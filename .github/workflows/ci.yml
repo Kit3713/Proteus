@@ -43,6 +43,20 @@ jobs:
       - name: cargo fmt --check
         run: cargo fmt --check
 
+  # Lockfile freshness check. The release pipeline depends on Cargo.lock as
+  # the single source of truth for dependency versions (see
+  # wiki/reproducible-builds.md). This job runs `cargo metadata --locked`,
+  # which fails if Cargo.lock is missing or would need to be regenerated.
+  # Catches PRs that bump Cargo.toml without committing a refreshed lockfile.
+  lockfile:
+    name: lockfile freshness
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - name: cargo metadata --locked
+        run: cargo metadata --locked --format-version 1 > /dev/null
+
   # Clippy is also libc-independent; runs on plain ubuntu for speed.
   clippy:
     name: cargo clippy
@@ -73,8 +87,8 @@ jobs:
         run: dnf install -y gcc pkg-config dbus-devel openssl-devel
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: cargo test
-        run: cargo test
+      - name: cargo test --locked
+        run: cargo test --locked
 
   # Release build + size enforcement. Runs in the Fedora container because
   # the stripped binary size depends on glibc version and Fedora 43 is the
@@ -101,12 +115,12 @@ jobs:
       # Time the cold release build. Soft signal only: the README targets
       # under 60s on the *dev host*, and CI runner perf is not our dev host.
       # Logged so regressions are visible, but never fails the job.
-      - name: cargo build --release (timed)
+      - name: cargo build --release --locked (timed)
         run: |
           set -euo pipefail
           # `time` writes to stderr; capture it so we can echo the line back
           # with a marker that's easy to grep in CI logs.
-          { time cargo build --release ; } 2> build-time.txt
+          { time cargo build --release --locked ; } 2> build-time.txt
           echo "PROTEUS_BUILD_TIME (soft signal, not enforced):"
           cat build-time.txt
       # Strip and log size. The ≤3 MB target is now a soft guideline, not a
@@ -154,8 +168,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: aarch64
-      - name: cargo build --release --target aarch64-unknown-linux-gnu
-        run: cargo build --release --target aarch64-unknown-linux-gnu
+      - name: cargo build --release --locked --target aarch64-unknown-linux-gnu
+        run: cargo build --release --locked --target aarch64-unknown-linux-gnu
       - name: Strip and enforce 3 MB size cap (aarch64)
         run: |
           set -euo pipefail

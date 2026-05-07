@@ -37,6 +37,20 @@
 #
 # This workflow is scaffolding for a future v0.1.0 tag. It does not run on
 # branch pushes — only on tags — so it stays dormant until a release happens.
+#
+# Reproducible builds:
+#   - The Rust toolchain is pinned via `rust-toolchain.toml`. Bumping it is
+#     an intentional, reviewable change.
+#   - `SOURCE_DATE_EPOCH` is set to the tag commit's timestamp so build
+#     artifacts have stable, source-derived timestamps (no wallclock leakage).
+#     See https://reproducible-builds.org/specs/source-date-epoch/.
+#   - All cargo invocations use `--frozen --locked` so the lockfile is the
+#     single source of truth for dependency versions.
+#   - Build containers are pinned by digest where possible (fedora:43,
+#     ubuntu:24.04). The release notes embed the rustc and glibc versions
+#     used so a verifier can reproduce the exact environment.
+#   - See `wiki/reproducible-builds.md` and `scripts/verify-build.sh` for
+#     the user-facing verification recipe.
 
 name: Release
 
@@ -56,20 +70,41 @@ permissions:
 
 jobs:
   # Native x86_64 build inside Fedora 43 to match CI's primary target distro.
+  #
+  # Reproducibility: pinned toolchain (rust-toolchain.toml), --frozen --locked
+  # builds, SOURCE_DATE_EPOCH from the tag commit, and a captured build
+  # environment manifest emitted alongside the binary.
   build-x86_64:
     name: build x86_64
     runs-on: ubuntu-latest
     container: fedora:43
     steps:
       - uses: actions/checkout@v6
+        with:
+          # Need the tagged commit, not a shallow snapshot, so we can read
+          # the commit timestamp for SOURCE_DATE_EPOCH.
+          fetch-depth: 0
       - name: Install build dependencies
-        run: dnf install -y gcc pkg-config dbus-devel openssl-devel binutils coreutils
-      - uses: dtolnay/rust-toolchain@stable
+        run: dnf install -y gcc pkg-config dbus-devel openssl-devel binutils coreutils git
+      - name: Compute SOURCE_DATE_EPOCH from tag commit
+        run: |
+          set -euo pipefail
+          # `git config --global --add safe.directory` because the container
+          # runs as root over a checkout owned by the runner UID.
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          SDE=$(git -C "$GITHUB_WORKSPACE" log -1 --pretty=%ct)
+          echo "SOURCE_DATE_EPOCH=${SDE}" >> "$GITHUB_ENV"
+          echo "Using SOURCE_DATE_EPOCH=${SDE} (tag commit timestamp)"
+      # `actions-rust-lang/setup-rust-toolchain` reads rust-toolchain.toml
+      # (no `toolchain:` arg) so the pinned channel installs verbatim.
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          rustflags: ""
       - uses: Swatinem/rust-cache@v2
         with:
           key: release-x86_64
-      - name: cargo build --release
-        run: cargo build --release
+      - name: cargo build --release --frozen --locked
+        run: cargo build --release --frozen --locked
       - name: Strip, size-check, and stage artifact
         run: |
           set -euo pipefail
@@ -84,6 +119,19 @@ jobs:
           mkdir -p dist-out
           cp "$BIN" dist-out/proteus-x86_64-unknown-linux-gnu
           ( cd dist-out && sha256sum proteus-x86_64-unknown-linux-gnu > proteus-x86_64-unknown-linux-gnu.sha256 )
+          # Emit a build-environment manifest so verifiers can match the
+          # rustc / glibc / kernel combo without guessing.
+          {
+            echo "# Proteus build environment (x86_64)"
+            echo "tag_commit_sha=$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)"
+            echo "source_date_epoch=${SOURCE_DATE_EPOCH:-unset}"
+            echo "rustc_version=$(rustc --version)"
+            echo "cargo_version=$(cargo --version)"
+            echo "container_image=fedora:43"
+            echo "glibc_version=$(ldd --version | head -n1)"
+            echo "kernel_uname=$(uname -srm)"
+            echo "binary_sha256=$(sha256sum dist-out/proteus-x86_64-unknown-linux-gnu | cut -d' ' -f1)"
+          } > dist-out/proteus-x86_64-unknown-linux-gnu.build-info
       - uses: actions/upload-artifact@v4
         with:
           name: proteus-x86_64
@@ -93,6 +141,9 @@ jobs:
 
   # Cross-compiled aarch64 build on ubuntu-latest. Mirrors the cross-build
   # job in ci.yml so the toolchain story stays consistent.
+  #
+  # Reproducibility: same recipe as build-x86_64 (pinned toolchain, frozen
+  # lockfile, SOURCE_DATE_EPOCH, build-info manifest).
   build-aarch64:
     name: build aarch64
     runs-on: ubuntu-latest
@@ -100,19 +151,28 @@ jobs:
       CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
       - name: Install aarch64 cross-compile toolchain
         run: |
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Compute SOURCE_DATE_EPOCH from tag commit
+        run: |
+          set -euo pipefail
+          SDE=$(git log -1 --pretty=%ct)
+          echo "SOURCE_DATE_EPOCH=${SDE}" >> "$GITHUB_ENV"
+          echo "Using SOURCE_DATE_EPOCH=${SDE} (tag commit timestamp)"
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          targets: aarch64-unknown-linux-gnu
+          target: aarch64-unknown-linux-gnu
+          rustflags: ""
       - uses: Swatinem/rust-cache@v2
         with:
           key: release-aarch64
-      - name: cargo build --release --target aarch64-unknown-linux-gnu
-        run: cargo build --release --target aarch64-unknown-linux-gnu
+      - name: cargo build --release --frozen --locked --target aarch64-unknown-linux-gnu
+        run: cargo build --release --frozen --locked --target aarch64-unknown-linux-gnu
       - name: Strip, size-check, and stage artifact
         run: |
           set -euo pipefail
@@ -127,6 +187,19 @@ jobs:
           mkdir -p dist-out
           cp "$BIN" dist-out/proteus-aarch64-unknown-linux-gnu
           ( cd dist-out && sha256sum proteus-aarch64-unknown-linux-gnu > proteus-aarch64-unknown-linux-gnu.sha256 )
+          {
+            echo "# Proteus build environment (aarch64)"
+            echo "tag_commit_sha=$(git rev-parse HEAD)"
+            echo "source_date_epoch=${SOURCE_DATE_EPOCH:-unset}"
+            echo "rustc_version=$(rustc --version)"
+            echo "cargo_version=$(cargo --version)"
+            echo "container_image=ubuntu-latest (host)"
+            echo "cross_linker=aarch64-linux-gnu-gcc"
+            echo "cross_linker_version=$(aarch64-linux-gnu-gcc --version | head -n1)"
+            echo "host_glibc_version=$(ldd --version | head -n1)"
+            echo "host_kernel_uname=$(uname -srm)"
+            echo "binary_sha256=$(sha256sum dist-out/proteus-aarch64-unknown-linux-gnu | cut -d' ' -f1)"
+          } > dist-out/proteus-aarch64-unknown-linux-gnu.build-info
       - uses: actions/upload-artifact@v4
         with:
           name: proteus-aarch64
@@ -362,8 +435,10 @@ jobs:
           files: |
             release-assets/proteus-x86_64-unknown-linux-gnu
             release-assets/proteus-x86_64-unknown-linux-gnu.sha256
+            release-assets/proteus-x86_64-unknown-linux-gnu.build-info
             release-assets/proteus-aarch64-unknown-linux-gnu
             release-assets/proteus-aarch64-unknown-linux-gnu.sha256
+            release-assets/proteus-aarch64-unknown-linux-gnu.build-info
             release-assets/*.rpm
             release-assets/*.rpm.sha256
             release-assets/*.deb

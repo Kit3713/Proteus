@@ -15,6 +15,16 @@ landed, what is in flight, and what is on the bench. See
 
 ### Changed
 
+- chore: reproducible build infrastructure (pinned toolchain, deterministic
+  `SOURCE_DATE_EPOCH`, sha256 verification script). `rust-toolchain.toml` now
+  pins to `1.93.0` instead of floating `stable`; the release workflow exports
+  `SOURCE_DATE_EPOCH` from the tag commit and builds with
+  `cargo build --release --frozen --locked`; each release attaches a
+  `*.build-info` manifest (rustc, glibc, kernel, container image, binary
+  sha256) so verifiers can match the build environment. New
+  `scripts/verify-build.sh` (POSIX shell, no extra crate deps) clones the
+  repo at a tag, rebuilds, and diffs the local sha256 against the published
+  one. New `wiki/reproducible-builds.md` documents the recipe and caveats.
 - chore: trim binary by ~316 KB via feature-flag audit (was 3,083,400 bytes,
   now 2,760,032 bytes stripped). Dropped `tracing-subscriber/env-filter` (it
   pulled `matchers` + `regex-automata` + `regex-syntax`, ~175 KB), replaced
