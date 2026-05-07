@@ -208,7 +208,7 @@ fn restart_timesyncd() -> Result<()> {
         tracing::debug!("systemd not detected; skipping {TIMESYNCD_UNIT} restart");
         return Ok(());
     }
-    let out = Command::new("systemctl")
+    let out = Command::new(crate::process::systemctl())
         .args(["restart", TIMESYNCD_UNIT])
         .output()?;
     if out.status.success() {

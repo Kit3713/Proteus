@@ -201,7 +201,7 @@ fn restart_resolved() -> Result<()> {
         tracing::debug!("systemd not detected; skipping {RESOLVED_UNIT} restart");
         return Ok(());
     }
-    let out = Command::new("systemctl")
+    let out = Command::new(crate::process::systemctl())
         .args(["restart", RESOLVED_UNIT])
         .output()?;
     if out.status.success() {

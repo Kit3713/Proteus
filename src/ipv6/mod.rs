@@ -206,7 +206,10 @@ pub(crate) fn validate_iface_name(iface: &str) -> Result<()> {
 /// `write_sysctl`, so the absence is a warning, not a failure.
 pub fn reload_sysctls() -> Result<()> {
     use std::process::Command;
-    let status = Command::new("sysctl")
+    // Bypass-hardening: prefer the canonical sysctl path (/sbin or
+    // /usr/sbin) before falling back to a PATH search.
+    let bin = crate::process::resolve_bin("sysctl", crate::process::paths::SYSCTL);
+    let status = Command::new(bin)
         .arg("--system")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())

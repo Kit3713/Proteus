@@ -560,7 +560,7 @@ pub fn chip_info_extended(iface: &str) -> ChipInfoExtended {
 /// — the binary is missing on minimal containers) and looks for the first
 /// line that mentions `iface` and the word `firmware`.
 fn dmesg_firmware_line(iface: &str) -> Option<String> {
-    let output = Command::new("dmesg").output().ok()?;
+    let output = Command::new(crate::process::dmesg()).output().ok()?;
     if !output.status.success() {
         tracing::debug!(iface, "dmesg returned non-zero; skipping firmware fallback");
         return None;

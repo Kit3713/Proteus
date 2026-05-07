@@ -38,8 +38,25 @@ landed, what is in flight, and what is on the bench. See
   quirky setup, config parse error.
 - **M6 `--format`** — global `--format json|yaml|table` flag at the
   CLI top level. `json` flips every reader's per-subcommand `--json`
-  at dispatch time; `table` is the default; `yaml` returns a clear
-  reserved-for-follow-up error pending a yaml dependency.
+  at dispatch time; `table` is the default; `yaml` redirects through
+  a hand-rolled JSON-to-YAML emitter (no new deps — walks
+  `serde_json::Value` and emits YAML block-style, with proper
+  string-quoting for scalars that would parse ambiguously as
+  numbers / booleans).
+- **M6 bypass hardening pass** — `docs/security/bypass-hardening-pass.md`
+  enumerates every `Command::new` site and every parser added since
+  the May 2026 audit. New `crate::process` module pins privileged
+  shellouts (`nft`, `ip`, `sysctl`, `systemctl`, `journalctl`, `ss`,
+  `dmesg`, `semanage`) to canonical absolute paths with PATH
+  fallback. Parser audit found and fixed two bugs in
+  `per_ssid::parse_duration`: a panic on multi-byte trailing chars
+  (`30é`) and silent overflow wrap on `n * 86_400` (now `checked_mul`).
+- **M6 wiki-hint audit** — operator-facing `bail!` / `anyhow!`
+  callsites in user-actionable error paths (config schema, OUI
+  tokens, timer durations, pin/unpin, watch interval) now carry a
+  `proteus wiki <page>` hint. Every reference verified to point at
+  a real wiki page (`grep -roh 'proteus wiki [a-z-]*' src/` against
+  `wiki/*.md`).
 
 ### Runtime performance
 

@@ -23,6 +23,7 @@ pub mod ntp;
 pub mod per_ssid;
 pub mod persona;
 pub mod probe;
+pub mod process;
 pub mod profile;
 pub mod rf;
 pub mod stack;

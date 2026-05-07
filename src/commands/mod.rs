@@ -178,6 +178,21 @@ pub(crate) fn acquire_state_lock_or_print(
 }
 
 pub(crate) fn print_json<T: Serialize>(value: &T) -> Result<()> {
+    // Roadmap Milestone 6 — `--format yaml` redirects through the
+    // JSON-to-YAML emitter below. Set by `cli::dispatch` when the
+    // user passes `--format yaml`. Default (Json) is the existing
+    // pretty-printed JSON path.
+    if YAML_OUTPUT.load(std::sync::atomic::Ordering::Relaxed) {
+        let yaml = serde_to_yaml(value)?;
+        let stdout = std::io::stdout();
+        let mut handle = stdout.lock();
+        use std::io::Write;
+        handle.write_all(yaml.as_bytes())?;
+        if !yaml.ends_with('\n') {
+            handle.write_all(b"\n")?;
+        }
+        return Ok(());
+    }
     let stdout = std::io::stdout();
     let mut handle = stdout.lock();
     serde_json::to_writer_pretty(&mut handle, value)?;
@@ -185,11 +200,230 @@ pub(crate) fn print_json<T: Serialize>(value: &T) -> Result<()> {
     Ok(())
 }
 
-// Roadmap Milestone 6: the `--format json|yaml|table` global flag is
-// resolved at dispatch time (`cli::dispatch::apply_json_to_command`)
-// and folds into the existing per-subcommand `--json` flag. Future
-// per-format renderers can lift back into this module when more than
-// one consumer needs them.
+/// Roadmap Milestone 6: process-wide YAML-output toggle. Set once by
+/// `cli::dispatch` when `--format yaml` is on the command line; every
+/// `print_json` call after that emits YAML instead of JSON.
+///
+/// Atomic rather than thread-local because all readers run on the main
+/// thread and the toggle is set exactly once before dispatch enters
+/// the per-subcommand match arms. An atomic bool is a single-byte read
+/// per `print_json` call — strictly cheaper than a thread-local check.
+pub(crate) static YAML_OUTPUT: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Serialize `value` through `serde_json::Value` and convert into a
+/// minimal YAML block-style document. The conversion intentionally
+/// covers only the JSON shape Proteus's reports already use:
+/// objects → mappings, arrays → sequences, primitives → scalars.
+/// No anchors, tags, flow style, or multi-document streams.
+fn serde_to_yaml<T: Serialize>(value: &T) -> Result<String> {
+    let v: serde_json::Value = serde_json::to_value(value)?;
+    let mut out = String::with_capacity(256);
+    write_yaml_value(&mut out, &v, 0, true);
+    Ok(out)
+}
+
+fn write_yaml_value(out: &mut String, v: &serde_json::Value, indent: usize, top_level: bool) {
+    match v {
+        serde_json::Value::Null => out.push_str("null\n"),
+        serde_json::Value::Bool(b) => {
+            out.push_str(if *b { "true" } else { "false" });
+            out.push('\n');
+        }
+        serde_json::Value::Number(n) => {
+            out.push_str(&n.to_string());
+            out.push('\n');
+        }
+        serde_json::Value::String(s) => {
+            out.push_str(&yaml_scalar(s));
+            out.push('\n');
+        }
+        serde_json::Value::Array(arr) => write_yaml_array(out, arr, indent, top_level),
+        serde_json::Value::Object(map) => write_yaml_object(out, map, indent, top_level),
+    }
+}
+
+fn write_yaml_array(
+    out: &mut String,
+    arr: &[serde_json::Value],
+    indent: usize,
+    top_level: bool,
+) {
+    if arr.is_empty() {
+        out.push_str("[]\n");
+        return;
+    }
+    if !top_level {
+        out.push('\n');
+    }
+    for item in arr {
+        push_indent(out, indent);
+        out.push_str("- ");
+        match item {
+            serde_json::Value::Object(map) if !map.is_empty() => {
+                let mut first = true;
+                for (k, v) in map {
+                    if !first {
+                        push_indent(out, indent + 1);
+                    }
+                    first = false;
+                    out.push_str(&yaml_key(k));
+                    out.push(':');
+                    if matches!(v, serde_json::Value::Object(m) if !m.is_empty())
+                        || matches!(v, serde_json::Value::Array(a) if !a.is_empty())
+                    {
+                        write_yaml_value(out, v, indent + 2, false);
+                    } else {
+                        out.push(' ');
+                        write_yaml_value(out, v, indent + 1, false);
+                    }
+                }
+            }
+            serde_json::Value::Array(inner) if !inner.is_empty() => {
+                write_yaml_array(out, inner, indent + 1, false);
+            }
+            _ => write_yaml_value(out, item, indent + 1, false),
+        }
+    }
+}
+
+fn write_yaml_object(
+    out: &mut String,
+    map: &serde_json::Map<String, serde_json::Value>,
+    indent: usize,
+    top_level: bool,
+) {
+    if map.is_empty() {
+        out.push_str("{}\n");
+        return;
+    }
+    if !top_level {
+        out.push('\n');
+    }
+    for (k, v) in map {
+        push_indent(out, indent);
+        out.push_str(&yaml_key(k));
+        out.push(':');
+        if matches!(v, serde_json::Value::Object(m) if !m.is_empty())
+            || matches!(v, serde_json::Value::Array(a) if !a.is_empty())
+        {
+            write_yaml_value(out, v, indent + 1, false);
+        } else {
+            out.push(' ');
+            write_yaml_value(out, v, indent, false);
+        }
+    }
+}
+
+fn push_indent(out: &mut String, indent: usize) {
+    for _ in 0..indent {
+        out.push_str("  ");
+    }
+}
+
+/// Quote keys that would otherwise be ambiguous (contain `:`, `#`,
+/// start with a sigil, or look like a YAML keyword). Plain identifiers
+/// pass through unquoted.
+fn yaml_key(s: &str) -> String {
+    if needs_quoting(s) {
+        format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
+    } else {
+        s.to_string()
+    }
+}
+
+/// Quote string scalars that could be misread as numbers, booleans, or
+/// YAML control characters. Plain text passes through unquoted to
+/// keep the rendered output readable.
+fn yaml_scalar(s: &str) -> String {
+    if s.is_empty() {
+        return "\"\"".into();
+    }
+    if needs_quoting(s) || looks_like_other_scalar(s) {
+        return format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""));
+    }
+    s.to_string()
+}
+
+fn needs_quoting(s: &str) -> bool {
+    if s.is_empty() {
+        return true;
+    }
+    let first = s.chars().next().unwrap();
+    if matches!(first, '!' | '&' | '*' | '@' | '`' | '%' | '|' | '>' | '?' | '#' | '-' | '[' | ']' | '{' | '}' | ',' | '"' | '\'') {
+        return true;
+    }
+    s.contains(':') || s.contains('#') || s.contains('\n') || s.starts_with(' ') || s.ends_with(' ')
+}
+
+fn looks_like_other_scalar(s: &str) -> bool {
+    matches!(
+        s.to_ascii_lowercase().as_str(),
+        "null" | "true" | "false" | "yes" | "no" | "on" | "off" | "~"
+    ) || s.parse::<f64>().is_ok()
+}
+
+#[cfg(test)]
+mod yaml_emitter_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn primitives_emit_their_yaml_form() {
+        assert_eq!(serde_to_yaml(&json!(null)).unwrap(), "null\n");
+        assert_eq!(serde_to_yaml(&json!(true)).unwrap(), "true\n");
+        assert_eq!(serde_to_yaml(&json!(42)).unwrap(), "42\n");
+        // Strings that look like other scalars get quoted.
+        assert_eq!(serde_to_yaml(&json!("true")).unwrap(), "\"true\"\n");
+        assert_eq!(serde_to_yaml(&json!("42")).unwrap(), "\"42\"\n");
+        // Plain text does not.
+        assert_eq!(serde_to_yaml(&json!("hello")).unwrap(), "hello\n");
+    }
+
+    #[test]
+    fn flat_object_emits_block_mapping() {
+        let v = json!({ "a": 1, "b": "two" });
+        let y = serde_to_yaml(&v).unwrap();
+        assert!(y.contains("a: 1"), "{y}");
+        assert!(y.contains("b: two"), "{y}");
+    }
+
+    #[test]
+    fn nested_object_indents_children() {
+        let v = json!({ "outer": { "inner": 7 } });
+        let y = serde_to_yaml(&v).unwrap();
+        assert!(y.contains("outer:\n"), "{y}");
+        assert!(y.contains("  inner: 7"), "{y}");
+    }
+
+    #[test]
+    fn array_of_scalars_uses_dash_lines() {
+        let v = json!(["a", "b", "c"]);
+        let y = serde_to_yaml(&v).unwrap();
+        assert_eq!(y, "- a\n- b\n- c\n");
+    }
+
+    #[test]
+    fn array_of_objects_inlines_first_key_after_dash() {
+        let v = json!([{ "k": "v1" }, { "k": "v2" }]);
+        let y = serde_to_yaml(&v).unwrap();
+        assert!(y.contains("- k: v1"));
+        assert!(y.contains("- k: v2"));
+    }
+
+    #[test]
+    fn empty_collections_use_flow_style() {
+        assert_eq!(serde_to_yaml(&json!({})).unwrap(), "{}\n");
+        assert_eq!(serde_to_yaml(&json!([])).unwrap(), "[]\n");
+    }
+
+    #[test]
+    fn keys_with_colons_get_quoted() {
+        let v = json!({ "k:with:colons": "v" });
+        let y = serde_to_yaml(&v).unwrap();
+        assert!(y.contains("\"k:with:colons\":"), "{y}");
+    }
+}
 
 /// Atomic file write: temp file + sync + rename. Used by both state and
 /// config writers so we share one durability story.

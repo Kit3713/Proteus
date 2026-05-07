@@ -451,7 +451,7 @@ fn summarize_timer_report(report: &crate::timer::ReconcileReport) -> String {
 
 fn systemctl(args: &[&str]) -> anyhow::Result<()> {
     use anyhow::{Context, anyhow};
-    let output = std::process::Command::new("systemctl")
+    let output = std::process::Command::new(crate::process::systemctl())
         .args(args)
         .output()
         .context("invoking systemctl")?;
@@ -460,7 +460,7 @@ fn systemctl(args: &[&str]) -> anyhow::Result<()> {
     }
     let stderr = String::from_utf8_lossy(&output.stderr);
     Err(anyhow!(
-        "systemctl {} exited with {}: {}",
+        "systemctl {} exited with {}: {} (see `proteus wiki troubleshooting`)",
         args.join(" "),
         output.status,
         stderr.trim()

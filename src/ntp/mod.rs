@@ -169,7 +169,7 @@ pub struct SystemProbe;
 
 impl RuntimeProbe for SystemProbe {
     fn unit_is_active(&self, unit: &str) -> bool {
-        let out = match Command::new("systemctl").args(["is-active", unit]).output() {
+        let out = match Command::new(crate::process::systemctl()).args(["is-active", unit]).output() {
             Ok(o) => o,
             Err(_) => return false,
         };

@@ -168,12 +168,14 @@ fn parse_duration_seconds(s: &str) -> Result<u64> {
         .position(|b| !b.is_ascii_digit())
         .unwrap_or(bytes.len());
     if split_at == 0 {
-        anyhow::bail!("duration must start with digits (got '{s}')");
+        anyhow::bail!(
+            "duration must start with digits (got '{s}'); see `proteus wiki timer`"
+        );
     }
     let (num, suffix) = s.split_at(split_at);
     let value: u64 = num
         .parse()
-        .map_err(|e| anyhow!("invalid duration '{s}': {e}"))?;
+        .map_err(|e| anyhow!("invalid duration '{s}': {e} (see `proteus wiki timer`)"))?;
     let mult: u64 = match suffix.trim().to_ascii_lowercase().as_str() {
         "" | "s" | "sec" | "secs" | "second" | "seconds" => 1,
         "m" | "min" | "mins" | "minute" | "minutes" => 60,
@@ -181,12 +183,13 @@ fn parse_duration_seconds(s: &str) -> Result<u64> {
         "d" | "day" | "days" => 60 * 60 * 24,
         "w" | "wk" | "wks" | "week" | "weeks" => 60 * 60 * 24 * 7,
         other => anyhow::bail!(
-            "unknown duration unit '{other}' in '{s}' (use s/m/h/d/w or a named cadence like 'hourly')"
+            "unknown duration unit '{other}' in '{s}' (use s/m/h/d/w or a named cadence \
+             like 'hourly'; see `proteus wiki timer`)"
         ),
     };
     value
         .checked_mul(mult)
-        .ok_or_else(|| anyhow!("duration '{s}' overflows u64 seconds"))
+        .ok_or_else(|| anyhow!("duration '{s}' overflows u64 seconds (see `proteus wiki timer`)"))
 }
 
 /// Render the drop-in body for a parsed interval.

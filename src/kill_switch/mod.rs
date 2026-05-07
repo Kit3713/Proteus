@@ -177,7 +177,12 @@ fn is_safe_iface(iface: &str) -> bool {
 }
 
 fn run_ip(args: &[&str]) -> Result<bool, String> {
-    let output = match Command::new("ip").args(args).output() {
+    // Bypass-hardening pass: pin to /usr/sbin/ip / /sbin/ip when one
+    // exists, fall back to PATH-walk on Nix/Alpine. The kill_switch
+    // mutates link state — a `$PATH` redirect would let an attacker
+    // run a different binary in a privileged context.
+    let bin = crate::process::resolve_bin("ip", crate::process::paths::IP);
+    let output = match Command::new(bin).args(args).output() {
         Ok(o) => o,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
         Err(e) => return Err(format!("spawning ip: {e}")),

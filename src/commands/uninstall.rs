@@ -261,8 +261,22 @@ fn teardown_units(layout: &Layout, warns: &mut Vec<String>) {
 
 /// Run a command quietly. Returns Err with a single-line message on
 /// non-zero exit so callers can collect warnings without aborting.
+///
+/// Bypass-hardening pass: well-known program names get resolved to
+/// their canonical absolute path before spawn so a tampered `$PATH`
+/// can't redirect the uninstall sequence to attacker-controlled
+/// binaries. Unknown program names fall through unchanged so the
+/// helper stays generic.
 fn run_quiet(program: &str, args: &[&str]) -> Result<(), String> {
-    match Command::new(program).args(args).output() {
+    let resolved = match program {
+        "systemctl" => crate::process::systemctl(),
+        "nft" => crate::process::nft(),
+        "sysctl" => crate::process::sysctl(),
+        "ip" => crate::process::ip(),
+        "semanage" => crate::process::semanage(),
+        other => other,
+    };
+    match Command::new(resolved).args(args).output() {
         Ok(o) if o.status.success() => Ok(()),
         Ok(o) => Err(format!(
             "{program} {}: {}",

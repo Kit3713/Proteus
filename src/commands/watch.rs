@@ -80,7 +80,7 @@ pub fn parse_interval(s: &str) -> anyhow::Result<Duration> {
         return Ok(Duration::from_secs(mins * 60));
     }
     anyhow::bail!(
-        "expected a duration like `2s`, `500ms`, or `1m`; got '{s}'"
+        "expected a duration like `2s`, `500ms`, or `1m`; got '{s}' (see `proteus wiki cli`)"
     )
 }
 

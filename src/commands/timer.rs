@@ -253,7 +253,7 @@ pub fn run_logs(name: &str, lines: u32) -> Result<u8> {
         }
     };
     let lines_str = lines.to_string();
-    let status = Command::new("journalctl")
+    let status = Command::new(crate::process::journalctl())
         .args(["-u", spec.unit, "-n", &lines_str, "--no-pager"])
         .status()
         .context("invoking journalctl")?;
@@ -294,7 +294,7 @@ fn write_dropin(spec: &TimerSpec, interval: &timer::Interval) -> Result<()> {
 }
 
 fn systemctl(args: &[&str]) -> Result<()> {
-    let output = Command::new("systemctl")
+    let output = Command::new(crate::process::systemctl())
         .args(args)
         .output()
         .context("invoking systemctl")?;
@@ -357,7 +357,7 @@ fn extract_cadence(dropin_body: &str) -> Option<String> {
 }
 
 fn systemctl_is_enabled(unit: &str) -> Option<bool> {
-    let out = Command::new("systemctl")
+    let out = Command::new(crate::process::systemctl())
         .args(["is-enabled", unit])
         .output()
         .ok()?;
@@ -370,7 +370,7 @@ fn systemctl_is_enabled(unit: &str) -> Option<bool> {
 }
 
 fn systemctl_is_active(unit: &str) -> Option<bool> {
-    let out = Command::new("systemctl")
+    let out = Command::new(crate::process::systemctl())
         .args(["is-active", unit])
         .output()
         .ok()?;
@@ -384,7 +384,7 @@ fn systemctl_is_active(unit: &str) -> Option<bool> {
 
 /// Returns (NEXT, LAST) columns from `systemctl list-timers <unit>`.
 fn list_timer_columns(unit: &str) -> (Option<String>, Option<String>) {
-    let out = match Command::new("systemctl")
+    let out = match Command::new(crate::process::systemctl())
         .args(["list-timers", "--all", "--no-pager", "--no-legend", unit])
         .output()
     {

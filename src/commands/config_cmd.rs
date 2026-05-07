@@ -424,17 +424,19 @@ fn parse_config_text(s: &str) -> Result<Config> {
 /// Empty segments (leading or trailing dots, double dots) are rejected.
 fn split_key(key: &str) -> Result<(Vec<&str>, &str)> {
     if key.is_empty() {
-        return Err(anyhow!("empty key"));
+        return Err(anyhow!("empty key (see `proteus wiki cli`)"));
     }
     let parts: Vec<&str> = key.split('.').collect();
     if parts.iter().any(|p| p.is_empty()) {
         return Err(anyhow!(
-            "key '{key}' must be of the form section.field or section.subsection.field"
+            "key '{key}' must be of the form section.field or section.subsection.field \
+             (see `proteus wiki cli`)"
         ));
     }
     if parts.len() < 2 {
         return Err(anyhow!(
-            "key '{key}' must be of the form section.field or section.subsection.field"
+            "key '{key}' must be of the form section.field or section.subsection.field \
+             (see `proteus wiki cli`)"
         ));
     }
     let (last, head) = parts.split_last().unwrap();
@@ -527,7 +529,7 @@ fn parse_value_for_key(key: &str, raw: &str) -> Result<Value> {
         .ok_or_else(|| anyhow!("unknown config key (try `proteus config keys`)"))?;
     let val = item
         .as_value()
-        .ok_or_else(|| anyhow!("'{key}' is not a scalar value"))?;
+        .ok_or_else(|| anyhow!("'{key}' is not a scalar value (see `proteus wiki cli`)"))?;
     match val {
         Value::Boolean(_) => parse_bool(raw).map(Value::from),
         Value::Integer(_) => raw
@@ -550,9 +552,10 @@ fn parse_value_for_key(key: &str, raw: &str) -> Result<Value> {
             }
             Ok(Value::Array(arr))
         }
-        Value::InlineTable(_) | Value::Datetime(_) => {
-            Err(anyhow!("setting this key from the CLI is not supported"))
-        }
+        Value::InlineTable(_) | Value::Datetime(_) => Err(anyhow!(
+            "setting this key from the CLI is not supported (edit `/etc/proteus/config.toml` \
+             directly; see `proteus wiki cli`)"
+        )),
     }
 }
 

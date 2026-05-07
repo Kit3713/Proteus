@@ -430,7 +430,7 @@ fn unit_enabled(unit: &str) -> bool {
 fn systemctl_state(verb: &str, unit: &str) -> Option<String> {
     // Pin the C locale so the output we parse stays in the canonical
     // English form regardless of the operator's session.
-    let out = Command::new("systemctl")
+    let out = Command::new(crate::process::systemctl())
         .env("LC_ALL", "C")
         .args([verb, unit])
         .output()
@@ -446,7 +446,7 @@ fn next_rotation_pair() -> (Option<String>, Option<String>) {
     // locale; `parse_next_rotation` below assumes the C-locale English
     // layout ("Wed 2026-05-07 16:00:00 UTC 1h 46min …"). Force the locale
     // so a French/German/Japanese installation produces parseable output.
-    let out = match Command::new("systemctl")
+    let out = match Command::new(crate::process::systemctl())
         .env("LC_ALL", "C")
         .args([
             "list-timers",

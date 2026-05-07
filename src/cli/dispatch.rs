@@ -28,11 +28,12 @@ pub(super) fn dispatch(cli: Cli) -> Result<u8> {
     if let Some(global_fmt) = cli.format {
         match global_fmt {
             super::OutputFormat::Yaml => {
-                eprintln!(
-                    "proteus: --format yaml is reserved (no yaml dependency yet); \
-                     use --format json or --format table"
-                );
-                return Ok(crate::exit::CONFIG_ERROR);
+                // Roadmap Milestone 6: yaml shares the json dispatch
+                // path — every reader's `--json` flag is flipped on,
+                // and the YAML_OUTPUT toggle redirects `print_json`
+                // through the JSON-to-YAML emitter.
+                commands::YAML_OUTPUT.store(true, std::sync::atomic::Ordering::Relaxed);
+                apply_json_to_command(&mut cli.command);
             }
             super::OutputFormat::Json => apply_json_to_command(&mut cli.command),
             super::OutputFormat::Table => {} // default — leave commands alone

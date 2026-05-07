@@ -156,7 +156,7 @@ pub struct SystemProbe;
 
 impl RuntimeProbe for SystemProbe {
     fn unit_is_active(&self, unit: &str) -> bool {
-        let out = match Command::new("systemctl").args(["is-active", unit]).output() {
+        let out = match Command::new(crate::process::systemctl()).args(["is-active", unit]).output() {
             Ok(o) => o,
             Err(_) => return false,
         };
@@ -190,7 +190,7 @@ impl RuntimeProbe for SystemProbe {
     fn foreign_localhost_dns_listener(&self) -> Option<String> {
         // Try `ss -tnlpH 'sport = :53'`. If ss is missing, return None — the
         // other guard checks (binary presence, drop-ins) carry the load.
-        let out = Command::new("ss")
+        let out = Command::new(crate::process::ss_bin())
             .args(["-tnlpH", "sport = :53"])
             .output()
             .ok()?;

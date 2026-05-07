@@ -105,7 +105,12 @@ pub fn generate(opts: &GenerateOptions<'_>) -> Result<Mac> {
         let token_idx = (rand_u8()? as usize) % opts.pool.len();
         let token = &opts.pool[token_idx];
         let vendor = Vendor::from_pool_token(token)
-            .ok_or_else(|| anyhow!("unknown OUI pool token '{token}'"))?;
+            .ok_or_else(|| {
+                anyhow!(
+                    "unknown OUI pool token '{token}' (see `proteus wiki personas` for the \
+                     vendor-token list)"
+                )
+            })?;
         let mac = match generate_for_vendor(vendor, &suffix)? {
             Some(m) => m,
             None => continue,
@@ -232,7 +237,12 @@ pub fn generate_with_probe<P: Probe + ?Sized>(
     for _ in 0..MAX_GENERATION_ATTEMPTS {
         let token = opts.pool[token_cursor].clone();
         let vendor = Vendor::from_pool_token(&token)
-            .ok_or_else(|| anyhow!("unknown OUI pool token '{token}'"))?;
+            .ok_or_else(|| {
+                anyhow!(
+                    "unknown OUI pool token '{token}' (see `proteus wiki personas` for the \
+                     vendor-token list)"
+                )
+            })?;
         let mac = match generate_for_vendor(vendor, &suffix)? {
             Some(m) => m,
             None => continue,

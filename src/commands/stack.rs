@@ -218,7 +218,10 @@ fn write_dropin(body: &str) -> Result<()> {
 }
 
 fn sysctl_system_reload() -> Result<()> {
-    let output = Command::new("sysctl")
+    // Bypass-hardening: pin to the canonical sysctl path before
+    // falling back to PATH. sysctl is a kernel-parameter mutator.
+    let bin = crate::process::resolve_bin("sysctl", crate::process::paths::SYSCTL);
+    let output = Command::new(bin)
         .arg("--system")
         .output()
         .context("invoking `sysctl --system`")?;

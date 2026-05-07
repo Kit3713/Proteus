@@ -204,8 +204,20 @@ pub(crate) fn note(p: &Path, outcome: Outcome, warns: &mut Vec<String>) {
 /// non-zero exit so callers can collect warnings without aborting. Used for
 /// best-effort reload steps (`nft delete`, `sysctl --system`, `systemctl …`)
 /// where failure means the daemon wasn't running, which is fine.
+///
+/// Bypass-hardening pass: known privileged binaries (`nft`, `sysctl`,
+/// `systemctl`, `ip`) get pinned to their canonical absolute path so
+/// a tampered `$PATH` can't redirect a revert to an attacker
+/// lookalike. Unknown program names fall through unchanged.
 pub(crate) fn run_quiet(program: &str, args: &[&str]) -> Result<(), String> {
-    match Command::new(program).args(args).output() {
+    let resolved = match program {
+        "systemctl" => crate::process::systemctl(),
+        "nft" => crate::process::nft(),
+        "sysctl" => crate::process::sysctl(),
+        "ip" => crate::process::ip(),
+        other => other,
+    };
+    match Command::new(resolved).args(args).output() {
         Ok(o) if o.status.success() => Ok(()),
         Ok(o) => Err(format!(
             "{program} {}: {}",

@@ -128,20 +128,30 @@ fn per_block_has_any_field(p: &PerSsidPolicy) -> bool {
 /// grammar that makes sense for an SSID-scoped knob: bare seconds /
 /// minutes / hours / days. Returns `None` on anything off-format so the
 /// resolver can transparently fall through to the global timer.
+///
+/// Bypass-hardening pass — two corner-case fixes:
+/// 1. UTF-8 safety: prior implementation called `split_at(s.len() - 1)`
+///    which panics when the string ends with a multi-byte char (e.g.
+///    a stray `é`). Walk by `char` instead so the function is
+///    panic-free on any input.
+/// 2. Overflow safety: `n * 86_400` would have panicked in debug
+///    builds and silently wrapped in release for `n` close to
+///    `u64::MAX / 86_400`. Use `checked_mul` and return `None` on
+///    overflow so a malformed config can never crash the resolver.
 fn parse_duration(s: &str) -> Option<Duration> {
     let s = s.trim();
-    if s.is_empty() {
-        return None;
-    }
-    let (num, unit) = s.split_at(s.len() - 1);
+    let last = s.chars().next_back()?;
+    let unit_start = s.len() - last.len_utf8();
+    let (num, unit) = (&s[..unit_start], &s[unit_start..]);
     let n: u64 = num.parse().ok()?;
-    match unit {
-        "s" => Some(Duration::from_secs(n)),
-        "m" => Some(Duration::from_secs(n * 60)),
-        "h" => Some(Duration::from_secs(n * 3600)),
-        "d" => Some(Duration::from_secs(n * 86_400)),
-        _ => None,
-    }
+    let secs = match unit {
+        "s" => n,
+        "m" => n.checked_mul(60)?,
+        "h" => n.checked_mul(3600)?,
+        "d" => n.checked_mul(86_400)?,
+        _ => return None,
+    };
+    Some(Duration::from_secs(secs))
 }
 
 #[cfg(test)]
@@ -322,6 +332,34 @@ mod tests {
         assert!(parse_duration("").is_none());
         assert!(parse_duration("xx").is_none());
         assert!(parse_duration("3w").is_none());
+    }
+
+    /// Bypass-hardening regression: previously `split_at(s.len() - 1)`
+    /// would panic when the string ended with a multi-byte UTF-8 char
+    /// (e.g. a stray `é`). The parser must now reject those without
+    /// crashing.
+    #[test]
+    fn parse_duration_handles_multi_byte_trailing_character() {
+        // These all would have hit `split_at` not at a char boundary.
+        assert!(parse_duration("30é").is_none());
+        assert!(parse_duration("é").is_none());
+        assert!(parse_duration("30秒").is_none());
+    }
+
+    /// Bypass-hardening regression: `n * 86_400` would have wrapped
+    /// silently in release builds for `n` close to `u64::MAX / 86_400`.
+    /// The checked-mul path returns `None` instead.
+    #[test]
+    fn parse_duration_returns_none_on_overflow() {
+        // u64::MAX days obviously overflows.
+        let huge = format!("{}d", u64::MAX);
+        assert!(parse_duration(&huge).is_none());
+        // Just-large-enough to overflow seconds-per-hour.
+        let huge_h = format!("{}h", u64::MAX / 1000);
+        assert!(parse_duration(&huge_h).is_none());
+        // Edge-case: u64::MAX seconds is in-range and must still parse.
+        let edge = format!("{}s", u64::MAX);
+        assert_eq!(parse_duration(&edge), Some(Duration::from_secs(u64::MAX)));
     }
 
     /// Empty per-SSID block (`[per_ssid."x"]` with no fields) is treated

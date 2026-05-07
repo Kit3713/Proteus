@@ -227,13 +227,22 @@ pub fn render_delete_script() -> String {
     )
 }
 
+/// Resolve the `nft` binary to an absolute path when one of the
+/// canonical locations exists; otherwise let `Command::new` walk
+/// `$PATH`. Issue from the bypass-hardening pass: `nft` mutates
+/// firewall rules — high-value target for a `$PATH`-injection
+/// attacker. Mirrors the `mac::factory::ETHTOOL_ABS_PATH` pattern.
+fn nft_bin() -> &'static str {
+    crate::process::resolve_bin("nft", crate::process::paths::NFT)
+}
+
 /// Detect whether the `nft` binary is on `$PATH`.
 ///
 /// We don't actually invoke it here — `nft list tables` requires root for
 /// full output, and `which`-style binary presence is the right gate for
 /// status reads. Mutating commands surface errors from `nft -f -` directly.
 pub fn nft_present() -> bool {
-    Command::new("nft")
+    Command::new(nft_bin())
         .arg("--version")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -258,7 +267,7 @@ pub enum TableProbe {
 ///
 /// Returns `Err(_)` only if `nft` itself fails for an unexpected reason.
 pub fn list_our_table() -> Result<TableProbe> {
-    let output = Command::new("nft")
+    let output = Command::new(nft_bin())
         .args(["list", "table", TABLE_FAMILY, TABLE_NAME])
         .output()
         .context("invoking nft list")?;
@@ -324,7 +333,7 @@ pub fn revert_ruleset() -> Result<()> {
 }
 
 fn run_nft_script(script: &str) -> Result<()> {
-    let mut child = Command::new("nft")
+    let mut child = Command::new(nft_bin())
         .args(["-f", "-"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

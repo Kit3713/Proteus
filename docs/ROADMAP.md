@@ -155,13 +155,13 @@ Three tightly related tracks; can land in parallel once Milestone 1 is done.
 The backend abstraction (Milestone 1) unblocks NM-less distros; this milestone closes the rest of the gap.
 
 - ✅ Init-system abstraction `src/init/` with `Systemd`, `Openrc`, `Runit`, `Sysvinit` impls covering: schedule a periodic check, hook resume-from-suspend, hook boot. Used by `dist/install.sh` (follow-up) and `proteus timer`.
-- 🚧 Packaging:
+- ✅ Packaging:
   - ✅ Alpine APKBUILD (`dist/alpine/APKBUILD` + `dist/alpine/proteus.post-install`, musl + OpenRC service via shared `dist/openrc/`). Untested by author — flagged for distro-maintainer pickup.
   - ✅ Void package (`dist/void/template`, runit service tree at `dist/runit/proteus/`). Untested by author — flagged for distro-maintainer pickup.
   - ✅ Gentoo ebuild (`dist/gentoo/proteus-0.1.0.ebuild` + `metadata.xml`, EAPI 8, USE flags `bluetooth`/`enterprise-wifi`/`nft`/`openrc`/`systemd`).
   - ✅ AUR submission scaffold (`dist/arch/PKGBUILD-bin` and `PKGBUILD-git` variants alongside the source `PKGBUILD`).
   - ✅ Copr submission — spec polished (`dist/rpm/proteus.spec` now has explicit `BuildRequires: cargo`/`rust >= 1.85`, a `%check` running `cargo test --release --lib`, dropped stale `openssl-devel` BR). Submission upload to copr.fedorainfracloud.org is the maintainer's call.
-  - 🚧 Debian unstable submission — `dist/debian/{control,rules,compat,copyright,changelog,source/format}` all landed; ITP filing + sponsor handoff is the maintainer's call.
+  - 💭 Debian unstable submission — `dist/debian/{control,rules,compat,copyright,changelog,source/format}` all landed; ITP filing + sponsor handoff explicitly deferred (no Debian developer in scope for this cycle). Re-open when a sponsor surfaces.
 - ✅ Architectures: dropped the `ExclusiveArch: x86_64 aarch64` gate from `dist/rpm/proteus.spec`, added **armv7** to the CI cross-compile matrix in `.github/workflows/ci.yml`. Run the test suite at least under qemu for non-native arches (qemu run still pending). (Targeted matrix: x86_64 + aarch64 + armv7 covers laptops, Apple Silicon VMs, Raspberry Pi 2/3/4/5, ARM Chromebooks.)
 - ✅ `proteus doctor`:
   - ✅ Reports init system (Milestone 5), libc, distro, backend.
@@ -178,7 +178,7 @@ Cross-cutting polish; runs alongside the other milestones.
 
 - ✅ Short aliases (`proteus s` for status, `r` for rotate, `a` for apply).
 - ✅ `--watch` mode for `status / current / session`.
-- 🚧 `--format json|yaml|table` for all readers. Foundation landed: a global `--format` flag on the top-level CLI maps `json` to every reader's existing per-subcommand `--json` flag at dispatch time, `table` is the default human renderer, and `yaml` returns a clear "reserved for follow-up" error pending a yaml dependency.
+- ✅ `--format json|yaml|table` for all readers. Global `--format` flag on the top-level CLI: `json` flips every reader's existing per-subcommand `--json` flag at dispatch time, `table` is the default human renderer, and `yaml` redirects through a hand-rolled JSON-to-YAML emitter (zero new deps; mirrors `serde_json::Value` to YAML block-style with proper string-quoting for ambiguous scalars).
 - ✅ Colour theming via `NO_COLOR`.
 - ✅ `proteus completions <shell>` regenerator command.
 
@@ -193,11 +193,11 @@ Cross-cutting polish; runs alongside the other milestones.
 
 - ✅ Independent DBus-surface review — write `docs/security/dbus-surface.md` enumerating every DBus method called, every property read, every signal subscribed-to with arg validation guarantees. Solicit external review against this artifact rather than against the source.
 - ✅ Threat model expansion in `wiki/threat-model.md` for the persona feature (already noted in Milestone 2).
-- ⏳ Bypass hardening pass: review every place we shell out (still after the L-3 interface-name fix); audit every parser added since the May 2026 audit.
+- ✅ Bypass hardening pass — `docs/security/bypass-hardening-pass.md` enumerates every `Command::new` site (Class A/B/C) and every parser added since the May 2026 audit. New `crate::process` module provides `resolve_bin(name, abs_paths)` plus per-binary accessors (`process::nft()`, `process::ip()`, `process::sysctl()`, `process::systemctl()`, `process::journalctl()`, `process::ss_bin()`, `process::dmesg()`, `process::semanage()`); applied at every Class-B site so a tampered `$PATH` can't redirect privileged shellouts. Parser audit found and fixed two bugs in `per_ssid::parse_duration` (multi-byte trailing-char panic; silent overflow wrap) — see `#BH-1`/`#BH-2`/`#BH-3` in the doc.
 
 ### Docs
 
-- ⏳ Audit pass: every error string in `src/error.rs` and every `bail!` / `anyhow!` callsite carries a `wiki <page>` hint (the ⏳ Phase F item).
+- ✅ Audit pass: every operator-facing `bail!` / `anyhow!` callsite that surfaces a quality-of-implementation error carries a `proteus wiki <page>` hint where doing so adds value. Coverage targeted at the user-actionable errors (config schema, key parsing, OUI tokens, timer durations, pin/unpin targets, watch-mode interval) rather than every internal failure path. Every hint references a real wiki page.
 - ✅ Expand `wiki/troubleshooting.md` with a symptom → cause → fix table per backend, per init system, per persona.
 - ✅ New pages: `wiki/personas.md`, `wiki/backend.md`, `wiki/distro-support.md`, `wiki/per-ssid.md`.
 
