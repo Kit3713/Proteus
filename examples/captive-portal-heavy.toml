@@ -1,0 +1,132 @@
+# examples/captive-portal-heavy.toml
+# purpose: tuned for someone whose daily routine includes lots of
+# public Wi-Fi (cafés, conferences, hotels, airports). Differences
+# from standard.toml are all about portal handling and a faster
+# probe / rotation cycle for shorter sessions and fast-changing
+# connectivity.
+#
+# install:
+#   sudo cp examples/captive-portal-heavy.toml /etc/proteus/config.toml
+#   sudo proteus apply
+#
+# schema reference: proteus wiki config
+# captive portals: proteus wiki captive-portals
+
+# MAC: faster rotation. 30m matches a typical café visit length so
+# each visit gets at least one fresh MAC.
+# WHY: 30m is at the threshold where some networks throttle DHCP
+# renewal — see the risk table in `proteus wiki config`. If your
+# usual networks renew leases longer than 30m, bump this to 1h.
+[mac]
+enabled = true
+rotation_interval = "30m"
+oui_pool = ["apple", "intel", "samsung", "dell", "random-locally-administered"]
+exclude_gateways = true
+exclude_arp_table = true
+per_connection = true
+
+# Hostname: rotate from wordlist; do not rotate with MAC because that
+# would change your shell prompt every 30m.
+[hostname]
+enabled = true
+mode = "wordlist"
+rotate_with_mac = false
+
+# DHCP: suppress fingerprint-leaking options.
+[dhcp]
+suppress_hostname = true
+suppress_vendor_class = true
+rotate_client_id = true
+
+# IPv6: same as standard.
+[ipv6]
+enabled = true
+use_temp_addresses = true
+addr_gen_mode = "stable-privacy"
+ndp_hardening = true
+
+# Discovery: silence the noisy ones. SSDP/WSD stay off; if you bring
+# a portable printer or use KDE Connect on the road, you want them
+# working when you join your home network later.
+[discovery]
+mdns_responder = false
+mdns_resolve = true
+llmnr = false
+netbios = false
+ssdp_block = false
+wsd_block = false
+wpad = false
+ntp_normalize = true
+
+# Stack fingerprint: standard set.
+[stack]
+tcp_timestamps_off = true
+icmp_info_replies_drop = true
+icmpv6_hardening = true
+suppress_gratuitous_arp = false
+
+# Probes: faster cycle for hopping networks. 2m interval catches
+# disconnects fast; 30s cooldown lets you re-rotate quickly when
+# moving between networks.
+# WHY: shorter probe interval means faster reaction to "this network
+# went down" but more probe traffic. 2m is still well under any
+# typical lease time so the extra traffic is negligible.
+[probes]
+enabled = true
+quorum_n = 3
+quorum_total = 4
+interval = "2m"
+cooldown = "30s"
+endpoints = ["1.1.1.1:443", "8.8.8.8:443", "9.9.9.9:443", "142.250.190.78:443"]
+
+# Captive portals: this is the heart of this preset.
+# rotate-before-auth is already the default but we set it explicitly
+# so it is obvious. fresh_mac_per_visit is already the default but
+# also explicit.
+# WHY: known_portal_ssids gets you a fresh MAC every visit even if
+# the rotation timer hasn't fired. Add and remove SSIDs with
+# `proteus portal mark <ssid>` and `proteus portal unmark <ssid>`.
+# The list below is a starter pack of common public-Wi-Fi SSIDs;
+# `proteus portal list` shows the live list at any time.
+[captive_portal]
+enabled = true
+detect_url = "http://nmcheck.gnome.org/check_network_status.txt"
+expected_response = "NetworkManager is online"
+policy = "rotate-before-auth"
+fresh_mac_per_visit = true
+known_portal_ssids = [
+    "StarbucksWiFi",
+    "GoogleStarbucks",
+    "AAGotham",
+    "BoingoHotspot",
+    "attwifi",
+    "xfinitywifi",
+]
+
+# Bluetooth: standard.
+[bluetooth]
+enabled = true
+generic_alias = true
+discoverable = false
+ble_rpa = true
+
+# Enterprise Wi-Fi: off — public Wi-Fi is rarely 802.1X.
+[enterprise_wifi]
+anonymous_outer_identity = false
+
+# DNS: ECS strip on, hard guard active.
+[dns]
+strip_edns_client_subnet = true
+
+# RF: TX power reduction stays off so you don't lose signal in a
+# crowded café.
+[rf]
+tx_power_reduce = false
+
+# Rotation: matches MAC cadence. on_ssid_change is critical for this
+# preset — it ensures a fresh MAC on every network hop.
+[rotation]
+interval = "30m"
+on_probe_fail = true
+on_link_change = true
+on_ssid_change = true

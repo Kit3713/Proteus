@@ -288,6 +288,27 @@ Lands in phase C. Cross-ref `proteus wiki rotation`.
 - Invalid value (bad hostname, bad duration string, bad enum variant, bad endpoint): exit code 65; the error names the field and the wiki page that explains valid values.
 - Unknown keys are accepted silently. Older binaries reading newer configs will ignore fields they don't understand. Newer binaries reading older configs use defaults for fields the old config didn't set.
 
+## Choosing a preset
+
+Annotated, ready-to-copy presets live in [`examples/`](../examples/) at the repo root. Each is a starting point — read the file, copy the closest one, then tweak. Quick decision guide:
+
+- Just want MAC rotation? `examples/minimal.toml`.
+- Not sure where to start? `examples/standard.toml`. Recommended.
+- Live on public Wi-Fi? `examples/captive-portal-heavy.toml`.
+- Willing to lose KDE Connect / WSD printers for stronger silence? `examples/aggressive.toml`.
+- Maximum privacy, accept significant breakage? `examples/paranoid.toml`.
+- Have your own privacy stack and just want Proteus's read commands? `examples/disabled.toml`.
+- Hacking on Proteus itself? `examples/development.toml`.
+
+Install with:
+
+```sh
+sudo cp examples/standard.toml /etc/proteus/config.toml
+sudo proteus apply
+```
+
+Substitute the preset filename you picked. The full index plus per-preset rationale lives in [`examples/README.md`](../examples/README.md).
+
 ## Examples
 
 ### Minimal: just MAC rotation, leave the rest alone
