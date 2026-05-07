@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -73,7 +72,7 @@ pub fn run(yes: bool, dry_run: bool, config_override: Option<&Path>) -> Result<u
 
     let minimal = render_minimal(profile);
     let backed_up = backup_existing(&path, &backup_path)?;
-    write_atomic(&path, minimal.as_bytes())?;
+    super::write_atomic(&path, minimal.as_bytes())?;
 
     if backed_up {
         println!(
@@ -128,24 +127,6 @@ pub(crate) fn backup_path_for(config: &Path, timestamp: &str) -> PathBuf {
     let mut s = config.as_os_str().to_os_string();
     s.push(format!(".bak.{safe}"));
     PathBuf::from(s)
-}
-
-/// Atomic write: temp file in the same directory, then rename.
-fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
-    let parent = path
-        .parent()
-        .with_context(|| format!("config path has no parent: {}", path.display()))?;
-    fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
-    let tmp = path.with_extension("toml.tmp");
-    {
-        let mut f =
-            fs::File::create(&tmp).with_context(|| format!("creating {}", tmp.display()))?;
-        f.write_all(bytes)?;
-        f.sync_all()?;
-    }
-    fs::rename(&tmp, path)
-        .with_context(|| format!("renaming {} to {}", tmp.display(), path.display()))?;
-    Ok(())
 }
 
 #[cfg(test)]

@@ -17,6 +17,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Result, anyhow};
 use serde::Serialize;
 
+use crate::commands;
 use crate::config::TimersConfig;
 use crate::profile::TIMER_NEVER;
 use crate::version;
@@ -401,15 +402,11 @@ where
 fn execute_action(spec: &TimerSpec, path: &Path, action: PlannedAction) -> ReconcileOutcome {
     match action {
         PlannedAction::Write { body } => {
-            let dir = dropin_dir(spec);
-            if let Err(e) = std::fs::create_dir_all(&dir) {
-                return ReconcileOutcome::Failed(format!(
-                    "creating drop-in dir {}: {e}",
-                    dir.display()
-                ));
-            }
-            if let Err(e) = std::fs::write(path, &body) {
-                return ReconcileOutcome::Failed(format!("writing {}: {e}", path.display()));
+            // write_atomic creates the parent dir as part of its contract; the
+            // randomized temp name + O_EXCL + parent fsync defends issues
+            // #125/#150 (TOCTOU symlink redirect, leaked .tmp, durability).
+            if let Err(e) = commands::write_atomic(path, body.as_bytes()) {
+                return ReconcileOutcome::Failed(format!("writing {}: {e:#}", path.display()));
             }
             ReconcileOutcome::Changed
         }
