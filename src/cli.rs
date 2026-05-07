@@ -116,10 +116,13 @@ pub enum Command {
         #[arg(trailing_var_arg = true)]
         command: Vec<String>,
     },
-    /// Reset config to defaults and re-apply.
+    /// Reset config to built-in defaults (sacred originals untouched).
     Reset {
         #[arg(long)]
         yes: bool,
+        /// Print what would happen without writing.
+        #[arg(long = "dry-run")]
+        dry_run: bool,
     },
     /// Remove Proteus from the system.
     Uninstall {
@@ -325,8 +328,8 @@ pub fn run() -> ExitCode {
         Command::DryRun { .. } => {
             commands::stub::not_implemented("dry-run", 'G', "proteus wiki concepts")
         }
-        Command::Reset { .. } => {
-            commands::stub::not_implemented("reset", 'G', "proteus wiki concepts")
+        Command::Reset { yes, dry_run } => {
+            commands::reset::run(yes, dry_run, cli.config.as_deref())
         }
         Command::Uninstall { .. } => {
             commands::stub::not_implemented("uninstall", 'G', "proteus wiki uninstall")
