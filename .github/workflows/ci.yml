@@ -36,7 +36,7 @@ jobs:
     name: cargo fmt
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
@@ -48,7 +48,7 @@ jobs:
     name: cargo clippy
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -63,7 +63,7 @@ jobs:
     runs-on: ubuntu-latest
     container: fedora:43
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       # gcc + pkg-config for crates that link to system libs.
       # dbus-devel is pre-installed because zbus pulls it in for system-bus
       # tests starting in phase B; staging it here keeps the container ready
@@ -85,7 +85,7 @@ jobs:
     runs-on: ubuntu-latest
     container: fedora:43
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       # See test job for rationale on each package.
       # binutils provides `strip`; coreutils provides `wc`; both are
       # already in the base image but listed defensively.
