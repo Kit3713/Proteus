@@ -147,6 +147,11 @@ pub enum Command {
         #[command(subcommand)]
         action: Ipv6Action,
     },
+    /// 802.1X enterprise Wi-Fi anonymous outer identity (opt-in).
+    EnterpriseWifi {
+        #[command(subcommand)]
+        action: EnterpriseWifiAction,
+    },
     /// Browse the embedded wiki.
     Wiki {
         /// Page name (e.g. `intro`); omit to list pages.
@@ -269,6 +274,31 @@ pub enum Ipv6Action {
     },
     /// Restore the cached pre-Proteus IPv6 sysctl values.
     Revert {
+        #[arg(long)]
+        yes: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum EnterpriseWifiAction {
+    /// Show 802-1x.anonymous-identity for every 802.1X connection NM knows.
+    Status {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Set 802-1x.anonymous-identity = anonymous@<realm> on a connection.
+    Enable {
+        /// NM connection profile id (the human-friendly name).
+        #[arg(long)]
+        connection: String,
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Clear 802-1x.anonymous-identity on a connection.
+    Disable {
+        /// NM connection profile id (the human-friendly name).
+        #[arg(long)]
+        connection: String,
         #[arg(long)]
         yes: bool,
     },
@@ -419,6 +449,20 @@ pub fn run() -> ExitCode {
                 commands::ipv6::apply(yes, cli.state.as_deref(), cli.config.as_deref())
             }
             Ipv6Action::Revert { yes } => commands::ipv6::revert(yes, cli.state.as_deref()),
+        },
+        Command::EnterpriseWifi { action } => match action {
+            EnterpriseWifiAction::Status { json } => {
+                commands::enterprise_wifi::status(json, cli.state.as_deref(), cli.config.as_deref())
+            }
+            EnterpriseWifiAction::Enable { connection, yes } => commands::enterprise_wifi::enable(
+                &connection,
+                yes,
+                cli.state.as_deref(),
+                cli.config.as_deref(),
+            ),
+            EnterpriseWifiAction::Disable { connection, yes } => {
+                commands::enterprise_wifi::disable(&connection, yes, cli.state.as_deref())
+            }
         },
         Command::Timer { action } => match action {
             TimerAction::Status { json } => commands::timer::run_status(json),

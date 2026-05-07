@@ -6,6 +6,7 @@ pub mod commands;
 pub mod config;
 pub mod diff;
 pub mod dry_run;
+pub mod enterprise_wifi;
 pub mod hostname;
 pub mod ipv6;
 pub mod logging;

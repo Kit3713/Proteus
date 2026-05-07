@@ -17,6 +17,7 @@ pub struct Config {
     pub discovery: DiscoveryConfig,
     pub probes: ProbesConfig,
     pub ipv6: Ipv6Config,
+    pub enterprise_wifi: EnterpriseWifiConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -81,6 +82,33 @@ pub struct Ipv6Config {
     pub use_temp_addresses: bool,
     pub addr_gen_mode: String,
     pub ndp_hardening: bool,
+}
+
+/// 802.1X anonymous outer identity for enterprise Wi-Fi (eduroam, corporate).
+/// Opt-in, default off — some auth servers reject mismatched outer/inner
+/// identities. See `proteus wiki enterprise-wifi`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EnterpriseWifiConfig {
+    /// Master switch. When false the feature does nothing globally; per-
+    /// connection overrides can still opt specific connections in via the
+    /// `enable` subcommand.
+    pub anonymous_outer_identity: bool,
+    /// `auto` extracts the realm from `802-1x.identity` (the part after `@`).
+    /// `manual` uses `anonymous_realm` verbatim.
+    pub realm_strip_strategy: String,
+    /// Used when `realm_strip_strategy = "manual"`. Empty otherwise.
+    pub anonymous_realm: String,
+}
+
+impl Default for EnterpriseWifiConfig {
+    fn default() -> Self {
+        Self {
+            anonymous_outer_identity: false,
+            realm_strip_strategy: "auto".into(),
+            anonymous_realm: String::new(),
+        }
+    }
 }
 
 impl Default for Ipv6Config {

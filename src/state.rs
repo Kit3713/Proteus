@@ -32,6 +32,22 @@ pub struct Originals {
     /// First-apply snapshot of per-iface IPv6 sysctl values. Keyed by
     /// interface name.
     pub ipv6: BTreeMap<String, Ipv6Originals>,
+    /// First-apply snapshot of per-NM-connection settings Proteus mutates
+    /// (currently `802-1x.anonymous-identity`). Keyed by connection id.
+    pub connections: BTreeMap<String, ConnectionOriginals>,
+}
+
+/// Cached pre-Proteus values for the per-connection 802.1X fields Proteus
+/// can rewrite. Captured on the first enable, never re-captured. `disable`
+/// reads from here to know whether the connection had a non-empty
+/// anonymous-identity before Proteus touched it.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ConnectionOriginals {
+    /// Original value of `802-1x.anonymous-identity`. `None` means the key
+    /// was unset before Proteus's first enable on this connection.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub anonymous_identity: Option<String>,
 }
 
 /// Cached pre-Proteus values for the IPv6 sysctls Proteus manages on a
