@@ -21,6 +21,7 @@ pub mod probe;
 pub mod reset;
 pub mod revert;
 pub mod rotate;
+pub mod session;
 pub mod show_config;
 pub mod show_defaults;
 pub mod stack;
@@ -79,7 +80,7 @@ pub(crate) fn now_iso8601() -> String {
     format!("{y:04}-{mo:02}-{d:02}T{h:02}:{mi:02}:{s:02}Z")
 }
 
-fn unix_to_ymdhms(mut t: u64) -> (u32, u32, u32, u32, u32, u32) {
+pub(crate) fn unix_to_ymdhms(mut t: u64) -> (u32, u32, u32, u32, u32, u32) {
     let s = (t % 60) as u32;
     t /= 60;
     let mi = (t % 60) as u32;

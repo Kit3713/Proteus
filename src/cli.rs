@@ -53,6 +53,11 @@ pub enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Show the current network session at a glance (read-only).
+    Session {
+        #[arg(long)]
+        json: bool,
+    },
     /// List current MAC addresses (per interface).
     Current {
         #[arg(long)]
@@ -566,6 +571,9 @@ pub fn run() -> ExitCode {
     let code = match cli.command {
         Command::Status { json } => {
             commands::status::run(json, cli.state.as_deref(), cli.config.as_deref())
+        }
+        Command::Session { json } => {
+            commands::session::run(json, cli.state.as_deref(), cli.config.as_deref())
         }
         Command::Current { json, iface } => {
             commands::current::run(json, iface.as_deref(), cli.state.as_deref())
