@@ -7,6 +7,7 @@ pub mod config;
 pub mod diff;
 pub mod dry_run;
 pub mod hostname;
+pub mod ipv6;
 pub mod logging;
 pub mod mac;
 pub mod nm;

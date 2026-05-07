@@ -29,6 +29,28 @@ pub struct Originals {
     /// means hostname has never been applied on this system.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hostname: Option<HostnameOriginals>,
+    /// First-apply snapshot of per-iface IPv6 sysctl values. Keyed by
+    /// interface name.
+    pub ipv6: BTreeMap<String, Ipv6Originals>,
+}
+
+/// Cached pre-Proteus values for the IPv6 sysctls Proteus manages on a
+/// given interface. Captured on the first apply and never re-captured;
+/// `revert` writes these back. All fields are stored as the raw integer
+/// strings the kernel uses for the corresponding `/proc/sys/net/ipv6/conf/*`
+/// node so the on-disk format is forward-compatible if the kernel grows
+/// new modes.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Ipv6Originals {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub use_tempaddr: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub addr_gen_mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub temp_valid_lft: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub temp_prefered_lft: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

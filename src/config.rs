@@ -16,6 +16,7 @@ pub struct Config {
     pub dns: DnsConfig,
     pub discovery: DiscoveryConfig,
     pub probes: ProbesConfig,
+    pub ipv6: Ipv6Config,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -71,6 +72,26 @@ pub struct ProbesConfig {
     pub interval: String,
     pub cooldown: String,
     pub endpoints: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Ipv6Config {
+    pub enabled: bool,
+    pub use_temp_addresses: bool,
+    pub addr_gen_mode: String,
+    pub ndp_hardening: bool,
+}
+
+impl Default for Ipv6Config {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            use_temp_addresses: true,
+            addr_gen_mode: "stable-privacy".into(),
+            ndp_hardening: true,
+        }
+    }
 }
 
 impl Default for MacConfig {

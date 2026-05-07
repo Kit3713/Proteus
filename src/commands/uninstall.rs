@@ -34,6 +34,7 @@ pub(crate) const UNITS: &[&str] = &[
 /// Drop-ins Proteus writes outside `/etc/proteus/`. Mirrors `wiki/uninstall.md`.
 pub(crate) const EXTERNAL_DROPINS: &[&str] = &[
     "/etc/sysctl.d/95-proteus.conf",
+    "/etc/sysctl.d/96-proteus-ipv6.conf",
     "/etc/systemd/timesyncd.conf.d/10-proteus.conf",
 ];
 
@@ -167,6 +168,9 @@ fn revert_best_effort(warns: &mut Vec<String>) {
     }
     if let Err(e) = super::bluetooth_cmd::revert(None) {
         warns.push(format!("bluetooth: {e:#}"));
+    }
+    if let Err(e) = super::ipv6::revert(true, None) {
+        warns.push(format!("ipv6: {e:#}"));
     }
     for p in EXTERNAL_DROPINS {
         let path = Path::new(p);

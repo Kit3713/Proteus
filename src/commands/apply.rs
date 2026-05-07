@@ -94,6 +94,7 @@ fn orchestrate(
         run_mac(config, state_path, config_path),
         run_hostname(config, state_path, config_path),
         run_bluetooth(config, state_path, config_path),
+        run_ipv6(config, state_path, config_path),
         // Phase-D-pending modules: surface a stable note so a future enable
         // on a configured system isn't a silent no-op.
         not_yet_implemented("dhcp"),
@@ -101,6 +102,19 @@ fn orchestrate(
         not_yet_implemented("stack"),
         not_yet_implemented("nft"),
     ]
+}
+
+fn run_ipv6(
+    config: &Config,
+    state_path: Option<&Path>,
+    config_path: Option<&Path>,
+) -> ComponentReport {
+    if !config.ipv6.enabled {
+        return skipped("ipv6", "disabled in config (ipv6.enabled = false)");
+    }
+    // Orchestrator already gated on `--yes`; pass it through so the
+    // sub-command's own --yes guard is satisfied.
+    classify("ipv6", super::ipv6::apply(true, state_path, config_path))
 }
 
 fn run_mac(
@@ -211,6 +225,7 @@ mod tests {
         cfg.mac.enabled = false;
         cfg.hostname.enabled = false;
         cfg.bluetooth.enabled = false;
+        cfg.ipv6.enabled = false;
         cfg
     }
 

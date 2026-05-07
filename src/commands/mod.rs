@@ -8,6 +8,7 @@ pub mod diff;
 pub mod doctor;
 pub mod dry_run;
 pub mod hostname;
+pub mod ipv6;
 pub mod original;
 pub mod pin;
 pub mod probe;
