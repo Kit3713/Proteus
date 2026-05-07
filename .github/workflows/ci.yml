@@ -38,9 +38,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt
+      # Reads rust-toolchain.toml so the pinned channel installs verbatim;
+      # rustfmt + clippy are listed in `components` there, so no `with:` here.
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
       - name: cargo fmt --check
         run: cargo fmt --check
 
@@ -54,7 +54,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
       - name: cargo metadata --locked
         run: cargo metadata --locked --format-version 1 > /dev/null
 
@@ -64,9 +64,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
       - uses: Swatinem/rust-cache@v2
       - name: cargo clippy --all-targets -- -D warnings
         run: cargo clippy --all-targets -- -D warnings
@@ -86,7 +84,7 @@ jobs:
       # openssl-devel covers any TLS-using build script in transitive deps.
       - name: Install build dependencies
         run: dnf install -y gcc pkg-config dbus-devel openssl-devel
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
       - uses: Swatinem/rust-cache@v2
       - name: cargo test --locked
         run: cargo test --locked
@@ -111,7 +109,7 @@ jobs:
       # already in the base image but listed defensively.
       - name: Install build dependencies
         run: dnf install -y gcc pkg-config dbus-devel openssl-devel binutils coreutils
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
       - uses: Swatinem/rust-cache@v2
       # Time the cold release build. Soft signal only: the README targets
       # under 60s on the *dev host*, and CI runner perf is not our dev host.
@@ -164,9 +162,9 @@ jobs:
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          targets: aarch64-unknown-linux-gnu
+          target: aarch64-unknown-linux-gnu
       - uses: Swatinem/rust-cache@v2
         with:
           key: aarch64

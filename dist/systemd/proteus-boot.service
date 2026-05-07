@@ -3,7 +3,7 @@ Description=Proteus boot-time apply
 # Apply Proteus config + first rotation at boot. Runs after NetworkManager
 # comes up so that connection profile mutations land on a live daemon.
 After=NetworkManager.service network-online.target
-Wants=NetworkManager.service
+Wants=network-online.target NetworkManager.service
 
 [Service]
 Type=oneshot
