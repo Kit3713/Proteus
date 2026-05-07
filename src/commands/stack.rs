@@ -200,13 +200,8 @@ pub fn revert(yes: bool, _state_path: Option<&Path>) -> Result<u8> {
 
 fn write_dropin(body: &str) -> Result<()> {
     let path = Path::new(DROPIN_PATH);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
-    }
-    let tmp = path.with_extension("conf.tmp");
-    fs::write(&tmp, body).with_context(|| format!("writing {}", tmp.display()))?;
-    fs::rename(&tmp, path)
-        .with_context(|| format!("renaming {} to {DROPIN_PATH}", tmp.display()))?;
+    commands::write_atomic(path, body.as_bytes())
+        .with_context(|| format!("writing {DROPIN_PATH}"))?;
     Ok(())
 }
 

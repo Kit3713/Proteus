@@ -7,11 +7,12 @@
 //! where possible so unit tests can verify formatting without touching
 //! the real `/etc`.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 
 use super::{PROTEUS_DROPIN_NAME, Paths};
+use crate::commands;
 use crate::version;
 
 /// Body of the drop-in **without** the sha256 marker. Kept separate so the
@@ -46,7 +47,8 @@ pub fn write_dropin(paths: &Paths) -> Result<PathBuf> {
         .with_context(|| format!("creating drop-in dir {}", dir.display()))?;
     let path = dropin_path(paths);
     let body = render_dropin();
-    write_atomic(&path, body.as_bytes()).with_context(|| format!("writing {}", path.display()))?;
+    commands::write_atomic(&path, body.as_bytes())
+        .with_context(|| format!("writing {}", path.display()))?;
     Ok(path)
 }
 
@@ -63,12 +65,6 @@ pub fn remove_dropin(paths: &Paths) -> Result<bool> {
 /// Returns true if Proteus's drop-in exists right now.
 pub fn dropin_present(paths: &Paths) -> bool {
     dropin_path(paths).is_file()
-}
-
-fn write_atomic(path: &Path, data: &[u8]) -> std::io::Result<()> {
-    let tmp = path.with_extension("conf.proteus-tmp");
-    std::fs::write(&tmp, data)?;
-    std::fs::rename(&tmp, path)
 }
 
 // ------- SHA-256, hand-rolled to keep the dep budget at zero -------
