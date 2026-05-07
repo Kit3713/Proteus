@@ -9,6 +9,9 @@ use crate::commands;
 use crate::exit;
 use crate::logging;
 
+/// Default cap on `wiki search` result rows.
+const WIKI_SEARCH_DEFAULT_LIMIT: usize = 10;
+
 #[derive(Parser, Debug)]
 #[command(
     name = "proteus",
@@ -152,8 +155,11 @@ pub enum Command {
         #[command(subcommand)]
         action: EnterpriseWifiAction,
     },
-    /// Browse the embedded wiki.
+    /// Browse the embedded wiki (or search it with `wiki search <query>`).
+    #[command(args_conflicts_with_subcommands = true)]
     Wiki {
+        #[command(subcommand)]
+        action: Option<WikiAction>,
         /// Page name (e.g. `intro`); omit to list pages.
         page: Option<String>,
     },
@@ -331,6 +337,21 @@ pub enum EnterpriseWifiAction {
 }
 
 #[derive(Subcommand, Debug)]
+pub enum WikiAction {
+    /// Full-text search across the embedded wiki.
+    Search {
+        /// One or more query terms (space-separated; case-insensitive).
+        #[arg(required = true, num_args = 1..)]
+        query: Vec<String>,
+        #[arg(long)]
+        json: bool,
+        /// Cap on result rows shown (default 10).
+        #[arg(long, default_value_t = WIKI_SEARCH_DEFAULT_LIMIT)]
+        limit: usize,
+    },
+}
+
+#[derive(Subcommand, Debug)]
 pub enum BluetoothAction {
     /// List adapters with current alias, discoverable state, and RPA status.
     Status {
@@ -500,7 +521,12 @@ pub fn run() -> ExitCode {
             TimerAction::Logs { name, lines } => commands::timer::run_logs(&name, lines),
         },
         Command::Config { action } => dispatch_config(action, cli.config.as_deref()),
-        Command::Wiki { page } => commands::wiki_cmd::run(page.as_deref(), cli.no_color),
+        Command::Wiki { action, page } => match action {
+            Some(WikiAction::Search { query, json, limit }) => {
+                commands::wiki_cmd::run_search(&query, json, limit)
+            }
+            None => commands::wiki_cmd::run(page.as_deref(), cli.no_color),
+        },
         Command::Help { feature } => commands::wiki_cmd::run_help(feature.as_deref(), cli.no_color),
         Command::Doctor { json, quick } => commands::doctor::run(commands::doctor::Options {
             json,

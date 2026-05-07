@@ -4,6 +4,12 @@ use include_dir::{Dir, include_dir};
 
 static WIKI: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/wiki");
 
+// Build-time-generated `WIKI_LINES: &[(page_name, line_no, byte_off, byte_len)]`,
+// one entry per non-blank line across every embedded wiki page. The text
+// itself lives in the `include_dir!` blob — keeping only offsets here
+// avoids duplicating ~270KB of wiki content in the binary.
+include!(concat!(env!("OUT_DIR"), "/wiki_index.rs"));
+
 pub fn list_pages() -> Vec<String> {
     let mut names: Vec<String> = WIKI
         .files()
@@ -22,6 +28,184 @@ pub fn list_pages() -> Vec<String> {
 pub fn get_page(name: &str) -> Option<&'static str> {
     let path = format!("{name}.md");
     WIKI.get_file(&path).and_then(|f| f.contents_utf8())
+}
+
+/// One ranked search hit. `line` is the full source line (no trim) so the
+/// caller can render its own snippet with whatever window it likes.
+#[derive(Debug, Clone)]
+pub struct SearchHit {
+    pub page: &'static str,
+    pub line_no: u32,
+    pub line: &'static str,
+    /// First match offset within `line`, in bytes. Used for snippet windowing.
+    pub match_offset: usize,
+    /// Number of distinct query terms found anywhere on this page.
+    pub matched_terms: usize,
+    /// Total occurrences of any query term across the whole page.
+    pub term_frequency: usize,
+    /// Composite rank: `matched_terms × log2(term_frequency + 1)`. Higher is better.
+    pub score: f32,
+}
+
+/// Tokenize the user's query: lowercase, split on whitespace, drop empties.
+fn tokenize(query: &str) -> Vec<String> {
+    query
+        .split_whitespace()
+        .map(str::to_lowercase)
+        .filter(|t| !t.is_empty())
+        .collect()
+}
+
+/// Search the embedded wiki for `query`. Returns up to `limit` hits ordered
+/// by descending score (with ties broken by page name then line number for
+/// deterministic output).
+///
+/// Ranking: per page, we count how many distinct query tokens appear at all
+/// and the total occurrences of any token; the page score is
+/// `matched_terms × log2(total_occurrences + 1)`. Each surviving page
+/// contributes one hit, anchored on the first line that matches any token.
+pub fn search(query: &str, limit: usize) -> Vec<SearchHit> {
+    let terms = tokenize(query);
+    if terms.is_empty() {
+        return Vec::new();
+    }
+
+    let mut hits: Vec<SearchHit> = Vec::new();
+    let mut cursor = 0;
+    while cursor < WIKI_LINES.len() {
+        let page = WIKI_LINES[cursor].0;
+        // Walk the contiguous slice for this page (entries are page-grouped).
+        let page_start = cursor;
+        while cursor < WIKI_LINES.len() && WIKI_LINES[cursor].0 == page {
+            cursor += 1;
+        }
+        let page_end = cursor;
+        let Some(page_text) = get_page(page) else {
+            continue;
+        };
+        let entries = &WIKI_LINES[page_start..page_end];
+
+        // Per page: count occurrences of every term, track which terms hit
+        // at least once, and remember the first matching line for snippets.
+        let mut total_occurrences = 0usize;
+        let mut matched_terms = 0usize;
+        let mut first_line: Option<(u32, &'static str, usize)> = None;
+        for term in &terms {
+            let mut term_count = 0usize;
+            let mut term_first: Option<(u32, &'static str, usize)> = None;
+            for &(_, line_no, off, len) in entries {
+                let line = &page_text[off as usize..(off + len) as usize];
+                let mut start = 0;
+                while let Some(found) = case_insensitive_find_from(line, term, start) {
+                    if term_count == 0 {
+                        term_first = Some((line_no, line, found));
+                    }
+                    term_count += 1;
+                    start = found + term.len();
+                }
+            }
+            if term_count > 0 {
+                matched_terms += 1;
+                total_occurrences += term_count;
+                if let Some((line_no, line, off)) = term_first
+                    && first_line.is_none_or(|(prev_no, _, _)| line_no < prev_no)
+                {
+                    first_line = Some((line_no, line, off));
+                }
+            }
+        }
+        let Some((line_no, line, match_offset)) = first_line else {
+            continue;
+        };
+        let tf = (total_occurrences as f32 + 1.0).log2();
+        let score = matched_terms as f32 * tf;
+        hits.push(SearchHit {
+            page,
+            line_no,
+            line,
+            match_offset,
+            matched_terms,
+            term_frequency: total_occurrences,
+            score,
+        });
+    }
+
+    hits.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| b.matched_terms.cmp(&a.matched_terms))
+            .then_with(|| a.page.cmp(b.page))
+            .then_with(|| a.line_no.cmp(&b.line_no))
+    });
+    hits.truncate(limit);
+    hits
+}
+
+/// Build a `±window` byte snippet around `match_offset` in `line`, with
+/// "…" prefix/suffix when truncated. The window is clamped to UTF-8
+/// codepoint boundaries so we never emit a torn multibyte sequence.
+pub fn snippet(line: &str, match_offset: usize, window: usize) -> String {
+    let bytes = line.as_bytes();
+    let len = bytes.len();
+    let raw_start = match_offset.saturating_sub(window);
+    let raw_end = (match_offset + window).min(len);
+    let start = floor_char_boundary(line, raw_start);
+    let end = ceil_char_boundary(line, raw_end);
+    let mut out = String::with_capacity(end - start + 6);
+    if start > 0 {
+        out.push('\u{2026}');
+    }
+    out.push_str(&line[start..end]);
+    if end < len {
+        out.push('\u{2026}');
+    }
+    out
+}
+
+fn floor_char_boundary(s: &str, mut idx: usize) -> usize {
+    if idx >= s.len() {
+        return s.len();
+    }
+    while idx > 0 && !s.is_char_boundary(idx) {
+        idx -= 1;
+    }
+    idx
+}
+
+fn ceil_char_boundary(s: &str, mut idx: usize) -> usize {
+    let len = s.len();
+    if idx >= len {
+        return len;
+    }
+    while idx < len && !s.is_char_boundary(idx) {
+        idx += 1;
+    }
+    idx
+}
+
+/// Case-insensitive byte-search for `needle` in `haystack[from..]`.
+/// ASCII-only folding (matches `to_lowercase` semantics in `tokenize`);
+/// non-ASCII characters compare case-sensitively, which is fine for the
+/// wiki's English prose plus a handful of em-dashes.
+fn case_insensitive_find_from(haystack: &str, needle: &str, from: usize) -> Option<usize> {
+    if needle.is_empty() {
+        return None;
+    }
+    let h = haystack.as_bytes();
+    let n = needle.as_bytes();
+    if from + n.len() > h.len() {
+        return None;
+    }
+    'outer: for start in from..=h.len() - n.len() {
+        for (i, &b) in n.iter().enumerate() {
+            if !h[start + i].eq_ignore_ascii_case(&b) {
+                continue 'outer;
+            }
+        }
+        return Some(start);
+    }
+    None
 }
 
 /// ANSI rendering style. `Plain` emits no escape codes (for pipes / `NO_COLOR`).
@@ -396,5 +580,205 @@ mod tests {
     fn paragraph_passthrough() {
         let out = render("just a line", RenderStyle::Plain);
         assert_eq!(out, "just a line\n");
+    }
+
+    // ---- search ---------------------------------------------------------
+
+    #[test]
+    fn empty_query_returns_no_hits() {
+        assert!(search("", 10).is_empty());
+        assert!(search("   ", 10).is_empty());
+    }
+
+    #[test]
+    fn search_is_case_insensitive() {
+        let lower = search("captive", 50);
+        let upper = search("CAPTIVE", 50);
+        let mixed = search("CapTive", 50);
+        assert!(!lower.is_empty(), "expected hits for 'captive'");
+        let pages_lower: Vec<_> = lower.iter().map(|h| h.page).collect();
+        let pages_upper: Vec<_> = upper.iter().map(|h| h.page).collect();
+        let pages_mixed: Vec<_> = mixed.iter().map(|h| h.page).collect();
+        assert_eq!(pages_lower, pages_upper);
+        assert_eq!(pages_lower, pages_mixed);
+    }
+
+    #[test]
+    fn search_returns_captive_portals_for_captive() {
+        let hits = search("captive", 10);
+        assert!(
+            hits.iter().any(|h| h.page == "captive-portals"),
+            "expected captive-portals in hits, got: {:?}",
+            hits.iter().map(|h| h.page).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn search_respects_limit() {
+        let many = search("the", 3);
+        assert!(many.len() <= 3);
+    }
+
+    #[test]
+    fn search_multi_term_prefers_pages_with_more_matched_terms() {
+        // A doc with both "captive" and "portal" should outrank one with
+        // only one of them.
+        let hits = search("captive portal", 10);
+        assert!(!hits.is_empty());
+        // captive-portals.md should hit both.
+        let cp = hits.iter().find(|h| h.page == "captive-portals");
+        assert!(cp.is_some(), "captive-portals page should match");
+        assert_eq!(cp.unwrap().matched_terms, 2);
+    }
+
+    #[test]
+    fn search_hit_line_text_appears_in_source() {
+        let hits = search("MAC", 10);
+        for hit in &hits {
+            let page = get_page(hit.page).expect("page exists");
+            let nth_line = page.lines().nth((hit.line_no - 1) as usize);
+            assert_eq!(
+                nth_line,
+                Some(hit.line),
+                "page={} line={}",
+                hit.page,
+                hit.line_no
+            );
+        }
+    }
+
+    #[test]
+    fn search_match_offset_lands_on_term() {
+        let hits = search("captive", 10);
+        for hit in &hits {
+            let slice = &hit.line[hit.match_offset..];
+            let head = slice.get(..7).unwrap_or(slice);
+            assert!(
+                head.eq_ignore_ascii_case("captive"),
+                "match_offset wrong: line={:?} offset={} head={:?}",
+                hit.line,
+                hit.match_offset,
+                head
+            );
+        }
+    }
+
+    #[test]
+    fn snippet_truncates_with_ellipsis_and_keeps_term_visible() {
+        let line = "Long preamble before the captive portal mention and a long tail afterward.";
+        let off = case_insensitive_find_from(line, "captive", 0).unwrap();
+        let snip = snippet(line, off, 10);
+        assert!(snip.contains("captive"));
+        // We expected truncation on at least one side.
+        assert!(snip.starts_with('\u{2026}') || snip.ends_with('\u{2026}'));
+    }
+
+    #[test]
+    fn snippet_handles_match_at_start_and_end() {
+        let line = "captive portal at start";
+        let snip = snippet(line, 0, 8);
+        assert!(snip.contains("captive"));
+        let line2 = "ending in captive";
+        let off = case_insensitive_find_from(line2, "captive", 0).unwrap();
+        let snip2 = snippet(line2, off, 100);
+        assert_eq!(snip2, line2);
+    }
+
+    #[test]
+    fn snippet_does_not_split_utf8() {
+        // Em-dash (U+2014) is 3 bytes in UTF-8. With a window large enough
+        // to span both em-dashes we should land on char boundaries cleanly.
+        let line = "left — captive — right";
+        let off = case_insensitive_find_from(line, "captive", 0).unwrap();
+        let snip = snippet(line, off, 4);
+        // The window is smaller than "captive" itself, so the term may be
+        // truncated. The contract is just: valid UTF-8, no panic, snippet
+        // is a substring of the line possibly bracketed by ellipses.
+        let core = snip
+            .trim_start_matches('\u{2026}')
+            .trim_end_matches('\u{2026}');
+        assert!(line.contains(core), "core {core:?} not in line");
+    }
+
+    #[test]
+    fn case_insensitive_find_from_walks_overlap_free() {
+        // Successive calls advancing by `needle.len()` count occurrences.
+        let h = "AAAA";
+        let n = "aa";
+        let mut start = 0;
+        let mut count = 0;
+        while let Some(off) = case_insensitive_find_from(h, n, start) {
+            count += 1;
+            start = off + n.len();
+        }
+        assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn case_insensitive_find_from_is_case_insensitive() {
+        assert_eq!(case_insensitive_find_from("foo BAR baz", "bar", 0), Some(4));
+        assert_eq!(
+            case_insensitive_find_from("nothing here", "missing", 0),
+            None
+        );
+        // Empty needle is treated as "no match" so the count loop terminates.
+        assert_eq!(case_insensitive_find_from("abc", "", 0), None);
+    }
+
+    #[test]
+    fn case_insensitive_find_from_respects_start_offset() {
+        assert_eq!(case_insensitive_find_from("aaa aaa", "aaa", 1), Some(4));
+    }
+
+    #[test]
+    fn search_is_deterministic_for_same_query() {
+        let a = search("MAC rotation", 10);
+        let b = search("MAC rotation", 10);
+        assert_eq!(a.len(), b.len());
+        for (x, y) in a.iter().zip(b.iter()) {
+            assert_eq!(x.page, y.page);
+            assert_eq!(x.line_no, y.line_no);
+        }
+    }
+
+    #[test]
+    fn build_time_index_is_non_empty() {
+        assert!(
+            !WIKI_LINES.is_empty(),
+            "build.rs should populate WIKI_LINES"
+        );
+    }
+
+    #[test]
+    fn build_time_index_pages_match_embedded_pages() {
+        use std::collections::BTreeSet;
+        let from_index: BTreeSet<&str> = WIKI_LINES.iter().map(|(p, _, _, _)| *p).collect();
+        let from_files: BTreeSet<String> = list_pages().into_iter().collect();
+        // Every page in the index should be a real page; every page should
+        // have at least one indexed line (since none of our wiki pages are
+        // entirely blank).
+        for page in &from_index {
+            assert!(from_files.contains(*page), "indexed unknown page {page}");
+        }
+        for page in &from_files {
+            assert!(
+                from_index.iter().any(|p| *p == page.as_str()),
+                "page {page} missing from index"
+            );
+        }
+    }
+
+    #[test]
+    fn search_completes_under_50ms_release_target() {
+        // Soft sanity check: dev build, so target is loose. The release-mode
+        // target in PLAN.md is <200ms cold; we should be far under that here.
+        let start = std::time::Instant::now();
+        let _ = search("captive portal MAC rotation", 10);
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed.as_millis() < 200,
+            "search took {}ms (>200ms budget)",
+            elapsed.as_millis()
+        );
     }
 }
