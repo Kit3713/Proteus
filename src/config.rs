@@ -43,6 +43,8 @@ pub struct HostnameConfig {
     pub enabled: bool,
     pub mode: String,
     pub pinned_value: Option<String>,
+    /// Rotate hostname every time MAC rotates. Default off — see wiki.
+    pub rotate_with_mac: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -104,9 +106,10 @@ impl Default for BluetoothConfig {
 impl Default for HostnameConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: true,
             mode: "wordlist".into(),
             pinned_value: None,
+            rotate_with_mac: false,
         }
     }
 }
