@@ -151,6 +151,7 @@ fn feature_table(
     let mac_state = mac_rotation_state(state, config);
     let bt_state = bluetooth_state(state, config, system);
     let host_state = hostname_state(state, config);
+    let v6_state = ipv6_state(state, config);
     vec![
         FeatureStatus {
             name: "mac-rotation",
@@ -179,8 +180,8 @@ fn feature_table(
         },
         FeatureStatus {
             name: "ipv6-privacy",
-            state: "not implemented".into(),
-            note: "phase D".into(),
+            state: v6_state.0,
+            note: v6_state.1,
         },
         FeatureStatus {
             name: "hostname",
@@ -244,6 +245,27 @@ fn bluetooth_state(
     (
         "idle".to_string(),
         "BlueZ present; run `proteus bluetooth apply` to manage".to_string(),
+    )
+}
+
+fn ipv6_state(state: Option<&State>, config: &Config) -> (String, String) {
+    if !config.ipv6.enabled {
+        return (
+            "idle".to_string(),
+            "disabled in config (ipv6.enabled = false)".to_string(),
+        );
+    }
+    let cached = state.map(|s| !s.originals.ipv6.is_empty()).unwrap_or(false);
+    if cached {
+        let n = state.map(|s| s.originals.ipv6.len()).unwrap_or(0);
+        return (
+            "applied".to_string(),
+            format!("{n} interface(s) hardened; see `proteus ipv6 status`"),
+        );
+    }
+    (
+        "idle".to_string(),
+        "configured; run `proteus ipv6 apply` to harden".to_string(),
     )
 }
 

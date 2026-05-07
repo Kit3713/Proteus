@@ -5,6 +5,7 @@ pub mod cli;
 pub mod commands;
 pub mod config;
 pub mod hostname;
+pub mod ipv6;
 pub mod logging;
 pub mod mac;
 pub mod nm;

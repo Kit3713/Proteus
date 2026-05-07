@@ -142,6 +142,11 @@ pub enum Command {
         #[command(subcommand)]
         action: HostnameAction,
     },
+    /// IPv6 stable-privacy + temp addresses + DUID rotation.
+    Ipv6 {
+        #[command(subcommand)]
+        action: Ipv6Action,
+    },
     /// Browse the embedded wiki.
     Wiki {
         /// Page name (e.g. `intro`); omit to list pages.
@@ -244,6 +249,25 @@ pub enum HostnameAction {
         yes: bool,
     },
     /// Restore the cached original hostname.
+    Revert {
+        #[arg(long)]
+        yes: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum Ipv6Action {
+    /// Show current per-iface IPv6 settings + privacy mode.
+    Status {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Apply stable-privacy + temp + DUID per config.
+    Apply {
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Restore the cached pre-Proteus IPv6 sysctl values.
     Revert {
         #[arg(long)]
         yes: bool,
@@ -390,6 +414,15 @@ pub fn run() -> ExitCode {
                 commands::hostname::pin(&name, cli.state.as_deref(), cli.config.as_deref())
             }
             HostnameAction::Revert { .. } => commands::hostname::revert(cli.state.as_deref()),
+        },
+        Command::Ipv6 { action } => match action {
+            Ipv6Action::Status { json } => {
+                commands::ipv6::status(json, cli.state.as_deref(), cli.config.as_deref())
+            }
+            Ipv6Action::Apply { yes } => {
+                commands::ipv6::apply(yes, cli.state.as_deref(), cli.config.as_deref())
+            }
+            Ipv6Action::Revert { yes } => commands::ipv6::revert(yes, cli.state.as_deref()),
         },
         Command::Timer { action } => match action {
             TimerAction::Status { json } => commands::timer::run_status(json),

@@ -6,6 +6,7 @@ pub mod config_cmd;
 pub mod current;
 pub mod doctor;
 pub mod hostname;
+pub mod ipv6;
 pub mod original;
 pub mod pin;
 pub mod probe;
