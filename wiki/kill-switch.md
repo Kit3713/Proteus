@@ -18,7 +18,7 @@ The kill switch is deliberately heavy. It is not the right tool for "I want to c
 
 When you run `sudo proteus kill --yes`:
 
-1. Enumerates real network interfaces from `/sys/class/net`, skipping `lo` and virtual interfaces (`docker*`, `podman*`, `veth*`, `virbr*`, `br-*`, `tun*`, `tap*`, `tailscale*`, `wg*`, `zt*`, `kube*`, `cni*`).
+1. Enumerates real network interfaces from `/sys/class/net`, skipping `lo` and virtual interfaces (`docker*`, `podman*`, `veth*`, `virbr*`, `br-*`, `tun*`, `tap*`, `tailscale*`, `wg*`, `zt*`, `kube*`, `cni*`). VPN tunnel devices in particular (`tun*`, `tap*`, `wg*`, `tailscale*`, `zt*`) are skipped on purpose: bringing them down via `ip link` would tear down the userspace-installed routes that the VPN client cannot reliably re-create on the matching `link up`, so resume would turn into a debugging session instead of a one-command restore. The underlying physical interface — the Wi-Fi card or Ethernet port the tunnel rides on — is already brought down, which kills the tunnel's traffic at the same moment without needing to touch the tunnel device itself.
 2. Brings each one down via `ip link set <iface> down`. The kernel marks the link administratively down; no frames leave the radio, no packets leave the wire.
 3. Toggles `WirelessEnabled = false` and `WwanEnabled = false` on the NetworkManager DBus service. Equivalent to `nmcli radio all off`.
 4. Powers off every BlueZ adapter via DBus (`org.bluez.Adapter1.Powered = false`).

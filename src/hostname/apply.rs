@@ -68,29 +68,31 @@ pub async fn apply_hostname(
     })
 }
 
-/// Restore the cached originals via the same DBus interface. Empty-string
-/// originals (which represent "never had one set") map to `""`, which
-/// hostnamed treats as "unset" — the right thing.
+/// Restore the cached originals via the same DBus interface. Only the names
+/// that were actually captured at apply time get pushed back; un-captured
+/// fields (where the apply-time snapshot had `None`) are left as-is so we
+/// don't collapse a name the user later set out-of-band to `""`.
 pub async fn revert_hostname(state: &State) -> Result<RevertOutcome> {
     let proxy = dbus::proxy().await?;
     let before = dbus::read_snapshot(&proxy).await;
 
     let cached = state.originals.hostname.is_some();
-    if let Some(orig) = &state.originals.hostname {
-        let kernel = orig.kernel.as_deref().unwrap_or_default();
-        let pretty = orig.pretty.as_deref().unwrap_or_default();
-        let transient = orig.transient.as_deref().unwrap_or_default();
-
+    let (kernel, pretty, transient) = revert_targets(state.originals.hostname.as_ref());
+    if let Some(k) = kernel {
         proxy
-            .set_static_hostname(kernel, false)
+            .set_static_hostname(k, false)
             .await
             .context("restoring static hostname")?;
+    }
+    if let Some(p) = pretty {
         proxy
-            .set_pretty_hostname(pretty, false)
+            .set_pretty_hostname(p, false)
             .await
             .context("restoring pretty hostname")?;
+    }
+    if let Some(t) = transient {
         proxy
-            .set_hostname(transient, false)
+            .set_hostname(t, false)
             .await
             .context("restoring transient hostname")?;
     }
@@ -102,6 +104,24 @@ pub async fn revert_hostname(state: &State) -> Result<RevertOutcome> {
         previous: snapshot_to_triple(before),
         current: snapshot_to_triple(after),
     })
+}
+
+/// Pure helper for `revert_hostname`: returns the (kernel, pretty,
+/// transient) tuple of *Some* values that should actually be pushed back to
+/// hostnamed. Anything that wasn't captured stays `None` so the caller
+/// skips it. Split out so the partial-capture behavior is unit-testable
+/// without a DBus connection.
+pub(crate) fn revert_targets(
+    cached: Option<&HostnameOriginals>,
+) -> (Option<&str>, Option<&str>, Option<&str>) {
+    match cached {
+        Some(orig) => (
+            orig.kernel.as_deref(),
+            orig.pretty.as_deref(),
+            orig.transient.as_deref(),
+        ),
+        None => (None, None, None),
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -130,6 +150,33 @@ fn capture_originals(state: &mut State, snap: &HostnameSnapshot) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn revert_targets_skips_uncaptured_fields() {
+        // Every field set: revert pushes all three.
+        let full = HostnameOriginals {
+            kernel: Some("k".into()),
+            pretty: Some("p".into()),
+            transient: Some("t".into()),
+        };
+        assert_eq!(
+            revert_targets(Some(&full)),
+            (Some("k"), Some("p"), Some("t"))
+        );
+
+        // Partial capture: only kernel was set at apply-time. The other two
+        // fields must stay `None` so the caller skips them rather than
+        // collapsing them to "" (issues #139/#144).
+        let partial = HostnameOriginals {
+            kernel: Some("k".into()),
+            pretty: None,
+            transient: None,
+        };
+        assert_eq!(revert_targets(Some(&partial)), (Some("k"), None, None));
+
+        // No cache at all: revert is a no-op.
+        assert_eq!(revert_targets(None), (None, None, None));
+    }
 
     #[test]
     fn capture_records_first_snapshot_only() {

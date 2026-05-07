@@ -163,6 +163,9 @@ fn note(p: &Path, outcome: Outcome, warns: &mut Vec<String>) {
 }
 
 fn revert_best_effort(warns: &mut Vec<String>) {
+    let mut sysctl_dropin_removed = false;
+    let mut timesyncd_dropin_removed = false;
+
     if let Err(e) = super::hostname::revert(None) {
         warns.push(format!("hostname: {e:#}"));
     }
@@ -174,35 +177,63 @@ fn revert_best_effort(warns: &mut Vec<String>) {
     }
     for p in EXTERNAL_DROPINS {
         let path = Path::new(p);
-        note(path, remove_file_opt(path), warns);
+        let outcome = remove_file_opt(path);
+        if matches!(outcome, Ok(true)) {
+            // Track whether we actually removed the per-daemon drop-in so
+            // we can skip the matching reload (issues #153/#155). Re-runs
+            // of `proteus uninstall` would otherwise restart resolved/
+            // timesyncd every time even after the files are long gone.
+            if path.starts_with("/etc/sysctl.d/") {
+                sysctl_dropin_removed = true;
+            } else if path.starts_with("/etc/systemd/timesyncd.conf.d/") {
+                timesyncd_dropin_removed = true;
+            }
+        }
+        note(path, outcome, warns);
     }
-    remove_resolved_dropins(warns);
+    let resolved_dropin_removed = remove_resolved_dropins(warns);
     let _ = run_quiet("nft", &["delete", "table", "inet", "proteus"]);
-    let _ = run_quiet("sysctl", &["--system"]);
-    let _ = run_quiet(
-        "systemctl",
-        &["restart", "systemd-resolved", "systemd-timesyncd"],
-    );
+    if sysctl_dropin_removed {
+        let _ = run_quiet("sysctl", &["--system"]);
+    }
+    let mut to_restart: Vec<&str> = Vec::new();
+    if resolved_dropin_removed {
+        to_restart.push("systemd-resolved");
+    }
+    if timesyncd_dropin_removed {
+        to_restart.push("systemd-timesyncd");
+    }
+    if !to_restart.is_empty() {
+        let mut args = vec!["restart"];
+        args.extend(to_restart);
+        let _ = run_quiet("systemctl", &args);
+    }
 }
 
-fn remove_resolved_dropins(warns: &mut Vec<String>) {
+fn remove_resolved_dropins(warns: &mut Vec<String>) -> bool {
     let dir = Path::new(RESOLVED_DROPIN_DIR);
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return false,
         Err(e) => {
             warns.push(format!("{}: {e}", dir.display()));
-            return;
+            return false;
         }
     };
+    let mut removed_any = false;
     for entry in entries.flatten() {
         let name = entry.file_name();
         let s = name.to_string_lossy();
         if s.starts_with(RESOLVED_DROPIN_PREFIX) && s.ends_with(".conf") {
             let path = entry.path();
-            note(&path, remove_file_opt(&path), warns);
+            let outcome = remove_file_opt(&path);
+            if matches!(outcome, Ok(true)) {
+                removed_any = true;
+            }
+            note(&path, outcome, warns);
         }
     }
+    removed_any
 }
 
 fn teardown_units(layout: &Layout, warns: &mut Vec<String>) {
