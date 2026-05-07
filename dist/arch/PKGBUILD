@@ -20,7 +20,7 @@ sha256sums=('SKIP')   # placeholder until first release
 
 build() {
   cd "Proteus-$pkgver"
-  cargo build --release --frozen
+  cargo build --release --locked
 }
 
 package() {
