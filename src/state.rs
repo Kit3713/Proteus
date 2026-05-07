@@ -198,7 +198,10 @@ impl State {
             }
         };
         match serde_json::from_slice::<State>(&bytes) {
-            Ok(state) => Ok(Some(state)),
+            Ok(mut state) => {
+                migrate_connection_keys_to_uuid(&mut state);
+                Ok(Some(state))
+            }
             Err(e) => {
                 let quarantine = quarantine_path(path);
                 tracing::warn!(
@@ -222,6 +225,38 @@ impl State {
         let bytes = serde_json::to_vec_pretty(self)?;
         commands::write_atomic(path, &bytes)
     }
+}
+
+/// Issue #124: `state.originals.connections` and `state.managed.connections`
+/// now key by NM `connection.uuid` instead of `connection.id`. Old state
+/// files still in the wild (from <= v0.2.6-alpha) used `id`. Drop those
+/// entries on load: they cannot be safely remapped without contacting NM,
+/// and the next `proteus apply` re-captures originals correctly. Alpha
+/// state is not durable across this kind of structural change.
+fn migrate_connection_keys_to_uuid(state: &mut State) {
+    state.originals.connections.retain(|k, _| is_uuid_shape(k));
+    state.managed.connections.retain(|k, _| is_uuid_shape(k));
+}
+
+/// NM uuids are RFC-4122 — 36 chars: `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`.
+/// We don't need full RFC validation; shape-matching is enough to filter
+/// legacy id-keyed entries from a v0.2.6 state.json.
+fn is_uuid_shape(s: &str) -> bool {
+    if s.len() != 36 {
+        return false;
+    }
+    let bytes = s.as_bytes();
+    for (i, b) in bytes.iter().enumerate() {
+        let want_dash = matches!(i, 8 | 13 | 18 | 23);
+        if want_dash {
+            if *b != b'-' {
+                return false;
+            }
+        } else if !b.is_ascii_hexdigit() {
+            return false;
+        }
+    }
+    true
 }
 
 /// `<path>.corrupt-<UTC-iso-with-colons-replaced>` so the bad bytes are

@@ -207,6 +207,13 @@ pub fn connection_id(settings: &ConnectionSettings) -> Option<String> {
     extract_str(settings, SECTION_CONNECTION, "id")
 }
 
+/// Pull the `connection.uuid` field out of a settings dict. Issue #124:
+/// state must be keyed by `uuid` (NM's only uniqueness guarantee), not by
+/// `id` (a display string that can collide between profiles).
+pub fn connection_uuid(settings: &ConnectionSettings) -> Option<String> {
+    extract_str(settings, SECTION_CONNECTION, "uuid")
+}
+
 /// Pull the `connection.type` field, mapping NM type strings to friendly
 /// labels for display.
 pub fn connection_kind(settings: &ConnectionSettings) -> String {

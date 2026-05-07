@@ -3,7 +3,7 @@
 use std::collections::HashSet;
 use std::path::Path;
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result};
 use serde::Serialize;
 
 use crate::config::Config;
@@ -170,11 +170,9 @@ async fn rotate_one(
     state: &mut State,
     state_path: &Path,
 ) -> Result<RotatedEntry> {
-    let connection_path = dev
-        .connections
-        .first()
-        .cloned()
-        .ok_or_else(|| anyhow!("no NM connection profile available"))?;
+    if dev.connections.is_empty() {
+        anyhow::bail!("no NM connection profile available");
+    }
 
     // Capture-then-save-then-mutate: the original factory MAC must be
     // durable on disk BEFORE we ask NetworkManager to set a cloned MAC.
@@ -192,11 +190,40 @@ async fn rotate_one(
         avoid,
     };
     let new_mac = generator::generate(&opts)?;
-    let connection_id = nm::apply::read_connection_id(conn, &connection_path)
-        .await
-        .ok()
-        .flatten();
-    nm::apply::set_cloned_mac(conn, &connection_path, dev.kind, new_mac).await?;
+
+    // Issue #122: iterate every connection profile bound to the device,
+    // not just the first one. Otherwise roaming between SSIDs surfaces
+    // the un-cloned factory MAC for the profiles that didn't get touched.
+    // The display-id label of the first profile is reported back as the
+    // "primary" so the rotated_entry keeps the existing schema. Failures
+    // on later profiles are logged but don't fail the whole rotate.
+    let mut primary_id: Option<String> = None;
+    for connection_path in &dev.connections {
+        let id = nm::apply::read_connection_id(conn, connection_path)
+            .await
+            .ok()
+            .flatten();
+        let uuid = nm::apply::read_connection_uuid(conn, connection_path)
+            .await
+            .ok()
+            .flatten();
+        if let Err(e) = nm::apply::set_cloned_mac(conn, connection_path, dev.kind, new_mac).await {
+            tracing::warn!(
+                profile = ?id,
+                "set_cloned_mac failed for profile: {e:#}"
+            );
+            continue;
+        }
+        if primary_id.is_none() {
+            primary_id = id.clone();
+        }
+        if let Some(uuid) = uuid {
+            let crec = state.managed.connections.entry(uuid).or_default();
+            crec.current_mac = Some(new_mac.to_string());
+            crec.last_rotated = Some(super::now_iso8601());
+            crec.rotation_count += 1;
+        }
+    }
 
     let rec = state
         .managed
@@ -208,19 +235,11 @@ async fn rotate_one(
     rec.last_rotated = Some(super::now_iso8601());
     rec.rotation_count += 1;
 
-    let last_rotated = rec.last_rotated.clone();
-    if let Some(id) = &connection_id {
-        let crec = state.managed.connections.entry(id.clone()).or_default();
-        crec.current_mac = Some(new_mac.to_string());
-        crec.last_rotated = last_rotated;
-        crec.rotation_count += 1;
-    }
-
     Ok(RotatedEntry {
         iface: dev.interface.clone(),
         previous,
         new: new_mac.to_string(),
-        connection: connection_id,
+        connection: primary_id,
     })
 }
 

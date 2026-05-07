@@ -112,6 +112,22 @@ pub async fn read_connection_id(
     Ok(extract_str(&settings, "connection", "id"))
 }
 
+/// Issue #124: read `connection.uuid` for state keying. Returns `Ok(None)`
+/// only if NM's `Settings.Connection.GetSettings` succeeded but the dict
+/// has no uuid field — every well-formed NM connection has one, so this
+/// is treated as a soft skip rather than a hard error in callers.
+pub async fn read_connection_uuid(
+    conn: &zbus::Connection,
+    connection_path: &OwnedObjectPath,
+) -> Result<Option<String>> {
+    let proxy = ConnectionProxy::builder(conn)
+        .path(connection_path.clone())?
+        .build()
+        .await?;
+    let settings = proxy.get_settings().await?;
+    Ok(extract_str(&settings, "connection", "uuid"))
+}
+
 pub async fn find_connection_by_id(
     conn: &zbus::Connection,
     id: &str,

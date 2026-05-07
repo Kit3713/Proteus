@@ -239,6 +239,11 @@ async fn do_apply(
         let Some(id) = nmdhcp::connection_id(&settings) else {
             continue;
         };
+        // Issue #124: state keys are NM uuids. id stays for display output.
+        let Some(uuid) = nmdhcp::connection_uuid(&settings) else {
+            tracing::debug!(id = %id, "skip: connection has no uuid");
+            continue;
+        };
         let kind = nmdhcp::connection_kind(&settings);
         if !is_managed_kind(&kind) {
             outcomes.push(ApplyOutcome {
@@ -254,7 +259,7 @@ async fn do_apply(
         // per-connection NM Update() so a crash between Update() and the
         // final state.save() can't leave a connection mutated with no
         // recorded original (sacred-originals invariant; issue #119).
-        capture_originals(state, &id, &settings);
+        capture_originals(state, &uuid, &settings);
         persist_capture_metadata(state);
         state.save(state_path)?;
 
@@ -315,13 +320,17 @@ async fn do_revert(state: &mut State) -> Result<Vec<RevertOutcome>> {
         let Some(id) = nmdhcp::connection_id(&settings) else {
             continue;
         };
+        // Issue #124: keyed by uuid; id stays for display.
+        let Some(uuid) = nmdhcp::connection_uuid(&settings) else {
+            continue;
+        };
         if !nmdhcp::is_proteus_managed(&settings) {
             continue;
         }
         let snap = state
             .originals
             .connections
-            .get(&id)
+            .get(&uuid)
             .and_then(|c| c.dhcp_settings.clone());
         let mut new_settings: ConnectionSettings = settings.clone();
         match snap {
@@ -336,7 +345,7 @@ async fn do_revert(state: &mut State) -> Result<Vec<RevertOutcome>> {
                     });
                     continue;
                 }
-                to_clear.push(id.clone());
+                to_clear.push(uuid.clone());
                 outcomes.push(RevertOutcome {
                     id,
                     restored: true,
@@ -364,8 +373,8 @@ async fn do_revert(state: &mut State) -> Result<Vec<RevertOutcome>> {
             }
         }
     }
-    for id in to_clear {
-        if let Some(c) = state.originals.connections.get_mut(&id) {
+    for uuid in to_clear {
+        if let Some(c) = state.originals.connections.get_mut(&uuid) {
             c.dhcp_settings = None;
         }
     }
@@ -373,11 +382,11 @@ async fn do_revert(state: &mut State) -> Result<Vec<RevertOutcome>> {
     Ok(outcomes)
 }
 
-fn capture_originals(state: &mut State, id: &str, settings: &ConnectionSettings) {
+fn capture_originals(state: &mut State, uuid: &str, settings: &ConnectionSettings) {
     let entry = state
         .originals
         .connections
-        .entry(id.to_string())
+        .entry(uuid.to_string())
         .or_default();
     if entry.dhcp_settings.is_none() {
         entry.dhcp_settings = Some(nmdhcp::snapshot_dhcp(settings));
@@ -541,8 +550,9 @@ mod tests {
         let state_path = dir.path.join("state.json");
 
         let mut state = State::default();
+        let uuid = "12345678-1234-1234-1234-1234567890ab"; // issue #124: uuid-keyed
         state.originals.connections.insert(
-            "Wired connection 1".into(),
+            uuid.into(),
             ConnectionOriginals {
                 anonymous_identity: None,
                 dhcp_settings: Some(DhcpSettingsSnapshot {
@@ -567,7 +577,7 @@ mod tests {
         let snap = loaded
             .originals
             .connections
-            .get("Wired connection 1")
+            .get(uuid)
             .and_then(|c| c.dhcp_settings.as_ref())
             .expect("dhcp_settings captured");
         assert_eq!(snap.ipv4_dhcp_send_hostname, Some(true));
