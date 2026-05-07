@@ -1,0 +1,297 @@
+.\" SPDX-License-Identifier: GPL-3.0-or-later
+.\" Man page for proteus(1)
+.TH PROTEUS 1 "2026-05-06" "0.1.0" "Proteus Manual"
+.SH NAME
+proteus \- erase network-layer fingerprints on Linux
+.SH SYNOPSIS
+.B proteus
+[\fIglobal-options\fR]
+.I subcommand
+[\fIsubcommand-options\fR]
+.SH DESCRIPTION
+.B proteus
+is a Rust CLI for Linux that erases the network identifiers your laptop hands
+out every time it joins a network: MAC addresses, DHCP options, IPv6
+derivations, hostname, mDNS chatter, TCP fingerprint quirks, and Bluetooth
+adapter alias. It rotates MACs on a schedule (default 2h) and on probe-driven
+connectivity loss (default every 5m). It ships as a single binary with an
+embedded wiki and targets Fedora 43+ with systemd and NetworkManager.
+.PP
+There is no daemon. The CLI is the whole product. Two systemd timers
+(\fBproteus-rotate.timer\fR at 2h, \fBproteus-check.timer\fR at 5m) and a boot
+oneshot call back into the binary; everything else is on-demand. State lives
+in \fI/var/lib/proteus/state.json\fR and config in
+\fI/etc/proteus/config.toml\fR. The first time Proteus sees a system it caches
+the permanent MAC and original hostname; those are sacred and never
+re-captured. Anything Proteus writes under \fI/etc/\fR carries a
+managed-by-proteus header plus a SHA of the expected content so drift is
+detectable.
+.PP
+Proteus is a network-layer fingerprint eraser, not a privacy suite. It does
+not touch TLS or browser fingerprints, DNS resolution policy beyond stripping
+EDNS Client Subnet, tracker blocking, or traffic correlation. It refuses to
+weaken Fedora's crypto-policies, touch \fI/etc/ssh/ssh_config\fR, or rotate
+\fI/etc/machine-id\fR. Mutating commands need root; read commands work for
+any user and degrade quietly when files are not readable.
+.SH OPTIONS
+The flags below are global \(em they apply to every subcommand and must
+precede the subcommand name. Per-subcommand flags are listed under
+\fBSUBCOMMANDS\fR below.
+.IP "\fB\-v\fR, \fB\-\-verbose\fR" 4
+Increase log verbosity. Repeatable: \fB\-v\fR debug, \fB\-vv\fR trace.
+.IP "\fB\-q\fR, \fB\-\-quiet\fR" 4
+Decrease log verbosity. Repeatable: \fB\-q\fR warn, \fB\-qq\fR error.
+.IP "\fB\-\-config\fR \fIPATH\fR" 4
+Override the default config path \fI/etc/proteus/config.toml\fR. Useful for
+testing.
+.IP "\fB\-\-state\fR \fIPATH\fR" 4
+Override the default state path \fI/var/lib/proteus/state.json\fR. Useful for
+testing.
+.IP "\fB\-\-no\-color\fR" 4
+Disable ANSI colors on stderr log output. Honors \fBNO_COLOR\fR too.
+.IP "\fB\-h\fR, \fB\-\-help\fR" 4
+Print help and exit 0.
+.IP "\fB\-V\fR, \fB\-\-version\fR" 4
+Print version and exit 0.
+.PP
+\fBRUST_LOG\fR overrides \fB\-v\fR / \fB\-q\fR when set; see
+\fBENVIRONMENT\fR below.
+.SH SUBCOMMANDS
+Every subcommand parses today. Subcommands marked \fIstub\fR return exit 64
+with a one-line pointer to the phase that brings the implementation. Mutating
+commands require root and accept \fB\-\-yes\fR for non-interactive runs. Read
+commands degrade quietly when files are not readable.
+.SS apply
+.B proteus apply
+[\fB\-\-yes\fR]
+.PP
+Apply the current config to the system: rotate MACs that need rotating, write
+managed files under \fI/etc/\fR, install systemd timers. Idempotent. Mutating;
+requires root. Stub in phase A; lands in phase D. See \fBproteus wiki
+concepts\fR.
+.SS current
+.B proteus current
+[\fB\-\-json\fR] [\fB\-\-iface\fR \fINAME\fR]
+.PP
+Show the current network identifiers your system is handing out right now.
+Read-only. \fB\-\-iface\fR limits to one interface. See \fBproteus wiki
+mac-recipes\fR.
+.SS diff
+.B proteus diff
+[\fB\-\-json\fR]
+.PP
+Show the delta between current config, built-in defaults, and live system
+state. Flags drift from managed files via the SHA in their header. Read-only.
+Stub in phase A; lands in phase G.
+.SS dry-run
+.B proteus dry-run
+.I subcommand
+[\fIargs\fR...]
+.PP
+Preview the mutations a command would make without performing them. Every
+mutator goes through a Plan enum that can be either previewed or executed.
+Read-only. Stub in phase A; lands in phase G.
+.SS help
+.B proteus help
+[\fIfeature\fR]
+.PP
+Friendly entry point. With no argument, lists embedded wiki pages. With a
+feature name, prints the matching wiki page. Effectively an alias for
+\fBwiki\fR \fIfeature\fR with a friendlier zero-arg behavior. Note:
+\fBproteus help\fR is not the same as \fBproteus \-\-help\fR. The latter is
+the clap usage; the former opens the wiki.
+.SS original
+.B proteus original
+[\fB\-\-json\fR]
+.PP
+Show the cached original MACs and hostname Proteus snapshotted on first run.
+Sacred \(em never re-captured. State path defaults to
+\fI/var/lib/proteus/state.json\fR; override with \fB\-\-state\fR. Read-only.
+The cache itself only populates from phase B onward (when the first mutating
+commands run).
+.SS pin
+.B proteus pin
+.I target
+.PP
+Pin a MAC to a specific interface or NetworkManager connection. Pinned
+targets are skipped by both scheduled and probe-driven rotation. \fItarget\fR
+is an interface name or NM connection profile (profile preferred when
+ambiguous). Mutating; requires root. Stub in phase A; lands in phase B. See
+\fBproteus wiki mac-recipes\fR.
+.SS reset
+.B proteus reset
+[\fB\-\-yes\fR]
+.PP
+Clear \fI/etc/proteus/config.toml\fR to defaults and re-apply. The "I
+tinkered and broke it" hatch. Deliberately does not touch the cached original
+MACs in \fIstate.json\fR \(em those remain sacred. Mutating; requires root.
+Stub in phase A; lands in phase G.
+.SS revert
+.B proteus revert
+[\fB\-\-yes\fR]
+.PP
+Restore everything to the cached originals. The panic button. Invariant: must
+work at every commit from phase B onward \(em if a feature cannot be backed
+out cleanly, it does not ship. Mutating; requires root. Stub in phase A;
+lands in phase G.
+.SS rotate
+.B proteus rotate
+[\fB\-\-iface\fR \fINAME\fR] [\fB\-\-yes\fR]
+.PP
+Generate a fresh MAC and apply it. With no \fB\-\-iface\fR, rotates every
+managed interface. Skips pinned interfaces. Avoids picking a MAC that matches
+the gateway or anything else in the local ARP table. Mutating; requires root.
+Stub in phase A; lands in phase B. See \fBproteus wiki mac-recipes\fR.
+.SS show-config
+.B proteus show-config
+[\fB\-\-json\fR]
+.PP
+Print the active config from \fI/etc/proteus/config.toml\fR (override with
+\fB\-\-config\fR). When the file is missing, prints a note that defaults are
+in effect and exits 0. Read-only. See \fBproteus wiki config\fR.
+.SS show-defaults
+.B proteus show-defaults
+[\fB\-\-json\fR]
+.PP
+Print the built-in default config. Use this to see every knob and its default
+before writing your own \fIconfig.toml\fR. Read-only; never touches the
+filesystem.
+.SS status
+.B proteus status
+[\fB\-\-json\fR]
+.PP
+The overall system + per-feature status report: whether systemd,
+NetworkManager, BlueZ, and systemd-resolved are present; physical interfaces
+with their current MAC; per-feature \fBapplied\fR / \fBskipped\fR (reason) /
+\fBfailed\fR (reason). Read-only.
+.SS uninstall
+.B proteus uninstall
+[\fB\-\-purge\fR] [\fB\-\-yes\fR]
+.PP
+Full removal. Runs \fBrevert\fR first, removes the binary, removes the
+systemd timers. With \fB\-\-purge\fR, also deletes \fI/etc/proteus/\fR and
+\fI/var/lib/proteus/\fR. Without \fB\-\-purge\fR the original-MAC cache is
+preserved so a reinstall can restore the same identity. Mutating; requires
+root. Stub in phase A; lands in phase G. See \fBproteus wiki uninstall\fR.
+.SS unpin
+.B proteus unpin
+.I target
+.PP
+Remove a pin previously set with \fBpin\fR. The target rejoins the rotation
+pool. \fItarget\fR is an interface name or NM connection profile. Mutating;
+requires root. Stub in phase A; lands in phase B.
+.SS wiki
+.B proteus wiki
+[\fIpage\fR]
+.PP
+Browse the embedded wiki. With no argument, lists available pages. With a
+page name, prints that page's Markdown to stdout. Read-only.
+.SH EXIT CODES
+Stable. New codes may be added in future versions; existing codes never
+change meaning. Defined in \fBsrc/lib.rs\fR (\fBexit::*\fR).
+.IP "\fB0\fR" 6
+\fBSUCCESS\fR \(em success.
+.IP "\fB1\fR" 6
+\fBGENERIC_ERROR\fR \(em generic / unclassified error.
+.IP "\fB2\fR" 6
+Reserved for clap's invalid-arguments default (usage error from the parser).
+.IP "\fB64\fR" 6
+\fBNOT_IMPLEMENTED\fR \(em command parses but the feature has not landed yet;
+stderr names the phase.
+.IP "\fB65\fR" 6
+\fBCONFIG_ERROR\fR \(em config parse failure or invalid value.
+.IP "\fB66\fR" 6
+\fBPERMISSION_ERROR\fR \(em mutating command run without root, or read denied
+on a privileged file.
+.IP "\fB70\fR" 6
+\fBSYSTEM_NOT_SUPPORTED\fR \(em not Linux, no systemd, or another
+precondition the binary cannot satisfy.
+.PP
+Wrappers should treat 0 as success and any non-zero as failure. Inspect
+stderr or journald for the human reason; do not scrape stdout for status \(em
+\fB\-\-json\fR is the contract.
+.SH FILES
+.IP "\fI/etc/proteus/config.toml\fR" 4
+Config file. Override with \fB\-\-config\fR. When absent, built-in defaults
+apply.
+.IP "\fI/var/lib/proteus/state.json\fR" 4
+Captured originals (permanent MACs, original hostname) plus managed state.
+The original-MAC cache is sacred \(em populated on first run, never
+re-captured. Override with \fB\-\-state\fR.
+.IP "\fI/etc/sysctl.d/95\-proteus.conf\fR" 4
+Sysctl drop-in for stack-fingerprint hardening (TCP timestamps off, ICMP
+info-reply drops, ARP suppression). Phase E.
+.IP "\fI/etc/systemd/resolved.conf.d/10\-proteus\-*.conf\fR" 4
+systemd-resolved drop-ins for the ECS-strip knob and discovery-silencing
+(mDNS responder/resolver, LLMNR). Phases D and E.
+.IP "\fI/etc/systemd/system/proteus\-*.{timer,service}\fR" 4
+systemd timer and service units that schedule rotation
+(\fBproteus-rotate.timer\fR at 2h), connectivity probes
+(\fBproteus-check.timer\fR at 5m), and the boot oneshot
+(\fBproteus-boot.service\fR). Phase C onwards.
+.SH ENVIRONMENT
+.IP "\fBRUST_LOG\fR" 4
+Standard \fBtracing\fR filter syntax. Overrides \fB\-v\fR / \fB\-q\fR when
+set. Examples: \fBRUST_LOG=debug\fR, \fBRUST_LOG=proteus=trace\fR.
+.IP "\fBNO_COLOR\fR" 4
+When set to any value, disables ANSI colors on stderr log output. Same as
+\fB\-\-no\-color\fR.
+.IP "\fBJOURNAL_STREAM\fR" 4
+Set by systemd when running under a unit. When present, Proteus routes log
+output to journald via \fBtracing-journald\fR; otherwise it falls back to
+stderr.
+.SH EXAMPLES
+Read overall system + per-feature state:
+.PP
+.RS 4
+.B proteus status
+.RE
+.PP
+Machine-readable status (pipe through \fBjq\fR(1) for filtering):
+.PP
+.RS 4
+.B proteus status \-\-json | jq .interfaces
+.RE
+.PP
+Rotate the MAC for a single Wi-Fi interface (phase B):
+.PP
+.RS 4
+.B sudo proteus rotate \-\-iface wlan0
+.RE
+.PP
+Apply the current config to the system (phase D onwards):
+.PP
+.RS 4
+.B sudo proteus apply
+.RE
+.PP
+Restore everything to the cached originals (phase G):
+.PP
+.RS 4
+.B sudo proteus revert
+.RE
+.PP
+Read the concepts page from the embedded wiki:
+.PP
+.RS 4
+.B proteus wiki concepts
+.RE
+.SH SEE ALSO
+.BR nmcli (1),
+.BR bluetoothctl (1),
+.BR tcpdump (1),
+.BR systemd-resolved.service (8),
+.BR NetworkManager (8)
+.PP
+The full embedded wiki is browsable via \fBproteus wiki\fR. Key pages:
+\fBintro\fR, \fBquickstart\fR, \fBconcepts\fR, \fBcli\fR, \fBconfig\fR,
+\fBmac-recipes\fR, \fBcaptive-portals\fR, \fBdns\fR, \fBthreat-model\fR,
+\fBtroubleshooting\fR, \fBverifying\fR, \fBuninstall\fR.
+.SH AUTHOR
+Kit3713
+.SH LICENSE
+GPL-3.0-or-later. See the LICENSE file shipped with the source distribution.
+If you distribute a modified version of Proteus, you must release the source
+under GPLv3 (or later) as well.
+.SH BUGS
+Report at https://github.com/Kit3713/Proteus/issues
