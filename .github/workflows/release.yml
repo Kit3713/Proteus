@@ -305,6 +305,10 @@ jobs:
           # the checkout under a parent so we have somewhere to collect them.
           WORK=$(mktemp -d)
           cp -a . "$WORK/proteus"
+          # dpkg-buildpackage expects ./debian/ at the source root; Proteus
+          # keeps Debian packaging under dist/debian/ so the repo root stays
+          # tidy. Materialize the expected layout in the staged copy.
+          cp -a "$WORK/proteus/dist/debian" "$WORK/proteus/debian"
           cd "$WORK/proteus"
           dpkg-buildpackage -us -uc -b
           echo "DEB_PARENT=$WORK" >> "$GITHUB_ENV"
