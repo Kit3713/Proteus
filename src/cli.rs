@@ -163,6 +163,9 @@ pub enum Command {
         #[arg(long)]
         json: bool,
         /// Skip the slower checks (DBus probes, filesystem walks).
+        #[arg(long)]
+        quick: bool,
+    },
     /// Run a manual probe round against the configured endpoints.
     Probe {
         /// Machine-readable JSON output.
