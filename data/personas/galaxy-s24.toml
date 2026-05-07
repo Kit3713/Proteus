@@ -1,0 +1,37 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Samsung Galaxy S24 (SM-S921B, Android 14 with One UI 6). Samsung OUI,
+# slightly different parameter-request-list ordering than stock Pixels.
+
+id = "galaxy-s24"
+display_name = "Galaxy S24 (One UI 6)"
+kind = "stealth"
+category = "phone"
+oui_pool = ["samsung"]
+hostname_template = "Galaxy-S24-{n}"
+mdns_advertise = false
+bt_name_template = "Galaxy S24"
+notes = "One UI's DHCP option 60 differs slightly from AOSP; we follow captures from SM-S921B on 14.0/UI 6.0."
+
+[dhcp_fingerprint]
+vendor_class_identifier = "dhcpcd-9.4.1:Linux-4.19.157-perf+:aarch64"
+fqdn = ""
+parameter_request_list = [1, 3, 6, 15, 26, 28, 51, 58, 59, 43]
+host_name = "Galaxy-S24"
+
+[tcp_stack]
+window_scale = 8
+mss = 1460
+tcp_timestamps = true
+tcp_sack = true
+default_ttl = 64
+
+[ipv6_traits]
+use_temp_addresses = true
+addr_gen_mode = "random"
+send_rs = true
+
+[rf_traits]
+tx_power_dbm = 0
+scan_style = "active"
+power_save = "auto"

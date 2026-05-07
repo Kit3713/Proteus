@@ -1,0 +1,38 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Randomizer mirror of `Profile::Low`. Privacy-curious home: 4h MAC
+# rotation, DHCP/IPv6/stack hardening, no discovery silencing.
+
+id = "randomizer-low"
+display_name = "Randomizer — Low"
+kind = "randomizer"
+category = "generic"
+oui_pool = ["apple", "intel", "samsung", "dell", "random-locally-administered"]
+hostname_template = "{wordlist}-{n}"
+mdns_advertise = false
+bt_name_template = ""
+rotate_cadence = "4h"
+notes = "Privacy-curious home baseline. Same wide OUI pool as the default Config; rotates on the 4h cadence the Low profile picks."
+
+[dhcp_fingerprint]
+vendor_class_identifier = ""
+fqdn = ""
+parameter_request_list = []
+host_name = ""
+
+[tcp_stack]
+window_scale = 7
+mss = 1460
+tcp_timestamps = false
+tcp_sack = true
+default_ttl = 64
+
+[ipv6_traits]
+use_temp_addresses = true
+addr_gen_mode = "stable-privacy"
+send_rs = true
+
+[rf_traits]
+tx_power_dbm = 0
+scan_style = "passive"
+power_save = "auto"

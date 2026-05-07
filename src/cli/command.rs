@@ -6,8 +6,8 @@ use clap::Subcommand;
 
 use super::actions::{
     BluetoothAction, ConfigAction, DhcpAction, DnsAction, EnterpriseWifiAction, HostnameAction,
-    Ipv6Action, KillAction, NftAction, PortalAction, RfAction, StackAction, TimerAction,
-    WikiAction,
+    Ipv6Action, KillAction, NftAction, PersonaAction, PortalAction, RfAction, StackAction,
+    TimerAction, WikiAction,
 };
 
 #[derive(Subcommand, Debug)]
@@ -207,5 +207,10 @@ pub enum Command {
     Rf {
         #[command(subcommand)]
         action: RfAction,
+    },
+    /// Device-persona / randomizer-recipe management (roadmap Milestone 2).
+    Persona {
+        #[command(subcommand)]
+        action: PersonaAction,
     },
 }

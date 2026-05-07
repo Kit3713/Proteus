@@ -15,6 +15,7 @@ pub mod ipv6;
 pub mod kill;
 pub mod nft;
 pub mod original;
+pub mod persona;
 pub mod pin;
 pub mod portal;
 pub mod probe;

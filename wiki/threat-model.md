@@ -192,9 +192,31 @@ Privacy tools tend to over-claim. Proteus tries not to. Every feature in `proteu
 
 If you find a place in Proteus's documentation, error messages, or marketing that over-claims relative to what the code actually does, that is a documentation bug. File it.
 
+## Personas
+
+Persona mode (roadmap Milestone 2; see `proteus wiki personas` for the field manual) is the second of Proteus's two stealth strategies. Where the entropy-based randomizer disappears you into noise, persona mode shapes every fingerprint Proteus already controls to look like one specific real device — iPhone 15, MacBook Air M3, Samsung TV, ESP32-class IoT widget. Both modes coexist in the same binary and use the same loader; the user picks which one their threat model wants via `proteus persona use <id>` (or `proteus persona clear` to drop back to plain randomizer).
+
+What persona mode defeats:
+
+- **OS-fingerprinting at L2/L3/L4.** `nmap -O`, p0f, fpdhcp/Fingerbank, passive-capture OS detection. The MAC OUI, hostname pattern, DHCP option content (vendor-class identifier, FQDN, parameter-request-list ordering), TCP/IP stack knobs (window scale, MSS, SACK, default TTL), and IPv6 SLAAC traits are all shaped to mimic the persona's target.
+- **DHCP fingerprint correlation across networks.** A device that walks into one coffee shop as an iPhone and the next as a MacBook is no longer correlatable by the DHCP banner the way the same Linux laptop with rotated MACs would be.
+- **mDNS/LLMNR/RF chatter.** Persona mode owns whether and what your host advertises on the LAN. A stealth-`thinkpad-x1-carbon` persona stays quiet; a stealth-`samsung-tv-2024` persona advertises loudly because that's what TVs do, and silence would itself be the giveaway.
+- **OS-controllable RF surface.** TX-power band, scan style (passive vs active), Wi-Fi power-save setting all move per persona, on top of the existing opt-in TX-power-reduce knob.
+
+What persona mode does not defeat (and so persona mode does not change any of the answers above in this page):
+
+- **TLS / browser fingerprinting** (JA3, JA4, ALPN, Canvas, WebGL). The TLS section above stands. Use Tor Browser, Mullvad Browser, LibreWolf, or Brave with farbling.
+- **Wireshark + payload-content analysis.** Looking inside encrypted application flows is application-layer territory; the persona only shapes the L1-L4 envelope, not the payload your apps actually send.
+- **Behavioural / timing analysis.** A persona doesn't lie about *when* you transmit — only what the L1-L4 packets look like. Use Tor or Mullvad VPN for traffic-correlation defence.
+- **Account-layer correlation.** If you log in to the same Google account from `iphone-15` and `macbook-air-m3` personas, the application correlates you across both. Persona mode is not account-laundering.
+- **RF L1 analog hardware fingerprints.** Clock-skew offsets, IQ imbalance, TX-power ramp shapes survive every software-level identifier change. A swappable USB Wi-Fi adapter is the only real answer; persona mode's `tx_power_dbm` knob narrows the capture radius but does not change the analog signature.
+
+Net: persona mode shifts you from "that one Linux laptop" to "another iPhone on the segment", and that is enough to defeat the analytics platforms most public Wi-Fi networks run. It is not invisibility, and it is not a guarantee against a determined adversary with active-probe capability or visibility into a TLS handshake. Compose with Tor / Mullvad VPN / a privacy-focused browser exactly as the rest of this page recommends.
+
 ## Cross-refs
 
 - `proteus wiki concepts` — Proteus's mental model: identifiers by layer, rotation triggers, captive portals, managed files, idempotency, no silent failures. The prerequisite for this page.
+- `proteus wiki personas` — the persona-mode field manual: schema, catalogue, authoring walkthrough, verification checklist.
 - `proteus wiki rf-fingerprinting` — RF L1 limits in detail. What a swappable USB adapter buys you and what TX power reduction does not.
 - `proteus wiki bluetooth` — BR/EDR rotation limits in detail. The per-vendor HCI mess and why BLE RPA is the supported path.
 - `proteus wiki dns` — the one ECS-strip knob and its hard guard. The detect-and-defer rule for dnscrypt-proxy, Pi-hole, AdGuard Home, custom resolv.conf.

@@ -340,6 +340,89 @@ pub enum DnsAction {
     },
 }
 
+/// `proteus persona ...` — roadmap Milestone 2.
+///
+/// The schema, catalogue, loader, and CLI all land in this PR. The
+/// apply / rotate integration (MAC OUI shaping, hostname template
+/// rendering, DHCP fingerprint write) is the follow-up tracked in
+/// the roadmap "Integration" bullets.
+#[derive(Subcommand, Debug)]
+pub enum PersonaAction {
+    /// List available personas (built-in + user). Filterable by kind / category.
+    List {
+        /// `stealth` or `randomizer`.
+        #[arg(long)]
+        kind: Option<String>,
+        /// `phone`, `laptop`, `tv`, `iot`, `router`, `console`, `printer`, `generic`.
+        #[arg(long)]
+        category: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Print the full schema for a single persona.
+    Show {
+        id: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Set `[persona] active = <id>` in config. `--apply` runs `proteus apply` after.
+    Use {
+        id: String,
+        #[arg(long)]
+        apply: bool,
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Drop back to plain randomizer mode (`active = None`).
+    Clear {
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Show the active persona id and which fields it would shape.
+    Current {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Pick a random persona id (filterable). Does NOT auto-apply.
+    Random {
+        #[arg(long)]
+        kind: Option<String>,
+        #[arg(long)]
+        category: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Clone an existing persona to `/etc/proteus/personas/<new>.toml`.
+    New {
+        /// New id (kebab-case).
+        id: String,
+        /// Existing persona to copy from.
+        #[arg(long = "from")]
+        from: String,
+        #[arg(long)]
+        yes: bool,
+    },
+    /// `$EDITOR` on `/etc/proteus/personas/<id>.toml`.
+    Edit {
+        id: String,
+    },
+    /// Schema-check an arbitrary `.toml` file. Exit 0 / 1.
+    Validate {
+        path: std::path::PathBuf,
+    },
+    /// Copy `<path>` into `/etc/proteus/personas/`.
+    Import {
+        path: std::path::PathBuf,
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Copy persona `<id>` to `<path>`.
+    Export {
+        id: String,
+        path: std::path::PathBuf,
+    },
+}
+
 #[derive(Subcommand, Debug)]
 pub enum RfAction {
     /// Show Wi-Fi/Bluetooth chipset inventory + current TX-power per iface.

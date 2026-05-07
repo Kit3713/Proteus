@@ -1,0 +1,38 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Generic HP printer (LaserJet / OfficeJet family running HP's
+# Futuresmart firmware). Loud mDNS (_ipp/_pdl-datastream/_printer), HP
+# OUI, IPP option signatures.
+
+id = "printer-generic-hp"
+display_name = "HP Printer (Generic)"
+kind = "stealth"
+category = "printer"
+oui_pool = ["hp", "random-locally-administered"]
+hostname_template = "HP{n}"
+mdns_advertise = true
+bt_name_template = ""
+notes = "Network printers are notoriously chatty on mDNS; that chatter is the persona. _ipp._tcp + _pdl-datastream._tcp + _http._tcp are the diagnostic giveaways the integration follow-up will emit."
+
+[dhcp_fingerprint]
+vendor_class_identifier = "Hewlett-Packard JetDirect"
+fqdn = ""
+parameter_request_list = [1, 2, 3, 4, 6, 12, 15, 18, 28, 33, 42, 43, 44, 60, 66]
+host_name = "HP"
+
+[tcp_stack]
+window_scale = 4
+mss = 1460
+tcp_timestamps = false
+tcp_sack = true
+default_ttl = 64
+
+[ipv6_traits]
+use_temp_addresses = false
+addr_gen_mode = "eui64"
+send_rs = true
+
+[rf_traits]
+tx_power_dbm = 0
+scan_style = "passive"
+power_save = "off"

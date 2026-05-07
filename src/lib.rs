@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+pub mod backend;
 pub mod bluetooth;
 pub mod captive_portal;
 pub mod cli;
@@ -16,6 +17,7 @@ pub mod logging;
 pub mod mac;
 pub mod nft;
 pub mod nm;
+pub mod persona;
 pub mod probe;
 pub mod profile;
 pub mod rf;

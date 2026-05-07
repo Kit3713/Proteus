@@ -1,0 +1,38 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# iPhone 15 (A2846/A2847/A2848/A2849, iOS 17+). Apple OUI, mDNS chatter
+# left on (Apple devices announce loudly), DHCP option 60 = "iPhone".
+# See `proteus wiki personas` for the schema and verification recipe.
+
+id = "iphone-15"
+display_name = "iPhone 15 (iOS 17)"
+kind = "stealth"
+category = "phone"
+oui_pool = ["apple"]
+hostname_template = "{owner}s-iPhone"
+mdns_advertise = true
+bt_name_template = "{owner}'s iPhone"
+notes = "iOS 17 baseline. mDNS Bonjour advertises _apple-mobdev2 and _airdrop services on real devices; integration follow-up will shape that surface. DHCP option 60 'iPhone' is the canonical Fingerbank match."
+
+[dhcp_fingerprint]
+vendor_class_identifier = "iPhone"
+fqdn = ""
+parameter_request_list = [1, 3, 6, 15, 119, 252]
+host_name = ""
+
+[tcp_stack]
+window_scale = 6
+mss = 1460
+tcp_timestamps = true
+tcp_sack = true
+default_ttl = 64
+
+[ipv6_traits]
+use_temp_addresses = true
+addr_gen_mode = "stable-privacy"
+send_rs = true
+
+[rf_traits]
+tx_power_dbm = 0
+scan_style = "passive"
+power_save = "auto"

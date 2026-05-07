@@ -1,0 +1,38 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Randomizer mirror of `Profile::High`. Hostile network: 30m rotation,
+# all of Med plus opt-in TX power reduction.
+
+id = "randomizer-high"
+display_name = "Randomizer — High"
+kind = "randomizer"
+category = "generic"
+oui_pool = ["apple", "intel", "samsung", "dell", "random-locally-administered"]
+hostname_template = "{wordlist}-{n}"
+mdns_advertise = false
+bt_name_template = ""
+rotate_cadence = "30m"
+notes = "Hostile-network baseline. Adds opt-in TX power reduction to shrink the passive-capture radius; SSDP/WSD blocks remain off so KDE Connect still works."
+
+[dhcp_fingerprint]
+vendor_class_identifier = ""
+fqdn = ""
+parameter_request_list = []
+host_name = ""
+
+[tcp_stack]
+window_scale = 7
+mss = 1460
+tcp_timestamps = false
+tcp_sack = true
+default_ttl = 64
+
+[ipv6_traits]
+use_temp_addresses = true
+addr_gen_mode = "stable-privacy"
+send_rs = true
+
+[rf_traits]
+tx_power_dbm = 14
+scan_style = "passive"
+power_save = "on"

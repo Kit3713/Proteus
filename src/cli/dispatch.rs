@@ -176,6 +176,10 @@ pub(super) fn dispatch(cli: Cli) -> Result<u8> {
             }
             RfAction::Revert { yes } => commands::rf::revert(yes, cli.state.as_deref()),
         },
+        // Roadmap Milestone 2: persona schema + CLI. Apply/rotate
+        // integration is the follow-up; this dispatch only flips
+        // `[persona] active` and runs the read-side commands.
+        Command::Persona { action } => commands::persona::run(action, cli.config.as_deref()),
     }
 }
 

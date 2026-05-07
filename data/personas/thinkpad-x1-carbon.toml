@@ -1,0 +1,38 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# ThinkPad X1 Carbon Gen 11 (21HM/21HN, Fedora 39 / Ubuntu 24.04). Intel
+# OUI for the Wi-Fi 6E AX211, Linux/dhclient option-60 banner, hostname
+# uses the wordlist (no Lenovo-specific naming convention to copy).
+
+id = "thinkpad-x1-carbon"
+display_name = "ThinkPad X1 Carbon (Linux)"
+kind = "stealth"
+category = "laptop"
+oui_pool = ["intel"]
+hostname_template = "{wordlist}-{n}"
+mdns_advertise = false
+bt_name_template = "thinkpad-{n}"
+notes = "Linux-on-laptop baseline. dhclient signature; mDNS off because most distros do not auto-advertise unless avahi-daemon is explicitly enabled."
+
+[dhcp_fingerprint]
+vendor_class_identifier = "dhcpcd-10.0.6:Linux-6.6.0:x86_64:GenuineIntel"
+fqdn = ""
+parameter_request_list = [1, 121, 33, 3, 6, 15, 26, 28, 51, 54, 58, 59, 119]
+host_name = ""
+
+[tcp_stack]
+window_scale = 7
+mss = 1460
+tcp_timestamps = true
+tcp_sack = true
+default_ttl = 64
+
+[ipv6_traits]
+use_temp_addresses = true
+addr_gen_mode = "stable-privacy"
+send_rs = true
+
+[rf_traits]
+tx_power_dbm = 0
+scan_style = "passive"
+power_save = "on"

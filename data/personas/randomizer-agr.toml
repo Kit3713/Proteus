@@ -1,0 +1,38 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Randomizer mirror of `Profile::Agr`. Conference / border / hostile:
+# 15m rotation plus every breaking knob.
+
+id = "randomizer-agr"
+display_name = "Randomizer — Aggressive"
+kind = "randomizer"
+category = "generic"
+oui_pool = ["apple", "intel", "samsung", "dell", "random-locally-administered"]
+hostname_template = "{wordlist}-{n}"
+mdns_advertise = false
+bt_name_template = ""
+rotate_cadence = "15m"
+notes = "Aggressive baseline. SSDP/WSD blocks, anonymous outer 802.1X identity, gratuitous-ARP suppression, fresh MAC per portal visit. Mirrors Profile::Agr."
+
+[dhcp_fingerprint]
+vendor_class_identifier = ""
+fqdn = ""
+parameter_request_list = []
+host_name = ""
+
+[tcp_stack]
+window_scale = 7
+mss = 1460
+tcp_timestamps = false
+tcp_sack = true
+default_ttl = 64
+
+[ipv6_traits]
+use_temp_addresses = true
+addr_gen_mode = "random"
+send_rs = false
+
+[rf_traits]
+tx_power_dbm = 10
+scan_style = "passive"
+power_save = "on"

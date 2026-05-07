@@ -41,6 +41,16 @@ pub struct Config {
     pub captive_portal: CaptivePortalConfig,
     pub rf: RfConfig,
     pub timers: TimersConfig,
+    /// Active persona (Milestone 2). Loader respects user-set values but
+    /// the apply / rotate paths do **not** yet consume persona fields —
+    /// integration with MAC OUI shaping, hostname rendering, and DHCP
+    /// fingerprint write is the follow-up tracked in roadmap Milestone 2
+    /// "Integration".
+    pub persona: PersonaConfig,
+    /// Backend selector (Milestone 1). `driver = "auto"` walks
+    /// NM → networkd → raw at runtime; only the NM impl is fully
+    /// wired in this PR.
+    pub backend: BackendConfig,
 }
 
 impl Default for Config {
@@ -85,6 +95,8 @@ impl Config {
             captive_portal: CaptivePortalConfig::default(),
             rf: RfConfig::default(),
             timers: TimersConfig::default(),
+            persona: PersonaConfig::default(),
+            backend: BackendConfig::default(),
         }
     }
 
@@ -173,6 +185,12 @@ impl Config {
                     interval: Some(self.timers.check.interval.clone()),
                 }),
             }),
+            persona: Some(RawPersonaConfig {
+                active: self.persona.active.clone(),
+            }),
+            backend: Some(RawBackendConfig {
+                driver: Some(self.backend.driver.clone()),
+            }),
         }
     }
 }
@@ -200,6 +218,8 @@ pub struct RawConfig {
     pub captive_portal: Option<RawCaptivePortalConfig>,
     pub rf: Option<RawRfConfig>,
     pub timers: Option<RawTimersConfig>,
+    pub persona: Option<RawPersonaConfig>,
+    pub backend: Option<RawBackendConfig>,
 }
 
 impl RawConfig {
@@ -386,6 +406,27 @@ impl RawConfig {
                 cfg.timers.check.interval = v;
             }
         }
+        if let Some(p) = self.persona {
+            cfg.persona.active = p.active;
+        }
+        if let Some(b) = self.backend
+            && let Some(v) = b.driver
+        {
+            // Reject anything outside the backend selector's grammar
+            // up-front so a typo'd `[backend] driver` lands in
+            // `proteus doctor` rather than triggering an obscure
+            // failure deep inside `select::select`. Match the
+            // existing config behaviour: fall back to the default
+            // and log so the user sees the rejection in `-v` mode.
+            if crate::backend::select::is_valid_driver(&v) {
+                cfg.backend.driver = v;
+            } else {
+                tracing::warn!(
+                    driver = v.as_str(),
+                    "ignoring invalid [backend] driver; expected one of auto|nm|networkd|raw"
+                );
+            }
+        }
         cfg
     }
 
@@ -479,6 +520,12 @@ impl RawConfig {
                 return true;
             }
         }
+        if let Some(p) = &self.persona
+            && p.active.is_some()
+        {
+            return true;
+        }
+        any_some!(&self.backend, [driver]);
         false
     }
 }
@@ -600,6 +647,18 @@ pub struct RawTimersConfig {
 #[serde(default)]
 pub struct RawTimerConfig {
     pub interval: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct RawPersonaConfig {
+    pub active: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct RawBackendConfig {
+    pub driver: Option<String>,
 }
 
 // ---- Resolved (public) sub-configs --------------------------------------
@@ -740,6 +799,39 @@ pub struct TimersConfig {
 #[serde(default)]
 pub struct TimerConfig {
     pub interval: String,
+}
+
+/// Active persona pointer. `active = None` means "no persona; the
+/// `Profile` slider drives entropy-only randomization" — the v0.2.x
+/// behaviour. `active = Some("iphone-15")` means "shape every controlled
+/// fingerprint to look like an iPhone 15."
+///
+/// Loaded by `proteus persona use <id>` and surfaced via
+/// `proteus persona current`. The integration with the apply / rotate
+/// paths (MAC OUI shaping, hostname rendering, DHCP fingerprint write)
+/// is the follow-up tracked in roadmap Milestone 2 "Integration"; this
+/// PR ships the schema, catalogue, loader, and CLI surface only.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PersonaConfig {
+    pub active: Option<String>,
+}
+
+/// `NetworkBackend` driver selector. Roadmap Milestone 1.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BackendConfig {
+    /// One of `auto` | `nm` | `networkd` | `raw`. `auto` walks the
+    /// available backends in order at runtime.
+    pub driver: String,
+}
+
+impl Default for BackendConfig {
+    fn default() -> Self {
+        Self {
+            driver: "auto".into(),
+        }
+    }
 }
 
 // ---- Defaults -----------------------------------------------------------
@@ -1113,5 +1205,39 @@ interval = "30m"
     fn timers_section_alone_triggers_has_overrides() {
         let raw: RawConfig = toml::from_str("[timers.rotate]\ninterval = \"1h\"\n").unwrap();
         assert!(raw.has_overrides());
+    }
+
+    #[test]
+    fn backend_default_driver_is_auto() {
+        assert_eq!(BackendConfig::default().driver, "auto");
+        assert_eq!(Config::default().backend.driver, "auto");
+    }
+
+    #[test]
+    fn backend_section_round_trips() {
+        let toml_str = r#"
+profile = "med"
+
+[backend]
+driver = "networkd"
+"#;
+        let raw: RawConfig = toml::from_str(toml_str).unwrap();
+        assert!(raw.has_overrides());
+        let cfg = raw.resolve();
+        assert_eq!(cfg.backend.driver, "networkd");
+    }
+
+    #[test]
+    fn backend_invalid_driver_falls_back_to_default() {
+        let toml_str = r#"
+[backend]
+driver = "garbage"
+"#;
+        let raw: RawConfig = toml::from_str(toml_str).unwrap();
+        let cfg = raw.resolve();
+        assert_eq!(
+            cfg.backend.driver, "auto",
+            "invalid driver must not bleed into resolved config"
+        );
     }
 }

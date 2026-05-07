@@ -46,8 +46,8 @@ Six numbered milestones, executed roughly in order. Milestones 2–6 all build o
 
 **Explicit non-NM compatibility goal.** After this milestone ships, Proteus runs end-to-end on a stock distro that has *no NetworkManager installed at all* — either via `backend::networkd` (Fedora Server, NixOS, systemd-networkd-driven) or `backend::raw` (anything with `ip` + `iw` + `wpa_supplicant`/`iwd`, including OpenRC/runit-based distros from Milestone 5). A user on Alpine + iwd should be able to `proteus apply` without ever installing NM.
 
-- ⏳ New `src/backend/` module with a `NetworkBackend` trait covering: enumerate interfaces, get/set cloned MAC per connection, get/set hostname-related DHCP options, trigger lease renew, read driver/chipset info, observe connection-up events.
-- ⏳ Three implementations:
+- 🚧 New `src/backend/` module with a `NetworkBackend` trait covering: enumerate interfaces, get/set cloned MAC per connection, get/set hostname-related DHCP options, trigger lease renew, read driver/chipset info, observe connection-up events.
+- 🚧 Three implementations:
   1. `backend::nm` — moves the existing zbus code from `src/nm/` behind the trait. No behaviour change for the default path.
   2. `backend::networkd` — systemd-networkd via DBus (`org.freedesktop.network1`) + drop-in files in `/etc/systemd/network/`.
   3. `backend::raw` — `ip` + `iw` + `wpa_supplicant`/`iwd` direct, the "any distro" fallback.
@@ -78,32 +78,32 @@ The next cycle's headline. Stealth becomes two modes that coexist in one binary;
 
 ### Schema and storage
 
-- ⏳ New `src/persona/` module with a `Persona` struct: `id`, `display_name`, `kind` (`stealth` | `randomizer`), `category` (phone/laptop/tablet/tv/iot/router/console/printer/generic — only meaningful for `stealth`), `oui_pool`, `mac_byte_pattern`, `hostname_template`, `dhcp_fingerprint`, `tcp_stack`, `ipv6_traits`, `mdns_advertise`, `bt_name_template`, `rf_traits`, `rotate_cadence` (only meaningful for `randomizer`), `notes`.
-- ⏳ Built-in stealth catalogue in `data/personas/*.toml` — at least: `iphone-15`, `iphone-13`, `pixel-8`, `pixel-6`, `galaxy-s24`, `macbook-air-m3`, `macbook-pro-m3`, `thinkpad-x1-carbon`, `dell-xps-13`, `surface-pro-9`, `ipad-air`, `samsung-tv-2024`, `lg-tv-2023`, `roku-ultra`, `chromecast`, `nest-mini`, `ring-doorbell`, `printer-generic-hp`, `printer-generic-canon`, `nintendo-switch`, `playstation-5`, `xbox-series-x`, `router-tplink`, `router-asus`, `iot-generic`. **25+ personas at launch.**
-- ⏳ Built-in randomizer catalogue: the existing six `Profile` baselines (`off`/`min`/`low`/`med`/`high`/`agr`) gain identical-content `.toml` mirrors so they show up in `proteus persona list --kind randomizer` next to user-authored randomizer recipes. Functionally unchanged — purely a unification step.
-- ⏳ User personas (both kinds): `/etc/proteus/personas/*.toml` only (system-wide; matches the root-via-polkit model). On id collision a user file shadows the built-in. Schema validation on load with wiki-linked errors.
+- 🚧 New `src/persona/` module with a `Persona` struct: `id`, `display_name`, `kind` (`stealth` | `randomizer`), `category` (phone/laptop/tablet/tv/iot/router/console/printer/generic — only meaningful for `stealth`), `oui_pool`, `mac_byte_pattern`, `hostname_template`, `dhcp_fingerprint`, `tcp_stack`, `ipv6_traits`, `mdns_advertise`, `bt_name_template`, `rf_traits`, `rotate_cadence` (only meaningful for `randomizer`), `notes`. Skeleton landed; integration with apply/rotate is the follow-up.
+- 🚧 Built-in stealth catalogue in `data/personas/*.toml` — at least: `iphone-15`, `iphone-13`, `pixel-8`, `pixel-6`, `galaxy-s24`, `macbook-air-m3`, `macbook-pro-m3`, `thinkpad-x1-carbon`, `dell-xps-13`, `surface-pro-9`, `ipad-air`, `samsung-tv-2024`, `lg-tv-2023`, `roku-ultra`, `chromecast`, `nest-mini`, `ring-doorbell`, `printer-generic-hp`, `printer-generic-canon`, `nintendo-switch`, `playstation-5`, `xbox-series-x`, `router-tplink`, `router-asus`, `iot-generic`. **25+ personas at launch.** First 13 stealth covers landed; the remaining 12 are part of the integration follow-up.
+- 🚧 Built-in randomizer catalogue: the existing six `Profile` baselines (`off`/`min`/`low`/`med`/`high`/`agr`) gain identical-content `.toml` mirrors so they show up in `proteus persona list --kind randomizer` next to user-authored randomizer recipes. Functionally unchanged — purely a unification step. All six mirrors landed.
+- 🚧 User personas (both kinds): `/etc/proteus/personas/*.toml` only (system-wide; matches the root-via-polkit model). On id collision a user file shadows the built-in. Schema validation on load with wiki-linked errors. Loader + validator landed.
 
 ### CLI
 
-- ⏳ `proteus persona list [--kind stealth|randomizer] [--category phone|laptop|...] [--json]`
-- ⏳ `proteus persona show <id>` — full schema + diff vs current device
-- ⏳ `proteus persona use <id> [--apply]` — set active persona (and optionally apply in one step)
-- ⏳ `proteus persona random [--kind stealth] [--category phone]` — pick a random persona, useful for scripted rotation between several covers
-- ⏳ `proteus persona new <id> --from <id>` — clone an existing persona to `/etc/proteus/personas/` for editing
-- ⏳ `proteus persona edit <id>` — open in `$EDITOR` (with the existing root-editor warning)
-- ⏳ `proteus persona validate <path>` — schema check, prints exact field-level errors
-- ⏳ `proteus persona current` — report active persona + kind + which fields are persona-shaped vs user-overridden vs profile-baseline
-- ⏳ `proteus persona clear` — drop back to plain randomizer mode (no persona; `Profile` slider drives entropy)
-- ⏳ `proteus persona import <path>` / `export <id> <path>` — share custom personas between machines
+- 🚧 `proteus persona list [--kind stealth|randomizer] [--category phone|laptop|...] [--json]` — surface landed; integration with apply/rotate is the follow-up.
+- 🚧 `proteus persona show <id>` — full schema dump landed; "diff vs current device" needs the integration to know what "current" means.
+- 🚧 `proteus persona use <id> [--apply]` — sets `[persona] active`; `--apply` is currently a no-op pending integration.
+- 🚧 `proteus persona random [--kind stealth] [--category phone]` — surface landed.
+- 🚧 `proteus persona new <id> --from <id>` — clone landed.
+- 🚧 `proteus persona edit <id>` — `$EDITOR` integration landed.
+- 🚧 `proteus persona validate <path>` — schema check landed with wiki-linked errors.
+- 🚧 `proteus persona current` — surface landed; field-level "shaped vs override vs baseline" reporting needs integration.
+- 🚧 `proteus persona clear` — landed.
+- 🚧 `proteus persona import <path>` / `export <id> <path>` — landed with permission warnings.
 
 ### Integration
 
-- ⏳ Config: new `[persona] active = "..."` section. The aggressiveness `Profile` still gates *whether* features run; persona shapes *how* they look. Per-knob overrides beat persona; persona beats profile baseline.
+- 🚧 Config: new `[persona] active = "..."` section landed; the resolved `Config` carries a `PersonaConfig`. Apply/rotate consumers do not yet read it — the follow-up wires per-knob precedence (override beats persona; persona beats profile baseline).
 - ⏳ `src/mac/oui.rs` gains a per-vendor `oui_for(Vendor)` registry that personas reference by token. Add Google, Microsoft, LG, TPLink, Asus, Roku, Amazon, generic-IoT to the table.
 - ⏳ Hostname patterns: per-persona templates rendered from `data/hostname-wordlist.txt` plus persona-specific token sets (e.g. `{n}` digit, `{owner}` first-name pool). The existing 534-word list keeps powering router/IoT personas.
 - ⏳ DHCP fingerprint: extend the DHCP-option path (now under `backend::*::dhcp`) to *set* `dhcp-vendor-class-identifier`, `dhcp-fqdn`, parameter-request-list ordering instead of only suppressing them. Defaults from persona; user override wins.
-- ⏳ Threat model section in `wiki/threat-model.md`: "personas defeat OS-fingerprinting at L2/L3/L4 and DHCP/mDNS/RF; they do not defeat traffic-content analysis (Wireshark + payload inspection), TLS fingerprinting (JA3/JA4), or behavioural timing analysis. Use Tor / VPN for those."
-- ⏳ New `wiki/personas.md` with the catalogue, build-your-own walkthrough, and verification checklist (`nmap -O` from a second host before/after).
+- 🚧 Threat model section in `wiki/threat-model.md`: "personas defeat OS-fingerprinting at L2/L3/L4 and DHCP/mDNS/RF; they do not defeat traffic-content analysis (Wireshark + payload inspection), TLS fingerprinting (JA3/JA4), or behavioural timing analysis. Use Tor / VPN for those." Section landed.
+- 🚧 New `wiki/personas.md` with the catalogue, build-your-own walkthrough, and verification checklist (`nmap -O` from a second host before/after). Landed.
 
 ### ARP / ND collision handling
 

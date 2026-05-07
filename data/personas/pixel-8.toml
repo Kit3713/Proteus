@@ -1,0 +1,38 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Pixel 8 (GA04457/GA04832, Android 14). Google OUI is in the integration
+# follow-up; for now we accept the LAA fallback so the persona loads
+# cleanly. DHCP option 60 = "android-dhcp-14" is the standard AOSP banner.
+
+id = "pixel-8"
+display_name = "Pixel 8 (Android 14)"
+kind = "stealth"
+category = "phone"
+oui_pool = ["google", "random-locally-administered"]
+hostname_template = "Pixel-8-{n}"
+mdns_advertise = false
+bt_name_template = "Pixel 8"
+notes = "Pixel-line MAC randomization is per-SSID by default in Android; we keep oui_pool tight. DHCP option 60 is the AOSP signature. Android Pixels do not advertise mDNS by default."
+
+[dhcp_fingerprint]
+vendor_class_identifier = "android-dhcp-14"
+fqdn = ""
+parameter_request_list = [1, 3, 6, 15, 26, 28, 51, 58, 59, 43]
+host_name = "Pixel-8"
+
+[tcp_stack]
+window_scale = 8
+mss = 1460
+tcp_timestamps = true
+tcp_sack = true
+default_ttl = 64
+
+[ipv6_traits]
+use_temp_addresses = true
+addr_gen_mode = "random"
+send_rs = true
+
+[rf_traits]
+tx_power_dbm = 0
+scan_style = "active"
+power_save = "auto"

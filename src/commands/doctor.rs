@@ -88,6 +88,7 @@ fn build_report(opts: &Options<'_>) -> Report {
     push_daemons(&mut checks, &sys, opts.quick);
     push_files(&mut checks, opts.config_path, opts.state_path);
     push_detect_and_defer(&mut checks, &sys, opts.quick);
+    push_backend(&mut checks, opts.config_path);
     push_runtime(&mut checks);
     push_proteus_state(&mut checks, opts.state_path);
     let summary = aggregate(&checks);
@@ -269,12 +270,16 @@ fn check_network_manager(sys: &status_cmd::SystemInfo) -> Check {
             remediation: None,
         }
     } else {
+        // Roadmap Milestone 1: doctor stops hard-failing when NM is
+        // absent. The backend section below reports which alternative
+        // (`networkd` / `raw`) is selectable, so this check downgrades
+        // to a skip.
         Check {
             category: "daemons",
             name: "network_manager",
-            status: Status::Fail,
-            message: "NetworkManager not running — required for MAC rotation".into(),
-            remediation: Some("systemctl start NetworkManager".into()),
+            status: Status::Skip,
+            message: "NetworkManager not running — see backend matrix below".into(),
+            remediation: None,
         }
     }
 }
@@ -582,6 +587,120 @@ fn check_iface_managers(sys: &status_cmd::SystemInfo) -> Check {
     }
 }
 
+// --- Backend matrix -------------------------------------------------------
+//
+// Roadmap Milestone 1: report which backends are available and which the
+// user has selected via `[backend] driver`. The matrix replaces the
+// hard-fail-on-no-NM behaviour above; users on networkd-only or raw-only
+// systems should see "OK" here even with NM absent.
+
+fn push_backend(out: &mut Vec<Check>, config_path: Option<&Path>) {
+    let cfg_path = super::config_path(config_path);
+    let cfg = crate::config::Config::default_or_loaded(&cfg_path).unwrap_or_default();
+    let matrix = backend_matrix();
+    let available: Vec<&'static str> = matrix
+        .iter()
+        .filter_map(|(n, ok)| if *ok { Some(*n) } else { None })
+        .collect();
+
+    out.push(check_backend_available(&matrix, &available));
+    out.push(check_backend_selected(&cfg.backend.driver, &available));
+}
+
+/// Probe `available()` for each backend without standing up the full
+/// async selector. Synchronous because every probe is a path check;
+/// keeps the doctor entry-point off the tokio runtime.
+fn backend_matrix() -> Vec<(&'static str, bool)> {
+    let nm = Path::new("/run/NetworkManager").exists()
+        || Path::new("/var/run/NetworkManager").exists();
+    let networkd = Path::new("/run/systemd/network").is_dir();
+    let raw = Path::new("/sbin/ip").exists() || Path::new("/usr/bin/ip").exists();
+    vec![("nm", nm), ("networkd", networkd), ("raw", raw)]
+}
+
+fn check_backend_available(matrix: &[(&'static str, bool)], available: &[&'static str]) -> Check {
+    let summary = matrix
+        .iter()
+        .map(|(n, ok)| format!("{n}={}", if *ok { "yes" } else { "no" }))
+        .collect::<Vec<_>>()
+        .join(", ");
+    if available.is_empty() {
+        Check {
+            category: "backend",
+            name: "available",
+            status: Status::Fail,
+            message: format!("no backend available ({summary})"),
+            remediation: Some(
+                "install NetworkManager, enable systemd-networkd, or install iproute2".into(),
+            ),
+        }
+    } else {
+        Check {
+            category: "backend",
+            name: "available",
+            status: Status::Ok,
+            message: summary,
+            remediation: None,
+        }
+    }
+}
+
+fn check_backend_selected(driver: &str, available: &[&'static str]) -> Check {
+    if !crate::backend::select::is_valid_driver(driver) {
+        return Check {
+            category: "backend",
+            name: "selected",
+            status: Status::Warn,
+            message: format!(
+                "[backend] driver = '{driver}' is invalid; falling back to 'auto'"
+            ),
+            remediation: Some("set driver = \"auto\" | \"nm\" | \"networkd\" | \"raw\"".into()),
+        };
+    }
+    if driver == "auto" {
+        // Mirror `select::select_auto`'s priority order so the user
+        // sees the same answer the runtime would pick.
+        let picked = ["nm", "networkd", "raw"]
+            .into_iter()
+            .find(|n| available.contains(n));
+        return match picked {
+            Some(n) => Check {
+                category: "backend",
+                name: "selected",
+                status: Status::Ok,
+                message: format!("auto → {n}"),
+                remediation: None,
+            },
+            None => Check {
+                category: "backend",
+                name: "selected",
+                status: Status::Fail,
+                message: "auto: no backend available".into(),
+                remediation: Some(
+                    "install NetworkManager, enable systemd-networkd, or install iproute2".into(),
+                ),
+            },
+        };
+    }
+    if available.contains(&driver) {
+        Check {
+            category: "backend",
+            name: "selected",
+            status: Status::Ok,
+            message: format!("pinned to {driver}"),
+            remediation: None,
+        }
+    } else {
+        Check {
+            category: "backend",
+            name: "selected",
+            status: Status::Warn,
+            message: format!("pinned to {driver}, but {driver} is not available on this host"),
+            remediation: Some(format!("change [backend] driver, or install {driver}")),
+        }
+    }
+}
+
 // --- Runtime --------------------------------------------------------------
 
 fn push_runtime(out: &mut Vec<Check>) {
@@ -818,6 +937,7 @@ fn category_label(cat: &str) -> &'static str {
         "daemons" => "Daemons",
         "files" => "Files",
         "detect_and_defer" => "Detect-and-defer",
+        "backend" => "Backend",
         "runtime" => "Runtime",
         "proteus_state" => "Proteus state",
         _ => "Other",
@@ -836,6 +956,7 @@ fn render_human(report: &Report, style: RenderStyle, verbose: bool) -> String {
         "daemons",
         "files",
         "detect_and_defer",
+        "backend",
         "runtime",
         "proteus_state",
     ];

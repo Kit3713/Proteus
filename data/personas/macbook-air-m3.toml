@@ -1,0 +1,38 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# MacBook Air M3 (A3113/A3114, macOS 14 Sonoma). Apple OUI, hostname
+# rendered as the canonical "<owner>s-MacBook-Air" form macOS picks by
+# default. mDNS on; macOS advertises a long list of services.
+
+id = "macbook-air-m3"
+display_name = "MacBook Air M3 (Sonoma)"
+kind = "stealth"
+category = "laptop"
+oui_pool = ["apple"]
+hostname_template = "{owner}s-MacBook-Air"
+mdns_advertise = true
+bt_name_template = "{owner}'s MacBook Air"
+notes = "macOS 14 baseline. The canonical hostname suffix '-2.local' added by Bonjour on duplicate name detection is handled by avahi at the link layer; we render the base form and let mDNS resolve collisions."
+
+[dhcp_fingerprint]
+vendor_class_identifier = ""
+fqdn = ""
+parameter_request_list = [1, 3, 6, 15, 119, 95, 252, 44, 46]
+host_name = ""
+
+[tcp_stack]
+window_scale = 6
+mss = 1460
+tcp_timestamps = true
+tcp_sack = true
+default_ttl = 64
+
+[ipv6_traits]
+use_temp_addresses = true
+addr_gen_mode = "stable-privacy"
+send_rs = true
+
+[rf_traits]
+tx_power_dbm = 0
+scan_style = "passive"
+power_save = "off"

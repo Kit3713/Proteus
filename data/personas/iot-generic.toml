@@ -1,0 +1,38 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Generic IoT device persona. Espressif/Realtek-class chipset on a Linux
+# kernel that exists strictly to bring up Wi-Fi and reach a vendor cloud.
+# Useful for blending into a residential IoT segment.
+
+id = "iot-generic"
+display_name = "Generic IoT Device"
+kind = "stealth"
+category = "iot"
+oui_pool = ["espressif", "realtek", "random-locally-administered"]
+hostname_template = "ESP-{n}"
+mdns_advertise = false
+bt_name_template = ""
+notes = "Espressif-style firmware. ESP32-based gear typically advertises a short hostname and a sparse DHCP request list."
+
+[dhcp_fingerprint]
+vendor_class_identifier = "ESP32-WROOM"
+fqdn = ""
+parameter_request_list = [1, 3, 6, 15]
+host_name = ""
+
+[tcp_stack]
+window_scale = 4
+mss = 1460
+tcp_timestamps = false
+tcp_sack = false
+default_ttl = 64
+
+[ipv6_traits]
+use_temp_addresses = false
+addr_gen_mode = "eui64"
+send_rs = true
+
+[rf_traits]
+tx_power_dbm = 0
+scan_style = "passive"
+power_save = "on"
