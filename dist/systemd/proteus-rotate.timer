@@ -1,0 +1,14 @@
+[Unit]
+Description=Proteus scheduled MAC rotation (every 2h by default)
+
+[Timer]
+# Default cadence; override via [rotation] interval in /etc/proteus/config.toml.
+OnCalendar=*-*-* 00/2:00:00
+# Catch up if the laptop was suspended or powered off across a tick.
+Persistent=true
+# Allow systemd to batch this with other timers within the window.
+AccuracySec=5min
+Unit=proteus-rotate.service
+
+[Install]
+WantedBy=timers.target
