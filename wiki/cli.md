@@ -343,16 +343,22 @@ Remove a pin previously set with `pin`. The target rejoins the rotation pool. `<
 
 Exit: `0` success · `1` no such pin · `64` stub · `66` not root.
 
-### `wiki` — phase **A**
+### `wiki` — phase **A** (search subcommand: phase **F**)
 
 ```sh
 proteus wiki [<page>]
+proteus wiki search <query>... [--json] [--limit <N>]
 ```
 
 Browse the embedded wiki. With no argument, lists available pages. With a page name, prints that page's Markdown to stdout. Read-only.
 
-Exit: `0` success · `1` no such page.
-Example: `proteus wiki cli`
+`proteus wiki search <query>...` runs a full-text search across every embedded wiki page. The query is whitespace-tokenized and matched case-insensitively. Results are ranked by `matched_terms × log2(occurrences + 1)` and capped at the top 10 by default (`--limit` overrides). Each row shows `<page>:<line_no>  <snippet>` with ~40 chars of context on either side of the first match. Pass `--json` for a machine-readable payload (schema: `{query, count, hits: [{page, line_no, line, snippet, matched_terms, term_frequency, score}]}`).
+
+Exit: `0` success (including no matches) · `1` no such page or empty query · `2` missing query argument.
+Examples:
+- `proteus wiki cli`
+- `proteus wiki search captive`
+- `proteus wiki search "ECS strip" --json`
 
 ## Exit codes
 

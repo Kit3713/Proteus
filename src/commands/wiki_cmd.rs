@@ -3,9 +3,14 @@
 use std::io::{IsTerminal, Write};
 
 use anyhow::Result;
+use serde::Serialize;
 
+use crate::commands::print_json;
 use crate::exit;
-use crate::wiki::{self, RenderStyle};
+use crate::wiki::{self, RenderStyle, SearchHit};
+
+/// Bytes of context shown on either side of the first match in a snippet.
+const SNIPPET_WINDOW: usize = 40;
 
 const NO_PAGES_NOTE: &str =
     "no pages embedded yet — `intro`, `quickstart`, `concepts` land in phase A alongside this PR";
@@ -16,6 +21,81 @@ pub fn run(page: Option<&str>, no_color: bool) -> Result<u8> {
     }
     list_pages();
     Ok(exit::SUCCESS)
+}
+
+/// Implements `proteus wiki search <query...>`. Tokenizes the query by
+/// whitespace, scans the embedded `WIKI_LINES` table case-insensitively,
+/// and prints up to `limit` ranked hits.
+pub fn run_search(query: &[String], json: bool, limit: usize) -> Result<u8> {
+    let joined = query.join(" ");
+    let trimmed = joined.trim();
+    if trimmed.is_empty() {
+        eprintln!("proteus: empty search query — pass at least one term");
+        return Ok(exit::GENERIC_ERROR);
+    }
+
+    let hits = wiki::search(trimmed, limit);
+
+    if json {
+        let payload = SearchOutput {
+            query: trimmed,
+            count: hits.len(),
+            hits: hits.iter().map(SearchHitJson::from).collect(),
+        };
+        print_json(&payload)?;
+        return Ok(exit::SUCCESS);
+    }
+
+    if hits.is_empty() {
+        println!("no matches for '{trimmed}'");
+        return Ok(exit::SUCCESS);
+    }
+
+    println!(
+        "{} match{} for '{}':",
+        hits.len(),
+        if hits.len() == 1 { "" } else { "es" },
+        trimmed
+    );
+    for hit in &hits {
+        let snippet = wiki::snippet(hit.line, hit.match_offset, SNIPPET_WINDOW);
+        println!("  {}:{}  {}", hit.page, hit.line_no, snippet);
+    }
+    println!();
+    println!("Run `proteus wiki <page>` to read a result.");
+    Ok(exit::SUCCESS)
+}
+
+#[derive(Serialize)]
+struct SearchOutput<'a> {
+    query: &'a str,
+    count: usize,
+    hits: Vec<SearchHitJson>,
+}
+
+#[derive(Serialize)]
+struct SearchHitJson {
+    page: String,
+    line_no: u32,
+    line: String,
+    snippet: String,
+    matched_terms: usize,
+    term_frequency: usize,
+    score: f32,
+}
+
+impl SearchHitJson {
+    fn from(hit: &SearchHit) -> Self {
+        Self {
+            page: hit.page.to_string(),
+            line_no: hit.line_no,
+            line: hit.line.to_string(),
+            snippet: wiki::snippet(hit.line, hit.match_offset, SNIPPET_WINDOW),
+            matched_terms: hit.matched_terms,
+            term_frequency: hit.term_frequency,
+            score: hit.score,
+        }
+    }
 }
 
 pub fn run_help(feature: Option<&str>, no_color: bool) -> Result<u8> {
