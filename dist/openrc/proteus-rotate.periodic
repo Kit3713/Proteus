@@ -1,0 +1,13 @@
+#!/bin/sh
+# managed by proteus — periodic rotate (every 2h)
+#
+# Drops into /etc/periodic/hourly/proteus-rotate on Alpine + Gentoo, where
+# the OpenRC `cron` provider walks the bucket. Matches the artifact the
+# `init::openrc::Openrc::schedule_periodic("rotate", 7200, ...)` builder
+# emits — keeping the file in `dist/` lets distro maintainers ship it
+# without depending on `proteus apply` to render one at install time.
+#
+# To override the cadence: edit /etc/proteus/config.toml's [rotation]
+# section and re-run `proteus apply`.
+
+exec /usr/bin/proteus rotate --yes

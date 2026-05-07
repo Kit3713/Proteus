@@ -16,15 +16,62 @@ use super::command::Command;
 use crate::commands;
 
 pub(super) fn dispatch(cli: Cli) -> Result<u8> {
+    // Resolve the global --no-color view once so the watch loop's
+    // screen-clear logic and the rest of the CLI honour the same flag.
+    let no_color = cli.no_color;
     match cli.command {
-        Command::Status { json } => {
-            commands::status::run(json, cli.state.as_deref(), cli.config.as_deref())
+        Command::Status {
+            json,
+            watch,
+            interval,
+        } => {
+            let state_path = cli.state.clone();
+            let config_path = cli.config.clone();
+            if watch {
+                let delay = commands::watch::parse_interval(&interval)?;
+                commands::watch::run(delay, no_color, move || {
+                    commands::status::run(json, state_path.as_deref(), config_path.as_deref())
+                })
+            } else {
+                commands::status::run(json, state_path.as_deref(), config_path.as_deref())
+            }
         }
-        Command::Session { json } => {
-            commands::session::run(json, cli.state.as_deref(), cli.config.as_deref())
+        Command::Session {
+            json,
+            watch,
+            interval,
+        } => {
+            let state_path = cli.state.clone();
+            let config_path = cli.config.clone();
+            if watch {
+                let delay = commands::watch::parse_interval(&interval)?;
+                commands::watch::run(delay, no_color, move || {
+                    commands::session::run(json, state_path.as_deref(), config_path.as_deref())
+                })
+            } else {
+                commands::session::run(json, state_path.as_deref(), config_path.as_deref())
+            }
         }
-        Command::Current { json, iface } => {
-            commands::current::run(json, iface.as_deref(), cli.state.as_deref())
+        Command::Current {
+            json,
+            iface,
+            watch,
+            interval,
+        } => {
+            let state_path = cli.state.clone();
+            let iface_owned = iface.clone();
+            if watch {
+                let delay = commands::watch::parse_interval(&interval)?;
+                commands::watch::run(delay, no_color, move || {
+                    commands::current::run(
+                        json,
+                        iface_owned.as_deref(),
+                        state_path.as_deref(),
+                    )
+                })
+            } else {
+                commands::current::run(json, iface.as_deref(), cli.state.as_deref())
+            }
         }
         Command::Original { json } => commands::original::run(json, cli.state.as_deref()),
         Command::ShowConfig { json } => commands::show_config::run(json, cli.config.as_deref()),

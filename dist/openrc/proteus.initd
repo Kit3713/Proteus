@@ -1,0 +1,46 @@
+#!/sbin/openrc-run
+# managed by proteus — OpenRC service shim
+#
+# This is a thin wrapper around `proteus apply` so OpenRC users can do:
+#
+#   rc-service proteus start
+#   rc-update add proteus default
+#
+# It intentionally does *not* keep a long-running daemon — Proteus is
+# CLI-only by design (see docs/PLAN.md "no daemon" invariant). `start`
+# fires `proteus apply --yes` once; periodic rotation comes from the
+# `/etc/periodic/<bucket>/proteus-rotate` script that the init module
+# emits, not from this service.
+
+name="Proteus"
+description="Erase network identifiers your Linux laptop hands out on every join"
+command="/usr/bin/proteus"
+command_args="apply --yes"
+command_user="root"
+
+depend() {
+	need net
+	use networkmanager dbus
+	after networkmanager
+}
+
+start_pre() {
+	# Bail loudly if the binary went missing — better than a silent no-op.
+	if [ ! -x "$command" ]; then
+		eerror "$command not found or not executable"
+		return 1
+	fi
+}
+
+start() {
+	ebegin "Applying Proteus configuration"
+	"$command" $command_args
+	eend $?
+}
+
+stop() {
+	# `apply` is a oneshot; there's nothing to stop. We provide the
+	# action so `rc-service proteus stop` doesn't error out.
+	ebegin "Proteus apply is one-shot; nothing to stop"
+	eend 0
+}

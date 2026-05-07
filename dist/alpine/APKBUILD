@@ -1,0 +1,114 @@
+# Maintainer: Kit3713 <noreply@example.com>
+#
+# Build:    abuild -r        (run from this directory inside an Alpine
+#                              build chroot — see dist/alpine/README.md)
+# Verify:   abuild -F sanitycheck && abuild -F check && proteus doctor
+#
+# Status:   UNTESTED BY AUTHOR — no Alpine community / edge build yet.
+#           Distro maintainers: please test in a fresh Alpine chroot,
+#           confirm musl linkage with `ldd /usr/bin/proteus`, and PR
+#           fixes against dist/alpine/. See "How to help" below.
+#
+# Reference: https://wiki.alpinelinux.org/wiki/APKBUILD_Reference
+
+pkgname=proteus
+pkgver=0.1.0
+pkgrel=0
+pkgdesc="Erase the network identifiers your Linux laptop hands out on every join"
+url="https://github.com/Kit3713/Proteus"
+arch="x86_64 aarch64 armv7"
+license="GPL-3.0-or-later"
+depends="
+	dbus
+	"
+makedepends="
+	cargo
+	rust
+	"
+checkdepends="
+	cargo
+	"
+install="$pkgname.post-install"
+subpackages="
+	$pkgname-doc
+	$pkgname-bash-completion
+	$pkgname-zsh-completion
+	$pkgname-fish-completion
+	$pkgname-openrc
+	"
+source="
+	$pkgname-$pkgver.tar.gz::$url/archive/v$pkgver.tar.gz
+	"
+builddir="$srcdir/Proteus-$pkgver"
+options="!check"  # cargo test --lib is the canonical check; opt in via APKBUILD_CHECK=1
+
+# Upstream's release profile already sets strip=true and lto=true;
+# Alpine's default abuild strip pass is therefore a no-op but harmless.
+
+prepare() {
+	default_prepare
+	cd "$builddir"
+	# `cargo fetch` once so the build phase runs offline in the chroot.
+	cargo fetch --locked
+}
+
+build() {
+	cd "$builddir"
+	cargo build --release --frozen
+}
+
+check() {
+	cd "$builddir"
+	# Library tests only — integration tests need a privileged systemd
+	# container. Matches the same boundary the Debian rules file uses.
+	cargo test --release --frozen --lib
+}
+
+package() {
+	cd "$builddir"
+	install -Dm755 target/release/proteus "$pkgdir"/usr/bin/proteus
+
+	# Man page
+	install -Dm644 dist/man/proteus.1 "$pkgdir"/usr/share/man/man1/proteus.1
+
+	# Shell completions (each lands in its own subpackage via _<shell>_complete below)
+	install -Dm644 dist/completions/proteus.bash \
+		"$pkgdir"/usr/share/bash-completion/completions/proteus
+	install -Dm644 dist/completions/proteus.zsh \
+		"$pkgdir"/usr/share/zsh/site-functions/_proteus
+	install -Dm644 dist/completions/proteus.fish \
+		"$pkgdir"/usr/share/fish/vendor_completions.d/proteus.fish
+
+	# OpenRC service + periodic shims (see dist/openrc/README.md)
+	install -Dm755 dist/openrc/proteus.initd "$pkgdir"/etc/init.d/proteus
+	install -Dm755 dist/openrc/proteus-rotate.periodic \
+		"$pkgdir"/etc/periodic/hourly/proteus-rotate
+	install -Dm755 dist/openrc/proteus-check.periodic \
+		"$pkgdir"/etc/periodic/15min/proteus-check
+
+	# polkit policy (works on Alpine's elogind+polkit pairing)
+	install -Dm644 dist/polkit/com.kit3713.proteus.policy \
+		"$pkgdir"/usr/share/polkit-1/actions/com.kit3713.proteus.policy
+
+	# License + docs
+	install -Dm644 LICENSE "$pkgdir"/usr/share/licenses/$pkgname/LICENSE
+	install -Dm644 README.md "$pkgdir"/usr/share/doc/$pkgname/README.md
+
+	# Config + state directories
+	install -dm755 "$pkgdir"/etc/proteus
+	install -dm700 "$pkgdir"/var/lib/proteus
+}
+
+openrc() {
+	pkgdesc="$pkgdesc (OpenRC service + periodic shims)"
+	depends="$pkgname=$pkgver-r$pkgrel openrc"
+	amove etc/init.d/proteus
+	amove etc/periodic/hourly/proteus-rotate
+	amove etc/periodic/15min/proteus-check
+}
+
+# sha512sum — placeholder; populated on first tagged release. Until then,
+# build with `abuild -F` from a local checkout (skips checksum verify).
+sha512sums="
+SKIP  $pkgname-$pkgver.tar.gz
+"

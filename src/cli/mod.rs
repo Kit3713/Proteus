@@ -179,7 +179,11 @@ mod tests {
     use std::path::Path;
 
     fn dummy_read_command() -> Command {
-        Command::Status { json: false }
+        Command::Status {
+            json: false,
+            watch: false,
+            interval: "2s".to_string(),
+        }
     }
 
     /// Mirrors the `eprintln!("proteus: {e:#}")` path in `run()`:

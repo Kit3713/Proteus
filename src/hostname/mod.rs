@@ -252,7 +252,13 @@ pub fn resolve_hostname(cfg: &crate::config::HostnameConfig) -> Result<String> {
 /// already knows they want persona-shaped output.
 pub fn render_template(template: &str) -> Result<String> {
     let words = wordlist()?;
-    let rendered = crate::persona::template::render_template(template, &words)?;
+    let raw = crate::persona::template::render_template(template, &words)?;
+    // Hostnames go on the wire lowercase: RFC 1123 + DHCP option 12
+    // historic norms reject uppercase, and a persona authored with
+    // mixed case (e.g. `{owner}s-iPhone`) is asking for the cover, not
+    // the literal string. Down-casing here means persona authors don't
+    // have to remember the kebab convention for every template.
+    let rendered = raw.to_ascii_lowercase();
     validate_hostname(&rendered).map_err(|e| {
         anyhow!(
             "rendered hostname '{rendered}' from template '{template}' fails RFC 1123: {e}"
@@ -425,11 +431,28 @@ mod tests {
     }
 
     #[test]
-    fn render_template_validates_through_rfc_1123() {
-        // Template that produces an uppercase output → rejected by
-        // validate_hostname so the user sees the bug immediately.
-        let r = render_template("BAD-HOST-{n}");
-        assert!(r.is_err(), "uppercase result must be rejected");
+    fn render_template_lowercases_for_rfc_1123() {
+        // Hostnames go on the wire lowercase. A persona-author template
+        // with mixed case (`{owner}s-iPhone`) must produce a
+        // lowercase, RFC 1123-valid name — both for the kernel
+        // hostname slot and for DHCP option 12.
+        let r = render_template("BAD-HOST-test").unwrap();
+        assert!(
+            r.chars().all(|c| !c.is_ascii_uppercase()),
+            "render_template must lowercase: got '{r}'"
+        );
+        // Underscores still rejected — lowercasing doesn't fix structure
+        // bugs, only case bugs.
+        assert!(render_template("bad_host").is_err());
+    }
+
+    #[test]
+    fn render_template_lowercases_iphone_template() {
+        // The shipped iphone-15 persona uses `{owner}s-iPhone`. The
+        // rendered output must always be lowercase + RFC-1123 valid.
+        let r = render_template("{owner}s-iPhone").unwrap();
+        assert!(r.ends_with("s-iphone"), "got '{r}'");
+        assert!(validate_hostname(&r).is_ok());
     }
 
     #[test]

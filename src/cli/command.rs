@@ -17,11 +17,24 @@ pub enum Command {
     Status {
         #[arg(long)]
         json: bool,
+        /// Re-run on a fixed interval, clearing the screen between renders.
+        /// Roadmap Milestone 6 (CLI ergonomics). Pair with `--interval`
+        /// (default 2s); accepts `2s`, `500ms`, `1m`.
+        #[arg(long)]
+        watch: bool,
+        /// Refresh cadence for `--watch`. Ignored without `--watch`.
+        #[arg(long, default_value = "2s")]
+        interval: String,
     },
     /// Show the current network session at a glance (read-only).
     Session {
         #[arg(long)]
         json: bool,
+        /// Re-run on a fixed interval. See `proteus status --watch`.
+        #[arg(long)]
+        watch: bool,
+        #[arg(long, default_value = "2s")]
+        interval: String,
     },
     /// List current MAC addresses (per interface).
     Current {
@@ -30,6 +43,11 @@ pub enum Command {
         /// Limit to a single interface.
         #[arg(long)]
         iface: Option<String>,
+        /// Re-run on a fixed interval. See `proteus status --watch`.
+        #[arg(long)]
+        watch: bool,
+        #[arg(long, default_value = "2s")]
+        interval: String,
     },
     /// Show the cached original MACs and hostname.
     Original {

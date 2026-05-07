@@ -1,0 +1,10 @@
+#!/bin/sh
+# managed by proteus — periodic probe-driven check (every 15m)
+#
+# Drops into /etc/periodic/15min/proteus-check on Alpine + Gentoo. Same
+# logic as the systemd `proteus-check.service`: invokes
+# `proteus rotate --if-needed --yes` and lets the binary decide whether
+# the probe quorum has failed. Until phase C wires up the probe quorum
+# the `--if-needed` path is a no-op — safe to ship.
+
+exec /usr/bin/proteus rotate --if-needed --yes

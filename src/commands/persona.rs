@@ -161,8 +161,12 @@ fn use_persona(
     write_active_to_config(Some(id), config_override)?;
     println!("active persona is now '{id}'");
     if apply {
+        // The persona-shaping integration is live (roadmap M2
+        // "Integration"), but `--apply` doesn't auto-rerun the
+        // mutating apply orchestrator — that needs `--yes` plus root
+        // and a confirmed plan. Point the operator at the next step.
         eprintln!(
-            "proteus: persona apply integration is not yet wired (roadmap Milestone 2 follow-up); rerun `proteus apply` after the integration lands"
+            "proteus: persona is set; run `proteus apply --yes` (as root) to push the new shape onto NetworkManager"
         );
     }
     Ok(exit::SUCCESS)
