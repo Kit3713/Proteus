@@ -1,26 +1,30 @@
 # Roadmap
 
-Status: Phase A skeleton ✅, Phase B (MAC + Bluetooth) ✅, Phase C event-driven triggers + probe ✅ (captive portal still open as #66), Phase D hostname ✅ (DHCP/DNS/IPv6/802.1X open as #71/#73), Phase E sysctl + nft open as #69/#70, Phase F packaging ✅ (search open as #72), Phase G reset/uninstall/apply orchestrator ✅ (revert pending).
+Status: every phase of the original plan has shipped. Phase A skeleton ✅, Phase B (MAC + Bluetooth) ✅, Phase C event-driven triggers + probes + captive portal ✅, Phase D hostname + DHCP + DNS + IPv6 + 802.1X ✅, Phase E sysctl + nft ✅, Phase F packaging + wiki + search ✅, Phase G revert + diff + dry-run + reset + uninstall + kill switch + integration tests ✅.
+
+The next big item is the v0.1.0-alpha release tag. Everything that follows is real-world testing, security review, and distro adoption.
 
 This is the operational view: what's done, what's next, what's on the bench. For design rationale, see [PLAN.md](PLAN.md). For per-version release notes, see [CHANGELOG.md](../CHANGELOG.md). For how to help, see [CONTRIBUTING.md](../CONTRIBUTING.md). For the mental model behind the phases, run `proteus wiki concepts`.
 
 ## Recent landings
 
-- ✅ #78 `proteus apply` orchestrator — runs every enabled component in dependency order
-- ✅ #76 `proteus uninstall` — full removal with `--purge` for state directories
-- ✅ #67 Hostname rotation via systemd hostname1 DBus (kernel/pretty/transient)
-- ✅ #63 `proteus probe` — manual probe quorum check
-- ✅ #65 aarch64 cross-compile + release workflow scaffold
-- ✅ #64 RPM spec + Copr config (Fedora/RHEL primary target)
-- ✅ #62 Debian/Ubuntu packaging (amd64 + arm64)
-- ✅ #60 `proteus reset` — restore config to defaults (sacred originals preserved)
-- ✅ #59 NixOS module + flake
-- ✅ #58 `proteus doctor` — self-diagnostic health check
-- ✅ #57 Arch Linux PKGBUILD
-- ✅ #55 `proteus config` CLI for user-controllable settings
-- ✅ #53 `proteus timer` CLI — user-controllable systemd timers
-- ✅ Wiki polish: getting-started, hostile-environments, ip-rotation, security-checklist
-- ✅ Wiki terminal renderer — markdown → ANSI on TTY, raw on pipe, `NO_COLOR` honored
+- ✅ #99 `proteus session` — current network session snapshot (one-screen status)
+- ✅ #97 `proteus kill` / `proteus resume` — emergency network shutdown + restoration
+- ✅ #96 `proteus enterprise-wifi` — 802.1X anonymous outer identity (opt-in)
+- ✅ #91 IPv6 stable-privacy + temp + DUID rotation (sysctl + NM DBus)
+- ✅ #90 `proteus dry-run <cmd>` — preview any mutation
+- ✅ #89 `proteus diff` — config drift + managed-file drift detection
+- ✅ #88 `proteus revert` — restore cached originals
+- ✅ #73 DHCP option suppression (12/60/61/81 + DHCPv6 DUID/IAID) via NM DBus
+- ✅ #72 Full-text wiki search via build-time index
+- ✅ #71 DNS ECS-strip with detect-and-defer hard guard
+- ✅ #70 nftables rule manager (ICMP info-drops + optional discovery blocks)
+- ✅ #69 Sysctl drop-in for TCP/ICMP/NDP stack hardening
+- ✅ #66 Captive portal detection + `proteus portal` family
+- ✅ #93 Integration test scaffolding (privileged podman + systemd)
+- ✅ #98 Reproducible build infrastructure (pinned toolchain + verification script)
+- ✅ #94 cargo-bloat audit + feature trim
+- ✅ Wiki: curated TOC (`_index.md`); `proteus apply` risk warnings; `cli.rs` split into modules
 
 ## Try it today
 
@@ -32,7 +36,7 @@ proteus wiki getting-started
 sudo proteus apply --yes
 ```
 
-`proteus apply` runs every enabled component in dependency order; `proteus reset` restores defaults; `proteus uninstall` removes the lot. See `proteus wiki getting-started` for the full first-run tour.
+`proteus apply` runs every enabled component in dependency order; `proteus revert` backs out network-layer side-effects; `proteus reset` restores config defaults; `proteus uninstall` removes the lot. See `proteus wiki getting-started` for the full first-run tour.
 
 ## What a great Linux tool looks like
 
@@ -46,16 +50,25 @@ Proteus aspires to be a real Linux tool, not a script collection — and ships l
 - **Cross-compile** — aarch64 builds and a release workflow that ships stripped binaries
 - **Embedded wiki** — `proteus wiki <page>` works offline, renders ANSI on a TTY, raw on a pipe
 
-## Pending PRs needing manual rebase
+## Path to v0.1.0-alpha release
 
-These all landed cleanly in isolation but conflict on `cli.rs` after the recent CLI convergence (apply/uninstall/reset/doctor/config/timer all now share the same Cli enum and arg parsing). They need a rebase against current main; the underlying code is sound.
+Code work is complete. Remaining work is operational:
 
-- 🚧 #66 `phase-c/captive-portal` — captive portal detection + `proteus portal` subcommand family. Blocked on cli.rs.
-- 🚧 #69 `phase-e/stack-sysctl` — sysctl drop-in for TCP/ICMP/NDP stack hardening. Blocked on cli.rs.
-- 🚧 #70 `phase-e/nft-rules` — nftables rule manager (ICMP info-drop + discovery blocks). Blocked on cli.rs.
-- 🚧 #71 `phase-d/dns-ecs-strip` — DNS ECS-strip with detect-and-defer hard guard. Blocked on cli.rs.
-- 🚧 #72 `phase-f/wiki-search` — full-text wiki search via build-time inverted index. Blocked on cli.rs (`proteus wiki search` plumbing).
-- 🚧 #73 `phase-d/dhcp-suppression` — DHCP option 12/60/61/81 + DUID/IAID suppression via NM DBus. Blocked on cli.rs.
+- ⏳ Tag `v0.1.0-alpha` — `git tag v0.1.0-alpha && git push origin v0.1.0-alpha` triggers the multi-distro pipeline. Without an actual release, the packaging infrastructure is theoretical.
+- ⏳ Real-world testing on diverse Wi-Fi (coffee shops, hotels, conferences) — the unit suite is solid (251 tests) but the project hasn't been run against weird DHCP servers, captive portals with quirks, or older BlueZ versions.
+- ⏳ Independent security review — threat model and DBus surface need eyes from someone like the Tor Project / Mullvad infra / EFF.
+- ⏳ Distro adoption — AUR / Copr / Debian unstable submissions need a packager sponsor; the recipes in `dist/` are ready.
+
+## Rescuable in-progress branches
+
+Six worktrees from rate-limited agents have substantive work that didn't land. Each is an independent rescue (extract files → fresh branch from main → verify → PR):
+
+- `phase-c/auto-triggers` — auto enable/disable/trigger catalog
+- `phase-d/ip-rotation` — DHCP lease release/renew without MAC change
+- `feat/cli-ergonomics` — short aliases, `--watch`, `--format`
+- `phase-d/wifi-privacy` — per-scan MAC randomization at NM layer
+- `docs/distro-compat` — distro compatibility doctor check
+- `phase-c/event-driven-triggers` — event-driven trigger framework
 
 ## Status legend
 
@@ -94,34 +107,41 @@ These all landed cleanly in isolation but conflict on `cli.rs` after the recent 
 - ✅ systemd sleep hook (`proteus-resume.service`) — re-rotate on resume from suspend
 - ✅ `proteus timer` CLI — user-controllable timers (status / enable / disable / set / reset / logs)
 - ✅ `proteus probe` command surface — manual probe quorum check
-- 🚧 Captive portal detector + `proteus portal` family (PR #66 — needs rebase)
-- 🚧 Portal classification (`clear` / `portal-required` / `portal-authed` / `unknown`) (PR #66)
-- 🚧 Portal policy (`rotate-before-auth` default, `preserve-mac`, `ask`) (PR #66)
-- 🚧 Suppress periodic rotation while authed; fresh MAC per visit to known-portal SSIDs (PR #66)
+- ✅ Captive portal detector + `proteus portal` family (status / mark / unmark / list / open)
+- ✅ Portal classification (`clear` / `portal-required` / `portal-authed` / `unknown`)
+- ✅ Portal policy (`rotate-before-auth` default, `preserve-mac`, `ask`)
 
 ## Phase D — DHCP, IPv6, hostname, 802.1X, DNS
 
 - ✅ Hostname wordlist (`data/hostname-wordlist.txt`, 534 router-flavored entries)
 - ✅ Hostname rotation (kernel/pretty/transient) via hostname1 dbus; generic-default option (`fedora`); optional rotate-with-MAC
-- 🚧 DHCP option 12/60/61/81 suppression via NM (PR #73 — needs rebase)
-- 🚧 DUID rotation alongside MAC (PR #73)
-- 🚧 IPv6 stable-privacy + temp addresses (PR #73)
-- 🚧 `dns.strip-edns-client-subnet` with detect-and-defer hard guard (PR #71 — needs rebase)
-- ⏳ 802.1X anonymous outer identity (opt-in, default off)
+- ✅ DHCP option 12/60/61/81 suppression via NM DBus, plus DHCPv6 DUID/IAID
+- ✅ IPv6 stable-privacy + temporary addresses + DUID rotation (sysctl + NM settings)
+- ✅ `dns.strip-edns-client-subnet` with detect-and-defer hard guard (defers to dnscrypt-proxy / Pi-hole / non-default resolvers)
+- ✅ 802.1X anonymous outer identity (opt-in, default off)
 
-## Phase E — Discovery silencing, stack fingerprint, RF surface
+## Phase E — Discovery silencing, stack fingerprint
 
-- 🚧 Sysctl drop-in for `tcp_timestamps=0` etc. + ICMPv6/NDP fingerprint hardening (PR #69 — needs rebase)
-- 🚧 nft rules for ICMP info-reply drops, NetBIOS/SSDP/WSD blocks, optional gratuitous-ARP suppression (PR #70 — needs rebase)
+- ✅ Sysctl drop-in for `tcp_timestamps=0` + ICMPv6/NDP fingerprint hardening
+- ✅ nft rules for ICMP info-reply drops, optional SSDP/WSD blocks, optional gratuitous-ARP suppression
 - ⏳ systemd-resolved drop-in: mDNS responder + resolver off, LLMNR off
-- ⏳ WPAD off via NM
 - ⏳ NTP normalization via timesyncd drop-in (skipped if chrony or ntpd present)
-- ⏳ `wifi.tx-power-reduce` (opt-in)
-- ⏳ Chipset reporting in `proteus status`
+
+## Phase H — RF surface (focus area)
+
+The OS-controllable half of the RF fingerprint. The hardware-analog half (oscillator drift, DAC nonlinearity, IQ imbalance) is documented in `wiki/rf-fingerprinting.md` as out-of-scope-by-physics; this phase is everything *above* the radio that software can shape.
+
+- ⏳ `proteus rf` subcommand family (status / apply / revert) following the established orchestrator pattern
+- ⏳ `wifi.tx-power-reduce` (opt-in) — `iw dev <iface> set txpower fixed <regulatory_max - reduction_db>`
+- ⏳ Per-scan MAC randomization at the NetworkManager / wpa_supplicant layer (the worktree `phase-d/wifi-privacy` is a starting point)
+- ⏳ Probe-request behavior: prefer passive scanning where the regulatory domain allows; suppress unnecessary active probes; never broadcast saved-SSID list
+- ⏳ Chipset + firmware inventory in `proteus status` (Wi-Fi driver + chip ID + firmware, Bluetooth chip vendor + firmware) so users can cross-reference RF-fingerprinting research for their hardware
+- 💭 BR/EDR (classic) BD_ADDR rotation — chipset-specific HCI, deferred until a known-good chipset matrix exists
 
 ## Phase F — Cross-cutting wiki, search, packaging
 
-- ✅ All wiki pages: `intro`, `quickstart`, `concepts`, `getting-started`, `mac-recipes`, `bluetooth`, `probes`, `rotation`, `captive-portals`, `dhcp`, `ipv6`, `hostname-recipes`, `enterprise-wifi`, `dns`, `discovery`, `stack-fingerprint`, `rf-fingerprinting`, `threat-model`, `cli`, `config`, `doctor`, `troubleshooting`, `verifying`, `uninstall`, `internals`, `faq`, `glossary`, `timer`, `ip-rotation`, `hostile-environments`, `security-checklist`, `throttling-detect`
+- ✅ 38 wiki pages including the curated TOC at `_index.md`
+- ✅ Full-text wiki search via build-time index (`proteus wiki search <terms>`)
 - ✅ `install.sh` and `uninstall.sh` (POSIX shell)
 - ✅ systemd units in `dist/systemd/`
 - ✅ Man page (`dist/man/proteus.1`)
@@ -130,21 +150,22 @@ These all landed cleanly in isolation but conflict on `cli.rs` after the recent 
 - ✅ `examples/` config presets (minimal, standard, aggressive, paranoid, captive-portal-heavy, development, disabled)
 - ✅ Arch PKGBUILD, RPM spec + Copr, Debian/Ubuntu, NixOS module + flake
 - ✅ aarch64 cross-compile + release workflow scaffold
-- 🚧 Full-text wiki search (PR #72 — needs rebase)
+- ✅ Reproducible build infrastructure (pinned toolchain + verification script)
 - ⏳ Audit pass: every error path points at a wiki page or `proteus help <feature>`
 
-## Phase G — Diff, dry-run, reset, uninstall, integration tests
+## Phase G — Revert, diff, dry-run, reset, uninstall, kill switch, integration tests
 
 - ✅ `proteus reset` — restore config to defaults (sacred originals preserved)
 - ✅ `proteus uninstall [--purge]` implementation
-- ✅ `proteus apply` orchestrator — runs every enabled component in dependency order
-- ⏳ `proteus revert` — undo the last apply (cached prior state)
-- ⏳ `proteus diff` (config vs defaults vs live; flag drift via SHA in managed-file headers)
-- ⏳ `proteus dry-run <command>` (every mutator routed through a `Plan` enum)
-- ⏳ Integration tests in privileged Podman + systemd container with stubbed NM and BlueZ
+- ✅ `proteus apply` orchestrator — every enabled component in dependency order, with risk warnings
+- ✅ `proteus revert` — restore cached originals (hostname, Bluetooth, IPv6 + DHCP per-connection, drop-ins, dispatcher, nft table)
+- ✅ `proteus diff` — config vs defaults vs live, with managed-file SHA verification
+- ✅ `proteus dry-run <cmd>` — preview any mutator
+- ✅ `proteus kill` / `proteus resume` — emergency network shutdown + restoration
+- ✅ Integration test scaffolding (privileged podman + systemd container)
 - ⏳ Image-diff verification: clean install + uninstall returns to baseline
-- ⏳ CI on Fedora-latest container with size check ≤3 MB
-- ⏳ v1.0.0 release tag with stripped binary + SHA256
+- ⏳ v0.1.0-alpha release tag with stripped binary + SHA256
+- ⏳ Real-world testing on diverse Wi-Fi (the open frontier)
 
 ## Post-v1 / future
 
@@ -155,17 +176,21 @@ These all landed cleanly in isolation but conflict on `cli.rs` after the recent 
 
 ## Things explicitly NOT on the roadmap
 
+The mission is *local controllable* fingerprint reduction. These items live on another tool's layer (not OS-controllable from Proteus's vantage point) or are physical limits:
+
 - TLS / browser fingerprint — use Tor Browser, librewolf, Brave's randomization
 - DNS resolution policy beyond ECS strip — use dnscrypt-proxy, NextDNS, AdGuard Home, Pi-hole
 - Tracker blocking — Pi-hole, NextDNS, uBlock Origin
 - Traffic correlation defenses — Tor, Mullvad
 - SSH client fingerprint (HASSH) — your `ssh_config` is yours
+- Hardware-baked RF fingerprints (oscillator drift, DAC nonlinearity, IQ imbalance) — physically impossible without a hardware swap; see `wiki/rf-fingerprinting.md` for what *is* in scope
 - Anything that weakens Fedora's `crypto-policies`, touches `/etc/ssh/ssh_config`, or rotates `/etc/machine-id`
 - Telemetry, update checks, analytics — no telemetry, ever
 
 ## How to help
 
-- **Code** — see [CONTRIBUTING.md](../CONTRIBUTING.md); the open frontier is the rebase queue (#66, #69–73) and Phase G integration tests
+- **Real-world testing** — `proteus doctor` + `proteus apply` on coffee-shop / hotel / conference / airport networks; report bugs via the issue template (this is the highest-value contribution right now)
+- **Independent security review** — eyes on `wiki/threat-model.md` and the DBus surface in `src/nm/`, `src/bluetooth/`, `src/commands/dhcp.rs`, `src/commands/ipv6.rs`
+- **Distro packaging sponsorship** — AUR / Copr / Debian unstable submissions; the recipes in `dist/` are ready
 - **Wiki** — pages are landed but always improvable; voice should match `wiki/intro.md`
-- **Plan feedback** — open a discussion or issue with `[plan-feedback]` in the title
-- **Testing** — `proteus doctor` on your Fedora (or other systemd) host, then report bugs via the issue template
+- **Code** — see [CONTRIBUTING.md](../CONTRIBUTING.md); rescuable in-progress branches listed above
