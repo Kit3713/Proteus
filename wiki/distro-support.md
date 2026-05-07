@@ -37,9 +37,14 @@ Other arches (i686, ppc64le, riscv64, s390x) are best-effort: the source is port
 
 The `dist/<distro>/` tree carries the layouts the project ships today.
 
-- **`dist/rpm/`** — RPM spec for Fedora / Copr. Arch-neutral as of Milestone 5.
-- **`dist/debian/`** — Debian / Ubuntu packaging.
-- **`dist/arch/`** — PKGBUILD for Arch / AUR.
+- **`dist/rpm/`** — RPM spec for Fedora / Copr. Arch-neutral as of Milestone 5; `%check` runs `cargo test --lib`.
+- **`dist/debian/`** — Debian / Ubuntu packaging (submission prep, not yet uploaded).
+- **`dist/arch/`** — three PKGBUILDs for Arch / AUR: source, `-bin`, and `-git`.
+- **`dist/alpine/`** — Alpine APKBUILD (musl + OpenRC). Untested by author.
+- **`dist/void/`** — xbps-src template (runit + musl/glibc). Untested by author.
+- **`dist/gentoo/`** — EAPI 8 ebuild + metadata.xml.
+- **`dist/openrc/`** — OpenRC `initd` + periodic shims, shared by Alpine + Gentoo.
+- **`dist/runit/proteus/`** — runit service tree, shared by Void + Artix-Runit.
 - **`dist/nix/`** — Nix derivation.
 - **`dist/systemd/`** — Canonical systemd unit shapes (rotate timer + service, boot oneshot, resume hook, check timer + service).
 - **`dist/networkmanager/`** — NetworkManager dispatcher script and drop-ins.
@@ -47,17 +52,24 @@ The `dist/<distro>/` tree carries the layouts the project ships today.
 - **`dist/man/`** — `proteus(8)` man page.
 - **`dist/completions/`** — bash, zsh, fish completion stubs.
 
-## What's pending
+## What's landed (recipes)
 
-These are tracked in `docs/ROADMAP.md` Milestone 5 and will land in follow-up PRs:
+Roadmap Milestone 5 packaging recipes are now drafted under `dist/`:
 
-- **Alpine APKBUILD** (musl + OpenRC). The init module already produces the OpenRC artifacts; the APKBUILD itself isn't drafted yet.
-- **Void package recipe** (musl + runit). Same story: artifacts exist, packaging recipe doesn't.
-- **Gentoo ebuild**. Gentoo can rebuild from the existing tree; an upstream ebuild would smooth the path for users.
-- **AUR submission** of the existing PKGBUILD (binary + `-git` flavors).
-- **Copr submission** for the RPM spec — the spec itself is ready, the submission step is the gap.
-- **Debian unstable submission**.
+- **`dist/alpine/APKBUILD`** + `proteus.post-install` (musl + OpenRC). Untested by author.
+- **`dist/openrc/`** — shared OpenRC `initd` + periodic shims used by Alpine + Gentoo.
+- **`dist/void/template`** (xbps-src) + **`dist/runit/proteus/`** (runit service tree). Untested by author.
+- **`dist/gentoo/proteus-0.1.0.ebuild`** + `metadata.xml` (EAPI 8). Locally validated, not GURU-merged.
+- **`dist/arch/PKGBUILD`** (source), **`PKGBUILD-bin`** (release tarball), **`PKGBUILD-git`** (origin/main). AUR submission ready.
+- **`dist/rpm/proteus.spec`** — polished with explicit cargo/rust BRs and a `%check` running `cargo test --lib`. Copr submission ready.
+- **`dist/debian/`** — `control`, `rules`, `compat`, `copyright`, `changelog`, `source/format`. Submission prep; ITP + sponsor handoff outstanding.
+
+## What's still pending
+
+- **Submission uploads**: the actual `dput`/`copr-cli build`/AUR push for each recipe is the maintainer's call, not blocked on this repo.
+- **Distro-test containers**: Alpine + Void recipes have *not* been built in their target chroots by the author. Flagged in each recipe's README.
 - **`proteus doctor` distro-compat warnings** for known-quirky setups (Pi-hole, dnscrypt-proxy, openresolv, NetworkManager-l2tp). Some of these already exist in the `Detect-and-defer` section; the rest land alongside the packaging work.
+- **`proteus doctor` package-format reporter** (currently reports init/libc/distro/backend, not yet the package manager).
 
 ## Caveats
 

@@ -25,14 +25,30 @@ The package lands in the current directory as
 
 ## AUR
 
-Not published yet. Once Proteus tags `v0.1.0` with a real release tarball:
+Three variants live under `dist/arch/`. Pick whichever matches the
+maintainer's submission flow.
 
-1. The maintainer line, `pkgver`, and `sha256sums` get filled in.
-2. The PKGBUILD is pushed to the AUR as `proteus`.
-3. Users install with an AUR helper: `paru -S proteus` or
-   `yay -S proteus`.
+| File           | AUR pkgname     | What it builds                                  |
+| -------------- | --------------- | ----------------------------------------------- |
+| `PKGBUILD`     | `proteus`       | Source build from the tagged release tarball.   |
+| `PKGBUILD-bin` | `proteus-bin`   | Downloads the prebuilt release tarball.         |
+| `PKGBUILD-git` | `proteus-git`   | Builds from the latest commit on `origin/main`. |
 
-A `-git` variant tracking `main` may follow if there's demand.
+The `-bin` variant pulls per-arch tarballs from the GitHub Releases page
+(`v$pkgver`) and skips the Rust toolchain dependency. The `-git`
+variant tracks `main` and is the right choice for testers / contributors.
+
+Submission flow (once `v0.1.0` is tagged):
+
+1. Fill `sha256sums` in `PKGBUILD` and `PKGBUILD-bin` from the real
+   release tarballs (`makepkg -g >> PKGBUILD`).
+2. For each variant, `cd` into a fresh AUR clone, copy in the
+   PKGBUILD, run `makepkg --printsrcinfo > .SRCINFO`, commit, push.
+3. Users install with `paru -S proteus`, `paru -S proteus-bin`, or
+   `paru -S proteus-git`.
+
+`provides=("proteus=$pkgver")` and `conflicts=("proteus")` on the
+non-source variants ensures only one is installed at a time.
 
 ## Dependencies
 
@@ -101,5 +117,14 @@ This removes everything except `/etc/proteus/` (kept by `backup=()`) and
   in sync — Proteus commits `Cargo.lock`, so this is fine.
 - The release profile in `Cargo.toml` already does `strip = true`, so no
   explicit `strip` call is needed in `build()`.
-- No `check()` function: the integration tests need privileged systemd
-  containers (Phase G) and don't fit the standard `cargo test` mold.
+- No `check()` function in the source PKGBUILD: the integration tests
+  need privileged systemd containers (Phase G) and don't fit the
+  standard `cargo test` mold. The `-git` variant *does* run
+  `cargo test --lib` since the lib tests are sandboxed.
+
+## How to help
+
+Arch / AUR maintainers: please test all three PKGBUILD variants in a
+clean `archlinux:base-devel` chroot, run `namcap` on the produced
+packages, and PR fixes. See `wiki/distro-support.md` for the full
+distro × init × backend matrix.

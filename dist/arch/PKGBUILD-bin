@@ -1,0 +1,51 @@
+# Maintainer: Kit3713 <noreply@example.com>
+#
+# Build:    makepkg -si        (run from this directory)
+# Verify:   namcap proteus-bin-*.pkg.tar.zst && proteus doctor
+#
+# Status:   AUR submission ready; downloads the released tarball
+#           rather than rebuilding from source. Mirrors the `-bin`
+#           convention used across the AUR for fast installs.
+
+pkgname=proteus-bin
+_pkgname=proteus
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Erase the network identifiers your Linux laptop hands out on every join (prebuilt)"
+arch=('x86_64' 'aarch64')
+url="https://github.com/Kit3713/Proteus"
+license=('GPL3')
+depends=('networkmanager' 'systemd' 'glibc')
+optdepends=(
+  'bluez: Bluetooth alias + RPA support'
+  'nftables: discovery silencing rules (Phase E)'
+  'firewalld: alternative to nftables-direct'
+  'polkit: desktop GUI integration'
+)
+provides=("$_pkgname=$pkgver")
+conflicts=("$_pkgname")
+backup=('etc/proteus/config.toml')
+
+# Tarball naming: each release publishes per-arch prebuilt tarballs as
+# release assets. URL pattern matches the GitHub Actions release
+# workflow; until v0.1.0 ships, sha256sums stays as SKIP.
+source_x86_64=("$_pkgname-$pkgver-x86_64.tar.gz::$url/releases/download/v$pkgver/$_pkgname-$pkgver-x86_64-unknown-linux-gnu.tar.gz")
+source_aarch64=("$_pkgname-$pkgver-aarch64.tar.gz::$url/releases/download/v$pkgver/$_pkgname-$pkgver-aarch64-unknown-linux-gnu.tar.gz")
+sha256sums_x86_64=('SKIP')
+sha256sums_aarch64=('SKIP')
+
+package() {
+  install -Dm755 "$srcdir/proteus" "$pkgdir/usr/bin/proteus"
+  install -Dm644 "$srcdir/dist/man/proteus.1" "$pkgdir/usr/share/man/man1/proteus.1"
+  install -Dm644 "$srcdir/dist/completions/proteus.bash" "$pkgdir/usr/share/bash-completion/completions/proteus"
+  install -Dm644 "$srcdir/dist/completions/proteus.zsh"  "$pkgdir/usr/share/zsh/site-functions/_proteus"
+  install -Dm644 "$srcdir/dist/completions/proteus.fish" "$pkgdir/usr/share/fish/vendor_completions.d/proteus.fish"
+  for unit in "$srcdir"/dist/systemd/*.timer "$srcdir"/dist/systemd/*.service; do
+    install -Dm644 "$unit" "$pkgdir/usr/lib/systemd/system/$(basename "$unit")"
+  done
+  install -Dm755 "$srcdir/dist/networkmanager/dispatcher.d/01-proteus" \
+    "$pkgdir/etc/NetworkManager/dispatcher.d/01-proteus"
+  install -Dm644 "$srcdir/dist/polkit/com.kit3713.proteus.policy" \
+    "$pkgdir/usr/share/polkit-1/actions/com.kit3713.proteus.policy"
+  install -Dm644 "$srcdir/LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

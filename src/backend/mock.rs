@@ -15,8 +15,12 @@ use std::time::Duration;
 
 use anyhow::Result;
 
-use super::{BackendDevice, BoxFuture, NetworkBackend, RotateOutcome};
+use super::{
+    BackendDevice, BoxFuture, ConnectionRef, NetworkBackend, RenewOutcome, RotateOutcome,
+};
+use crate::ipv6::nm::Ipv6NmSettings;
 use crate::mac::Mac;
+use crate::state::DhcpSettingsSnapshot;
 
 /// Single observation in [`MockBackend::call_log`]. Test code asserts
 /// against this rather than poking at internal state.
@@ -188,6 +192,64 @@ impl NetworkBackend for MockBackend {
             .unwrap_or(RotateOutcome::BackendUnavailable);
         Box::pin(async move { Ok(out) })
     }
+
+    // The connection-level methods are stubs in MockBackend — Milestone 1's
+    // mock-driven tests focus on device-level rotation, not connection
+    // settings. Tests that need richer per-connection observation can
+    // extend MockCall + MockState in the same file when the integration
+    // tests around DHCP / IPv6 / 802.1X land.
+
+    fn list_connections<'a>(
+        &'a self,
+        _device: &'a BackendDevice,
+    ) -> BoxFuture<'a, Result<Vec<ConnectionRef>>> {
+        Box::pin(async { Ok(Vec::new()) })
+    }
+
+    fn read_connection_id<'a>(
+        &'a self,
+        _connection: &'a ConnectionRef,
+    ) -> BoxFuture<'a, Result<Option<String>>> {
+        Box::pin(async { Ok(None) })
+    }
+
+    fn read_connection_uuid<'a>(
+        &'a self,
+        _connection: &'a ConnectionRef,
+    ) -> BoxFuture<'a, Result<Option<String>>> {
+        Box::pin(async { Ok(None) })
+    }
+
+    fn set_dhcp_settings<'a>(
+        &'a self,
+        _connection: &'a ConnectionRef,
+        _snapshot: DhcpSettingsSnapshot,
+    ) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn set_ipv6_settings<'a>(
+        &'a self,
+        _connection: &'a ConnectionRef,
+        _settings: Ipv6NmSettings,
+    ) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn renew_lease<'a>(
+        &'a self,
+        _device: &'a BackendDevice,
+    ) -> BoxFuture<'a, Result<RenewOutcome>> {
+        Box::pin(async { Ok(RenewOutcome::NoActiveConnection) })
+    }
+
+    fn write_anonymous_identity<'a>(
+        &'a self,
+        _connection: &'a ConnectionRef,
+        _value: &'a str,
+    ) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async { Ok(()) })
+    }
 }
 
 #[cfg(test)]
@@ -208,6 +270,8 @@ mod tests {
             kind: BackendKind::Wifi,
             hw_address: Some("aa:bb:cc:dd:ee:ff".into()),
             identifier: format!("mock://{iface}"),
+            connections: Vec::new(),
+            managed: true,
         }
     }
 

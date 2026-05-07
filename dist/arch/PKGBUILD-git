@@ -1,0 +1,67 @@
+# Maintainer: Kit3713 <noreply@example.com>
+#
+# Build:    makepkg -si        (run from this directory)
+# Verify:   namcap proteus-git-*.pkg.tar.zst && proteus doctor && proteus --version
+#
+# Status:   AUR submission ready; tracks origin/main. Use this if you
+#           want the bleeding edge — the regular `proteus` package
+#           tracks tagged releases.
+
+pkgname=proteus-git
+_pkgname=proteus
+pkgver=0.1.0.r0.g0000000
+pkgrel=1
+pkgdesc="Erase the network identifiers your Linux laptop hands out on every join (git)"
+arch=('x86_64' 'aarch64')
+url="https://github.com/Kit3713/Proteus"
+license=('GPL3')
+depends=('networkmanager' 'systemd' 'glibc')
+makedepends=('git' 'rust' 'cargo')
+optdepends=(
+  'bluez: Bluetooth alias + RPA support'
+  'nftables: discovery silencing rules (Phase E)'
+  'firewalld: alternative to nftables-direct'
+  'polkit: desktop GUI integration'
+)
+provides=("$_pkgname=$pkgver")
+conflicts=("$_pkgname")
+backup=('etc/proteus/config.toml')
+source=("$_pkgname::git+$url.git#branch=main")
+sha256sums=('SKIP')
+
+pkgver() {
+  cd "$_pkgname"
+  # Format: <Cargo.toml version>.r<commits-since-tag>.g<short-sha>.
+  # If no tag yet, fall back to "0.1.0.r<total-commits>.g<sha>".
+  local cargo_ver
+  cargo_ver=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+  printf '%s.r%s.g%s' \
+    "$cargo_ver" \
+    "$(git rev-list --count HEAD)" \
+    "$(git rev-parse --short=7 HEAD)"
+}
+
+build() {
+  cd "$_pkgname"
+  cargo build --release --locked
+}
+
+check() {
+  cd "$_pkgname"
+  cargo test --release --locked --lib
+}
+
+package() {
+  cd "$_pkgname"
+  install -Dm755 target/release/proteus "$pkgdir/usr/bin/proteus"
+  install -Dm644 dist/man/proteus.1 "$pkgdir/usr/share/man/man1/proteus.1"
+  install -Dm644 dist/completions/proteus.bash "$pkgdir/usr/share/bash-completion/completions/proteus"
+  install -Dm644 dist/completions/proteus.zsh "$pkgdir/usr/share/zsh/site-functions/_proteus"
+  install -Dm644 dist/completions/proteus.fish "$pkgdir/usr/share/fish/vendor_completions.d/proteus.fish"
+  for unit in dist/systemd/*.timer dist/systemd/*.service; do
+    install -Dm644 "$unit" "$pkgdir/usr/lib/systemd/system/$(basename "$unit")"
+  done
+  install -Dm755 dist/networkmanager/dispatcher.d/01-proteus "$pkgdir/etc/NetworkManager/dispatcher.d/01-proteus"
+  install -Dm644 dist/polkit/com.kit3713.proteus.policy "$pkgdir/usr/share/polkit-1/actions/com.kit3713.proteus.policy"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

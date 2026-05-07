@@ -155,13 +155,13 @@ Three tightly related tracks; can land in parallel once Milestone 1 is done.
 The backend abstraction (Milestone 1) unblocks NM-less distros; this milestone closes the rest of the gap.
 
 - ✅ Init-system abstraction `src/init/` with `Systemd`, `Openrc`, `Runit`, `Sysvinit` impls covering: schedule a periodic check, hook resume-from-suspend, hook boot. Used by `dist/install.sh` (follow-up) and `proteus timer`.
-- ⏳ Packaging:
-  - Alpine APKBUILD (`dist/alpine/`) with musl + OpenRC service.
-  - Void (`dist/void/`) with runit.
-  - Gentoo ebuild (`dist/gentoo/`).
-  - AUR submission (binary + -git) using existing PKGBUILD.
-  - Copr submission for RPM.
-  - Debian unstable submission.
+- 🚧 Packaging:
+  - ✅ Alpine APKBUILD (`dist/alpine/APKBUILD` + `dist/alpine/proteus.post-install`, musl + OpenRC service via shared `dist/openrc/`). Untested by author — flagged for distro-maintainer pickup.
+  - ✅ Void package (`dist/void/template`, runit service tree at `dist/runit/proteus/`). Untested by author — flagged for distro-maintainer pickup.
+  - ✅ Gentoo ebuild (`dist/gentoo/proteus-0.1.0.ebuild` + `metadata.xml`, EAPI 8, USE flags `bluetooth`/`enterprise-wifi`/`nft`/`openrc`/`systemd`).
+  - ✅ AUR submission scaffold (`dist/arch/PKGBUILD-bin` and `PKGBUILD-git` variants alongside the source `PKGBUILD`).
+  - ✅ Copr submission — spec polished (`dist/rpm/proteus.spec` now has explicit `BuildRequires: cargo`/`rust >= 1.85`, a `%check` running `cargo test --release --lib`, dropped stale `openssl-devel` BR). Submission upload to copr.fedorainfracloud.org is the maintainer's call.
+  - 🚧 Debian unstable submission — `dist/debian/{control,rules,compat,copyright,changelog,source/format}` all landed; ITP filing + sponsor handoff is the maintainer's call.
 - ✅ Architectures: dropped the `ExclusiveArch: x86_64 aarch64` gate from `dist/rpm/proteus.spec`, added **armv7** to the CI cross-compile matrix in `.github/workflows/ci.yml`. Run the test suite at least under qemu for non-native arches (qemu run still pending). (Targeted matrix: x86_64 + aarch64 + armv7 covers laptops, Apple Silicon VMs, Raspberry Pi 2/3/4/5, ARM Chromebooks.)
 - 🚧 `proteus doctor`:
   - ✅ Reports init system (Milestone 5), libc, distro, backend.

@@ -4,11 +4,10 @@
 //! NetworkManager, systemd-networkd, or raw `ip` + `iw` from the same
 //! call sites.
 //!
-//! Roadmap Milestone 1 (`docs/ROADMAP.md`): the trait + scaffolding
-//! land here; the per-command migration off of `crate::nm::*` is the
-//! follow-up. NM stays the only fully-wired backend in this PR; the
-//! `networkd` and `raw` impls compile but every method bails until
-//! the dedicated work lands.
+//! Roadmap Milestone 1 (`docs/ROADMAP.md`): the trait surface lives
+//! here; per-command migration off of `crate::nm::*` lands in this PR.
+//! NM stays the only fully-wired backend; the `networkd` and `raw`
+//! impls compile but every method bails until the dedicated work lands.
 //!
 //! Why a boxed-future trait instead of `#[async_trait]`: this codebase
 //! deliberately keeps its direct dep list short (see `Cargo.toml`),
@@ -19,15 +18,15 @@
 //!
 //! Also see Milestone 1 issues #206-B and #206-C: the trait's
 //! `rotate_if_needed` returns a typed [`RotateOutcome`] so the NM
-//! dispatcher stops sed-parsing `proteus current --json`.
+//! dispatcher stops sed-parsing `proteus current --json`, and
+//! `state_lock` migrates to a `Mutex`-protected primitive that's
+//! safe under the async event loops the trait will be called from.
 
-pub mod nm;
+pub mod mock;
 pub mod networkd;
+pub mod nm;
 pub mod raw;
 pub mod select;
-
-#[cfg(test)]
-pub mod mock;
 
 use std::future::Future;
 use std::pin::Pin;
@@ -35,7 +34,9 @@ use std::time::Duration;
 
 use anyhow::Result;
 
+use crate::ipv6::nm::Ipv6NmSettings;
 use crate::mac::Mac;
+use crate::state::DhcpSettingsSnapshot;
 
 pub use select::select;
 
@@ -55,7 +56,7 @@ pub enum BackendKind {
 
 /// Backend-agnostic device handle. `identifier` is whatever the
 /// backend uses to address this device when issuing follow-up calls
-/// (NM connection object path string, networkd `.network` filename,
+/// (NM device object path string, networkd `.network` filename,
 /// `ip` link name, etc.). Treat it as opaque outside the impl.
 #[derive(Debug, Clone)]
 pub struct BackendDevice {
@@ -63,6 +64,40 @@ pub struct BackendDevice {
     pub kind: BackendKind,
     pub hw_address: Option<String>,
     pub identifier: String,
+    /// Connection profiles bound to this device, in the backend's
+    /// native handle form. NM has multiple profiles per Wi-Fi device
+    /// (one per saved SSID); networkd / raw collapse this to one.
+    pub connections: Vec<ConnectionRef>,
+    /// Whether the backend currently considers the device "managed".
+    /// Callers iterating all devices skip unmanaged ones; an explicit
+    /// iface filter still lets them through so a "no such device"
+    /// error surfaces.
+    pub managed: bool,
+}
+
+/// Backend-opaque connection handle. The trait surface intentionally
+/// hides `zbus::zvariant::OwnedObjectPath` — networkd's stub future
+/// will key off a `.network` filename, raw's off an iface name. The
+/// NM impl carries the dbus path internally; everything else uses the
+/// `String` form.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ConnectionRef {
+    inner: String,
+}
+
+impl ConnectionRef {
+    /// Construct from any string. Used by the NM backend with the
+    /// `OwnedObjectPath::as_str()` view, and by tests / stub backends
+    /// with whatever opaque token they've cooked up.
+    pub fn new(s: impl Into<String>) -> Self {
+        Self { inner: s.into() }
+    }
+
+    /// Borrow the opaque payload. Mostly for log lines and tests; the
+    /// production callers should not parse this.
+    pub fn as_str(&self) -> &str {
+        &self.inner
+    }
 }
 
 /// Typed result for [`NetworkBackend::rotate_if_needed`]. Issue
@@ -76,9 +111,25 @@ pub enum RotateOutcome {
     BackendUnavailable,
 }
 
-/// The trait Proteus's commands will route through once Milestone 1's
-/// migration completes. Today only [`nm::NmBackend`] implements every
-/// method end-to-end; `networkd` and `raw` are scaffolds.
+/// Typed result for [`NetworkBackend::renew_lease`]. Mirrors the
+/// `nm::dhcp::RenewOutcome` enum but stays at the trait layer so
+/// commands don't need to import the NM internals.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RenewOutcome {
+    /// `Device.Reapply` (or its backend equivalent) succeeded — link
+    /// stayed up and DHCP cycled.
+    Reapplied,
+    /// Reapply was rejected; we fell back to a Disconnect +
+    /// Activate-style cycle.
+    DisconnectActivated,
+    /// No active connection on the device — nothing to renew, not an
+    /// error.
+    NoActiveConnection,
+}
+
+/// The trait Proteus's commands route through. Today only
+/// [`nm::NmBackend`] implements every method end-to-end; `networkd`
+/// and `raw` are scaffolds.
 pub trait NetworkBackend: Send + Sync {
     /// Stable token used in logs, config (`[backend] driver = "..."`),
     /// and `proteus doctor`. Must be one of `"nm"`, `"networkd"`,
@@ -92,6 +143,14 @@ pub trait NetworkBackend: Send + Sync {
 
     /// Enumerate every interface the backend can manage.
     fn list_devices<'a>(&'a self) -> BoxFuture<'a, Result<Vec<BackendDevice>>>;
+
+    /// Connection profiles bound to `device`. Convenience over
+    /// [`BackendDevice::connections`] for callers that want to iterate
+    /// without first holding the device value.
+    fn list_connections<'a>(
+        &'a self,
+        device: &'a BackendDevice,
+    ) -> BoxFuture<'a, Result<Vec<ConnectionRef>>>;
 
     /// Write `mac` as the cloned/spoofed MAC for `device`. The
     /// concrete write path varies per backend (NM `Settings.Connection.Update`,
@@ -125,6 +184,57 @@ pub trait NetworkBackend: Send + Sync {
         iface: &'a str,
         cooldown: Duration,
     ) -> BoxFuture<'a, Result<RotateOutcome>>;
+
+    /// Read the human-friendly profile id for `connection` (`connection.id`
+    /// on NM). `Ok(None)` for backends that don't expose one.
+    fn read_connection_id<'a>(
+        &'a self,
+        connection: &'a ConnectionRef,
+    ) -> BoxFuture<'a, Result<Option<String>>>;
+
+    /// Read the stable uuid for `connection` (`connection.uuid` on NM).
+    /// `Ok(None)` for backends that don't expose one — the stub
+    /// backends derive a synthetic uuid from the connection handle so
+    /// state-keying still works.
+    fn read_connection_uuid<'a>(
+        &'a self,
+        connection: &'a ConnectionRef,
+    ) -> BoxFuture<'a, Result<Option<String>>>;
+
+    /// Push the [`DhcpSettingsSnapshot`] onto `connection`. The
+    /// snapshot's shape is the same one the per-command DHCP code
+    /// already serialises into `state.json`; the backend translates
+    /// each field into its native key path (NM `ipv4.dhcp-*` keys for
+    /// nm, `[DHCPv4]` drop-in keys for networkd, etc.).
+    fn set_dhcp_settings<'a>(
+        &'a self,
+        connection: &'a ConnectionRef,
+        snapshot: DhcpSettingsSnapshot,
+    ) -> BoxFuture<'a, Result<()>>;
+
+    /// Push the IPv6 NM-style settings onto `connection`. Networkd
+    /// and raw will translate into their native equivalents.
+    fn set_ipv6_settings<'a>(
+        &'a self,
+        connection: &'a ConnectionRef,
+        settings: Ipv6NmSettings,
+    ) -> BoxFuture<'a, Result<()>>;
+
+    /// Trigger a DHCP lease renew on `device` without touching the
+    /// cloned MAC. Roadmap Milestone 4c.
+    fn renew_lease<'a>(
+        &'a self,
+        device: &'a BackendDevice,
+    ) -> BoxFuture<'a, Result<RenewOutcome>>;
+
+    /// Write `value` into the connection's anonymous outer identity
+    /// (`802-1x.anonymous-identity` on NM). An empty string clears
+    /// the field per NM's documented contract for "unset on save".
+    fn write_anonymous_identity<'a>(
+        &'a self,
+        connection: &'a ConnectionRef,
+        value: &'a str,
+    ) -> BoxFuture<'a, Result<()>>;
 }
 
 #[cfg(test)]
@@ -151,10 +261,30 @@ mod tests {
             kind: BackendKind::Wifi,
             hw_address: Some("aa:bb:cc:dd:ee:ff".into()),
             identifier: "/org/freedesktop/NetworkManager/Devices/3".into(),
+            connections: vec![ConnectionRef::new(
+                "/org/freedesktop/NetworkManager/Settings/2",
+            )],
+            managed: true,
         };
         let cloned = dev.clone();
         assert_eq!(cloned.iface, dev.iface);
         assert_eq!(cloned.kind, dev.kind);
         assert_eq!(cloned.identifier, dev.identifier);
+        assert_eq!(cloned.connections, dev.connections);
+        assert!(cloned.managed);
+    }
+
+    #[test]
+    fn connection_ref_round_trips_payload() {
+        let r = ConnectionRef::new("/org/freedesktop/NetworkManager/Settings/9");
+        assert_eq!(r.as_str(), "/org/freedesktop/NetworkManager/Settings/9");
+        let cloned = r.clone();
+        assert_eq!(cloned, r);
+    }
+
+    #[test]
+    fn renew_outcome_variants_are_distinct() {
+        assert_ne!(RenewOutcome::Reapplied, RenewOutcome::DisconnectActivated);
+        assert_ne!(RenewOutcome::Reapplied, RenewOutcome::NoActiveConnection);
     }
 }

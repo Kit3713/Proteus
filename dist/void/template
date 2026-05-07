@@ -1,0 +1,80 @@
+# Template file for 'proteus' (xbps-src style)
+#
+# Build:    ./xbps-src pkg proteus      (run from inside a void-packages
+#                                        clone with this file dropped at
+#                                        srcpkgs/proteus/template)
+# Verify:   ./xbps-src lint srcpkgs/proteus/template && \
+#           xbps-install --repository=hostdir/binpkgs proteus && \
+#           proteus doctor
+#
+# Status:   UNTESTED BY AUTHOR — no Void build yet.
+#           Distro maintainers: please drop this into a void-packages
+#           checkout, run `./xbps-src pkg proteus` from a clean masterdir,
+#           and PR fixes against dist/void/. See "How to help" in
+#           dist/void/README.md.
+#
+# Reference: https://github.com/void-linux/void-packages/blob/master/Manual.md
+
+pkgname=proteus
+version=0.1.0
+revision=1
+build_style=cargo
+hostmakedepends="pkg-config"
+makedepends="dbus-devel"
+depends="dbus"
+short_desc="Erase the network identifiers your Linux laptop hands out on every join"
+maintainer="Kit3713 <noreply@example.com>"
+license="GPL-3.0-or-later"
+homepage="https://github.com/Kit3713/Proteus"
+distfiles="https://github.com/Kit3713/Proteus/archive/v${version}.tar.gz"
+checksum=SKIP  # placeholder until v0.1.0 is tagged; populate with `xgensum`.
+
+# musl + glibc both supported; arch list mirrors the CI cross-compile matrix.
+archs="x86_64 x86_64-musl aarch64 aarch64-musl armv7l armv7l-musl"
+
+post_extract() {
+	mv ../Proteus-${version}/* . 2>/dev/null || true
+}
+
+do_check() {
+	# Library tests only — same boundary as the Alpine APKBUILD and the
+	# Debian rules. Integration tests need a privileged systemd container.
+	cargo test --release --frozen --lib
+}
+
+do_install() {
+	vbin target/release/proteus
+
+	vman dist/man/proteus.1
+
+	vinstall dist/completions/proteus.bash 644 \
+		usr/share/bash-completion/completions proteus
+	vinstall dist/completions/proteus.zsh   644 \
+		usr/share/zsh/site-functions _proteus
+	vinstall dist/completions/proteus.fish  644 \
+		usr/share/fish/vendor_completions.d proteus.fish
+
+	# runit service directory. The maintainer who imports this template
+	# into void-packages should copy `dist/runit/proteus/` to
+	# `srcpkgs/proteus/files/proteus/` so the standard `vsv proteus`
+	# macro (which expects $FILESDIR/$svname) picks it up. Until that
+	# import lands, install the service tree manually:
+	vmkdir etc/sv/proteus
+	vmkdir etc/sv/proteus/log
+	vinstall dist/runit/proteus/run     755 etc/sv/proteus     run
+	vinstall dist/runit/proteus/log/run 755 etc/sv/proteus/log run
+	vmkdir var/log/proteus
+	# Symlink for runit's `supervise` directory — created on first start.
+
+	# polkit policy
+	vinstall dist/polkit/com.kit3713.proteus.policy 644 \
+		usr/share/polkit-1/actions com.kit3713.proteus.policy
+
+	# License + docs
+	vlicense LICENSE
+	vdoc README.md
+
+	# Config + state directories
+	vmkdir etc/proteus
+	vmkdir var/lib/proteus
+}

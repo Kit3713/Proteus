@@ -150,13 +150,27 @@ mock -r fedora-43-x86_64 ~/rpmbuild/SRPMS/proteus-0.1.0-1.fc43.src.rpm
 - `Cargo.lock` is committed, so `--frozen` builds are deterministic.
 - The release profile in `Cargo.toml` already does `strip = true`; no
   explicit `%{__strip}` call is needed.
-- No `%check` section: integration tests need a privileged systemd
-  container (Phase G) and don't fit the standard `cargo test` mold.
+- `%check` runs `cargo test --release --lib` (Milestone 5). Integration
+  tests need a privileged systemd container (Phase G) and aren't lib
+  tests; if Copr hits a flake we haven't reproduced locally, rebuild
+  the SRPM with `rpmbuild --without check ...` to skip.
 - The NM dispatcher hook is intentionally **not** marked
   `%config(noreplace)`: it's a script that ships with the package, not a
   user config. If the dispatcher logic changes in a new release, RPM
   should overwrite the old version — not silently preserve a stale copy.
   User config lives in `/etc/proteus/config.toml` (created on first run).
+
+## How to help
+
+Fedora / Copr maintainers: please test the spec in `mock -r
+fedora-43-x86_64` and `fedora-43-aarch64`, run `rpmlint
+dist/rpm/proteus.spec`, and PR fixes. The Copr submission step itself
+is the maintainer's call — the spec is ready, the actual upload to
+`copr.fedorainfracloud.org/coprs/kit3713/proteus/` lives outside this
+repo.
+
+See `wiki/distro-support.md` for the full distro × init × backend
+matrix.
 
 ## Cross-references
 

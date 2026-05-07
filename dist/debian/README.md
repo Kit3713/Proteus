@@ -83,6 +83,48 @@ The PPA infrastructure is free for open-source projects; the only real
 ongoing cost is keeping the changelog accurate and rebuilding for each
 new Ubuntu LTS within its support window.
 
+## Debian unstable submission prep
+
+The current directory ships everything Debian's [Debian Cargo packaging
+guide][1] expects for a hand-written (non-`debcargo`) source package:
+
+| File                | Purpose                                                |
+| ------------------- | ------------------------------------------------------ |
+| `control`           | Source + binary package metadata.                      |
+| `rules`             | Build/install/test overrides (debhelper compat 13).    |
+| `compat`            | Legacy debhelper-compat marker (kept for older tools). |
+| `copyright`         | DEP-5 copyright file (GPL-3.0-or-later).               |
+| `changelog`         | Debian-format changelog (`unstable; urgency=medium`).  |
+| `source/format`     | `3.0 (quilt)`.                                         |
+
+**Status: submission prep, not submitted.** The package builds locally
+with `dpkg-buildpackage -us -uc -b`. Outstanding steps owned by the
+maintainer (not in scope for this PR):
+
+1. Get a Debian sponsor (mentors.debian.net or a NM-team contact).
+2. Sign the upload with `debsign ../proteus_0.1.0-1_source.changes`.
+3. `dput mentors ../proteus_0.1.0-1_source.changes`.
+4. File an ITP bug against `wnpp` (`reportbug wnpp`) noting GPL-3,
+   Rust 1.85+ requirement, and the upstream URL.
+5. Once accepted, Debian's auto-builders cover amd64 + arm64 (the
+   Architectures we list); other ports are best-effort.
+
+Until then, the `dput ppa:kit3713/proteus ...` Launchpad path (below)
+is the supported install route for Debian-derivative users.
+
+[1]: https://wiki.debian.org/Teams/RustPackaging
+
+## How to help
+
+Debian / Ubuntu maintainers: please test in a clean `debian:trixie` or
+`ubuntu:noble` chroot with `sbuild`, lint with `lintian`, and PR fixes.
+Specifically wanted: a sponsor for the ITP, and confirmation that the
+`Rules-Requires-Root: no` claim still holds when we add the
+`/var/lib/proteus` 0700 directory (it should — `dh_fixperms` reads
+the rules-file install commands).
+
+See `wiki/distro-support.md` for the full distro × init × backend matrix.
+
 ## Notes for packagers
 
 - The package does **not** enable timers automatically. That is a

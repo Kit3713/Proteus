@@ -10,8 +10,12 @@ use std::time::Duration;
 
 use anyhow::{Result, bail};
 
-use super::{BackendDevice, BoxFuture, NetworkBackend, RotateOutcome};
+use super::{
+    BackendDevice, BoxFuture, ConnectionRef, NetworkBackend, RenewOutcome, RotateOutcome,
+};
+use crate::ipv6::nm::Ipv6NmSettings;
 use crate::mac::{Mac, factory};
+use crate::state::DhcpSettingsSnapshot;
 
 #[derive(Debug, Default)]
 pub struct RawBackend;
@@ -40,6 +44,15 @@ impl NetworkBackend for RawBackend {
 
     fn list_devices<'a>(&'a self) -> BoxFuture<'a, Result<Vec<BackendDevice>>> {
         Box::pin(async { bail!("backend::raw: list_devices not yet implemented (Milestone 1)") })
+    }
+
+    fn list_connections<'a>(
+        &'a self,
+        _device: &'a BackendDevice,
+    ) -> BoxFuture<'a, Result<Vec<ConnectionRef>>> {
+        Box::pin(async {
+            bail!("backend::raw: list_connections not yet implemented (Milestone 1)")
+        })
     }
 
     fn set_cloned_mac<'a>(
@@ -72,6 +85,59 @@ impl NetworkBackend for RawBackend {
     ) -> BoxFuture<'a, Result<RotateOutcome>> {
         Box::pin(async { Ok(RotateOutcome::BackendUnavailable) })
     }
+
+    fn read_connection_id<'a>(
+        &'a self,
+        _connection: &'a ConnectionRef,
+    ) -> BoxFuture<'a, Result<Option<String>>> {
+        Box::pin(async { Ok(None) })
+    }
+
+    fn read_connection_uuid<'a>(
+        &'a self,
+        _connection: &'a ConnectionRef,
+    ) -> BoxFuture<'a, Result<Option<String>>> {
+        Box::pin(async { Ok(None) })
+    }
+
+    fn set_dhcp_settings<'a>(
+        &'a self,
+        _connection: &'a ConnectionRef,
+        _snapshot: DhcpSettingsSnapshot,
+    ) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async {
+            bail!("backend::raw: set_dhcp_settings not yet implemented (Milestone 1)")
+        })
+    }
+
+    fn set_ipv6_settings<'a>(
+        &'a self,
+        _connection: &'a ConnectionRef,
+        _settings: Ipv6NmSettings,
+    ) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async {
+            bail!("backend::raw: set_ipv6_settings not yet implemented (Milestone 1)")
+        })
+    }
+
+    fn renew_lease<'a>(
+        &'a self,
+        _device: &'a BackendDevice,
+    ) -> BoxFuture<'a, Result<RenewOutcome>> {
+        Box::pin(async {
+            bail!("backend::raw: renew_lease not yet implemented (Milestone 1)")
+        })
+    }
+
+    fn write_anonymous_identity<'a>(
+        &'a self,
+        _connection: &'a ConnectionRef,
+        _value: &'a str,
+    ) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async {
+            bail!("backend::raw: write_anonymous_identity not yet implemented (Milestone 1)")
+        })
+    }
 }
 
 #[cfg(test)]
@@ -92,6 +158,26 @@ mod tests {
         rt.block_on(async {
             let backend = RawBackend::new();
             assert!(backend.list_devices().await.is_err());
+        });
+    }
+
+    #[test]
+    fn read_connection_methods_yield_none() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let backend = RawBackend::new();
+            let cref = ConnectionRef::new("");
+            assert!(backend.read_connection_id(&cref).await.unwrap().is_none());
+            assert!(
+                backend
+                    .read_connection_uuid(&cref)
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
         });
     }
 }

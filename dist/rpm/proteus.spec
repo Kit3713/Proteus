@@ -7,11 +7,13 @@ License:        GPL-3.0-or-later
 URL:            https://github.com/Kit3713/Proteus
 Source0:        %{url}/archive/v%{version}/%{name}-%{version}.tar.gz
 
-BuildRequires:  rust >= 1.85
+# Milestone 5: explicit cargo + rust >= 1.85 BRs (edition 2024 floor).
+# `rust-packaging` would also pull these via %cargo_build, but we drive
+# cargo by hand (see %build) so the BRs need to be spelled out.
 BuildRequires:  cargo
+BuildRequires:  rust >= 1.85
 BuildRequires:  systemd-rpm-macros
 BuildRequires:  pkgconfig(dbus-1)
-BuildRequires:  openssl-devel
 
 Requires:       NetworkManager
 Requires:       systemd
@@ -43,6 +45,13 @@ NetworkManager.
 # resolution issues in the container). Calling cargo directly matches the
 # rest of CI and is the same recipe used for the raw-binary release jobs.
 cargo build --release --locked
+
+%check
+# Library tests only — integration tests need a privileged systemd
+# container (Phase G) and aren't `cargo test --lib` clean. Matches the
+# Alpine APKBUILD, Void template, and Debian rules. Disable with
+# `--without check` if Copr hits a flake we haven't reproduced locally.
+cargo test --release --locked --lib
 
 %install
 install -Dm755 target/release/proteus %{buildroot}%{_bindir}/proteus
@@ -96,5 +105,9 @@ install -dm700 %{buildroot}%{_sharedstatedir}/proteus
 %systemd_postun_with_restart proteus-rotate.timer proteus-check.timer
 
 %changelog
+* Thu May 07 2026 Kit3713 <noreply@example.com> - 0.1.0-1
+- Milestone 5 polish: explicit cargo + rust >= 1.85 BRs, %check section
+  running `cargo test --release --lib`, dropped stale openssl-devel BR
+  (zbus 5 + tokio feature doesn't pull OpenSSL).
 * Wed May 06 2026 Kit3713 <noreply@example.com> - 0.1.0-1
 - Initial RPM packaging for Phase A/B

@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE pkgmetadata SYSTEM "https://www.gentoo.org/dtd/metadata.dtd">
+<pkgmetadata>
+	<maintainer type="person" proxied="yes">
+		<email>noreply@example.com</email>
+		<name>Kit3713</name>
+		<description>Upstream author; proxied while a Gentoo dev sponsors the package.</description>
+	</maintainer>
+	<longdescription lang="en">
+		Proteus is a Rust CLI that rotates and scrubs the identifiers your
+		Linux laptop hands out when joining a network: MAC address, DHCP
+		options 12/60/61/81, IPv6 stable-privacy + DUID, hostname, mDNS
+		announcements, Bluetooth alias, and TCP/ICMP stack fingerprint.
+		Single binary, embedded wiki, no daemon — every action is a CLI
+		invocation that ends.
+	</longdescription>
+	<use>
+		<flag name="bluetooth">Enable Bluetooth alias + RPA support via <pkg>net-wireless/bluez</pkg></flag>
+		<flag name="enterprise-wifi">Enable WPA-Enterprise / 802.1X identifier rotation via <pkg>net-wireless/wpa_supplicant</pkg></flag>
+		<flag name="nft">Enable discovery-silencing nftables rules (Phase E)</flag>
+		<flag name="openrc">Install OpenRC service + periodic shims</flag>
+		<flag name="systemd">Install systemd timers, services, and resume hook</flag>
+	</use>
+	<upstream>
+		<remote-id type="github">Kit3713/Proteus</remote-id>
+		<bugs-to>https://github.com/Kit3713/Proteus/issues</bugs-to>
+	</upstream>
+</pkgmetadata>
