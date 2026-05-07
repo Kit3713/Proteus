@@ -71,7 +71,7 @@ First-class, not a heuristic.
 
 Anything Proteus writes to `/etc/` carries a header:
 
-```
+```text
 # managed by proteus — do not edit
 # expected-sha256: <64 hex chars>
 ```

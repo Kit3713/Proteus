@@ -290,7 +290,7 @@ Lands in phase C. Cross-ref `proteus wiki rotation`.
 
 ## Choosing a preset
 
-Annotated, ready-to-copy presets live in [`examples/`](../examples/) at the repo root. Each is a starting point — read the file, copy the closest one, then tweak. Quick decision guide:
+Annotated, ready-to-copy presets live in `examples/` at the repo root. Each is a starting point — read the file, copy the closest one, then tweak. Quick decision guide:
 
 - Just want MAC rotation? `examples/minimal.toml`.
 - Not sure where to start? `examples/standard.toml`. Recommended.
@@ -307,7 +307,7 @@ sudo cp examples/standard.toml /etc/proteus/config.toml
 sudo proteus apply
 ```
 
-Substitute the preset filename you picked. The full index plus per-preset rationale lives in [`examples/README.md`](../examples/README.md).
+Substitute the preset filename you picked. The full index plus per-preset rationale lives in `examples/README.md`.
 
 ## Examples
 

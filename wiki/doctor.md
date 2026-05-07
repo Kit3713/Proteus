@@ -4,7 +4,7 @@ It runs a battery of small checks and prints, per check, one of `ok`, `warn`, `f
 
 ## Usage
 
-```
+```sh
 proteus doctor                # human-readable report
 proteus doctor --json         # machine-readable for wrappers
 proteus doctor --quick        # fast subset (skip filesystem walks)
@@ -89,7 +89,7 @@ Reports last-rotated timestamp per managed interface. `ok` if any rotations are 
 
 The default human format groups checks by category and prefixes each with a glyph:
 
-```
+```text
 proteus doctor — system health check (v0.1.0, phase B)
 
 System
@@ -114,7 +114,7 @@ Under `NO_COLOR=1` or `--no-color`, the glyphs become `[ok]`, `[warn]`, `[fail]`
 
 When a check has a remediation pointer, it follows on an indented line:
 
-```
+```text
   ✗ NetworkManager not running — required for MAC rotation
       see: systemctl start NetworkManager
 ```

@@ -26,19 +26,19 @@ If you need classic BD_ADDR rotation today, `bdaddr` from `bluez-tools` is the m
 
 Read commands first, before changing anything. Per-feature status is one of `applied / skipped (reason) / failed (reason)` — never a silent skip. See `proteus wiki concepts` for the rule.
 
-```
+```sh
 proteus status
 ```
 
 Shows the Bluetooth adapter's current alias, discoverable state, RPA support, and whether RPA is enabled. If BlueZ isn't present, the section reads `bluetooth: skipped (no BlueZ)` and Proteus moves on cleanly.
 
-```
+```sh
 sudo proteus apply
 ```
 
 Writes the configured alias (default `BT Device`), sets `Discoverable=false`, and enables RPA where the controller supports it. Idempotent — running it ten times converges to the same state as running it once.
 
-```
+```sh
 sudo proteus revert
 ```
 
@@ -84,19 +84,19 @@ If a paired device does break after `proteus apply`, that's a bug — file it wi
 
 Use the existing tools. Proteus is for "Bluetooth on, fingerprint reduced", not "Bluetooth off". For full off:
 
-```
+```sh
 bluetoothctl power off
 ```
 
 Or block at the rfkill layer for a hard off across reboots:
 
-```
+```sh
 rfkill block bluetooth
 ```
 
 If you never use Bluetooth, mask the service:
 
-```
+```sh
 sudo systemctl mask bluetooth.service
 ```
 

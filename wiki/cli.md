@@ -2,7 +2,7 @@ Full reference for the `proteus` command: every subcommand, every flag, every do
 
 ## Synopsis
 
-```
+```sh
 proteus [-v|--verbose ...] [-q|--quiet ...] [--config <path>] [--state <path>] [--no-color] <SUBCOMMAND>
 ```
 
@@ -18,7 +18,7 @@ These apply to every subcommand. They must precede the subcommand name.
 - `-h`, `--help` — print help and exit 0.
 - `-V`, `--version` — print version and exit 0.
 
-`RUST_LOG` overrides `-v` / `-q` when set; see [Logging](#logging).
+`RUST_LOG` overrides `-v` / `-q` when set; see the Logging section below.
 
 ## Subcommands
 
@@ -26,7 +26,7 @@ Alphabetical. Every subcommand parses today; the ones marked **stub** return exi
 
 ### `apply` — phase **stub** (lands D)
 
-```
+```sh
 proteus apply [--yes]
 ```
 
@@ -38,7 +38,7 @@ Example: `sudo proteus apply --yes`
 
 ### `config` — phase **A**
 
-```
+```sh
 proteus config <SUBCOMMAND> [args...]
 ```
 
@@ -58,7 +58,7 @@ Sub-subcommands:
 
 Examples:
 
-```
+```sh
 proteus config show --json
 proteus config get mac.rotation_interval
 proteus config keys | head -10
@@ -73,19 +73,19 @@ Cross-ref `proteus wiki config` for the full schema.
 
 ### `current` — phase **A**
 
-```
+```sh
 proteus current [--json] [--iface <NAME>]
 ```
 
 Show the current network identifiers your system is handing out right now. Read-only.
 
-Flags: `--json` machine-readable (see [`current` JSON](#proteus-current---json)) · `--iface <NAME>` limit to one interface.
+Flags: `--json` machine-readable (see the `current --json` schema below) · `--iface <NAME>` limit to one interface.
 Exit: `0` success · `1` generic.
 Example: `proteus current --json | jq '.[] | select(.type == "wifi")'`
 
 ### `diff` — phase **stub** (lands G)
 
-```
+```sh
 proteus diff [--json]
 ```
 
@@ -96,19 +96,19 @@ Exit: `0` no drift · `1` drift detected · `64` stub.
 
 ### `doctor` — phase **A**
 
-```
+```sh
 proteus doctor [--json] [--quick]
 ```
 
 Self-diagnostic. Runs a battery of read-only checks across system / daemons / files / detect-and-defer / runtime / Proteus state and prints `ok / warn / fail / skip` per check with remediation pointers. The first thing to run when something looks wrong. Works without root — checks needing root degrade to `skip` rather than `fail`.
 
-Flags: `--json` machine-readable (see [`doctor` JSON](#proteus-doctor---json)) · `--quick` skip slower checks (filesystem walks, DBus probes). Use the global `-v` for extra detail per check (check id beneath each line).
+Flags: `--json` machine-readable (see the `doctor --json` schema below) · `--quick` skip slower checks (filesystem walks, DBus probes). Use the global `-v` for extra detail per check (check id beneath each line).
 Exit: `0` no failures (warns and skips are fine) · `1` at least one `fail` · `2` invalid args.
 Example: `proteus doctor` then `proteus doctor --json | jq '.checks[] | select(.status=="fail")'`
 
 ### `dry-run` — phase **stub** (lands G)
 
-```
+```sh
 proteus dry-run <SUBCOMMAND> [args...]
 ```
 
@@ -119,7 +119,7 @@ Example: `sudo proteus dry-run rotate --iface wlan0`
 
 ### `help` — phase **A**
 
-```
+```sh
 proteus help [<feature>]
 ```
 
@@ -131,20 +131,20 @@ Exit: `0` success or no-arg listing · `1` no such page.
 
 ### `original` — phase **A**
 
-```
+```sh
 proteus original [--json]
 ```
 
 Show the cached original MACs and hostname Proteus snapshotted on first run. Sacred — never re-captured. State path defaults to `/var/lib/proteus/state.json`; override with `--state`. Read-only.
 
-Flags: `--json` machine-readable (see [`original` JSON](#proteus-original---json)).
+Flags: `--json` machine-readable (see the `original --json` schema below).
 Exit: `0` success (whether or not a cache exists) · `1` generic read failure.
 
 The cache itself only populates from phase B onward (when the first mutating commands run).
 
 ### `pin` — phase **stub** (lands B)
 
-```
+```sh
 proteus pin <TARGET>
 ```
 
@@ -155,19 +155,19 @@ Example: `sudo proteus pin "Home Wi-Fi"`
 
 ### `probe` — phase **C**
 
-```
+```sh
 proteus probe [--json] [--quick]
 ```
 
 Run one probe round against the configured endpoints and print the result. Reads `[probes]` from `/etc/proteus/config.toml`; defaults to four public IPs at port 443. Read-only; no root required. ICMP fallback is documented in `proteus wiki probes` but not implemented yet — a TCP-only failure stays `inconclusive` rather than escalating.
 
-Flags: `--json` machine-readable (see [`probe` JSON](#proteus-probe---json)) · `--quick` single-endpoint fast check (uses the first configured endpoint and a 1-of-1 quorum).
+Flags: `--json` machine-readable (see the `probe --json` schema below) · `--quick` single-endpoint fast check (uses the first configured endpoint and a 1-of-1 quorum).
 Exit: `0` clear · `1` down · `2` inconclusive · `3` portal-suspected.
 Example: `proteus probe --json | jq .classification`
 
 ### `reset` — phase **stub** (lands G)
 
-```
+```sh
 proteus reset [--yes]
 ```
 
@@ -177,7 +177,7 @@ Exit: `0` success · `64` stub · `66` not root.
 
 ### `revert` — phase **stub** (lands G)
 
-```
+```sh
 proteus revert [--yes]
 ```
 
@@ -188,7 +188,7 @@ Example: `sudo proteus revert --yes`
 
 ### `rotate` — phase **stub** (lands B)
 
-```
+```sh
 proteus rotate [--iface <NAME>] [--yes]
 ```
 
@@ -200,18 +200,18 @@ Example: `sudo proteus rotate --iface wlan0 --yes`
 
 ### `show-config` — phase **A**
 
-```
+```sh
 proteus show-config [--json]
 ```
 
 Print the active config from `/etc/proteus/config.toml` (override with `--config`). When the file is missing, prints a note that defaults are in effect and exits 0. Read-only.
 
-Flags: `--json` emit JSON instead of TOML (see [`show-config` JSON](#proteus-show-config---json-and-show-defaults---json)).
+Flags: `--json` emit JSON instead of TOML (see the `show-config --json` schema below).
 Exit: `0` success (including missing file) · `65` parse failure · `66` permission denied · `1` other read failure.
 
 ### `show-defaults` — phase **A**
 
-```
+```sh
 proteus show-defaults [--json]
 ```
 
@@ -222,18 +222,18 @@ Exit: `0` success.
 
 ### `status` — phase **A**
 
-```
+```sh
 proteus status [--json]
 ```
 
 The overall system + per-feature status report: whether systemd, NetworkManager, BlueZ, and systemd-resolved are present; physical interfaces with their current MAC; per-feature `applied / skipped (reason) / failed (reason)`. Read-only.
 
-Flags: `--json` machine-readable (see [`status` JSON](#proteus-status---json)).
+Flags: `--json` machine-readable (see the `status --json` schema below).
 Exit: `0` success.
 
 ### `timer` — phase **C**
 
-```
+```sh
 proteus timer <SUBCOMMAND> [args...]
 ```
 
@@ -243,7 +243,7 @@ Timer names are short identifiers, not full unit names: `rotate` -> `proteus-rot
 
 #### `timer status`
 
-```
+```sh
 proteus timer status [--json]
 ```
 
@@ -254,7 +254,7 @@ Exit: `0` success · `70` no systemd.
 
 #### `timer list`
 
-```
+```sh
 proteus timer list [--json]
 ```
 
@@ -265,7 +265,7 @@ Exit: `0` success.
 
 #### `timer enable <NAME>`
 
-```
+```sh
 proteus timer enable <NAME>
 ```
 
@@ -276,7 +276,7 @@ Example: `sudo proteus timer enable resume`
 
 #### `timer disable <NAME>`
 
-```
+```sh
 proteus timer disable <NAME>
 ```
 
@@ -287,7 +287,7 @@ Example: `sudo proteus timer disable check`
 
 #### `timer set <NAME> --interval <DURATION>`
 
-```
+```sh
 proteus timer set <NAME> --interval <DURATION>
 ```
 
@@ -303,7 +303,7 @@ Example: `sudo proteus timer set rotate --interval 30m`
 
 #### `timer reset <NAME>`
 
-```
+```sh
 proteus timer reset <NAME>
 ```
 
@@ -313,7 +313,7 @@ Exit: `0` success · `1` generic · `65` config (non-timer unit) · `66` not roo
 
 #### `timer logs <NAME> [--lines N]`
 
-```
+```sh
 proteus timer logs <NAME> [--lines N]
 ```
 
@@ -324,7 +324,7 @@ Exit: `0` success · `1` generic · `70` no systemd.
 
 ### `uninstall` — phase **stub** (lands G)
 
-```
+```sh
 proteus uninstall [--purge] [--yes]
 ```
 
@@ -335,7 +335,7 @@ Exit: `0` success · `64` stub · `66` not root.
 
 ### `unpin` — phase **stub** (lands B)
 
-```
+```sh
 proteus unpin <TARGET>
 ```
 
@@ -345,7 +345,7 @@ Exit: `0` success · `1` no such pin · `64` stub · `66` not root.
 
 ### `wiki` — phase **A**
 
-```
+```sh
 proteus wiki [<page>]
 ```
 
@@ -398,7 +398,7 @@ Wrappers should treat `0` as success and any non-zero as failure. Inspect stderr
 ```
 
 - `interfaces[].mac` is `null` when the address is unreadable. `interfaces[].kind` is `wifi`, `ethernet`, or `other` (virtual interfaces are filtered out).
-- `features[].state` is `not implemented`, `applied`, `skipped`, or `failed`. `features[].note` is human text — the reason or a phase pointer. Full feature list in [Phases](#phases-at-a-glance).
+- `features[].state` is `not implemented`, `applied`, `skipped`, or `failed`. `features[].note` is human text — the reason or a phase pointer. Full feature list in the Phases section below.
 
 ### `proteus current --json`
 
@@ -535,7 +535,7 @@ Branch on `config_present` (absent → present config; `false` → defaults in e
 - `RUST_LOG` overrides `-v` / `-q`. Standard `tracing` filter syntax: `RUST_LOG=debug`, `RUST_LOG=proteus=trace`.
 - ANSI colors on stderr honor `--no-color` and `NO_COLOR`.
 - Inspect timer-driven runs:
-  ```
+  ```sh
   journalctl -t proteus -n 100
   journalctl -u proteus-rotate.timer
   ```
@@ -567,7 +567,7 @@ Notes for GUI / automation wrappers. The CLI is designed to be wrappable; the JS
 
 Stub commands print one line to stderr and exit `64`:
 
-```
+```sh
 $ sudo proteus rotate --iface wlan0
 proteus: 'rotate' is not yet implemented; targets phase B. See: proteus wiki mac-recipes
 $ echo $?

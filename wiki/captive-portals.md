@@ -68,7 +68,7 @@ Some networks you'll join again. Your usual cafe, the conference venue, the airp
 
 State lives in `/var/lib/proteus/state.json` under `known_portal_ssids`. A small list, manually curated.
 
-```
+```sh
 proteus portal mark <ssid>      # add an SSID to the known-portal list
 proteus portal list             # print the list
 proteus portal unmark <ssid>    # remove an SSID
@@ -80,7 +80,7 @@ The `proteus portal mark` / `list` / `unmark` commands are phase C surface and s
 
 ## Browser helper
 
-```
+```sh
 proteus portal open
 ```
 

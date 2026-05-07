@@ -6,7 +6,7 @@ If you are wrapping the CLI, also read `proteus wiki cli` for the command surfac
 
 ## Data flow
 
-```
+```text
 +-----------------+      +----------------------+
 | /etc/proteus/   | <--- | proteus apply (root) |
 | config.toml     |      +----------------------+
@@ -103,7 +103,7 @@ The phase A struct in `src/state.rs` is a flatter provisional shape (`original_m
 
 Every file Proteus writes under `/etc/` carries a 3-line header:
 
-```
+```text
 # managed by proteus v0.1.0
 # do not edit; manage via /etc/proteus/config.toml or `proteus apply`
 # sha256:abc123...  (sha256 of the body content; checked by `proteus diff`)
@@ -117,7 +117,7 @@ The same hashes are mirrored into `state.json` under `managed.drop_ins`, so a wr
 
 Proteus tags NM connections it modifies with `connection.user-data`:
 
-```
+```text
 proteus.managed=true
 proteus.applied-version=0.1.0
 proteus.applied-at=2026-05-06T14:34:56Z

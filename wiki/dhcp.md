@@ -30,7 +30,7 @@ This page covers what Proteus suppresses, what it deliberately leaves alone, and
 
 Settings are written per NetworkManager connection over the NM DBus API. No `nmcli` shelling. The keys set on each managed connection:
 
-```
+```toml
 ipv4.dhcp-send-hostname            = no
 ipv4.dhcp-fqdn                     = ""
 ipv4.dhcp-vendor-class-identifier  = ""
@@ -60,7 +60,7 @@ System-wide DHCP suppression at the `dhclient` or `dhcpcd` level is out of scope
 
 Watch the actual exchange:
 
-```
+```sh
 sudo tcpdump -n -i wlan0 -vv 'udp port 67 or udp port 68'
 ```
 
@@ -68,7 +68,7 @@ Trigger a fresh lease (`nmcli connection down <name> && nmcli connection up <nam
 
 Inspect the resulting NM config:
 
-```
+```sh
 nmcli connection show <name> | grep -E 'dhcp|duid'
 ```
 

@@ -21,7 +21,7 @@ All read commands work for any user. Mutating commands require root and exit `66
 
 Lists every Proteus-owned unit with: enabled state, active state, current interval, next/last fire (timers only), and whether a drop-in override is in effect (marked with `*`). The first thing to run when something looks off.
 
-```
+```sh
 proteus timer status
 proteus timer status --json | jq '.timers[] | select(.has_override)'
 ```
@@ -42,7 +42,7 @@ Runs `systemctl disable --now <unit>`. Mutating; needs root. The unit stays inst
 
 Writes a drop-in at `/etc/systemd/system/proteus-<name>.timer.d/override.conf`, runs `daemon-reload`, and restarts the unit. Mutating; needs root. Only valid for timer units (`rotate`, `check`, `resume`); `set` against `boot` exits `65` because the boot oneshot has no cadence to set.
 
-```
+```sh
 sudo proteus timer set rotate --interval 30m
 sudo proteus timer set rotate --interval hourly
 sudo proteus timer set rotate --interval '*-*-* 06:00:00'
@@ -70,15 +70,11 @@ Zero-duration intervals are rejected. Empty strings are rejected. Unknown unit s
 
 ## The drop-in mechanism
 
-Each `set` writes one file:
-
-```
-/etc/systemd/system/proteus-<name>.timer.d/override.conf
-```
+Each `set` writes one file at `/etc/systemd/system/proteus-<name>.timer.d/override.conf`.
 
 The file carries a two-line header:
 
-```
+```text
 # managed by proteus v<version>
 # do not edit; manage via `proteus timer set ...`
 ```
@@ -93,14 +89,14 @@ If you delete the drop-in manually instead of running `proteus timer reset`, the
 
 **Rotate every 30 minutes instead of 2 hours.**
 
-```
+```sh
 sudo proteus timer set rotate --interval 30m
 proteus timer status
 ```
 
 **Rely on NM dispatcher events; disable the polling check timer.**
 
-```
+```sh
 sudo proteus timer disable check
 ```
 
@@ -108,32 +104,32 @@ The dispatcher script under `/etc/NetworkManager/dispatcher.d/01-proteus` rotate
 
 **Restore the rotate timer's default cadence.**
 
-```
+```sh
 sudo proteus timer reset rotate
 ```
 
 **Inspect every Proteus unit at once.**
 
-```
+```sh
 proteus timer status
 ```
 
 **Tail the last 50 lines of rotation logs.**
 
-```
+```sh
 proteus timer logs rotate --lines 50
 ```
 
 **Pause scheduled rotation without uninstalling.** Disable both timers. The boot oneshot and the NM dispatcher hook still run unless you remove them too.
 
-```
+```sh
 sudo proteus timer disable rotate
 sudo proteus timer disable check
 ```
 
 **Switch rotate to a wall-clock cadence.** `OnCalendar=` makes rotation predictable but loses the "N time since last run" property — if your laptop was suspended at 6am, the 6am rotation is missed unless `Persistent=true` is set in the unit file (it is, for `proteus-rotate.timer`).
 
-```
+```sh
 sudo proteus timer set rotate --interval 'hourly'
 sudo proteus timer set rotate --interval '*-*-* 06:00:00'
 ```

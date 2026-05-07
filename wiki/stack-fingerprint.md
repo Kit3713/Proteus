@@ -97,7 +97,7 @@ The revert path is part of the standard invariant: it must work at every commit.
 
 ## Verification
 
-```
+```sh
 sysctl net.ipv4.tcp_timestamps          # 0 after apply
 sysctl net.ipv6.conf.wlan0.accept_redirects  # 0 after apply
 nft list ruleset | grep -A20 'table .* proteus'   # see our chains and rules
@@ -105,7 +105,7 @@ nft list ruleset | grep -A20 'table .* proteus'   # see our chains and rules
 
 From another machine:
 
-```
+```sh
 nmap -O <your-ip>
 sudo p0f -i any -p
 ```
