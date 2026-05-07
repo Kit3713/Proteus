@@ -10,8 +10,8 @@ The `profile` field at the top of `/etc/proteus/config.toml` selects a coherent 
 | `min` | trusted home LAN | none | none | none |
 | `low` | privacy-curious home | scheduled | none | none |
 | `med` | public Wi-Fi default | scheduled | mDNS, LLMNR | none |
-| `high` | hostile network | scheduled | mDNS, LLMNR | TX power reduction (when `[rf]` lands) |
-| `agr` | conference / border | scheduled, fresh-MAC-per-portal | mDNS, LLMNR, SSDP, WSD | anonymous outer 802.1X, gratuitous ARP suppression, per-visit MAC rotation |
+| `high` | hostile network | scheduled | mDNS, LLMNR | TX power reduction |
+| `agr` | conference / border | scheduled, fresh-MAC-per-portal | mDNS, LLMNR, SSDP, WSD | TX power reduction, anonymous outer 802.1X, gratuitous ARP suppression, per-visit MAC rotation |
 
 ## How resolution works
 
@@ -31,9 +31,9 @@ The override-only-if-present model means the difference between "this knob takes
 
 `med` — recommended public Wi-Fi default. Adds mDNS and LLMNR silencing on top of `low`. The system stops broadcasting its hostname and capabilities to anyone on the LAN, but does not enable any knob that could break a service the user cares about.
 
-`high` — the network is actively hostile. Same as `med` plus TX power reduction so the passive-capture radius for an SDR-equipped observer shrinks. SSDP and WSD remain unblocked so KDE Connect and Windows printer discovery still work for the user's own devices.
+`high` — the network is actively hostile. Same as `med` plus TX power reduction (`[rf] tx_power_reduce = true`) so the passive-capture radius for an SDR-equipped observer shrinks. SSDP and WSD remain unblocked so KDE Connect and Windows printer discovery still work for the user's own devices. The reduction may degrade range from APs — `proteus apply` surfaces a one-line risk warning, and `sudo proteus rf revert --yes` restores the original TX power exactly.
 
-`agr` — conference, border, or any environment where every breaking knob is acceptable. Adds SSDP and WSD blocks (breaks KDE Connect, Windows printer discovery), anonymous outer identity for 802.1X (some auth servers reject mismatched outer/inner identities), gratuitous ARP suppression (breaks VRRP/keepalived failover detection), and per-visit MAC rotation for known captive portals. Each enabled breaking knob is surfaced by the `proteus apply` risk-warning banner.
+`agr` — conference, border, or any environment where every breaking knob is acceptable. Carries the `high` TX power reduction forward and adds SSDP and WSD blocks (breaks KDE Connect, Windows printer discovery), anonymous outer identity for 802.1X (some auth servers reject mismatched outer/inner identities), gratuitous ARP suppression (breaks VRRP/keepalived failover detection), and per-visit MAC rotation for known captive portals. Each enabled breaking knob is surfaced by the `proteus apply` risk-warning banner.
 
 `off` — temporary panic disable. Every feature off until the profile is changed back. Useful for debugging, comparing system behavior with and without Proteus, or rapidly disabling everything during an incident. Overrides remain on disk and resume effect when the profile changes back.
 
@@ -77,8 +77,9 @@ apply summary:
   dhcp       applied   (ok)
   dns        applied   (ok)
   stack      applied   (ok)
+  rf         skipped   (disabled in config (rf.tx_power_reduce = false))
   nft        skipped   (nftables not installed)
-totals: applied=6 skipped=2 failed=0
+totals: applied=6 skipped=3 failed=0
 ```
 
 `proteus doctor` lists every absent dependency as an informational warning so the operator knows in advance which features will skip. There is no separate scan command and no extra state on disk: the file is always the user's intent, and the runtime behavior reflects what the system can actually do.

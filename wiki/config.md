@@ -243,10 +243,10 @@ tx_power_reduction_db = 6
 
 Knobs:
 
-- `tx_power_reduce` — OPT-IN. Reduces Wi-Fi TX power so the capture radius for passive listeners is smaller. Off by default because reduced range degrades range from your APs.
-- `tx_power_reduction_db` — number of dB to reduce by. Default `6` (≈ quarter the radiated power). Range `0..=20`. Hardware caps the effective floor.
+- `tx_power_reduce` — OPT-IN. Reduces Wi-Fi TX power so the capture radius for passive listeners is smaller. Default off in `off`/`min`/`low`/`med` profiles; default **on** in `high` and `agr`. Per-knob overrides beat the profile baseline either direction.
+- `tx_power_reduction_db` — `u8` count of dB to reduce by, applied as `regulatory_max - (db × 100) mBm`. Default `6` (≈ quarter the radiated power). Hardware caps the effective floor; if `iw reg get` returns no value, Proteus falls back to a conservative 20 dBm ceiling.
 
-L1 RF analog characteristics cannot be erased in software; this knob only narrows the capture radius. Lands in phase E. Cross-ref `proteus wiki rf-fingerprinting`.
+The shipped surface is `proteus rf status / apply / revert`. `apply` writes via `iw dev <iface> set txpower fixed <mbm>`; `revert` restores the cached pre-Proteus TX power exactly. L1 analog characteristics (oscillator drift, IQ imbalance, etc.) cannot be erased in software; this knob only narrows the capture radius. Cross-ref `proteus wiki rf-fingerprinting`.
 
 ### `[rotation]`
 

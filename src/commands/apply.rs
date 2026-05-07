@@ -126,6 +126,13 @@ pub(crate) fn risk_warnings(cfg: &Config) -> Vec<RiskWarning> {
             wiki: "stack-fingerprint",
         });
     }
+    if cfg.rf.tx_power_reduce {
+        out.push(RiskWarning {
+            knob: "rf.tx_power_reduce",
+            breakage: "reducing TX power may degrade reception in weak-signal environments",
+            wiki: "rf-fingerprinting",
+        });
+    }
     out
 }
 
@@ -155,6 +162,7 @@ fn orchestrate(
         run_dhcp(config, state_path, config_path),
         run_dns(config, config_path),
         run_stack(state_path, config_path),
+        run_rf(config, state_path, config_path),
         run_nft(config_path),
     ]
 }
@@ -245,6 +253,30 @@ fn run_stack(state_path: Option<&Path>, config_path: Option<&Path>) -> Component
     classify("stack", super::stack::apply(true, state_path, config_path))
 }
 
+// RF: master-switch and "no Wi-Fi hardware" skips happen here so the
+// orchestrator labels them clearly. Missing `iw` is gated by the submodule
+// (it returns SYSTEM_NOT_SUPPORTED, treated as a skip below — same pattern
+// as nft).
+fn run_rf(
+    config: &Config,
+    state_path: Option<&Path>,
+    config_path: Option<&Path>,
+) -> ComponentReport {
+    if !config.rf.tx_power_reduce {
+        return skipped("rf", "disabled in config (rf.tx_power_reduce = false)");
+    }
+    if crate::rf::wifi_interfaces().is_empty() {
+        return skipped("rf", "no Wi-Fi interfaces detected");
+    }
+    let res = super::rf::apply(true, state_path, config_path);
+    if let Ok(code) = res
+        && code == exit::SYSTEM_NOT_SUPPORTED
+    {
+        return skipped("rf", "`iw` binary not found on PATH");
+    }
+    classify("rf", res)
+}
+
 // nft is gated by `nft_present()` inside the submodule, which surfaces
 // SYSTEM_NOT_SUPPORTED (70) when nftables isn't installed. Treat that as a
 // skip in the summary instead of a failure so the orchestrator doesn't
@@ -325,6 +357,7 @@ mod tests {
         cfg.ipv6.enabled = false;
         cfg.dhcp.enabled = false;
         cfg.dns.strip_edns_client_subnet = false;
+        cfg.rf.tx_power_reduce = false;
         cfg
     }
 
@@ -342,6 +375,7 @@ mod tests {
             run_ipv6(&cfg, None, None),
             run_dhcp(&cfg, None, None),
             run_dns(&cfg, None),
+            run_rf(&cfg, None, None),
         ];
         assert!(
             reports.iter().all(|r| r.status == Status::Skipped),
@@ -367,8 +401,9 @@ mod tests {
             run_ipv6(&cfg, None, None),
             run_dhcp(&cfg, None, None),
             run_dns(&cfg, None),
+            run_rf(&cfg, None, None),
         ];
-        for name in ["mac", "hostname", "bluetooth", "ipv6", "dhcp", "dns"] {
+        for name in ["mac", "hostname", "bluetooth", "ipv6", "dhcp", "dns", "rf"] {
             assert!(
                 reports.iter().any(|r| r.name == name),
                 "orchestrator missing component '{name}'"
@@ -409,13 +444,15 @@ mod tests {
         cfg.discovery.wsd_block = true;
         cfg.enterprise_wifi.anonymous_outer_identity = true;
         cfg.stack.suppress_gratuitous_arp = true;
+        cfg.rf.tx_power_reduce = true;
         let warnings = risk_warnings(&cfg);
         let knobs: Vec<&str> = warnings.iter().map(|w| w.knob).collect();
         assert!(knobs.contains(&"discovery.ssdp_block"));
         assert!(knobs.contains(&"discovery.wsd_block"));
         assert!(knobs.contains(&"enterprise_wifi.anonymous_outer_identity"));
         assert!(knobs.contains(&"stack.suppress_gratuitous_arp"));
-        assert_eq!(warnings.len(), 4);
+        assert!(knobs.contains(&"rf.tx_power_reduce"));
+        assert_eq!(warnings.len(), 5);
     }
 
     #[test]
@@ -428,6 +465,7 @@ mod tests {
         cfg.discovery.wsd_block = true;
         cfg.enterprise_wifi.anonymous_outer_identity = true;
         cfg.stack.suppress_gratuitous_arp = true;
+        cfg.rf.tx_power_reduce = true;
         for w in risk_warnings(&cfg) {
             assert!(
                 wiki::get_page(w.wiki).is_some(),
@@ -436,6 +474,35 @@ mod tests {
                 w.wiki
             );
         }
+    }
+
+    #[test]
+    fn run_rf_skips_with_default_config_note() {
+        // The Med default has rf.tx_power_reduce off, so the orchestrator
+        // entry point skips with a stable, machine-greppable note. Pin it
+        // so a future profile change can't silently flip the default-on.
+        let cfg = Config::default();
+        assert!(
+            !cfg.rf.tx_power_reduce,
+            "default profile must not enable rf"
+        );
+        let report = run_rf(&cfg, None, None);
+        assert_eq!(report.name, "rf");
+        assert_eq!(report.status, Status::Skipped);
+        assert!(report.note.contains("rf.tx_power_reduce = false"));
+    }
+
+    #[test]
+    fn risk_warnings_rf_tx_power_reduce_triggers_alone() {
+        // RF is the only opt-in risk knob in High by default, so verify it
+        // produces the expected warning shape independent of the others.
+        let mut cfg = Config::default();
+        cfg.rf.tx_power_reduce = true;
+        let warnings = risk_warnings(&cfg);
+        let rf = warnings.iter().find(|w| w.knob == "rf.tx_power_reduce");
+        let rf = rf.expect("rf.tx_power_reduce warning expected");
+        assert_eq!(rf.wiki, "rf-fingerprinting");
+        assert!(rf.breakage.contains("TX power"));
     }
 
     #[test]

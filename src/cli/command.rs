@@ -6,7 +6,8 @@ use clap::Subcommand;
 
 use super::actions::{
     BluetoothAction, ConfigAction, DhcpAction, DnsAction, EnterpriseWifiAction, HostnameAction,
-    Ipv6Action, KillAction, NftAction, PortalAction, StackAction, TimerAction, WikiAction,
+    Ipv6Action, KillAction, NftAction, PortalAction, RfAction, StackAction, TimerAction,
+    WikiAction,
 };
 
 #[derive(Subcommand, Debug)]
@@ -201,5 +202,10 @@ pub enum Command {
     Portal {
         #[command(subcommand)]
         action: PortalAction,
+    },
+    /// RF surface — Wi-Fi chipset inventory + opt-in TX-power reduction.
+    Rf {
+        #[command(subcommand)]
+        action: RfAction,
     },
 }

@@ -169,6 +169,13 @@ pub(super) fn dispatch(cli: Cli) -> Result<u8> {
             NftAction::Apply { yes } => commands::nft::apply(yes, cli.config.as_deref()),
             NftAction::Revert { yes } => commands::nft::revert(yes),
         },
+        Command::Rf { action } => match action {
+            RfAction::Status { json } => commands::rf::status(json, cli.config.as_deref()),
+            RfAction::Apply { yes } => {
+                commands::rf::apply(yes, cli.state.as_deref(), cli.config.as_deref())
+            }
+            RfAction::Revert { yes } => commands::rf::revert(yes, cli.state.as_deref()),
+        },
     }
 }
 

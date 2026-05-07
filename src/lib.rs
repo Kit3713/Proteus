@@ -18,6 +18,7 @@ pub mod nft;
 pub mod nm;
 pub mod probe;
 pub mod profile;
+pub mod rf;
 pub mod stack;
 pub mod state;
 pub mod timer;

@@ -339,3 +339,22 @@ pub enum DnsAction {
         yes: bool,
     },
 }
+
+#[derive(Subcommand, Debug)]
+pub enum RfAction {
+    /// Show Wi-Fi/Bluetooth chipset inventory + current TX-power per iface.
+    Status {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Apply the configured TX-power reduction to every Wi-Fi interface.
+    Apply {
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Restore the cached pre-Proteus TX power per interface.
+    Revert {
+        #[arg(long)]
+        yes: bool,
+    },
+}

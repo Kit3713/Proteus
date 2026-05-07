@@ -57,24 +57,64 @@ Configurable in `/etc/proteus/config.toml`:
 
 ```toml
 [rf]
-tx_power_reduce = false           # opt-in
+tx_power_reduce = false           # opt-in; default off in min/low/med, on in high/agr
 tx_power_reduction_db = 6         # dB below regulatory max
 ```
 
-When enabled, Proteus issues `iw dev <iface> set txpower fixed <value>` via netlink at apply time, computing the target as the regulatory maximum for your region minus `tx_power_reduction_db`.
+The `[rf]` schema has exactly two fields. `tx_power_reduce` is a boolean master switch. `tx_power_reduction_db` is a `u8` count of dB below the regulatory ceiling.
+
+Profile defaults:
+
+| Profile | `tx_power_reduce` |
+|---|---|
+| `off` | false (every feature off) |
+| `min` | false |
+| `low` | false |
+| `med` | false |
+| `high` | **true** |
+| `agr` | **true** |
+
+A user-set value (`[rf] tx_power_reduce = false` or `= true` in `/etc/proteus/config.toml`) overrides the profile baseline. Switching from `med` to `high` does not flip an explicit `false` back on; switching from `high` back to `med` does not silently clear an explicit `true`. See `proteus wiki profiles`.
+
+When enabled, Proteus issues `iw dev <iface> set txpower fixed <mbm>` against every Wi-Fi interface at apply time, computing the target as the regulatory maximum (`iw reg get`, with a 20 dBm fallback if the lookup fails) minus `tx_power_reduction_db × 100` mBm.
 
 Default reduction is 6 dB below the regulatory maximum. That's roughly a quarter of the radiated power, halving the effective range of a passive listener under typical free-space assumptions.
 
-Tradeoff is real: reduced range may degrade your connection at distance from the AP. If you're reaching for this knob you've already accepted that.
+Tradeoff is real: reduced range may degrade reception in weak-signal environments. `proteus apply` prints a one-line risk warning whenever the knob is on. If reception suffers, `sudo proteus rf revert --yes` restores the cached pre-Proteus TX power exactly.
+
+## CLI surface
+
+```sh
+# Read-only inventory: chip + firmware + current TX + regulatory max + BT adapters.
+# Works without root; --json is GUI-friendly.
+proteus rf status
+proteus rf status --json
+
+# Apply the configured TX-power floor. Requires root + --yes. Idempotent;
+# captures the original TX power once on first apply.
+sudo proteus rf apply --yes
+
+# Restore the cached pre-Proteus TX power. Requires root + --yes. Idempotent.
+sudo proteus rf revert --yes
+```
+
+Skip behavior — each path lands as a clear note instead of an error:
+
+- `rf.tx_power_reduce = false` → `apply` exits 0 with `disabled in config (rf.tx_power_reduce = false)`.
+- No Wi-Fi interfaces detected → exits 0 with `no Wi-Fi interfaces detected`.
+- `iw` binary missing (no iw-tools package) → exits 70 (`SYSTEM_NOT_SUPPORTED`).
+- Already at the configured target → re-apply is a no-op write the kernel accepts and the originals remain captured.
+
+The orchestrated `proteus apply` runs `rf` after `stack` and before `nft`, so the same gate applies in the all-in-one command. Failures on one interface never abort the rest of the apply pass.
 
 ## Chipset reporting
 
-`proteus status` includes your radio inventory:
+`proteus rf status` includes the radio inventory in one read-only call:
 
-- **Wi-Fi** — driver name (e.g. `iwlwifi`, `rtw89`, `mt7921e`), chip ID from sysfs, firmware version where the driver exposes it.
-- **Bluetooth** — chip vendor (Intel, Broadcom, Realtek, CSR, Qualcomm), firmware version where BlueZ exposes it.
+- **Wi-Fi** — driver name (e.g. `iwlwifi`, `rtw89`, `mt7921e`), chip ID from sysfs (`/sys/class/net/<iface>/device/{vendor,device}`), firmware version where the driver exposes it (`/sys/class/net/<iface>/device/firmware_version` and friends).
+- **Bluetooth** — chip vendor (Intel, Broadcom, Realtek, CSR, Qualcomm), address type, powered state.
 
-Take the chipset family and search IEEE Xplore, ACM Digital Library, USENIX, or the academic search engine of your choice for "RF fingerprinting" plus the chip name. If your hardware shows up in published research, you know roughly what you're exposed to.
+Take the chipset family and search IEEE Xplore, ACM Digital Library, USENIX, or the academic search engine of your choice for "RF fingerprinting" plus the chip name. If hardware shows up in published research, the operator has a calibrated sense of exposure.
 
 ## Threat model
 
