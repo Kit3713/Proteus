@@ -20,3 +20,8 @@ Thumbs.db
 
 # Claude Code agent worktrees
 /.claude/
+
+# Integration test driver stages a freshly-built proteus here so the
+# Containerfile's COPY can pick it up. Always rebuilt by run.sh; never
+# checked in.
+/tests/integration/proteus.bin
