@@ -10,6 +10,7 @@ pub mod dry_run;
 pub mod enterprise_wifi;
 pub mod hostname;
 pub mod ipv6;
+pub mod kill;
 pub mod original;
 pub mod pin;
 pub mod probe;

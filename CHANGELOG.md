@@ -13,6 +13,20 @@ landed, what is in flight, and what is on the bench. See
 
 (work in progress; see [docs/ROADMAP.md](docs/ROADMAP.md))
 
+### Added
+
+- feat(phase-g): `proteus kill` / `proteus resume` — emergency network
+  shutdown. `sudo proteus kill --yes` brings every managed interface down
+  via `ip link`, disables NetworkManager Wi-Fi + WWAN radios via DBus, and
+  powers off every BlueZ adapter. State is recorded under
+  `state.kill_switch` so `sudo proteus resume --yes` can reverse exactly
+  the set we touched. `proteus kill status [--json]` is a read-only
+  reporter for wrappers. Idempotent: re-running while already active /
+  inactive exits 0 with a note. New wiki page `kill-switch` documents
+  when to use it (hostile networks, suspected compromise, border
+  crossings), what it does, what it deliberately does not do, and the
+  manual recovery path.
+
 ### Changed
 
 - chore: trim binary by ~316 KB via feature-flag audit (was 3,083,400 bytes,

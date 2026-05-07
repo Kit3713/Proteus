@@ -190,6 +190,32 @@ pub enum Command {
         #[arg(long)]
         quick: bool,
     },
+    /// Emergency network kill switch — bring all interfaces down + radios off.
+    ///
+    /// `proteus kill --yes` cuts every managed interface and disables Wi-Fi,
+    /// WWAN, and Bluetooth radios. `proteus kill status` reports the current
+    /// state. Use `proteus resume --yes` to restore. See `proteus wiki kill-switch`.
+    Kill {
+        #[command(subcommand)]
+        action: Option<KillAction>,
+        /// Confirm the destructive action when omitting the subcommand.
+        #[arg(long, global = true)]
+        yes: bool,
+    },
+    /// Restore network connectivity after `proteus kill`.
+    Resume {
+        #[arg(long)]
+        yes: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum KillAction {
+    /// Show whether the kill switch is currently active.
+    Status {
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -485,6 +511,13 @@ pub fn run() -> ExitCode {
             config_path: cli.config.as_deref(),
         }),
         Command::Probe { json, quick } => commands::probe::run(json, quick, cli.config.as_deref()),
+        Command::Kill { action, yes } => match action {
+            Some(KillAction::Status { json }) => {
+                commands::kill::kill_status(json, cli.state.as_deref())
+            }
+            None => commands::kill::kill_run(yes, cli.state.as_deref()),
+        },
+        Command::Resume { yes } => commands::kill::resume_run(yes, cli.state.as_deref()),
     };
 
     ExitCode::from(code.unwrap_or(exit::GENERIC_ERROR))
