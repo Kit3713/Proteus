@@ -128,6 +128,12 @@ pub fn read_snapshot(root_prefix: Option<&Path>, iface: &str) -> InterfaceSnapsh
         iface: iface.to_string(),
         ..Default::default()
     };
+    // Read path: a bad iface produces an empty snapshot rather than an
+    // error so revert flows over a vanished interface still complete. We
+    // keep the validation cheap and bail before touching the filesystem.
+    if validate_iface_name(iface).is_err() {
+        return snap;
+    }
     for s in SYSCTLS {
         let path = sysctl_path(root_prefix, iface, s.key);
         let v = std::fs::read_to_string(&path)
@@ -146,11 +152,52 @@ pub fn read_snapshot(root_prefix: Option<&Path>, iface: &str) -> InterfaceSnapsh
 
 /// Write a single sysctl knob via the writable mirror under `/proc/sys`.
 /// Used by `apply` and `revert` to push settings live without waiting for
-/// `sysctl --system` to pick up the drop-in.
+/// `sysctl --system` to pick up the drop-in. Validates `iface` first so a
+/// caller-supplied bad name can never traverse outside the per-iface tree.
 pub fn write_sysctl(root_prefix: Option<&Path>, iface: &str, key: &str, value: &str) -> Result<()> {
+    validate_iface_name(iface)?;
     let path = sysctl_path(root_prefix, iface, key);
     std::fs::write(&path, format!("{value}\n"))
         .with_context(|| format!("writing {} = {}", path.display(), value))
+}
+
+/// Defense-in-depth: refuse interface names the kernel itself wouldn't
+/// accept. Without this check, a hostile or buggy caller could pass
+/// `"../../etc/passwd"` and `sysctl_path` would happily produce
+/// `/proc/sys/net/ipv6/conf/../../etc/passwd/use_tempaddr` (issue #147).
+///
+/// Rules mirror `dev_valid_name()` in the Linux kernel
+/// (`net/core/dev.c`): 1..=15 bytes, no slash, no NUL, no whitespace, no
+/// `:` or `/`, and the special names `.` / `..` are forbidden.
+pub(crate) fn validate_iface_name(iface: &str) -> Result<()> {
+    if iface.is_empty() {
+        return Err(anyhow!("interface name is empty"));
+    }
+    // The kernel ifname buffer is `IFNAMSIZ - 1 = 15` bytes (the trailing
+    // NUL is counted). Any longer name would be rejected by `SIOCSIFNAME`
+    // and ENAMETOOLONG-equivalents — refusing it here is a courtesy.
+    if iface.len() > 15 {
+        return Err(anyhow!(
+            "interface name '{iface}' is {} bytes (max 15)",
+            iface.len()
+        ));
+    }
+    if iface == "." || iface == ".." {
+        return Err(anyhow!("interface name '{iface}' is reserved"));
+    }
+    for b in iface.bytes() {
+        if b == 0 || b == b'/' || b == b':' || b.is_ascii_whitespace() {
+            return Err(anyhow!(
+                "interface name '{iface}' contains illegal byte 0x{b:02x}"
+            ));
+        }
+        if !b.is_ascii() {
+            return Err(anyhow!(
+                "interface name '{iface}' contains non-ASCII byte 0x{b:02x}"
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Reload kernel sysctls so the drop-in we just wrote takes effect on
@@ -385,6 +432,49 @@ mod tests {
         assert_eq!(snap.use_tempaddr.as_deref(), Some("0"));
         assert_eq!(snap.addr_gen_mode.as_deref(), Some("1"));
         assert_eq!(snap.temp_valid_lft, None);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn validate_iface_name_accepts_typical_kernel_names() {
+        for name in ["eth0", "wlan0", "wlo1", "enp0s3", "enp48s0", "lo"] {
+            validate_iface_name(name).unwrap_or_else(|e| panic!("rejected {name}: {e}"));
+        }
+        // Max length 15 is OK.
+        validate_iface_name(&"x".repeat(15)).unwrap();
+    }
+
+    #[test]
+    fn validate_iface_name_rejects_path_traversal_and_garbage() {
+        // Issue #147 — defense in depth against caller-supplied paths.
+        for bad in [
+            "",
+            "../../etc/passwd",
+            "../etc",
+            "wlan0/../etc",
+            ".",
+            "..",
+            "wlan 0",
+            "wlan\t0",
+            "wlan\n0",
+            "wlan:0",
+            "café",
+            // Length 16 is over the kernel ifname budget.
+            "x".repeat(16).as_str(),
+        ] {
+            assert!(validate_iface_name(bad).is_err(), "should reject '{bad}'");
+        }
+    }
+
+    #[test]
+    fn write_sysctl_refuses_traversal_iface() {
+        // The path must not be created for a traversal iface — even if
+        // someone removed `validate_iface_name` from `sysctl_path` itself.
+        let tmp =
+            std::env::temp_dir().join(format!("proteus-ipv6-validate-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let res = write_sysctl(Some(&tmp), "../../etc/shadow", "use_tempaddr", "2");
+        assert!(res.is_err(), "expected validation error");
         let _ = std::fs::remove_dir_all(&tmp);
     }
 

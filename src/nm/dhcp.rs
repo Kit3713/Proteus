@@ -288,13 +288,22 @@ fn restore_bool(
     key: &str,
     value: Option<bool>,
 ) -> Result<()> {
-    let sec = settings.entry(section.to_string()).or_default();
     match value {
         Some(b) => {
+            let sec = settings.entry(section.to_string()).or_default();
             sec.insert(key.to_string(), Value::from(b).try_into()?);
         }
         None => {
-            sec.remove(key);
+            // No cached value to restore. Only touch the section if it
+            // already exists — issue #151: previously we would `or_default`
+            // the entry and materialize an empty `[ipv6]` section even when
+            // the originals dict had nothing IPv6-shaped at all.
+            if let Some(sec) = settings.get_mut(section) {
+                sec.remove(key);
+                if sec.is_empty() {
+                    settings.remove(section);
+                }
+            }
         }
     }
     Ok(())
@@ -306,13 +315,18 @@ fn restore_str(
     key: &str,
     value: Option<&str>,
 ) -> Result<()> {
-    let sec = settings.entry(section.to_string()).or_default();
     match value {
         Some(s) => {
+            let sec = settings.entry(section.to_string()).or_default();
             sec.insert(key.to_string(), Value::from(s.to_string()).try_into()?);
         }
         None => {
-            sec.remove(key);
+            if let Some(sec) = settings.get_mut(section) {
+                sec.remove(key);
+                if sec.is_empty() {
+                    settings.remove(section);
+                }
+            }
         }
     }
     Ok(())
@@ -408,6 +422,25 @@ mod tests {
         assert!(ipv4.get(KEY_DHCP_CLIENT_ID).is_none());
         assert!(ipv4.contains_key(KEY_DHCP_VENDOR_CLASS_IDENTIFIER));
         assert!(!s.contains_key(SECTION_IPV6));
+    }
+
+    #[test]
+    fn revert_does_not_materialize_empty_ipv6_section() {
+        // Issue #151 — when the snapshot has no IPv6-shaped values, revert
+        // would still create an empty `[ipv6]` section because every
+        // restore_* helper called `entry().or_default()` unconditionally.
+        // After the fix, an absent IPv6 dict stays absent.
+        let mut s = empty_settings();
+        let snap = snapshot_dhcp(&s);
+        revert_dhcp_settings(&mut s, &snap).unwrap();
+        assert!(
+            !s.contains_key(SECTION_IPV6),
+            "revert should not materialize an empty ipv6 section, got {s:?}"
+        );
+        assert!(
+            !s.contains_key(SECTION_IPV4),
+            "revert should not materialize an empty ipv4 section either"
+        );
     }
 
     #[test]

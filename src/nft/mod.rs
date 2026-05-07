@@ -64,15 +64,25 @@ fn render_header() -> String {
     )
 }
 
+/// Priority for the `icmp_drops` chain. -100 sits above conntrack
+/// (NF_IP_PRI_CONNTRACK = -200) and below raw (NF_IP_PRI_RAW = -300) — the
+/// same slot firewalld uses for its pre-routing chains.
+pub(crate) const ICMP_CHAIN_PRIORITY: i32 = -100;
+/// Priority for the `discovery_drops` chain. We deliberately offset it
+/// from `icmp_drops` (issue #148) so two chains never share the same
+/// `(hook, priority)` slot — sharing is technically legal in nftables but
+/// the eval order between equal-priority chains is undefined, which
+/// matters when one chain might accept a packet another would drop.
+pub(crate) const DISCOVERY_CHAIN_PRIORITY: i32 = -99;
+
 fn render_icmp_chain() -> String {
-    // priority -100 is above conntrack (NF_IP_PRI_CONNTRACK = -200), below
-    // raw (NF_IP_PRI_RAW = -300). Same priority firewalld uses for its
-    // pre-routing chains; safe place to drop on input. policy accept means
-    // we don't disturb existing input rulesets — we only drop the specific
-    // ICMP types.
+    // policy accept means we don't disturb existing input rulesets — we
+    // only drop the specific ICMP types.
     let mut out = String::new();
     out.push_str("    chain icmp_drops {\n");
-    out.push_str("        type filter hook input priority -100; policy accept;\n");
+    out.push_str(&format!(
+        "        type filter hook input priority {ICMP_CHAIN_PRIORITY}; policy accept;\n"
+    ));
     out.push_str("        # ICMP info-request, timestamp-request, address-mask-request (RFC 792 fingerprint vectors)\n");
     out.push_str(
         "        icmp type { timestamp-request, info-request, address-mask-request } drop\n",
@@ -88,7 +98,9 @@ fn render_icmp_chain() -> String {
 fn render_discovery_chain(discovery: &DiscoveryConfig) -> String {
     let mut out = String::new();
     out.push_str("    chain discovery_drops {\n");
-    out.push_str("        type filter hook input priority -100; policy accept;\n");
+    out.push_str(&format!(
+        "        type filter hook input priority {DISCOVERY_CHAIN_PRIORITY}; policy accept;\n"
+    ));
     if discovery.ssdp_block {
         out.push_str("        # SSDP (UPnP) — breaks KDE Connect when blocked; opt-in\n");
         out.push_str("        udp dport 1900 drop\n");
@@ -340,5 +352,27 @@ mod tests {
     fn icmpv6_trim_present() {
         let body = render_ruleset(&cfg(false, false));
         assert!(body.contains("icmpv6 type"), "missing icmpv6 trim: {body}");
+    }
+
+    #[test]
+    fn chains_use_distinct_priorities() {
+        // Issue #148 — both chains used to share `(input, -100)`, leaving
+        // the eval order between them undefined. Confirm they're now
+        // separated.
+        assert_ne!(ICMP_CHAIN_PRIORITY, DISCOVERY_CHAIN_PRIORITY);
+
+        let body = render_ruleset(&cfg(true, true));
+        let icmp_marker =
+            format!("type filter hook input priority {ICMP_CHAIN_PRIORITY}; policy accept;");
+        let disc_marker =
+            format!("type filter hook input priority {DISCOVERY_CHAIN_PRIORITY}; policy accept;");
+        assert!(
+            body.contains(&icmp_marker),
+            "missing icmp priority {ICMP_CHAIN_PRIORITY}: {body}"
+        );
+        assert!(
+            body.contains(&disc_marker),
+            "missing discovery priority {DISCOVERY_CHAIN_PRIORITY}: {body}"
+        );
     }
 }

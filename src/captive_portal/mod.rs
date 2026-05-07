@@ -211,18 +211,56 @@ struct UrlParts {
     path: String,
 }
 
+/// Parse `http://[user[:pass]@]host[:port][/path]` into the pieces we need
+/// for the request line. Hand-rolled so we don't pull in the `url` crate
+/// for one URL per detect call. Supported forms (issues #138/#145):
+///
+/// * bare hostname — `http://example.com/`
+/// * `host:port` — `http://example.com:8080/foo`
+/// * IPv6 literal — `http://[::1]/check` or `http://[fe80::1]:8080/`
+/// * userinfo — `http://user:pass@host/` (we strip and discard it;
+///   the detector intentionally never sends Authorization)
+///
+/// `https://` and other schemes are rejected (we have no TLS).
 fn parse_http_url(url: &str) -> Option<UrlParts> {
+    use std::net::Ipv6Addr;
+    use std::str::FromStr;
+
     let rest = url.strip_prefix("http://")?;
-    let (hostport, path) = match rest.find('/') {
+    let (authority, path) = match rest.find('/') {
         Some(i) => (&rest[..i], &rest[i..]),
         None => (rest, "/"),
     };
-    let (host, port) = match hostport.rfind(':') {
-        Some(i) => {
-            let p = hostport[i + 1..].parse::<u16>().ok()?;
-            (hostport[..i].to_string(), p)
+
+    // Strip optional `user[:pass]@` userinfo. We don't use it — the
+    // detector is unauthenticated by construction — but URLs in the wild
+    // often carry it via copy-paste, and a bare `@` would otherwise
+    // corrupt the host.
+    let hostport = match authority.rfind('@') {
+        Some(at) => &authority[at + 1..],
+        None => authority,
+    };
+
+    // IPv6 literals are wrapped in brackets per RFC 3986 §3.2.2 so the
+    // colons inside the address don't collide with the port separator.
+    let (host, port) = if let Some(bracketed) = hostport.strip_prefix('[') {
+        let (raw_host, after) = bracketed.split_once(']')?;
+        if raw_host.is_empty() {
+            return None;
         }
-        None => (hostport.to_string(), 80),
+        // Validate it actually parses as an IPv6 address — anything else is
+        // malformed and we'd rather fail loudly than DNS-resolve garbage.
+        Ipv6Addr::from_str(raw_host).ok()?;
+        let port = parse_port_suffix(after)?;
+        (raw_host.to_string(), port)
+    } else {
+        match hostport.rfind(':') {
+            Some(i) => {
+                let p = hostport[i + 1..].parse::<u16>().ok()?;
+                (hostport[..i].to_string(), p)
+            }
+            None => (hostport.to_string(), 80),
+        }
     };
     if host.is_empty() {
         return None;
@@ -232,6 +270,17 @@ fn parse_http_url(url: &str) -> Option<UrlParts> {
         port,
         path: path.to_string(),
     })
+}
+
+/// Helper for IPv6-literal port handling: `after` is the slice that comes
+/// after the closing `]`, which is either empty (no port; default 80) or
+/// `:NNN`.
+fn parse_port_suffix(after: &str) -> Option<u16> {
+    if after.is_empty() {
+        return Some(80);
+    }
+    let port_str = after.strip_prefix(':')?;
+    port_str.parse::<u16>().ok()
 }
 
 fn http_get(parts: &UrlParts, timeout: Duration) -> std::io::Result<HttpResponse> {
@@ -419,6 +468,61 @@ mod tests {
     fn rejects_https_and_garbage() {
         assert!(parse_http_url("https://example.com/").is_none());
         assert!(parse_http_url("notaurl").is_none());
+    }
+
+    #[test]
+    fn parses_ipv6_literal_with_default_port() {
+        let p = parse_http_url("http://[::1]/check").unwrap();
+        assert_eq!(p.host, "::1");
+        assert_eq!(p.port, 80);
+        assert_eq!(p.path, "/check");
+    }
+
+    #[test]
+    fn parses_ipv6_literal_with_explicit_port() {
+        let p = parse_http_url("http://[fe80::1]:8080/foo").unwrap();
+        assert_eq!(p.host, "fe80::1");
+        assert_eq!(p.port, 8080);
+        assert_eq!(p.path, "/foo");
+    }
+
+    #[test]
+    fn parses_ipv6_literal_without_path() {
+        let p = parse_http_url("http://[2001:db8::1]").unwrap();
+        assert_eq!(p.host, "2001:db8::1");
+        assert_eq!(p.port, 80);
+        assert_eq!(p.path, "/");
+    }
+
+    #[test]
+    fn rejects_malformed_ipv6_brackets() {
+        // Empty brackets, missing close bracket, non-IPv6 inside.
+        assert!(parse_http_url("http://[]/").is_none());
+        assert!(parse_http_url("http://[::1/").is_none());
+        assert!(parse_http_url("http://[notipv6]/").is_none());
+    }
+
+    #[test]
+    fn strips_userinfo_from_authority() {
+        let p = parse_http_url("http://user:pass@host.example/check").unwrap();
+        assert_eq!(p.host, "host.example");
+        assert_eq!(p.port, 80);
+        assert_eq!(p.path, "/check");
+    }
+
+    #[test]
+    fn strips_userinfo_with_port() {
+        let p = parse_http_url("http://user@host.example:8080/").unwrap();
+        assert_eq!(p.host, "host.example");
+        assert_eq!(p.port, 8080);
+    }
+
+    #[test]
+    fn strips_userinfo_with_ipv6_literal() {
+        let p = parse_http_url("http://user:pass@[::1]:8080/foo").unwrap();
+        assert_eq!(p.host, "::1");
+        assert_eq!(p.port, 8080);
+        assert_eq!(p.path, "/foo");
     }
 
     #[test]

@@ -63,6 +63,19 @@ pub fn run(yes: bool) -> Result<u8> {
     Ok(exit::SUCCESS)
 }
 
+/// Tracks which on-disk artifacts the file-removal pass actually deleted.
+/// Used to decide whether the matching daemon needs a reload — issue
+/// #153/#155: previously `revert_best_effort` would `systemctl restart`
+/// `systemd-resolved` and `systemd-timesyncd` on every invocation, even
+/// when nothing on disk had changed.
+#[derive(Debug, Default)]
+pub(crate) struct RevertChanged {
+    pub sysctl_dropin_removed: bool,
+    pub timesyncd_dropin_removed: bool,
+    pub resolved_dropin_removed: bool,
+    pub nft_table_removed: bool,
+}
+
 /// Best-effort revert of every Proteus side-effect outside the binary, config,
 /// and state files. Shared with `commands::uninstall` so both paths stay
 /// consistent. Each step is independent: a failure pushes a warning and the
@@ -74,6 +87,7 @@ pub fn run(yes: bool) -> Result<u8> {
 /// settings live inside NetworkManager keyfiles or in-memory connections,
 /// so the corresponding submodule reverts are called explicitly.
 pub(crate) fn revert_best_effort(warns: &mut Vec<String>) {
+    let mut changed = RevertChanged::default();
     if let Err(e) = super::hostname::revert(None) {
         warns.push(format!("hostname: {e:#}"));
     }
@@ -91,37 +105,74 @@ pub(crate) fn revert_best_effort(warns: &mut Vec<String>) {
     }
     for p in EXTERNAL_DROPINS {
         let path = Path::new(p);
-        note(path, remove_file_opt(path), warns);
+        let outcome = remove_file_opt(path);
+        if matches!(outcome, Ok(true)) {
+            // Track which kind of drop-in was actually removed so we can
+            // skip the matching reload when nothing changed.
+            if path.starts_with("/etc/sysctl.d/") {
+                changed.sysctl_dropin_removed = true;
+            } else if path.starts_with("/etc/systemd/timesyncd.conf.d/") {
+                changed.timesyncd_dropin_removed = true;
+            }
+        }
+        note(path, outcome, warns);
     }
-    remove_resolved_dropins(warns);
-    let _ = run_quiet("nft", &["delete", "table", "inet", "proteus"]);
-    let _ = run_quiet("sysctl", &["--system"]);
-    let _ = run_quiet(
-        "systemctl",
-        &["restart", "systemd-resolved", "systemd-timesyncd"],
-    );
+    if remove_resolved_dropins(warns) {
+        changed.resolved_dropin_removed = true;
+    }
+    // `nft delete table` non-zero usually means the table was already
+    // absent (a no-op); record only the success case.
+    if run_quiet("nft", &["delete", "table", "inet", "proteus"]).is_ok() {
+        changed.nft_table_removed = true;
+    }
+    if changed.sysctl_dropin_removed {
+        let _ = run_quiet("sysctl", &["--system"]);
+    }
+    // The original code restarted both daemons unconditionally, which
+    // could thrash a healthy system on every `proteus revert` re-run.
+    // Restart only the ones whose drop-ins we actually pulled.
+    let mut to_restart: Vec<&str> = Vec::new();
+    if changed.resolved_dropin_removed {
+        to_restart.push("systemd-resolved");
+    }
+    if changed.timesyncd_dropin_removed {
+        to_restart.push("systemd-timesyncd");
+    }
+    if !to_restart.is_empty() {
+        let mut args = vec!["restart"];
+        args.extend(to_restart);
+        let _ = run_quiet("systemctl", &args);
+    }
 }
 
-/// Resolved drop-ins are name-prefixed so the per-link files Proteus writes
-/// can be wiped without scanning every conf file in the directory.
-fn remove_resolved_dropins(warns: &mut Vec<String>) {
+/// Resolved drop-ins are name-prefixed so the per-link files Proteus
+/// writes can be wiped without scanning every conf file in the directory.
+/// Returns `true` if at least one matching file was actually removed —
+/// callers use that to decide whether to reload `systemd-resolved`.
+fn remove_resolved_dropins(warns: &mut Vec<String>) -> bool {
     let dir = Path::new(RESOLVED_DROPIN_DIR);
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return false,
         Err(e) => {
             warns.push(format!("{}: {e}", dir.display()));
-            return;
+            return false;
         }
     };
+    let mut removed_any = false;
     for entry in entries.flatten() {
         let name = entry.file_name();
         let s = name.to_string_lossy();
         if is_proteus_resolved_dropin(&s) {
             let path = entry.path();
-            note(&path, remove_file_opt(&path), warns);
+            let outcome = remove_file_opt(&path);
+            if matches!(outcome, Ok(true)) {
+                removed_any = true;
+            }
+            note(&path, outcome, warns);
         }
     }
+    removed_any
 }
 
 /// Pulled out so the matcher (prefix + `.conf` suffix) is unit-testable.
@@ -244,6 +295,42 @@ mod tests {
         let path = dir.join("does-not-exist.conf");
         let res = remove_file_opt(&path).expect("missing file is Ok(false), not Err");
         assert!(!res, "expected Ok(false) for a path that never existed");
+    }
+
+    #[test]
+    fn remove_resolved_dropins_returns_false_when_no_matches() {
+        // Issue #153/#155 — the return value drives whether we restart
+        // systemd-resolved. A directory with no proteus-prefixed files
+        // must report `false` so revert stays quiet.
+        let dir = std::env::temp_dir().join("proteus-revert-resolved-empty");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("99-third-party.conf"), b"DNS=1.1.1.1\n").unwrap();
+
+        // We can't easily dependency-inject the dir into
+        // remove_resolved_dropins (it reads a const), so build a small
+        // local mirror that exercises the same loop and helper.
+        let mut warns: Vec<String> = Vec::new();
+        let mut removed_any = false;
+        for entry in std::fs::read_dir(&dir).unwrap().flatten() {
+            let name = entry.file_name();
+            let s = name.to_string_lossy();
+            if is_proteus_resolved_dropin(&s) {
+                let path = entry.path();
+                let outcome = remove_file_opt(&path);
+                if matches!(outcome, Ok(true)) {
+                    removed_any = true;
+                }
+                note(&path, outcome, &mut warns);
+            }
+        }
+        assert!(
+            !removed_any,
+            "no proteus-prefixed file present, removed_any should stay false"
+        );
+        // The third-party file must still be there afterwards.
+        assert!(dir.join("99-third-party.conf").exists());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -1,4 +1,10 @@
 #!/usr/bin/make -f
+# Single source of truth for what gets installed. We deliberately do not
+# ship a `debian/install` file (issue #158): it would duplicate the
+# install lines below, but with neither mode bits nor directory creation
+# (`/etc/proteus`, `/var/lib/proteus`), and dh-installed files can't easily
+# carry per-file modes. Override `dh_auto_install` so everything stays in
+# one place.
 %:
 	dh $@
 

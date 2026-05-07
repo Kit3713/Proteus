@@ -9,6 +9,12 @@ use super::Mac;
 
 const DEFAULT_ARP_PATH: &str = "/proc/net/arp";
 
+/// Bit values for the `Flags` column in `/proc/net/route` (see
+/// `<linux/route.h>`). RTF_UP marks the route as live, RTF_GATEWAY says the
+/// `Gateway` field actually holds the next-hop address rather than 0.
+const RTF_UP: u32 = 0x0001;
+const RTF_GATEWAY: u32 = 0x0002;
+
 pub fn read_arp_macs() -> HashSet<Mac> {
     read_arp_macs_from(Path::new(DEFAULT_ARP_PATH)).unwrap_or_else(|e| {
         tracing::debug!("ARP read failed ({e}); proceeding with empty ARP set");
@@ -19,11 +25,27 @@ pub fn read_arp_macs() -> HashSet<Mac> {
 pub fn read_arp_macs_from(path: &Path) -> Result<HashSet<Mac>> {
     let body = std::fs::read_to_string(path)
         .with_context(|| format!("reading ARP table {}", path.display()))?;
-    Ok(parse_arp(&body))
+    let (macs, errors) = parse_arp_with_errors(&body);
+    for e in errors {
+        // Bad rows usually mean a kernel format change or a transient
+        // tear-down race. Surface them at debug rather than swallowing
+        // silently — `journalctl -t proteus` can pick them up if a user
+        // reports an empty arp set (issue #146).
+        tracing::debug!("ARP row ignored: {e}");
+    }
+    Ok(macs)
 }
 
 pub fn parse_arp(body: &str) -> HashSet<Mac> {
+    parse_arp_with_errors(body).0
+}
+
+/// Parse `/proc/net/arp`, returning the assignable MACs plus any parse
+/// errors encountered along the way. The error list lets callers surface
+/// row-level problems instead of silently dropping them.
+fn parse_arp_with_errors(body: &str) -> (HashSet<Mac>, Vec<String>) {
     let mut out = HashSet::new();
+    let mut errors = Vec::new();
     for (i, line) in body.lines().enumerate() {
         if i == 0 {
             // Header row.
@@ -32,19 +54,27 @@ pub fn parse_arp(body: &str) -> HashSet<Mac> {
         // Layout: IPaddr HWtype HWaddr Flags Mask Device
         let cols: Vec<&str> = line.split_whitespace().collect();
         if cols.len() < 4 {
+            if !cols.is_empty() {
+                errors.push(format!("row {i}: only {} columns (need ≥4)", cols.len()));
+            }
             continue;
         }
         let hw = cols[3];
         if hw == "00:00:00:00:00:00" {
             continue;
         }
-        if let Ok(m) = hw.parse::<Mac>()
-            && m.validate_assignable().is_ok()
-        {
-            out.insert(m);
+        match hw.parse::<Mac>() {
+            Ok(m) if m.validate_assignable().is_ok() => {
+                out.insert(m);
+            }
+            Ok(_) => {
+                // Multicast / non-assignable. Not an error — just not a
+                // candidate for collision-avoidance.
+            }
+            Err(e) => errors.push(format!("row {i}: bad MAC '{hw}': {e}")),
         }
     }
-    out
+    (out, errors)
 }
 
 pub fn read_default_gateway_mac() -> Option<Mac> {
@@ -68,17 +98,28 @@ pub fn read_default_gateway_mac_with(route_path: &Path, arp_path: &Path) -> Opti
 
 fn parse_default_gateways(body: &str) -> Vec<String> {
     // /proc/net/route columns: Iface Destination Gateway Flags ...
-    // Destination=00000000 means "default route"; Gateway is little-endian hex.
+    // A real default-gateway entry has Destination=00000000 *and* the
+    // RTF_GATEWAY (0x2) flag set. Without the flag check we'd also match
+    // on-link default-target entries (e.g. point-to-point tun devices) and
+    // pick up the wrong neighbour MAC. The Flags column is a hex-encoded
+    // `unsigned short` per `<linux/route.h>` (issue #146).
     let mut out = Vec::new();
     for (i, line) in body.lines().enumerate() {
         if i == 0 {
             continue;
         }
         let cols: Vec<&str> = line.split_whitespace().collect();
-        if cols.len() < 3 {
+        if cols.len() < 4 {
             continue;
         }
         if cols[1] != "00000000" {
+            continue;
+        }
+        let flags = match u32::from_str_radix(cols[3], 16) {
+            Ok(f) => f,
+            Err(_) => continue,
+        };
+        if flags & RTF_GATEWAY == 0 || flags & RTF_UP == 0 {
             continue;
         }
         if let Some(ip) = hex_le_to_ipv4(cols[2]) {
@@ -163,6 +204,55 @@ wlan0   0000FEA9        00000000        0001    0       0       1000    0000FFFF
 ";
         let gws = parse_default_gateways(route);
         assert_eq!(gws, vec!["192.168.1.1".to_string()]);
+    }
+
+    #[test]
+    fn skips_destination_zero_without_gateway_flag() {
+        // A route with Destination=00000000 but no RTF_GATEWAY (0x2) bit
+        // set is an on-link default target (point-to-point), not a real
+        // default gateway. Issue #146.
+        let route = "\
+Iface   Destination     Gateway         Flags   RefCnt  Use     Metric  Mask            MTU     Window  IRTT
+tun0    00000000        00000000        0001    0       0       100     00000000        0       0       0
+wlan0   00000000        0101A8C0        0003    0       0       100     00000000        0       0       0
+";
+        let gws = parse_default_gateways(route);
+        assert_eq!(gws, vec!["192.168.1.1".to_string()]);
+    }
+
+    #[test]
+    fn skips_routes_with_unknown_flag_encoding() {
+        // A non-hex Flags column shouldn't match — better to drop the row
+        // than to silently treat malformed kernel output as a gateway.
+        let route = "\
+Iface   Destination     Gateway         Flags
+wlan0   00000000        0101A8C0        notahex
+";
+        assert!(parse_default_gateways(route).is_empty());
+    }
+
+    #[test]
+    fn surfaces_arp_parse_errors_via_with_errors_helper() {
+        // Mixing valid + invalid rows: the valid MAC still lands in the
+        // set, and the bad row produces an error string that callers can
+        // log instead of silently dropping (issue #146).
+        let body = "\
+IP address       HW type     Flags       HW address            Mask     Device
+192.168.1.1      0x1         0x2         aa:bb:cc:dd:ee:ff     *        wlan0
+192.168.1.5      0x1         0x2         not:a:mac:address     *        wlan0
+192.168.1.7      0x1         0x2         zz:zz:zz:zz:zz:zz     *        wlan0
+";
+        let (macs, errors) = parse_arp_with_errors(body);
+        assert_eq!(macs.len(), 1);
+        assert!(macs.contains(&"aa:bb:cc:dd:ee:ff".parse().unwrap()));
+        assert!(
+            errors.iter().any(|e| e.contains("not:a:mac:address")),
+            "expected error for malformed MAC, got {errors:?}"
+        );
+        assert!(
+            errors.iter().any(|e| e.contains("zz:zz:zz:zz:zz:zz")),
+            "expected error for invalid hex MAC, got {errors:?}"
+        );
     }
 
     #[test]

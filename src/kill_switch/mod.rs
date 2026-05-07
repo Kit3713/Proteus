@@ -56,8 +56,24 @@ pub const SYSFS_NET: &str = "/sys/class/net";
 
 /// Names we never bring down. `lo` keeps localhost services functional
 /// (the entire point of a kill switch is L2/L3 isolation, not breaking
-/// the loopback for local IPC). The other prefixes are virtual / runtime
-/// interfaces that are not "yours" in any meaningful sense.
+/// the loopback for local IPC).
+///
+/// VPN tunnel interfaces (`tun*`, `tap*`, `wg*`, `tailscale*`, `zt*`) are
+/// skipped on purpose (issue #157). `ip link set <iface> down` would tear
+/// down the userspace-installed routes for the tunnel, and the VPN
+/// client does not reliably re-create them on the matching `link up` —
+/// so killing the tunnel turns a recoverable `proteus resume` into a
+/// debugging session. The kill switch's promise is "every physical
+/// radio off, every wire down" and the *underlying* interface (the
+/// Wi-Fi card or Ethernet port the tunnel rides on) is already
+/// disabled, which kills the tunnel's traffic at the same moment with
+/// no need to touch the tunnel device itself.
+///
+/// Container bridges (`docker*`, `podman*`, `veth*`, `virbr*`, `br-*`,
+/// `kube*`, `cni*`) are skipped for the same kind of reason — they're
+/// virtual interfaces whose lifetimes are owned by another daemon, and
+/// toggling them out from under that daemon is more disruptive than
+/// helpful for a tool that's meant to be a clean reversible hatch.
 pub const SKIP_PREFIXES: &[&str] = &[
     "lo",
     "docker",
@@ -175,6 +191,24 @@ mod tests {
         assert!(!should_manage("tailscale0"));
         assert!(!should_manage("wg0"));
         assert!(!should_manage(""));
+    }
+
+    #[test]
+    fn vpn_tunnel_skip_list_matches_documented_intent() {
+        // Issue #157 — the docs commit to skipping VPN tunnel devices on
+        // purpose. Pin the prefixes so a future drive-by edit can't quietly
+        // drop one and break the documented contract.
+        for prefix in ["tun", "tap", "wg", "tailscale", "zt"] {
+            assert!(
+                SKIP_PREFIXES.contains(&prefix),
+                "VPN tunnel prefix '{prefix}' must remain in SKIP_PREFIXES"
+            );
+        }
+        // And the policy itself must hold: tun0/tap1/wg0/tailscale0/zt-foo
+        // all evaluate to "do not manage".
+        for name in ["tun0", "tap1", "wg0", "tailscale0", "zt-abc12345"] {
+            assert!(!should_manage(name), "should not manage VPN iface {name}");
+        }
     }
 
     #[test]
