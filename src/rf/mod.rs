@@ -261,11 +261,15 @@ fn parse_iw_dev_info_txpower(text: &str) -> Option<i32> {
 /// Find the highest `(<dBm> dBm)` value from `iw reg get`. Real output looks
 /// like:
 ///
-///     (5170 - 5250 @ 80), (N/A, 23), (N/A)
+/// ```text
+/// (5170 - 5250 @ 80), (N/A, 23), (N/A)
+/// ```
 ///
 /// or, on older `iw`:
 ///
-///     (5170 - 5250 @ 80), (N/A, 23 dBm), (N/A)
+/// ```text
+/// (5170 - 5250 @ 80), (N/A, 23 dBm), (N/A)
+/// ```
 ///
 /// We accept both shapes. A regulatory max of zero means the parser failed
 /// and the caller should fall back.
