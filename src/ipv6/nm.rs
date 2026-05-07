@@ -12,7 +12,7 @@
 use anyhow::{Context, Result};
 use zbus::zvariant::{OwnedObjectPath, Value};
 
-use crate::nm::{ConnectionProxy, ConnectionSettings};
+use crate::nm::{ConnectionProxy, ConnectionSettings, addr_gen_mode_to_int};
 
 /// NM key for stable-privacy IID generation under `[ipv6]`.
 pub const ADDR_GEN_MODE_STABLE_PRIVACY: &str = "stable-privacy";
@@ -81,9 +81,13 @@ pub async fn apply_settings(
         .await
         .context("calling Settings.Connection.GetSettings")?;
     let entry = settings.entry("ipv6".to_string()).or_default();
+    // NM declares `ipv6.addr-gen-mode` as signature `i` (i32) — older NM
+    // versions (1.20-1.36) hard-reject a string value. Map our string token
+    // through the helper, which validates it's one of the four legal modes.
+    let mode_int = addr_gen_mode_to_int(&new.addr_gen_mode)?;
     entry.insert(
         "addr-gen-mode".to_string(),
-        Value::from(new.addr_gen_mode.clone()).try_into()?,
+        Value::from(mode_int).try_into()?,
     );
     entry.insert(
         "dhcp-duid".to_string(),
@@ -116,7 +120,7 @@ impl Ipv6Snapshot {
         let Some(section) = settings.get("ipv6") else {
             return out;
         };
-        out.addr_gen_mode = lookup_str(section, "addr-gen-mode");
+        out.addr_gen_mode = lookup_addr_gen_mode(section);
         out.dhcp_duid = lookup_str(section, "dhcp-duid");
         out.dhcp_iaid = lookup_str(section, "dhcp-iaid");
         out
@@ -131,6 +135,30 @@ fn lookup_str(
     match v {
         Value::Str(s) => Some(s.as_str().to_string()),
         _ => None,
+    }
+}
+
+/// `ipv6.addr-gen-mode` may come back as `i32` (modern, post-fix) or `String`
+/// (legacy NM keyfile or older Proteus releases). Normalise both shapes into
+/// the string token our config and status output speak.
+fn lookup_addr_gen_mode(
+    section: &std::collections::HashMap<String, zbus::zvariant::OwnedValue>,
+) -> Option<String> {
+    let v: &Value = section.get("addr-gen-mode")?;
+    match v {
+        Value::Str(s) => Some(s.as_str().to_string()),
+        Value::I32(i) => Some(addr_gen_mode_from_int(*i)),
+        _ => None,
+    }
+}
+
+fn addr_gen_mode_from_int(i: i32) -> String {
+    match i {
+        0 => "default".into(),
+        1 => "eui64".into(),
+        2 => "stable-privacy".into(),
+        3 => "default-or-eui64".into(),
+        other => other.to_string(),
     }
 }
 
@@ -150,5 +178,43 @@ mod tests {
     fn snapshot_from_empty_settings_yields_all_none() {
         let s = Ipv6Snapshot::from_settings(&ConnectionSettings::new());
         assert_eq!(s, Ipv6Snapshot::default());
+    }
+
+    #[test]
+    fn snapshot_decodes_i32_addr_gen_mode() {
+        let mut settings = ConnectionSettings::new();
+        let section = settings.entry("ipv6".to_string()).or_default();
+        section.insert(
+            "addr-gen-mode".to_string(),
+            Value::from(2_i32).try_into().unwrap(),
+        );
+        let snap = Ipv6Snapshot::from_settings(&settings);
+        assert_eq!(snap.addr_gen_mode.as_deref(), Some("stable-privacy"));
+    }
+
+    #[test]
+    fn snapshot_still_decodes_legacy_string_addr_gen_mode() {
+        let mut settings = ConnectionSettings::new();
+        let section = settings.entry("ipv6".to_string()).or_default();
+        section.insert(
+            "addr-gen-mode".to_string(),
+            Value::from("stable-privacy".to_string())
+                .try_into()
+                .unwrap(),
+        );
+        let snap = Ipv6Snapshot::from_settings(&settings);
+        assert_eq!(snap.addr_gen_mode.as_deref(), Some("stable-privacy"));
+    }
+
+    #[test]
+    fn addr_gen_mode_from_int_covers_known_values() {
+        assert_eq!(addr_gen_mode_from_int(0), "default");
+        assert_eq!(addr_gen_mode_from_int(1), "eui64");
+        assert_eq!(addr_gen_mode_from_int(2), "stable-privacy");
+        assert_eq!(addr_gen_mode_from_int(3), "default-or-eui64");
+        // Unknown values pass through as their integer label rather than
+        // panic — keeps `proteus ipv6 status` informative if NM ever adds
+        // a new mode.
+        assert_eq!(addr_gen_mode_from_int(99), "99");
     }
 }
