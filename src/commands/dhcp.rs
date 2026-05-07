@@ -223,7 +223,7 @@ pub fn renew(iface: Option<&str>, yes: bool, state_path: Option<&Path>) -> Resul
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct RenewOutcome {
+pub(crate) struct RenewOutcome {
     iface: String,
     method: String,
     note: Option<String>,

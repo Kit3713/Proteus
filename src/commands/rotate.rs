@@ -20,7 +20,7 @@ use crate::state::State;
 use crate::version;
 
 #[derive(Debug, Serialize)]
-struct RotateReport {
+pub(crate) struct RotateReport {
     rotated: Vec<RotatedEntry>,
     skipped: Vec<SkippedEntry>,
     /// Roadmap M2: per-iface explain trace, populated only when `--explain`

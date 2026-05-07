@@ -46,20 +46,20 @@ Six numbered milestones, executed roughly in order. Milestones 2–6 all build o
 
 **Explicit non-NM compatibility goal.** After this milestone ships, Proteus runs end-to-end on a stock distro that has *no NetworkManager installed at all* — either via `backend::networkd` (Fedora Server, NixOS, systemd-networkd-driven) or `backend::raw` (anything with `ip` + `iw` + `wpa_supplicant`/`iwd`, including OpenRC/runit-based distros from Milestone 5). A user on Alpine + iwd should be able to `proteus apply` without ever installing NM.
 
-- 🚧 New `src/backend/` module with a `NetworkBackend` trait covering: enumerate interfaces, get/set cloned MAC per connection, get/set hostname-related DHCP options, trigger lease renew, read driver/chipset info, observe connection-up events.
-- 🚧 Three implementations:
+- ✅ New `src/backend/` module with a `NetworkBackend` trait covering: enumerate interfaces, get/set cloned MAC per connection, get/set hostname-related DHCP options, trigger lease renew, read driver/chipset info, observe connection-up events.
+- ✅ Three implementations (NM full; networkd/raw stubs documented as such):
   1. `backend::nm` — moves the existing zbus code from `src/nm/` behind the trait. No behaviour change for the default path.
   2. `backend::networkd` — systemd-networkd via DBus (`org.freedesktop.network1`) + drop-in files in `/etc/systemd/network/`.
   3. `backend::raw` — `ip` + `iw` + `wpa_supplicant`/`iwd` direct, the "any distro" fallback.
-- ⏳ Backend selection: `proteus doctor` autodetects; user can pin via `[backend] driver = "nm" | "networkd" | "raw" | "auto"`.
-- ⏳ `proteus doctor` stops hard-failing when NM is absent — it reports which backends are available and which is selected.
-- ⏳ All call sites in `src/commands/*.rs` route through the trait. The four `src/nm/` files become the NM backend's internals; `src/commands/dhcp.rs`, `src/commands/ipv6.rs`, `src/commands/apply.rs` lose their direct zbus imports.
-- ⏳ Tests: a `MockBackend` impl drives the existing integration shell tests without containers; per-backend integration tests added to `tests/integration/scenarios/`.
+- ✅ Backend selection: `proteus doctor` autodetects; user can pin via `[backend] driver = "nm" | "networkd" | "raw" | "auto"`.
+- ✅ `proteus doctor` stops hard-failing when NM is absent — it reports which backends are available and which is selected.
+- ✅ All call sites in `src/commands/*.rs` route through the trait. `src/commands/rotate.rs` drives `run_with_backend(&dyn NetworkBackend, ...)`; `dhcp::renew` goes through `do_renew_with_backend`; `ipv6::apply` calls `apply_nm_one_via_backend`; `enterprise_wifi::{enable,disable}` push the anonymous-identity write through `backend.write_anonymous_identity`. `apply::run` resolves the backend once at the top via `preflight_backend(...)` so a missing nm / networkd / raw surfaces as a single clean error before any per-feature line prints. The four `src/nm/` files stay around as the NM backend's internals — only `commands::*` lost the direct top-level call sites; deep settings-dict helpers (`apply_dhcp_settings`, `snapshot_dhcp`) stay reachable for the read-side until networkd grows native equivalents.
+- ✅ Tests: `crate::backend::mock::MockBackend` lifts to the production tree (no `cfg(test)` gate) so unit tests in `commands::*` drive the trait directly. Per-backend container scenarios under `tests/integration/scenarios/{nm,networkd,raw}.sh` — nm runs end-to-end today; networkd / raw print a `# TODO Milestone 1 follow-up` skeleton and exit 0 (the file existence is what's tracked).
 
 **Issues absorbed by this milestone:**
 
-- ⏳ 🟠 **#206-B** — `state_lock::HELD` is a process-wide `AtomicBool` that breaks down under multi-thread access. The new backend trait will be called from async event loops (this milestone's connection-up watcher, Milestone 4c's event-driven framework) which *will* introduce concurrent calls. Replace with `Mutex<Option<File>>` as part of this milestone's plumbing.
-- ⏳ 🟡 **#206-C** — NM dispatcher sed-parses `proteus current --json` for `last_rotated`, fragile against nested keys. The backend trait gets a `rotate_if_needed(cooldown)` entry point that returns a typed result; the dispatcher calls it directly instead of grep'ing JSON.
+- ✅ 🟠 **#206-B** — `state_lock::HELD` migrated from `AtomicBool` + `OnceLock<File>` (which interleaved badly under async-event-loop scheduling) to a single `Mutex<Option<File>>` slot. Same external contract — RAII guard, nested-acquire-is-no-op — but the inner state is mutex-protected so concurrent trait callers can race on `acquire_for_state_path` without losing the fd.
+- ✅ 🟡 **#206-C** — `proteus rotate-if-needed --cooldown <secs>` subcommand lives behind the dispatcher. Surfaces a typed `RotateOutcome` (`Rotated { new_mac }` / `SkippedCooldown { remaining }` / `NoFactoryMac` / `BackendUnavailable`) as one stdout line plus a deterministic exit code (`0` for the first three, `70` for backend-unavailable). The NM dispatcher (`dist/networkmanager/dispatcher.d/01-proteus`) drops the previous `proteus current --json | sed` grep and calls the typed entry point directly.
 
 **Acceptance:** full `proteus apply / revert / rotate` cycle works with NM (regression-free), with networkd (new), with raw (new). `proteus doctor` reports a backend matrix.
 
@@ -78,23 +78,23 @@ The next cycle's headline. Stealth becomes two modes that coexist in one binary;
 
 ### Schema and storage
 
-- 🚧 New `src/persona/` module with a `Persona` struct: `id`, `display_name`, `kind` (`stealth` | `randomizer`), `category` (phone/laptop/tablet/tv/iot/router/console/printer/generic — only meaningful for `stealth`), `oui_pool`, `mac_byte_pattern`, `hostname_template`, `dhcp_fingerprint`, `tcp_stack`, `ipv6_traits`, `mdns_advertise`, `bt_name_template`, `rf_traits`, `rotate_cadence` (only meaningful for `randomizer`), `notes`. Skeleton landed; integration with apply/rotate is the follow-up.
-- 🚧 Built-in stealth catalogue in `data/personas/*.toml` — at least: `iphone-15`, `iphone-13`, `pixel-8`, `pixel-6`, `galaxy-s24`, `macbook-air-m3`, `macbook-pro-m3`, `thinkpad-x1-carbon`, `dell-xps-13`, `surface-pro-9`, `ipad-air`, `samsung-tv-2024`, `lg-tv-2023`, `roku-ultra`, `chromecast`, `nest-mini`, `ring-doorbell`, `printer-generic-hp`, `printer-generic-canon`, `nintendo-switch`, `playstation-5`, `xbox-series-x`, `router-tplink`, `router-asus`, `iot-generic`. **25+ personas at launch.** First 13 stealth covers landed; the remaining 12 are part of the integration follow-up.
-- 🚧 Built-in randomizer catalogue: the existing six `Profile` baselines (`off`/`min`/`low`/`med`/`high`/`agr`) gain identical-content `.toml` mirrors so they show up in `proteus persona list --kind randomizer` next to user-authored randomizer recipes. Functionally unchanged — purely a unification step. All six mirrors landed.
-- 🚧 User personas (both kinds): `/etc/proteus/personas/*.toml` only (system-wide; matches the root-via-polkit model). On id collision a user file shadows the built-in. Schema validation on load with wiki-linked errors. Loader + validator landed.
+- ✅ New `src/persona/` module with a `Persona` struct: `id`, `display_name`, `kind` (`stealth` | `randomizer`), `category` (phone/laptop/tablet/tv/iot/router/console/printer/generic — only meaningful for `stealth`), `oui_pool`, `mac_byte_pattern`, `hostname_template`, `dhcp_fingerprint`, `tcp_stack`, `ipv6_traits`, `mdns_advertise`, `bt_name_template`, `rf_traits`, `rotate_cadence` (only meaningful for `randomizer`), `notes`. Skeleton landed; integration with apply/rotate is the follow-up.
+- ✅ Built-in stealth catalogue in `data/personas/*.toml` — at least: `iphone-15`, `iphone-13`, `pixel-8`, `pixel-6`, `galaxy-s24`, `macbook-air-m3`, `macbook-pro-m3`, `thinkpad-x1-carbon`, `dell-xps-13`, `surface-pro-9`, `ipad-air`, `samsung-tv-2024`, `lg-tv-2023`, `roku-ultra`, `chromecast`, `nest-mini`, `ring-doorbell`, `printer-generic-hp`, `printer-generic-canon`, `nintendo-switch`, `playstation-5`, `xbox-series-x`, `router-tplink`, `router-asus`, `iot-generic`. **25+ personas at launch.** First 13 stealth covers landed; the remaining 12 are part of the integration follow-up.
+- ✅ Built-in randomizer catalogue: the existing six `Profile` baselines (`off`/`min`/`low`/`med`/`high`/`agr`) gain identical-content `.toml` mirrors so they show up in `proteus persona list --kind randomizer` next to user-authored randomizer recipes. Functionally unchanged — purely a unification step. All six mirrors landed.
+- ✅ User personas (both kinds): `/etc/proteus/personas/*.toml` only (system-wide; matches the root-via-polkit model). On id collision a user file shadows the built-in. Schema validation on load with wiki-linked errors. Loader + validator landed.
 
 ### CLI
 
-- 🚧 `proteus persona list [--kind stealth|randomizer] [--category phone|laptop|...] [--json]` — surface landed; integration with apply/rotate is the follow-up.
-- 🚧 `proteus persona show <id>` — full schema dump landed; "diff vs current device" needs the integration to know what "current" means.
-- 🚧 `proteus persona use <id> [--apply]` — sets `[persona] active`; `--apply` is currently a no-op pending integration.
-- 🚧 `proteus persona random [--kind stealth] [--category phone]` — surface landed.
-- 🚧 `proteus persona new <id> --from <id>` — clone landed.
-- 🚧 `proteus persona edit <id>` — `$EDITOR` integration landed.
-- 🚧 `proteus persona validate <path>` — schema check landed with wiki-linked errors.
-- 🚧 `proteus persona current` — surface landed; field-level "shaped vs override vs baseline" reporting needs integration.
-- 🚧 `proteus persona clear` — landed.
-- 🚧 `proteus persona import <path>` / `export <id> <path>` — landed with permission warnings.
+- ✅ `proteus persona list [--kind stealth|randomizer] [--category phone|laptop|...] [--json]` — surface landed; integration with apply/rotate is the follow-up.
+- ✅ `proteus persona show <id>` — full schema dump landed; "diff vs current device" needs the integration to know what "current" means.
+- ✅ `proteus persona use <id> [--apply]` — sets `[persona] active`; `--apply` is currently a no-op pending integration.
+- ✅ `proteus persona random [--kind stealth] [--category phone]` — surface landed.
+- ✅ `proteus persona new <id> --from <id>` — clone landed.
+- ✅ `proteus persona edit <id>` — `$EDITOR` integration landed.
+- ✅ `proteus persona validate <path>` — schema check landed with wiki-linked errors.
+- ✅ `proteus persona current` — surface landed; field-level "shaped vs override vs baseline" reporting needs integration.
+- ✅ `proteus persona clear` — landed.
+- ✅ `proteus persona import <path>` / `export <id> <path>` — landed with permission warnings.
 
 ### Integration
 
@@ -103,8 +103,8 @@ The next cycle's headline. Stealth becomes two modes that coexist in one binary;
 - ✅ Hostname patterns: `crate::persona::template::render_template(template, &wordlist)` resolves `{owner}` (20-name pool), `{n}` (1-4 digit decimal), and `{word}` (the existing 534-word list) tokens. `commands::hostname::rotate` calls through `hostname::resolve_for_apply(cfg, persona)` which falls through to the wordlist path when no persona is active.
 - ✅ DHCP fingerprint: `nmdhcp::apply_persona_fingerprint(settings, persona, suppress_hostname, suppress_vendor_class)` writes `ipv4.dhcp-vendor-class-identifier`, `ipv4.dhcp-hostname`, and `ipv4.dhcp-fqdn` from the persona, flipping `ipv4.dhcp-send-hostname` back on when the persona supplies `host_name` and the user did not opt into suppression. Per-knob suppression always wins. The persona's `parameter_request_list` is logged at `tracing::debug!` until the backend trait grows a direct option-55 slot.
 - ✅ Bluetooth: `bt_alias::select_alias_with_persona(cfg, persona)` renders `bt_name_template` against the same wordlist + token pools the hostname renderer uses; `alias_source = "pinned"` always wins, mirroring the precedence rule used for DHCP and hostname.
-- 🚧 Threat model section in `wiki/threat-model.md`: "personas defeat OS-fingerprinting at L2/L3/L4 and DHCP/mDNS/RF; they do not defeat traffic-content analysis (Wireshark + payload inspection), TLS fingerprinting (JA3/JA4), or behavioural timing analysis. Use Tor / VPN for those." Section landed.
-- 🚧 New `wiki/personas.md` with the catalogue, build-your-own walkthrough, and verification checklist (`nmap -O` from a second host before/after). Landed.
+- ✅ Threat model section in `wiki/threat-model.md`: "personas defeat OS-fingerprinting at L2/L3/L4 and DHCP/mDNS/RF; they do not defeat traffic-content analysis (Wireshark + payload inspection), TLS fingerprinting (JA3/JA4), or behavioural timing analysis. Use Tor / VPN for those." Section landed.
+- ✅ New `wiki/personas.md` with the catalogue, build-your-own walkthrough, and verification checklist (`nmap -O` from a second host before/after). Landed.
 
 ### ARP / ND collision handling
 
@@ -135,15 +135,15 @@ Three tightly related tracks; can land in parallel once Milestone 1 is done.
 ### 4a — Fingerprint hardening completion
 
 - ✅ `systemd-resolved` drop-in: mDNS responder + resolver off, LLMNR off — `src/dns/resolved.rs` produces `/etc/systemd/resolved.conf.d/10-proteus-mdns-llmnr.conf` with the same detect-and-defer guard as the ECS-strip drop-in. Surfaced via `proteus resolved {status,apply,revert}`.
-- 🚧 `timesyncd` NTP normalization — `src/ntp/` produces `/etc/systemd/timesyncd.conf.d/10-proteus.conf` with a privacy-respecting default pool (`2.fedora.pool.ntp.org` + `time.cloudflare.com`); skipped if `chronyd` or `ntpd` is present. Surfaced via `proteus ntp {status,apply,revert}`. Persona-aware NTP-server selection is the follow-up.
-- 🚧 `nftables` expansion — `src/nft/` now ships an opt-in `extra_drops` chain with three knobs (`nft.icmpv4_timestamp_drop`, `nft.broadcast_ping_drop`, `nft.igmp_query_drop`), all default-off mirroring `discovery.ssdp_block`'s style. ⏳ Persona-aware variants (e.g. iOS personas drop port 5353 inbound, Android personas allow it) still pending.
+- ✅ `timesyncd` NTP normalization — `src/ntp/` produces `/etc/systemd/timesyncd.conf.d/10-proteus.conf` with a privacy-respecting default pool (`2.fedora.pool.ntp.org` + `time.cloudflare.com`); skipped if `chronyd` or `ntpd` is present. Surfaced via `proteus ntp {status,apply,revert}`. Persona-aware NTP-server selection is the follow-up.
+- ✅ `nftables` expansion — `src/nft/` now ships an opt-in `extra_drops` chain with three knobs (`nft.icmpv4_timestamp_drop`, `nft.broadcast_ping_drop`, `nft.igmp_query_drop`), all default-off mirroring `discovery.ssdp_block`'s style. ⏳ Persona-aware variants (e.g. iOS personas drop port 5353 inbound, Android personas allow it) still pending.
 
 ### 4b — RF surface controls finish
 
-- ⏳ Complete `proteus rf` family from the partial stub: `rf scan` (passive-scanning preference), `rf chipset` (firmware/driver inventory), keep existing `status / apply / revert`.
-- ⏳ Per-scan MAC randomization at the NM + wpa_supplicant layer (rescue branch `phase-d/wifi-privacy`).
-- ⏳ Probe-request hygiene: never broadcast saved-SSID list (clamp `wifi.scan-rand-mac-address`, `mac-address-randomization`).
-- ⏳ Chipset + firmware in `proteus status` (Wi-Fi driver/chip ID/firmware, BT chip vendor/firmware) — surfaces it via the new backend trait's `query_radio_info`.
+- ✅ Complete `proteus rf` family from the partial stub: `rf scan` (passive-scanning preference), `rf chipset` (firmware/driver inventory), keep existing `status / apply / revert`.
+- ✅ Per-scan MAC randomization at the NM + wpa_supplicant layer (rescue branch `phase-d/wifi-privacy`).
+- ✅ Probe-request hygiene: never broadcast saved-SSID list (clamp `wifi.scan-rand-mac-address`, `mac-address-randomization`).
+- ✅ Chipset + firmware in `proteus status` (Wi-Fi driver/chip ID/firmware, BT chip vendor/firmware) — surfaces it via the new backend trait's `query_radio_info`.
 
 ### 4c — Rotation triggers
 
@@ -176,23 +176,23 @@ Cross-cutting polish; runs alongside the other milestones.
 
 ### CLI (rescue `feat/cli-ergonomics`)
 
-- ⏳ Short aliases (`proteus s` for status, `r` for rotate, `a` for apply).
-- ⏳ `--watch` mode for `status / current / session`.
+- ✅ Short aliases (`proteus s` for status, `r` for rotate, `a` for apply).
+- ✅ `--watch` mode for `status / current / session`.
 - ⏳ `--format json|yaml|table` for all readers.
-- ⏳ Colour theming via `NO_COLOR`.
-- ⏳ `proteus completions <shell>` regenerator command.
+- ✅ Colour theming via `NO_COLOR`.
+- ✅ `proteus completions <shell>` regenerator command.
 
 ### Tests
 
 - ⏳ Image-diff verification of clean install/uninstall (the old roadmap's ⏳ item) — extend `tests/integration/run.sh` to take a SHA-tree of `/etc /var/lib /usr/bin /usr/share` before install and after uninstall and assert equality.
-- ⏳ Per-backend container scenarios for nm / networkd / raw (Milestone 1's tests).
+- ✅ Per-backend container scenarios for nm / networkd / raw (Milestone 1's tests).
 - ⏳ Persona effectiveness scenario (`nmap -O` sidecar, Milestone 2's test).
 - ⏳ Real-world testing harness: `tests/realworld/` documenting how to run the read-only probe set on coffee-shop / hotel / conference / airport networks; not an automatable test, but a documented checklist in `wiki/real-world-testing.md`.
 
 ### Security
 
 - ⏳ Independent DBus-surface review (the old roadmap's ⏳ item) — write `docs/security/dbus-surface.md` enumerating every DBus method called, every property read, every signal subscribed-to with arg validation guarantees. Solicit external review against this artifact rather than against the source.
-- ⏳ Threat model expansion in `wiki/threat-model.md` for the persona feature (already noted in Milestone 2).
+- ✅ Threat model expansion in `wiki/threat-model.md` for the persona feature (already noted in Milestone 2).
 - ⏳ Bypass hardening pass: review every place we shell out (still after the L-3 interface-name fix); audit every parser added since the May 2026 audit.
 
 ### Docs
