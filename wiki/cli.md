@@ -172,6 +172,97 @@ The overall system + per-feature status report: whether systemd, NetworkManager,
 Flags: `--json` machine-readable (see [`status` JSON](#proteus-status---json)).
 Exit: `0` success.
 
+### `timer` — phase **C**
+
+```
+proteus timer <SUBCOMMAND> [args...]
+```
+
+First-class CLI surface for managing the systemd timers Proteus owns. Read sub-subcommands (`status`, `list`, `logs`) work for any user; mutating ones (`enable`, `disable`, `set`, `reset`) require root and exit `66` otherwise. Every sub-subcommand exits `70` if systemd isn't detected.
+
+Timer names are short identifiers, not full unit names: `rotate` -> `proteus-rotate.timer`, `check` -> `proteus-check.timer`, `resume` -> `proteus-resume.timer`, `boot` -> `proteus-boot.service`.
+
+#### `timer status`
+
+```
+proteus timer status [--json]
+```
+
+List every Proteus timer with its enabled/active state, current cadence, next fire, last fire, and whether a user override drop-in is active. Read-only.
+
+Flags: `--json` machine-readable.
+Exit: `0` success · `70` no systemd.
+
+#### `timer list`
+
+```
+proteus timer list [--json]
+```
+
+List the timer "types" defined by Proteus along with their default cadence and one-line description. Read-only; does not consult systemd at all.
+
+Flags: `--json` machine-readable.
+Exit: `0` success.
+
+#### `timer enable <NAME>`
+
+```
+proteus timer enable <NAME>
+```
+
+Run `systemctl enable --now <unit>` for the named timer (or just `enable` for the boot oneshot). Mutating; requires root.
+
+Exit: `0` success · `1` generic · `66` not root · `70` no systemd.
+Example: `sudo proteus timer enable resume`
+
+#### `timer disable <NAME>`
+
+```
+proteus timer disable <NAME>
+```
+
+Run `systemctl disable --now <unit>` for the named timer. Mutating; requires root.
+
+Exit: `0` success · `1` generic · `66` not root · `70` no systemd.
+Example: `sudo proteus timer disable check`
+
+#### `timer set <NAME> --interval <DURATION>`
+
+```
+proteus timer set <NAME> --interval <DURATION>
+```
+
+Change a timer's cadence. Writes a drop-in at `/etc/systemd/system/proteus-<name>.timer.d/override.conf` carrying a `# managed by proteus` header, then runs `systemctl daemon-reload` + `systemctl restart proteus-<name>.timer`. Mutating; requires root.
+
+`<DURATION>` accepts:
+- Compact durations: `30s`, `5m`, `2h`, `1d`, `1w`. Renders to `OnUnitActiveSec=<seconds>` so cadence tracks the unit's last successful run rather than wall-clock alignment.
+- Named systemd cadences: `hourly`, `daily`, `weekly`, `monthly`, `yearly`. Renders to `OnCalendar=<name>`.
+- Full systemd calendar expressions (e.g. `*-*-* 04:00:00`). Renders to `OnCalendar=<expr>` verbatim.
+
+Exit: `0` success · `1` generic · `65` config (bad interval, or non-timer unit) · `66` not root · `70` no systemd.
+Example: `sudo proteus timer set rotate --interval 30m`
+
+#### `timer reset <NAME>`
+
+```
+proteus timer reset <NAME>
+```
+
+Remove the drop-in for a timer and reset to the unit-file default. Runs `daemon-reload` + `restart`. Mutating; requires root.
+
+Exit: `0` success · `1` generic · `65` config (non-timer unit) · `66` not root · `70` no systemd.
+
+#### `timer logs <NAME> [--lines N]`
+
+```
+proteus timer logs <NAME> [--lines N]
+```
+
+Tail recent journald logs for a timer's unit (`journalctl -u <unit> -n N --no-pager`). Read-only.
+
+Flags: `--lines N` (default 50).
+Exit: `0` success · `1` generic · `70` no systemd.
+
 ### `uninstall` — phase **stub** (lands G)
 
 ```
