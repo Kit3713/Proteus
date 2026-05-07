@@ -6,6 +6,7 @@ pub mod config_cmd;
 pub mod current;
 pub mod diff;
 pub mod doctor;
+pub mod dry_run;
 pub mod hostname;
 pub mod original;
 pub mod pin;

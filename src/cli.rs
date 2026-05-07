@@ -361,8 +361,8 @@ pub fn run() -> ExitCode {
         Command::Diff { json } => {
             commands::diff::run(json, cli.state.as_deref(), cli.config.as_deref())
         }
-        Command::DryRun { .. } => {
-            commands::stub::not_implemented("dry-run", 'G', "proteus wiki concepts")
+        Command::DryRun { command } => {
+            commands::dry_run::run(&command, cli.state.as_deref(), cli.config.as_deref())
         }
         Command::Reset { yes, dry_run } => {
             commands::reset::run(yes, dry_run, cli.config.as_deref())

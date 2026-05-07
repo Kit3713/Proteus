@@ -3,9 +3,12 @@
 pub mod arp;
 pub mod generator;
 pub mod oui;
+pub mod plan;
 
 use std::fmt;
 use std::str::FromStr;
+
+pub use plan::{plan_pin, plan_rotate};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;

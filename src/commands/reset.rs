@@ -88,8 +88,9 @@ fn backup_existing(path: &Path, backup_path: &Path) -> Result<bool> {
 /// `/etc/proteus/config.toml` -> `/etc/proteus/config.toml.bak.<timestamp>`.
 ///
 /// The timestamp is the ISO-8601 form (with `:` replaced by `-` to keep the
-/// filename portable across shells and filesystems).
-fn backup_path_for(config: &Path, timestamp: &str) -> PathBuf {
+/// filename portable across shells and filesystems). `pub(crate)` so the
+/// dry-run preview names the same path the real reset would produce.
+pub(crate) fn backup_path_for(config: &Path, timestamp: &str) -> PathBuf {
     let safe = timestamp.replace(':', "-");
     let mut s = config.as_os_str().to_os_string();
     s.push(format!(".bak.{safe}"));

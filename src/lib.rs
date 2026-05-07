@@ -5,6 +5,7 @@ pub mod cli;
 pub mod commands;
 pub mod config;
 pub mod diff;
+pub mod dry_run;
 pub mod hostname;
 pub mod logging;
 pub mod mac;
