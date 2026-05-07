@@ -8,12 +8,20 @@ use anyhow::{Context, Result};
 
 use crate::config::Config;
 use crate::exit;
+use crate::profile::Profile;
 
-/// Reset config to built-in defaults.
+/// Reset config to a minimal "profile only" file.
 ///
 /// Mutating; requires root and `--yes`. The cached original MACs and hostname
 /// in `state.json` are sacred and untouched. `apply` is not invoked
 /// automatically — the user decides when to re-apply.
+///
+/// The written file contains only `profile = "<name>"`. The active profile
+/// is preserved from the existing config when present, otherwise it falls
+/// back to the built-in default. Resolution at load time fills in every
+/// other knob from the profile baseline. This is the inverse of the bug in
+/// issue #131 where reset wrote the resolved (frozen) Config back to disk
+/// and turned every default into an explicit override.
 pub fn run(yes: bool, dry_run: bool, config_override: Option<&Path>) -> Result<u8> {
     // `--dry-run` is a free preview, so it implicitly satisfies the
     // confirmation gate. The shared helper handles the message + exit code
@@ -37,6 +45,7 @@ pub fn run(yes: bool, dry_run: bool, config_override: Option<&Path>) -> Result<u
 
     let path = super::config_path(config_override);
     let backup_path = backup_path_for(&path, &super::now_iso8601());
+    let profile = active_profile(&path);
 
     if dry_run {
         let exists = path.exists();
@@ -54,29 +63,48 @@ pub fn run(yes: bool, dry_run: bool, config_override: Option<&Path>) -> Result<u
             );
         }
         println!(
-            "  would write fresh defaults to {} (state.json untouched)",
-            path.display()
+            "  would write minimal profile-only config to {} (profile = \"{}\")",
+            path.display(),
+            profile.name()
         );
         println!("  would NOT call `proteus apply` — re-apply manually when ready");
         return Ok(exit::SUCCESS);
     }
 
-    let defaults = toml::to_string_pretty(&Config::default()).context("serializing defaults")?;
+    let minimal = render_minimal(profile);
     let backed_up = backup_existing(&path, &backup_path)?;
-    write_atomic(&path, defaults.as_bytes())?;
+    write_atomic(&path, minimal.as_bytes())?;
 
     if backed_up {
         println!(
-            "config reset; previous config saved to {}",
+            "config reset to profile = \"{}\"; previous config saved to {}",
+            profile.name(),
             backup_path.display()
         );
     } else {
         println!(
-            "config reset; no previous config at {} (wrote fresh defaults)",
+            "config reset to profile = \"{}\"; no previous config at {}",
+            profile.name(),
             path.display()
         );
     }
     Ok(exit::SUCCESS)
+}
+
+/// Read the currently-active profile from `path`. If the file is absent or
+/// unparseable we fall back to the built-in default — reset's job is to
+/// produce a clean, valid file even when the previous one was broken.
+fn active_profile(path: &Path) -> Profile {
+    Config::default_or_loaded(path)
+        .map(|c| c.profile)
+        .unwrap_or_default()
+}
+
+/// Render the minimal on-disk form: just `profile = "<name>"`. Resolution
+/// at load time fills in every other knob from the profile baseline, which
+/// is the same override-only-if-present model used everywhere else.
+fn render_minimal(profile: Profile) -> String {
+    format!("profile = \"{}\"\n", profile.name())
 }
 
 /// Copy `path` to `backup_path` if it exists. Returns whether a backup was made.
@@ -135,23 +163,60 @@ mod tests {
     }
 
     #[test]
-    fn defaults_round_trip_via_toml() {
-        // The `reset` operation writes the default profile baseline as
-        // TOML; we must be able to read it back through the RawConfig
-        // resolver and recover the same effective values.
-        let cfg = Config::default();
-        let raw = cfg.to_raw_explicit();
-        let s = toml::to_string_pretty(&raw).unwrap();
-        let parsed: crate::config::RawConfig = toml::from_str(&s).unwrap();
-        let back = parsed.resolve();
-        assert_eq!(back.profile, cfg.profile);
-        assert_eq!(back.probes.quorum_n, cfg.probes.quorum_n);
-        assert_eq!(back.probes.quorum_total, cfg.probes.quorum_total);
-        assert_eq!(
-            back.dns.strip_edns_client_subnet,
-            cfg.dns.strip_edns_client_subnet
-        );
-        assert_eq!(back.mac.rotation_interval, cfg.mac.rotation_interval);
-        assert_eq!(back.mac.oui_pool, cfg.mac.oui_pool);
+    fn render_minimal_writes_only_profile_line() {
+        // Issue #131: reset must not bloat the file with every default
+        // explicitly set. The on-disk form is exactly one assignment.
+        let s = render_minimal(Profile::Med);
+        assert_eq!(s, "profile = \"med\"\n");
+    }
+
+    #[test]
+    fn render_minimal_round_trips_through_resolver() {
+        // After reset the file must still resolve to the profile baseline
+        // when read back. Without per-knob overrides, that is exactly the
+        // built-in baseline for the chosen profile.
+        for p in [
+            Profile::Off,
+            Profile::Min,
+            Profile::Low,
+            Profile::Med,
+            Profile::High,
+            Profile::Agr,
+        ] {
+            let s = render_minimal(p);
+            let raw: crate::config::RawConfig =
+                toml::from_str(&s).expect("minimal profile-only TOML parses");
+            assert!(
+                !raw.has_overrides(),
+                "render_minimal should produce zero per-knob overrides for {:?}",
+                p
+            );
+            let resolved = raw.resolve();
+            assert_eq!(
+                resolved.profile,
+                p,
+                "resolved profile mismatch for {:?}",
+                p
+            );
+        }
+    }
+
+    #[test]
+    fn active_profile_falls_back_to_default_when_path_missing() {
+        let nowhere = Path::new("/nonexistent/proteus/no-such-config.toml");
+        assert_eq!(active_profile(nowhere), Profile::default());
+    }
+
+    #[test]
+    fn active_profile_reads_existing_profile_from_file() {
+        // Per-test unique path so parallel cargo runs don't collide.
+        let cfg = std::env::temp_dir().join(format!(
+            "proteus-reset-active-profile-{}-{}.toml",
+            std::process::id(),
+            line!()
+        ));
+        fs::write(&cfg, "profile = \"high\"\n[mac]\nenabled = false\n").unwrap();
+        assert_eq!(active_profile(&cfg), Profile::High);
+        let _ = fs::remove_file(&cfg);
     }
 }

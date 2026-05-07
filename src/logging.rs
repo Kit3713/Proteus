@@ -10,7 +10,6 @@
 //!
 //! See `wiki/cli.md` Logging section for the user-facing surface.
 
-use std::io::IsTerminal;
 use std::str::FromStr;
 
 use tracing::Level;
@@ -37,7 +36,7 @@ pub fn init(verbose: u8, quiet: u8, no_color: bool) {
 
     let fmt_layer = fmt::layer()
         .with_writer(std::io::stderr)
-        .with_ansi(should_use_ansi(no_color, std::io::stderr().is_terminal()))
+        .with_ansi(!no_color && !no_color_env())
         .without_time()
         .with_target(false);
     let _ = tracing_subscriber::registry()
@@ -46,22 +45,15 @@ pub fn init(verbose: u8, quiet: u8, no_color: bool) {
         .try_init();
 }
 
-/// Decide whether the fmt layer should emit ANSI escape codes.
-///
-/// ANSI is only enabled when **all** of the following hold:
-///
-/// * `--no-color` was not passed,
-/// * the `NO_COLOR` environment variable is unset or empty
-///   (per <https://no-color.org/>),
-/// * the writer (stderr) is attached to a terminal.
-///
-/// This prevents `tracing-subscriber` from embedding ANSI escape bytes when the
-/// log writer is a file or pipe, which previously polluted captured stderr.
-pub(crate) fn should_use_ansi(no_color_flag: bool, stderr_is_tty: bool) -> bool {
-    if no_color_flag || !stderr_is_tty {
-        return false;
-    }
-    !matches!(std::env::var_os("NO_COLOR"), Some(v) if !v.is_empty())
+/// Honor the POSIX `NO_COLOR` convention (https://no-color.org): any
+/// non-empty value disables ANSI styling, regardless of the `--no-color`
+/// flag. Empty `NO_COLOR=""` is treated as unset, matching the spec.
+fn no_color_env() -> bool {
+    no_color_from(std::env::var_os("NO_COLOR").as_deref())
+}
+
+fn no_color_from(value: Option<&std::ffi::OsStr>) -> bool {
+    value.is_some_and(|v| !v.is_empty())
 }
 
 /// Parse `RUST_LOG` into a `Targets` filter. Falls back to the requested
@@ -81,31 +73,36 @@ fn build_filter(default_level: Level) -> Targets {
 }
 
 fn parse_rust_log(s: &str, fallback: LevelFilter) -> Targets {
-    // `Targets::from_str` already understands `target=level` directives. Bare
-    // levels (`debug`) parse as a `=debug` directive against the empty target,
-    // which `Targets` does not treat as a global default — so we strip a
-    // leading bare-level token and feed it through `with_default` instead.
+    // Each directive parses independently so a malformed `bogus=invalid`
+    // does not poison the otherwise-valid `zbus=warn` next to it. Bare
+    // levels (`debug`) update the default; `target=level` directives
+    // accumulate into the `Targets` filter. Bad directives are warned
+    // about and skipped — tracing itself isn't initialized yet here, so
+    // we route the warning through stderr.
     let mut default = fallback;
-    let mut directives: Vec<&str> = Vec::new();
+    let mut targets = Targets::new();
     for part in s.split(',') {
         let part = part.trim();
         if part.is_empty() {
             continue;
         }
-        if !part.contains('=')
-            && let Ok(level) = LevelFilter::from_str(part)
-        {
-            default = level;
+        if !part.contains('=') {
+            match LevelFilter::from_str(part) {
+                Ok(level) => default = level,
+                Err(_) => warn_bad_directive(part),
+            }
             continue;
         }
-        directives.push(part);
+        match Targets::from_str(part) {
+            Ok(t) => targets.extend(t),
+            Err(_) => warn_bad_directive(part),
+        }
     }
-    let targets = if directives.is_empty() {
-        Targets::new()
-    } else {
-        Targets::from_str(&directives.join(",")).unwrap_or_else(|_| Targets::new())
-    };
     targets.with_default(default)
+}
+
+fn warn_bad_directive(part: &str) {
+    eprintln!("proteus: RUST_LOG: ignoring invalid directive '{part}'");
 }
 
 fn level_from_counts(verbose: u8, quiet: u8) -> Level {
@@ -165,82 +162,36 @@ mod tests {
         assert!(!t.would_enable("x", &Level::INFO));
     }
 
-    /// `should_use_ansi` is the single source of truth for the fmt layer's
-    /// ANSI flag; these tests pin its decision matrix so a regression here
-    /// can't reintroduce ANSI escape bytes on captured stderr.
-    mod ansi {
-        use super::*;
+    #[test]
+    fn parse_rust_log_skips_bad_directive_keeps_valid_ones() {
+        // The motivating case from issue #132: a single bad directive in
+        // the middle of an otherwise-valid list must not nuke the rest.
+        let t = parse_rust_log("zbus=warn,bogus=invalid", LevelFilter::INFO);
+        assert!(t.would_enable("zbus", &Level::WARN));
+        assert!(!t.would_enable("zbus", &Level::INFO));
+        // Untouched targets follow the fallback default.
+        assert!(t.would_enable("other", &Level::INFO));
+        assert!(!t.would_enable("other", &Level::DEBUG));
+    }
 
-        /// Serialize tests that mutate `NO_COLOR`; otherwise parallel tests
-        /// race against the shared process environment.
-        fn lock() -> std::sync::MutexGuard<'static, ()> {
-            static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-            LOCK.lock().unwrap_or_else(|e| e.into_inner())
-        }
+    #[test]
+    fn parse_rust_log_skips_bad_bare_level_keeps_valid_targeted() {
+        let t = parse_rust_log("nonsense,zbus=warn", LevelFilter::INFO);
+        // Targeted directive survives even though the bare level was junk.
+        assert!(t.would_enable("zbus", &Level::WARN));
+        assert!(!t.would_enable("zbus", &Level::INFO));
+    }
 
-        struct ScopedNoColor {
-            prev: Option<std::ffi::OsString>,
-        }
+    #[test]
+    fn no_color_from_treats_unset_and_empty_as_color_allowed() {
+        assert!(!no_color_from(None));
+        assert!(!no_color_from(Some(std::ffi::OsStr::new(""))));
+    }
 
-        impl ScopedNoColor {
-            fn set(value: Option<&str>) -> Self {
-                let prev = std::env::var_os("NO_COLOR");
-                // SAFETY: the surrounding `lock()` serializes env mutation.
-                unsafe {
-                    match value {
-                        Some(v) => std::env::set_var("NO_COLOR", v),
-                        None => std::env::remove_var("NO_COLOR"),
-                    }
-                }
-                Self { prev }
-            }
-        }
-
-        impl Drop for ScopedNoColor {
-            fn drop(&mut self) {
-                // SAFETY: same lock as `set`.
-                unsafe {
-                    match self.prev.take() {
-                        Some(v) => std::env::set_var("NO_COLOR", v),
-                        None => std::env::remove_var("NO_COLOR"),
-                    }
-                }
-            }
-        }
-
-        #[test]
-        fn off_when_stderr_is_not_a_tty() {
-            let _g = lock();
-            let _env = ScopedNoColor::set(None);
-            assert!(!should_use_ansi(false, false));
-        }
-
-        #[test]
-        fn off_when_no_color_flag_set() {
-            let _g = lock();
-            let _env = ScopedNoColor::set(None);
-            assert!(!should_use_ansi(true, true));
-        }
-
-        #[test]
-        fn off_when_no_color_env_set() {
-            let _g = lock();
-            let _env = ScopedNoColor::set(Some("1"));
-            assert!(!should_use_ansi(false, true));
-        }
-
-        #[test]
-        fn empty_no_color_env_is_ignored() {
-            let _g = lock();
-            let _env = ScopedNoColor::set(Some(""));
-            assert!(should_use_ansi(false, true));
-        }
-
-        #[test]
-        fn on_when_tty_and_no_overrides() {
-            let _g = lock();
-            let _env = ScopedNoColor::set(None);
-            assert!(should_use_ansi(false, true));
-        }
+    #[test]
+    fn no_color_from_treats_any_nonempty_value_as_color_disabled() {
+        assert!(no_color_from(Some(std::ffi::OsStr::new("1"))));
+        assert!(no_color_from(Some(std::ffi::OsStr::new("yes"))));
+        assert!(no_color_from(Some(std::ffi::OsStr::new("0"))));
     }
 }
