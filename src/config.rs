@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+use std::path::Path;
+
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 // Provisional schema. Phases B-E will refine. `#[serde(default)]` everywhere
@@ -86,6 +89,16 @@ impl Default for DnsConfig {
     fn default() -> Self {
         Self {
             strip_edns_client_subnet: true,
+        }
+    }
+}
+
+impl Config {
+    pub fn default_or_loaded(path: &Path) -> Result<Self> {
+        match std::fs::read_to_string(path) {
+            Ok(s) => toml::from_str(&s).with_context(|| format!("parsing {}", path.display())),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
+            Err(e) => Err(e).with_context(|| format!("reading {}", path.display())),
         }
     }
 }

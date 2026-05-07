@@ -1,14 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::{Context, Result};
 use serde::Serialize;
 
 use crate::config::Config;
 use crate::exit;
-
-const DEFAULT_CONFIG_PATH: &str = "/etc/proteus/config.toml";
 
 #[derive(Serialize)]
 struct MissingReport<'a> {
@@ -18,9 +16,7 @@ struct MissingReport<'a> {
 }
 
 pub fn run(json: bool, override_path: Option<&Path>) -> Result<u8> {
-    let path: PathBuf = override_path
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from(DEFAULT_CONFIG_PATH));
+    let path = super::config_path(override_path);
 
     let raw = match std::fs::read_to_string(&path) {
         Ok(s) => s,

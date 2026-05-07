@@ -94,6 +94,11 @@ pub enum Command {
     Pin {
         /// Interface name or NM connection profile.
         target: String,
+        /// Specific MAC to pin (defaults to current cloned MAC).
+        #[arg(long)]
+        mac: Option<String>,
+        #[arg(long)]
+        yes: bool,
     },
     /// Remove a pin previously set with `pin`.
     Unpin {
@@ -141,8 +146,12 @@ pub fn run() -> ExitCode {
     logging::init(cli.verbose, cli.quiet, cli.no_color);
 
     let code = match cli.command {
-        Command::Status { json } => commands::status::run(json),
-        Command::Current { json, iface } => commands::current::run(json, iface.as_deref()),
+        Command::Status { json } => {
+            commands::status::run(json, cli.state.as_deref(), cli.config.as_deref())
+        }
+        Command::Current { json, iface } => {
+            commands::current::run(json, iface.as_deref(), cli.state.as_deref())
+        }
         Command::Original { json } => commands::original::run(json, cli.state.as_deref()),
         Command::ShowConfig { json } => commands::show_config::run(json, cli.config.as_deref()),
         Command::ShowDefaults { json } => commands::show_defaults::run(json),
@@ -154,15 +163,16 @@ pub fn run() -> ExitCode {
             'G',
             "revert is critical and lands in phase G",
         ),
-        Command::Rotate { .. } => {
-            commands::stub::not_implemented("rotate", 'B', "proteus wiki mac-recipes")
+        Command::Rotate { iface, yes } => commands::rotate::run(
+            iface.as_deref(),
+            yes,
+            cli.state.as_deref(),
+            cli.config.as_deref(),
+        ),
+        Command::Pin { target, mac, yes } => {
+            commands::pin::run(&target, mac.as_deref(), yes, cli.state.as_deref())
         }
-        Command::Pin { .. } => {
-            commands::stub::not_implemented("pin", 'B', "proteus wiki mac-recipes")
-        }
-        Command::Unpin { .. } => {
-            commands::stub::not_implemented("unpin", 'B', "proteus wiki mac-recipes")
-        }
+        Command::Unpin { target } => commands::unpin::run(&target, cli.state.as_deref()),
         Command::Diff { .. } => {
             commands::stub::not_implemented("diff", 'G', "proteus wiki concepts")
         }
