@@ -244,10 +244,14 @@ fn read_firmware_version(base: &Path) -> Option<String> {
 
 /// Pull the `txpower 20.00 dBm` line out of `iw dev <iface> info` and
 /// convert to mBm (milli-dBm). dBm * 100 == mBm by definition.
+///
+/// Issue #160 (defense-in-depth): require a literal `txpower ` prefix
+/// (with trailing space) so future `txpower-foo` keys cannot be parsed
+/// as a power value.
 fn parse_iw_dev_info_txpower(text: &str) -> Option<i32> {
     for raw in text.lines() {
         let line = raw.trim();
-        let Some(rest) = line.strip_prefix("txpower") else {
+        let Some(rest) = line.strip_prefix("txpower ") else {
             continue;
         };
         let value = rest.trim_start();
@@ -273,16 +277,31 @@ fn parse_iw_dev_info_txpower(text: &str) -> Option<i32> {
 ///
 /// We accept both shapes. A regulatory max of zero means the parser failed
 /// and the caller should fall back.
+///
+/// Issue #160 (regulatory safety): the parser anchors on the *power* tuple
+/// — the second parenthesized clause matching `(N/A, <num>[ dBm])` or
+/// `(<num>[ dBm])` — and skips the leading frequency-band clause. Walking
+/// every paren'd token would let the `@ 80` channel-bandwidth in malformed
+/// output be parsed as a power value, which `set_tx_power_mbm` would then
+/// accept as a regulatory ceiling. The grammar is documented above; the
+/// parser refuses anything that doesn't match.
 fn parse_iw_reg_get_max_mbm(text: &str) -> Option<i32> {
     let mut max_dbm: Option<f32> = None;
     for raw in text.lines() {
-        // Each per-band entry is wrapped in parens; we only care about the
-        // tuple immediately after the frequency range.
-        let Some(after_range) = raw.split_once(',') else {
+        // Each per-band entry has the shape `(freq @ bw), (N/A, dBm), (...)`.
+        // Skip the first clause (frequency band), keep the rest, and only
+        // consider the second parenthesized clause for power.
+        let mut clauses = raw.split('(').skip(1);
+        let _ = clauses.next(); // drop the frequency band
+        let Some(power_clause) = clauses.next() else {
             continue;
         };
-        let after_range = after_range.1;
-        for token in after_range.split([',', '(', ')']) {
+        let body = power_clause
+            .split_once(')')
+            .map(|(b, _)| b)
+            .unwrap_or(power_clause);
+        // Body is e.g. "N/A, 23" or "N/A, 23 dBm" or "23" — comma-separated.
+        for token in body.split(',') {
             let t = token.trim();
             if t.is_empty() || t.eq_ignore_ascii_case("N/A") {
                 continue;
@@ -406,6 +425,26 @@ mod tests {
     fn parse_iw_reg_get_returns_none_when_no_dbm_value() {
         let sample = "country US: nothing at all\n";
         assert!(parse_iw_reg_get_max_mbm(sample).is_none());
+    }
+
+    #[test]
+    fn parse_iw_reg_get_does_not_treat_channel_bandwidth_as_dbm() {
+        // Issue #160 regression: an earlier parser walked every parenthesized
+        // token and could pick up `80` from `@ 80` (channel bandwidth) as a
+        // dBm value. With only a frequency-band clause and no power tuple,
+        // the parser must return None — never the bandwidth.
+        let sample = "country US: DFS-FCC\n\
+            (5170 - 5250 @ 80)\n";
+        assert!(parse_iw_reg_get_max_mbm(sample).is_none());
+    }
+
+    #[test]
+    fn parse_iw_dev_info_txpower_rejects_unrelated_txpower_keys() {
+        // Issue #160 defense-in-depth: the prefix check requires `txpower `
+        // (trailing space). A future `txpower-foo` line must not be parsed
+        // as a power value.
+        let sample = "Interface wlan0\n\ttxpower-mode auto\n";
+        assert_eq!(parse_iw_dev_info_txpower(sample), None);
     }
 
     #[test]
