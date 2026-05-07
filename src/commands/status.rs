@@ -55,12 +55,14 @@ pub fn run(json: bool, state_path: Option<&Path>, config_path: Option<&Path>) ->
 fn build_report(state_path: Option<&Path>, config_path: Option<&Path>) -> StatusReport {
     let state = load_state(state_path);
     let config = load_config(config_path);
+    let system = detect_system();
+    let features = feature_table(state.as_ref(), &config, &system);
     StatusReport {
         proteus_version: version::VERSION,
         phase: version::PHASE,
-        system: detect_system(),
+        system,
         interfaces: enumerate_interfaces(),
-        features: feature_table(state.as_ref(), &config),
+        features,
     }
 }
 
@@ -79,7 +81,7 @@ fn detect_system() -> SystemInfo {
         systemd: Path::new("/run/systemd/system").is_dir(),
         network_manager: Path::new("/run/NetworkManager").exists()
             || Path::new("/var/run/NetworkManager").exists(),
-        bluez: Path::new("/run/bluetooth").exists() || Path::new("/var/run/bluetooth").exists(),
+        bluez: crate::bluetooth::detect_runtime(),
         systemd_resolved: Path::new("/run/systemd/resolve").exists(),
     }
 }
@@ -141,8 +143,13 @@ fn read_trim(path: &Path) -> Option<String> {
     }
 }
 
-fn feature_table(state: Option<&State>, config: &Config) -> Vec<FeatureStatus> {
+fn feature_table(
+    state: Option<&State>,
+    config: &Config,
+    system: &SystemInfo,
+) -> Vec<FeatureStatus> {
     let mac_state = mac_rotation_state(state, config);
+    let bt_state = bluetooth_state(state, config, system);
     vec![
         FeatureStatus {
             name: "mac-rotation",
@@ -151,8 +158,8 @@ fn feature_table(state: Option<&State>, config: &Config) -> Vec<FeatureStatus> {
         },
         FeatureStatus {
             name: "bluetooth",
-            state: "not implemented".into(),
-            note: "phase B (parallel PR)".into(),
+            state: bt_state.0,
+            note: bt_state.1,
         },
         FeatureStatus {
             name: "probes",
@@ -205,6 +212,38 @@ fn feature_table(state: Option<&State>, config: &Config) -> Vec<FeatureStatus> {
             note: "phase E".into(),
         },
     ]
+}
+
+fn bluetooth_state(
+    state: Option<&State>,
+    config: &Config,
+    system: &SystemInfo,
+) -> (String, String) {
+    if !config.bluetooth.enabled {
+        return (
+            "idle".to_string(),
+            "disabled in config (bluetooth.enabled = false)".to_string(),
+        );
+    }
+    if !system.bluez {
+        return ("skipped".to_string(), "no BlueZ detected".to_string());
+    }
+    let cached = state
+        .map(|s| !s.originals.bluetooth_aliases.is_empty())
+        .unwrap_or(false);
+    if cached {
+        let n = state
+            .map(|s| s.originals.bluetooth_aliases.len())
+            .unwrap_or(0);
+        return (
+            "applied".to_string(),
+            format!("{n} adapter(s) cached; see `proteus bluetooth status`"),
+        );
+    }
+    (
+        "idle".to_string(),
+        "BlueZ present; run `proteus bluetooth apply` to manage".to_string(),
+    )
 }
 
 fn mac_rotation_state(state: Option<&State>, config: &Config) -> (String, String) {

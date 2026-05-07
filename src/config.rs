@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 #[serde(default)]
 pub struct Config {
     pub mac: MacConfig,
+    pub bluetooth: BluetoothConfig,
     pub hostname: HostnameConfig,
     pub dns: DnsConfig,
     pub discovery: DiscoveryConfig,
@@ -23,6 +24,17 @@ pub struct MacConfig {
     pub enabled: bool,
     pub rotation_interval: String,
     pub oui_pool: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BluetoothConfig {
+    pub enabled: bool,
+    pub generic_alias: bool,
+    pub alias_source: String,
+    pub pinned_alias: Option<String>,
+    pub discoverable: bool,
+    pub ble_rpa: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -71,6 +83,19 @@ impl Default for MacConfig {
                 "dell".into(),
                 "random-locally-administered".into(),
             ],
+        }
+    }
+}
+
+impl Default for BluetoothConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            generic_alias: true,
+            alias_source: "generic".into(),
+            pinned_alias: None,
+            discoverable: false,
+            ble_rpa: true,
         }
     }
 }
