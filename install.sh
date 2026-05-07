@@ -21,6 +21,8 @@ CONFIG_DIR="/etc/proteus"
 STATE_DIR="/var/lib/proteus"
 SYSTEMD_DIR="/etc/systemd/system"
 UNITS_SRC="dist/systemd"
+POLKIT_SRC="dist/polkit/com.kit3713.proteus.policy"
+POLKIT_DIR="/usr/share/polkit-1/actions"
 
 DRY_RUN=0
 
@@ -140,6 +142,23 @@ if [ -d "$UNITS_SRC" ]; then
     fi
 else
     warn "$UNITS_SRC not found — skipping systemd units (timers and boot service won't be enabled)"
+fi
+
+# ---- polkit policy ----------------------------------------------------------
+
+# A PolicyKit action policy that lets a future GUI wrapper elevate mutating
+# proteus commands via pkexec (desktop password prompt) instead of sudo (TTY
+# prompt). The binary itself does not enforce per-action policy; this file is
+# a hint to pkexec and desktop tooling. Skip when polkit is not installed.
+if [ -f "$POLKIT_SRC" ]; then
+    if [ -d "$POLKIT_DIR" ]; then
+        info "installing polkit policy to $POLKIT_DIR"
+        run install -m 0644 "$POLKIT_SRC" "$POLKIT_DIR/com.kit3713.proteus.policy"
+    else
+        warn "$POLKIT_DIR not found — skipping polkit policy (PolicyKit not installed?)"
+    fi
+else
+    warn "$POLKIT_SRC not found — skipping polkit policy"
 fi
 
 # ---- SELinux ----------------------------------------------------------------

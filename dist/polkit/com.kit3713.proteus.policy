@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC
+ "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1.0/policyconfig.dtd">
+<policyconfig>
+  <vendor>Proteus</vendor>
+  <vendor_url>https://github.com/Kit3713/Proteus</vendor_url>
+
+  <action id="com.kit3713.proteus.rotate">
+    <description>Rotate network identifiers (MAC, etc.)</description>
+    <message>Authentication is required to rotate network identifiers.</message>
+    <defaults>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/local/bin/proteus</annotate>
+  </action>
+
+  <action id="com.kit3713.proteus.apply">
+    <description>Apply or revert Proteus configuration</description>
+    <message>Authentication is required to modify network configuration via Proteus.</message>
+    <defaults>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/local/bin/proteus</annotate>
+  </action>
+</policyconfig>
