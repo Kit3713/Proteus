@@ -371,9 +371,7 @@ pub fn run() -> ExitCode {
         Command::Reset { yes, dry_run } => {
             commands::reset::run(yes, dry_run, cli.config.as_deref())
         }
-        Command::Uninstall { .. } => {
-            commands::stub::not_implemented("uninstall", 'G', "proteus wiki uninstall")
-        }
+        Command::Uninstall { purge, yes } => commands::uninstall::run(purge, yes),
         Command::Bluetooth { action } => match action {
             BluetoothAction::Status { json } => commands::bluetooth_cmd::status(json),
             BluetoothAction::Apply { .. } => {
