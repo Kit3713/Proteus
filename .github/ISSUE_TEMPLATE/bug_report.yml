@@ -1,0 +1,131 @@
+name: Bug report
+description: Something Proteus did wrong, or didn't do, or said it did but didn't
+title: "[bug] "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Proteus is pre-release. Phase A (project skeleton) is the current target — see [`docs/PLAN.md`](https://github.com/Kit3713/Proteus/blob/main/docs/PLAN.md). Bugs against unreleased phases are still useful, but expect "not implemented yet" responses for anything past Phase A.
+
+  - type: dropdown
+    id: subcommand
+    attributes:
+      label: Which subcommand triggered this?
+      options:
+        - status
+        - current
+        - original
+        - show-config
+        - show-defaults
+        - apply
+        - revert
+        - rotate
+        - pin
+        - unpin
+        - diff
+        - dry-run
+        - reset
+        - uninstall
+        - wiki
+        - help
+        - other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: phase
+    attributes:
+      label: Which phase does this touch?
+      description: Match the phase in docs/PLAN.md.
+      options:
+        - A skeleton
+        - B L2
+        - C probes+timers+captive
+        - D DHCP+IPv6+hostname+DNS
+        - E discovery+stack+RF
+        - F wiki+packaging
+        - G diff+dry-run+reset+uninstall
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What Proteus did, or didn't do.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+      description: What should have happened instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Repro steps
+      description: Exact commands, in order, starting from a known state.
+    validations:
+      required: true
+
+  - type: input
+    id: fedora-version
+    attributes:
+      label: Fedora version
+      placeholder: Fedora 43
+    validations:
+      required: true
+
+  - type: input
+    id: kernel-version
+    attributes:
+      label: Kernel version
+      description: Output of `uname -r`.
+    validations:
+      required: true
+
+  - type: input
+    id: nm-version
+    attributes:
+      label: NetworkManager version
+      description: Output of `NetworkManager --version`.
+    validations:
+      required: true
+
+  - type: input
+    id: bluez-version
+    attributes:
+      label: BlueZ version
+      description: Output of `bluetoothd --version`. Only required if a Bluetooth feature is involved.
+
+  - type: textarea
+    id: status-json
+    attributes:
+      label: proteus status --json output
+      description: Paste verbatim. Required unless the failing subcommand is `status` itself.
+      render: json
+
+  - type: textarea
+    id: journal
+    attributes:
+      label: Relevant journald log lines
+      description: |
+        `journalctl --user -t proteus -n 100` or `sudo journalctl -t proteus -n 100`.
+      render: shell
+
+  - type: checkboxes
+    id: confirmations
+    attributes:
+      label: Confirmations
+      options:
+        - label: I read CONTRIBUTING.md and this fits Proteus's network-layer fingerprint scope.
+          required: true
+        - label: I checked this isn't a TLS, browser, or DNS-resolution-policy issue (out of scope — see README).
+          required: true
+        - label: I'm willing to test a fix.
+          required: true
