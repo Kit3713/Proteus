@@ -83,6 +83,9 @@ pub(crate) fn revert_best_effort(warns: &mut Vec<String>) {
     if let Err(e) = super::dhcp::revert(None) {
         warns.push(format!("dhcp: {e:#}"));
     }
+    if let Err(e) = super::rf::revert(true, None) {
+        warns.push(format!("rf: {e:#}"));
+    }
     for p in EXTERNAL_DROPINS {
         let path = Path::new(p);
         note(path, remove_file_opt(path), warns);

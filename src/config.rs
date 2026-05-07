@@ -39,6 +39,7 @@ pub struct Config {
     pub stack: StackConfig,
     pub dhcp: DhcpConfig,
     pub captive_portal: CaptivePortalConfig,
+    pub rf: RfConfig,
 }
 
 impl Default for Config {
@@ -81,6 +82,7 @@ impl Config {
             stack: StackConfig::default(),
             dhcp: DhcpConfig::default(),
             captive_portal: CaptivePortalConfig::default(),
+            rf: RfConfig::default(),
         }
     }
 
@@ -157,6 +159,10 @@ impl Config {
                 fresh_mac_per_visit: Some(self.captive_portal.fresh_mac_per_visit),
                 timeout_secs: Some(self.captive_portal.timeout_secs),
             }),
+            rf: Some(RawRfConfig {
+                tx_power_reduce: Some(self.rf.tx_power_reduce),
+                tx_power_reduction_db: Some(self.rf.tx_power_reduction_db),
+            }),
         }
     }
 }
@@ -182,6 +188,7 @@ pub struct RawConfig {
     pub stack: Option<RawStackConfig>,
     pub dhcp: Option<RawDhcpConfig>,
     pub captive_portal: Option<RawCaptivePortalConfig>,
+    pub rf: Option<RawRfConfig>,
 }
 
 impl RawConfig {
@@ -348,6 +355,14 @@ impl RawConfig {
                 cfg.captive_portal.timeout_secs = v;
             }
         }
+        if let Some(r) = self.rf {
+            if let Some(v) = r.tx_power_reduce {
+                cfg.rf.tx_power_reduce = v;
+            }
+            if let Some(v) = r.tx_power_reduction_db {
+                cfg.rf.tx_power_reduction_db = v;
+            }
+        }
         cfg
     }
 
@@ -428,6 +443,7 @@ impl RawConfig {
                 timeout_secs
             ]
         );
+        any_some!(&self.rf, [tx_power_reduce, tx_power_reduction_db]);
         false
     }
 }
@@ -529,6 +545,13 @@ pub struct RawCaptivePortalConfig {
     pub policy: Option<String>,
     pub fresh_mac_per_visit: Option<bool>,
     pub timeout_secs: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct RawRfConfig {
+    pub tx_power_reduce: Option<bool>,
+    pub tx_power_reduction_db: Option<u8>,
 }
 
 // ---- Resolved (public) sub-configs --------------------------------------
@@ -637,6 +660,19 @@ pub struct CaptivePortalConfig {
     pub policy: String,
     pub fresh_mac_per_visit: bool,
     pub timeout_secs: u64,
+}
+
+/// Wi-Fi RF surface controls. The TX-power knob is opt-in: enabling it
+/// shrinks the passive-capture radius at the cost of range from the AP.
+/// Default reduction is 6 dB (~quarter the radiated power).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RfConfig {
+    /// Master switch for TX-power reduction. Off in Min/Low/Med profiles,
+    /// on in High and Agr.
+    pub tx_power_reduce: bool,
+    /// dB below the regulatory maximum. Hardware-clamped on actual write.
+    pub tx_power_reduction_db: u8,
 }
 
 // ---- Defaults -----------------------------------------------------------
@@ -774,6 +810,15 @@ impl Default for CaptivePortalConfig {
     }
 }
 
+impl Default for RfConfig {
+    fn default() -> Self {
+        Self {
+            tx_power_reduce: false,
+            tx_power_reduction_db: 6,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -887,5 +932,27 @@ enabled = true
         assert_eq!(resolved.profile, cfg.profile);
         assert_eq!(resolved.mac.enabled, cfg.mac.enabled);
         assert_eq!(resolved.dhcp.enabled, cfg.dhcp.enabled);
+    }
+
+    #[test]
+    fn rf_section_round_trips_through_toml() {
+        // Explicit values for [rf] survive serialize -> parse -> resolve.
+        let toml_str = r#"
+profile = "med"
+
+[rf]
+tx_power_reduce = true
+tx_power_reduction_db = 9
+"#;
+        let raw: RawConfig = toml::from_str(toml_str).unwrap();
+        let cfg = raw.resolve();
+        assert!(cfg.rf.tx_power_reduce);
+        assert_eq!(cfg.rf.tx_power_reduction_db, 9);
+        let raw2 = cfg.to_raw_explicit();
+        let s = toml::to_string(&raw2).unwrap();
+        let parsed: RawConfig = toml::from_str(&s).unwrap();
+        let back = parsed.resolve();
+        assert!(back.rf.tx_power_reduce);
+        assert_eq!(back.rf.tx_power_reduction_db, 9);
     }
 }

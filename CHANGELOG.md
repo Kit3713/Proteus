@@ -15,6 +15,21 @@ landed, what is in flight, and what is on the bench. See
 
 ### Added
 
+- feat(phase-h): `proteus rf` — Wi-Fi chipset inventory + opt-in TX-power
+  reduction. New subcommands: `rf status` (read-only; lists driver, PCI/USB
+  vendor/device IDs, firmware, current TX power, regulatory max for every
+  Wi-Fi interface, plus the BlueZ adapter inventory for cross-referencing
+  RF-fingerprinting research), `rf apply` (writes the configured floor via
+  `iw dev <iface> set txpower fixed <mbm>` against every Wi-Fi interface;
+  captures the original TX power once on first apply), `rf revert` (restores
+  the cached pre-Proteus TX power exactly). New `[rf]` config section with
+  `tx_power_reduce` (bool, default off in `min`/`low`/`med`, **on** in
+  `high`/`agr`) and `tx_power_reduction_db` (u8, default `6`). Wired into
+  `proteus apply` after `stack` and before `nft`; skips clearly when the
+  master switch is off, no Wi-Fi hardware is detected, or `iw` is not on
+  PATH. Emits a risk-warning line when the knob is on. Real-hardware
+  effects are driver-dependent — if reception degrades after `rf apply`,
+  run `sudo proteus rf revert --yes` to restore.
 - feat: `proteus session` — current network session snapshot in one read-only
   view (active SSID, gateway, link-layer MAC, hostname, captive-portal
   classification). Designed for GUI wrappers via `--json`.

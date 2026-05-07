@@ -155,6 +155,7 @@ fn apply_bools(cfg: &mut Config, profile: Profile) {
     cfg.dhcp.rotate_client_id = f.dhcp_rotate_client_id;
     cfg.captive_portal.enabled = f.captive_portal_enabled;
     cfg.captive_portal.fresh_mac_per_visit = f.captive_portal_fresh_mac_per_visit;
+    cfg.rf.tx_power_reduce = f.rf_tx_power_reduce;
 }
 
 /// Flat record of every profile-affected boolean. Each profile defines
@@ -186,6 +187,7 @@ struct BoolBaseline {
     dhcp_rotate_client_id: bool,
     captive_portal_enabled: bool,
     captive_portal_fresh_mac_per_visit: bool,
+    rf_tx_power_reduce: bool,
 }
 
 const ALL_OFF: BoolBaseline = BoolBaseline {
@@ -215,6 +217,7 @@ const ALL_OFF: BoolBaseline = BoolBaseline {
     dhcp_rotate_client_id: false,
     captive_portal_enabled: false,
     captive_portal_fresh_mac_per_visit: false,
+    rf_tx_power_reduce: false,
 };
 
 const LOW: BoolBaseline = BoolBaseline {
@@ -244,6 +247,7 @@ const LOW: BoolBaseline = BoolBaseline {
     dhcp_rotate_client_id: true,
     captive_portal_enabled: true,
     captive_portal_fresh_mac_per_visit: false,
+    rf_tx_power_reduce: false,
 };
 
 const MED: BoolBaseline = BoolBaseline {
@@ -252,7 +256,10 @@ const MED: BoolBaseline = BoolBaseline {
     ..LOW
 };
 
-const HIGH: BoolBaseline = BoolBaseline { ..MED };
+const HIGH: BoolBaseline = BoolBaseline {
+    rf_tx_power_reduce: true,
+    ..MED
+};
 
 const AGR: BoolBaseline = BoolBaseline {
     discovery_ssdp_block: true,
@@ -381,5 +388,43 @@ mod tests {
         assert_eq!(off.mac.enabled, min.mac.enabled);
         assert_eq!(off.hostname.enabled, min.hostname.enabled);
         assert_eq!(off.ipv6.enabled, min.ipv6.enabled);
+    }
+
+    #[test]
+    fn high_and_agr_enable_rf_tx_power_reduction() {
+        // [rf] is a hostile-network knob: high adds it on top of med, and
+        // agr keeps it on while layering breaking-knob deltas.
+        assert!(Profile::High.baseline().rf.tx_power_reduce);
+        assert!(Profile::Agr.baseline().rf.tx_power_reduce);
+    }
+
+    #[test]
+    fn quiet_profiles_do_not_enable_rf_tx_power_reduction() {
+        // Reducing TX power degrades range from APs, so off/min/low/med
+        // leave it alone. Operators opt in via high/agr or per-knob.
+        assert!(!Profile::Off.baseline().rf.tx_power_reduce);
+        assert!(!Profile::Min.baseline().rf.tx_power_reduce);
+        assert!(!Profile::Low.baseline().rf.tx_power_reduce);
+        assert!(!Profile::Med.baseline().rf.tx_power_reduce);
+    }
+
+    #[test]
+    fn user_override_for_rf_tx_power_reduce_survives_med_to_high() {
+        // The override-beats-profile invariant: explicitly disabling rf
+        // in the file means high cannot turn it back on at the next apply.
+        let toml_str = r#"
+profile = "med"
+
+[rf]
+tx_power_reduce = false
+"#;
+        let raw: crate::config::RawConfig = toml::from_str(toml_str).unwrap();
+        let mut switched = raw.clone();
+        switched.profile = Some(Profile::High);
+        let cfg = switched.resolve();
+        assert!(
+            !cfg.rf.tx_power_reduce,
+            "explicit override must beat the High baseline"
+        );
     }
 }

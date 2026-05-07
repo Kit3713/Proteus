@@ -20,6 +20,7 @@ pub mod portal;
 pub mod probe;
 pub mod reset;
 pub mod revert;
+pub mod rf;
 pub mod rotate;
 pub mod session;
 pub mod show_config;

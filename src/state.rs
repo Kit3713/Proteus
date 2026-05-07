@@ -63,6 +63,12 @@ pub struct Originals {
     /// any write, never overwritten on subsequent applies. Empty string means
     /// "key did not exist on this kernel".
     pub sysctls: BTreeMap<String, String>,
+    /// First-apply snapshot of per-Wi-Fi-iface TX power. Keyed by interface
+    /// name. Captured the first time `proteus rf apply` writes a new TX
+    /// power and used by `proteus rf revert` to restore the original. Empty
+    /// when no RF apply has run; skip-serialized to keep state.json compact.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub rf: BTreeMap<String, RfOriginals>,
 }
 
 /// Cached pre-Proteus values for the per-connection settings Proteus can
@@ -124,6 +130,18 @@ pub struct HostnameOriginals {
     pub kernel: Option<String>,
     pub pretty: Option<String>,
     pub transient: Option<String>,
+}
+
+/// Cached pre-Proteus TX power for one Wi-Fi interface. `None` means the
+/// `iw` lookup did not return a value at first-apply time (driver doesn't
+/// expose it, link was down, etc.); revert in that case is a no-op for
+/// the iface.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RfOriginals {
+    /// TX power in mBm (milli-dBm; the unit `iw` reports natively).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tx_power_mbm: Option<i32>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
