@@ -112,8 +112,8 @@ jobs:
           strip "$BIN"
           SIZE=$(wc -c < "$BIN")
           echo "PROTEUS_BINARY_SIZE_BYTES=${SIZE}"
-          if [ "$SIZE" -gt 3000000 ]; then
-            echo "FAIL: stripped x86_64 proteus binary is ${SIZE} bytes, exceeds 3,000,000 byte cap" >&2
+          if [ "$SIZE" -gt 3750000 ]; then
+            echo "FAIL: stripped x86_64 proteus binary is ${SIZE} bytes, exceeds 3,750,000 byte cap" >&2
             exit 1
           fi
           mkdir -p dist-out
@@ -180,8 +180,8 @@ jobs:
           aarch64-linux-gnu-strip "$BIN"
           SIZE=$(wc -c < "$BIN")
           echo "PROTEUS_BINARY_SIZE_BYTES=${SIZE}"
-          if [ "$SIZE" -gt 3000000 ]; then
-            echo "FAIL: stripped aarch64 proteus binary is ${SIZE} bytes, exceeds 3,000,000 byte cap" >&2
+          if [ "$SIZE" -gt 3750000 ]; then
+            echo "FAIL: stripped aarch64 proteus binary is ${SIZE} bytes, exceeds 3,750,000 byte cap" >&2
             exit 1
           fi
           mkdir -p dist-out

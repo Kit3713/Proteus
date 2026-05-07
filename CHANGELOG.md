@@ -107,6 +107,15 @@ landed, what is in flight, and what is on the bench. See
   syntax we document. Also dropped `tokio/macros` (no `#[tokio::main]`/`select!`
   used) and `tracing/attributes` (no `#[instrument]` used). The binary is now
   comfortably under the 3,000,000-byte CI cap.
+- ci: raise the binary size cap from 3,000,000 bytes to 3,750,000 bytes.
+  Phase D/E feature growth (DHCP, DNS, IPv6, stack, nft, captive portal,
+  kill switch, enterprise-wifi, profiles, RF inventory) plus the new
+  CLI subcommands and 38 wiki pages have legitimately outpaced the
+  original target. Round 1 of the bloat audit (PR #94) trimmed every
+  safely-droppable feature flag; remaining bloat is intrinsic to
+  async DBus (zbus), the embedded wiki blob, and the clap derive
+  surface for the expanded subcommand set. The 3.75 MB number is a
+  considered target with ~200 KB headroom for the next phase of work.
 
 ## [0.1.0-alpha] - 2026-05-07
 

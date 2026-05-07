@@ -38,7 +38,7 @@ Yes. Proteus has a hard guard: if it detects another DNS-privacy tool managing s
 
 ## What's the binary size?
 
-Phase A is around 1.3 MB stripped. Project invariant: ≤3 MB. Any dependency that adds more than 200 KB needs a justification. Cross-ref `CONTRIBUTING.md` quality bar.
+Phase A was around 1.3 MB stripped; with Phase D/E features (DHCP, DNS, IPv6, stack, nft, captive portal, kill switch, enterprise-wifi, profiles, RF inventory) plus the embedded wiki the binary is now around 3.5 MB stripped. Release cap: ≤3.75 MB. Any dependency that adds more than 200 KB needs a justification. Cross-ref `CONTRIBUTING.md` quality bar.
 
 ## Does this work on Ubuntu, Debian, or Arch?
 

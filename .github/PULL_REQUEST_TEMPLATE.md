@@ -13,7 +13,7 @@
 - [ ] `cargo fmt` clean
 - [ ] `cargo clippy --all-targets -- -D warnings` clean
 - [ ] `cargo test` passes
-- [ ] Binary stays under 3 MB stripped (run `strip target/release/proteus && wc -c < target/release/proteus`)
+- [ ] Binary stays under 3.75 MB stripped (run `strip target/release/proteus && wc -c < target/release/proteus`)
 - [ ] If this adds a new feature flag or knob: wiki page added in `wiki/` AND `proteus help <feature>` text wired up
 - [ ] If this adds a new error path: error message points at a wiki page or `proteus help <feature>` where applicable
 - [ ] If this touches privileged operations: integration test added (or noted why not, e.g., "phase A has no privileged ops")

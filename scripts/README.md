@@ -11,7 +11,7 @@ Local pre-push checker. Runs the same checks as [`.github/workflows/ci.yml`](../
 3. `cargo test`
 4. `cargo build --release`
 5. `strip target/release/proteus` (Linux only)
-6. Binary size check (≤ 3,000,000 bytes — hard project invariant)
+6. Binary size check (≤ 3,750,000 bytes — matches the release.yml hard cap)
 7. `bash -n` on `install.sh` and `uninstall.sh` (if present)
 8. `groff -ww -man` lint on `dist/man/proteus.1` (if present and `groff` installed)
 
