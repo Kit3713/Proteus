@@ -229,6 +229,52 @@ pub fn keys(json: bool) -> Result<u8> {
     Ok(exit::SUCCESS)
 }
 
+/// `proteus config set-profile <name>`. Writes `profile = "<name>"` at the
+/// top of the config file, preserving any per-knob overrides the user has
+/// already set (the override-only-if-present model). Switching to `off`
+/// keeps overrides on disk; resolution ignores them while `off` is active
+/// and restores them as soon as the profile changes back.
+pub fn set_profile(name: &str, yes: bool, config: Option<&Path>) -> Result<u8> {
+    let profile = match crate::profile::Profile::parse(name) {
+        Some(p) => p,
+        None => {
+            let names: Vec<&str> = crate::profile::Profile::all()
+                .iter()
+                .map(|p| p.name())
+                .collect();
+            eprintln!(
+                "proteus: unknown profile '{name}' (valid: {})",
+                names.join(", ")
+            );
+            return Ok(exit::CONFIG_ERROR);
+        }
+    };
+    if !yes {
+        eprintln!("proteus: refusing to write config without --yes (safety guard)");
+        return Ok(exit::CONFIG_ERROR);
+    }
+    if let Err(e) = super::require_root() {
+        eprintln!("proteus: {e}");
+        return Ok(exit::PERMISSION_ERROR);
+    }
+    let path = super::config_path(config);
+    let mut doc = load_or_empty_document(&path)?;
+    doc["profile"] = Item::Value(Value::from(profile.name()));
+    let serialized = doc.to_string();
+    if let Err(e) = parse_config_text(&serialized) {
+        eprintln!("proteus: refusing to write — resulting config would not parse: {e:#}");
+        return Ok(exit::CONFIG_ERROR);
+    }
+    super::write_atomic(&path, serialized.as_bytes())?;
+    println!(
+        "set profile = \"{}\" in {} ({})",
+        profile.name(),
+        path.display(),
+        profile.description()
+    );
+    Ok(exit::SUCCESS)
+}
+
 // ---------- shared helpers ----------
 
 fn set_enabled(
@@ -338,7 +384,8 @@ fn default_document() -> Result<DocumentMut> {
 }
 
 fn parse_config_text(s: &str) -> Result<Config> {
-    toml::from_str::<Config>(s).context("parsing config")
+    let raw: crate::config::RawConfig = toml::from_str(s).context("parsing config")?;
+    Ok(raw.resolve())
 }
 
 // ---------- dotted-key plumbing ----------

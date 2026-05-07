@@ -17,6 +17,7 @@ pub mod mac;
 pub mod nft;
 pub mod nm;
 pub mod probe;
+pub mod profile;
 pub mod stack;
 pub mod state;
 pub mod timer;
@@ -41,8 +42,10 @@ mod tests {
     #[test]
     fn defaults_round_trip_through_toml() {
         let cfg = config::Config::default();
-        let s = toml::to_string_pretty(&cfg).unwrap();
-        let back: config::Config = toml::from_str(&s).unwrap();
+        let raw = cfg.to_raw_explicit();
+        let s = toml::to_string_pretty(&raw).unwrap();
+        let parsed: config::RawConfig = toml::from_str(&s).unwrap();
+        let back = parsed.resolve();
         assert_eq!(back.probes.quorum_n, 3);
         assert_eq!(back.probes.quorum_total, 4);
         assert!(back.dns.strip_edns_client_subnet);

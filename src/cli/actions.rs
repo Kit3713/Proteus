@@ -292,6 +292,14 @@ pub enum ConfigAction {
         #[arg(long)]
         json: bool,
     },
+    /// Set the active profile (off / min / low / med / high / agr).
+    /// Per-knob overrides already in the config file are preserved.
+    SetProfile {
+        /// Profile name: `off`, `min`, `low`, `med`, `high`, or `agr`.
+        profile: String,
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]
