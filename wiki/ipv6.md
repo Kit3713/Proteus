@@ -45,7 +45,7 @@ The down/up step is what makes step 3 visible immediately rather than at the end
 
 Look at the live address set:
 
-```
+```sh
 ip -6 addr show wlan0
 ```
 
@@ -53,7 +53,7 @@ Expect to see at least one global-scope address with the `temporary` flag (the t
 
 Watch v6 traffic and confirm the new IID appears on the wire:
 
-```
+```sh
 tcpdump -n -i wlan0 -vv ip6
 ```
 
@@ -61,7 +61,7 @@ Confirm no EUI-64 is in use. Quick check — the IID (last 64 bits) should not c
 
 Check `addr_gen_mode` actually took:
 
-```
+```sh
 cat /proc/sys/net/ipv6/conf/wlan0/addr_gen_mode
 ```
 

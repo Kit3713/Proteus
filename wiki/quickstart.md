@@ -12,7 +12,7 @@ Phase A is pre-release. There is nothing to install yet. Once Phase A lands, the
 
 For now, build from source:
 
-```
+```sh
 git clone https://github.com/Kit3713/Proteus.git
 cd Proteus
 cargo build --release
@@ -52,19 +52,19 @@ Nothing surprises you. If a command isn't built yet, it says so and points at th
 
 Once phase B lands, MAC rotation is one command:
 
-```
+```sh
 sudo proteus rotate --iface wlan0
 ```
 
 Generate a new MAC and apply it via NetworkManager. Confirm it took:
 
-```
+```sh
 proteus current --json | jq .interfaces[].mac
 ```
 
 Rotate every managed interface at once:
 
-```
+```sh
 sudo proteus rotate --yes
 ```
 
@@ -86,7 +86,7 @@ Until phase G ships, the only way to undo Proteus is manual: edit the affected N
 
 ## Presets
 
-Annotated example configs live in [`examples/`](../examples/) in the repo. Each is a starting point you copy into place and tweak, not a one-true-config. After copying, run `proteus show-config --json` to confirm it parses, then `sudo proteus apply`.
+Annotated example configs live in `examples/` in the repo. Each is a starting point you copy into place and tweak, not a one-true-config. After copying, run `proteus show-config --json` to confirm it parses, then `sudo proteus apply`.
 
 - `examples/minimal.toml` — only MAC rotation; everything else stays at OS defaults.
 - `examples/standard.toml` — balanced privacy + compatibility; recommended for most users.
@@ -114,7 +114,7 @@ Substitute the preset filename you picked. See `examples/README.md` for the full
 
 All output goes to journald via `tracing-journald` when running under systemd, and falls back to stderr otherwise.
 
-```
+```sh
 journalctl -t proteus -n 100
 ```
 

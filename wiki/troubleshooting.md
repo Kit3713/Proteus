@@ -112,7 +112,7 @@ Probably not the ECS-strip knob — it has a hard guard that defers to dnscrypt-
 
 - Check the guard fired: `proteus status --json | jq '.features.dns'` should show `skipped (detected <tool>)` if you have one of those installed.
 - If the guard didn't fire, look for the Proteus drop-in: `ls /etc/systemd/resolved.conf.d/`. Remove the suspect file:
-  ```
+  ```sh
   sudo rm /etc/systemd/resolved.conf.d/10-proteus-no-ecs.conf
   sudo systemctl restart systemd-resolved
   ```

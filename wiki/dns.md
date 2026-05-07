@@ -33,13 +33,9 @@ The user's DNS setup wins, every time. If you have set up DNS deliberately, Prot
 
 ## How it does it
 
-Writes a single drop-in:
+Writes a single drop-in at `/etc/systemd/resolved.conf.d/10-proteus-no-ecs.conf`:
 
-```
-/etc/systemd/resolved.conf.d/10-proteus-no-ecs.conf
-```
-
-```
+```toml
 # managed by proteus
 # sha256:<expected-content-hash>
 [Resolve]

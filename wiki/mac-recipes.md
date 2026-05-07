@@ -4,13 +4,13 @@ Practical patterns for MAC rotation. Phase B. For the mental model, see `proteus
 
 Rotate a single interface:
 
-```
+```sh
 sudo proteus rotate --iface wlan0
 ```
 
 Rotate every managed interface in one shot:
 
-```
+```sh
 sudo proteus rotate --yes
 ```
 
@@ -18,7 +18,7 @@ sudo proteus rotate --yes
 
 Confirm it took:
 
-```
+```sh
 proteus current --json | jq .interfaces[].mac
 ```
 
@@ -55,13 +55,13 @@ Freeze a MAC so neither the schedule nor the probe-driven trigger touches it.
 
 Per interface:
 
-```
+```sh
 sudo proteus pin --iface wlan0
 ```
 
 Per NetworkManager connection profile:
 
-```
+```sh
 sudo proteus pin --connection "Coffee Shop"
 ```
 
@@ -69,7 +69,7 @@ When both an interface pin and a connection pin would apply (the iface is curren
 
 Release a pin:
 
-```
+```sh
 sudo proteus unpin --iface wlan0
 sudo proteus unpin --connection "Coffee Shop"
 ```
@@ -129,7 +129,7 @@ Probes target IPs, not hostnames — a broken resolver should not cause a rotati
 
 Restore the original cached MAC for one interface:
 
-```
+```sh
 sudo proteus revert --iface wlan0
 ```
 

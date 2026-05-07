@@ -63,7 +63,7 @@ The cooldown does not block the scheduled timer. If `proteus-rotate.timer` fires
 
 `proteus timer status` is the high-level view of every Proteus timer: enabled vs disabled, currently active, current cadence, next fire, last fire, and whether a user override is in effect. `--json` for wrappers.
 
-```
+```sh
 proteus timer status
 proteus timer status --json
 proteus timer logs rotate --lines 50
@@ -71,7 +71,7 @@ proteus timer logs rotate --lines 50
 
 Standard systemd tools still work as a fallback:
 
-```
+```sh
 systemctl list-timers proteus-*
 journalctl -u proteus-rotate -n 50
 journalctl -u proteus-check -n 50
@@ -86,7 +86,7 @@ journalctl -u proteus-boot -n 50
 
 `proteus timer` is the first-class CLI surface for changing cadences and enabling/disabling rotation jobs without hand-editing systemd units. Drop-ins land at `/etc/systemd/system/proteus-<name>.timer.d/override.conf` and carry a `# managed by proteus` header. `daemon-reload` and a unit restart happen automatically.
 
-```
+```sh
 # See current timer state
 proteus timer status
 proteus timer status --json
@@ -118,7 +118,7 @@ Read commands (`status`, `list`, `logs`) work for any user. Mutating commands (`
 
 The CLI is the same surface the timers call. Manual invocations work identically.
 
-```
+```sh
 sudo proteus rotate                        # rotate all managed interfaces now
 sudo proteus rotate --iface wlan0          # single interface by name
 sudo proteus rotate --connection home-wifi # single NM connection profile
@@ -131,7 +131,7 @@ Manual rotations respect pins and the portal classifier. To rotate a pinned inte
 
 To stop both timers without uninstalling:
 
-```
+```sh
 sudo systemctl disable --now proteus-rotate.timer proteus-check.timer
 ```
 
@@ -158,7 +158,7 @@ The two timers are the baseline. On top of them, Proteus ships two event-driven 
 
 With both hooks installed, `proteus-check.timer` (5-minute polling) becomes a backup safety net. Users who trust the event triggers can disable it:
 
-```
+```sh
 sudo systemctl disable --now proteus-check.timer
 ```
 
