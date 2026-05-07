@@ -64,12 +64,24 @@ pub fn run(yes: bool) -> Result<u8> {
 /// and state files. Shared with `commands::uninstall` so both paths stay
 /// consistent. Each step is independent: a failure pushes a warning and the
 /// next step still runs.
+///
+/// File-removal handles the on-disk drop-ins (sysctl/timesyncd/dispatcher,
+/// per-link resolved drop-ins, the proteus nft table). Per-NM-connection
+/// DBus state for IPv6 and DHCP is *not* covered by file removal — those
+/// settings live inside NetworkManager keyfiles or in-memory connections,
+/// so the corresponding submodule reverts are called explicitly.
 pub(crate) fn revert_best_effort(warns: &mut Vec<String>) {
     if let Err(e) = super::hostname::revert(None) {
         warns.push(format!("hostname: {e:#}"));
     }
     if let Err(e) = super::bluetooth_cmd::revert(None) {
         warns.push(format!("bluetooth: {e:#}"));
+    }
+    if let Err(e) = super::ipv6::revert(true, None) {
+        warns.push(format!("ipv6: {e:#}"));
+    }
+    if let Err(e) = super::dhcp::revert(None) {
+        warns.push(format!("dhcp: {e:#}"));
     }
     for p in EXTERNAL_DROPINS {
         let path = Path::new(p);
