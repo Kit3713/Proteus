@@ -1,0 +1,42 @@
+root = true
+
+# Defaults for all files in the repo.
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+# Rust: 4-space indent, line width matches rustfmt.toml.
+[*.rs]
+indent_style = space
+indent_size = 4
+max_line_length = 100
+
+[*.toml]
+indent_style = space
+indent_size = 2
+
+[*.{yml,yaml}]
+indent_style = space
+indent_size = 2
+
+# Markdown: keep trailing spaces — they encode hard line breaks.
+[*.md]
+indent_style = space
+indent_size = 2
+trim_trailing_whitespace = false
+
+# Shell: 2-space POSIX style, consistent with install.sh.
+[*.sh]
+indent_style = space
+indent_size = 2
+
+# Makefiles require literal tabs in recipes.
+[Makefile]
+indent_style = tab
+
+# systemd unit files use flat sections — no indent.
+[*.{service,timer}]
+indent_style = space
+indent_size = 0
