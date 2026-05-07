@@ -420,6 +420,7 @@ mod tests {
             "MyWiFi".to_string(),
             ConnectionOriginals {
                 anonymous_identity: Some("old@x.y".to_string()),
+                dhcp_settings: None,
             },
         );
         // Simulate the line from `disable_one` that drops the cached entry.
