@@ -9,10 +9,10 @@
 	dh $@
 
 override_dh_auto_build:
-	cargo build --release --frozen
+	cargo build --release --locked
 
 override_dh_auto_test:
-	cargo test --release --frozen
+	cargo test --release --locked
 
 override_dh_auto_install:
 	install -Dm755 target/release/proteus debian/proteus/usr/bin/proteus
