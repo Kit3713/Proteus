@@ -193,10 +193,23 @@ pub fn apply(state_path: Option<&Path>, config_path: Option<&Path>) -> Result<u8
     persist_capture_metadata(&mut state);
     state.save(&state_path)?;
 
+    // Roadmap M2 "Integration": per-persona BT alias template. When a
+    // persona is active, its `bt_name_template` shapes the alias.
+    // `select_alias_with_persona` falls through to `select_alias` when
+    // no persona / no template / `alias_source = "pinned"` so v0.2.x
+    // users see no change.
+    let active_persona = crate::persona::active_for(
+        &config,
+        None,
+        crate::persona::resolve::default_user_root(),
+    );
     let result = rt.block_on(async {
         let mut outcomes = Vec::new();
         for a in &adapters {
-            let alias = bt_alias::select_alias(&config.bluetooth)?;
+            let alias = bt_alias::select_alias_with_persona(
+                &config.bluetooth,
+                active_persona.as_ref(),
+            )?;
             let outcome = bt_apply::apply_one(&conn, a, &config.bluetooth, &alias).await?;
             outcomes.push(outcome);
         }

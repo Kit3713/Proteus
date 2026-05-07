@@ -9,11 +9,13 @@ use serde::Serialize;
 use crate::config::Config;
 use crate::exit;
 use crate::mac::generator::{
-    self, CandidateAttempt, GenerateOptions, ProbeOptions, RejectionReason,
+    self, ByteSuffixPattern, CandidateAttempt, GenerateOptions, ProbeOptions, RejectionReason,
 };
+use crate::mac::oui;
 use crate::mac::probe::{Probe, SystemProbe};
 use crate::mac::{Mac, arp, factory};
 use crate::nm::{self, DeviceInfo, DeviceKind};
+use crate::persona;
 use crate::state::State;
 use crate::version;
 
@@ -27,6 +29,12 @@ struct RotateReport {
     /// change for them).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     explain: Vec<ExplainEntry>,
+    /// Active persona id, when one shaped this rotation. Surfaced under
+    /// `--explain` so the operator sees which `oui_pool` was actually
+    /// in scope. `None` means the global `[mac] oui_pool` was in use
+    /// (the v0.2.x slider path).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    active_persona: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -174,6 +182,8 @@ async fn rotate_devices<P: Probe + ?Sized>(
         rotated: Vec::new(),
         skipped: Vec::new(),
         explain: Vec::new(),
+        active_persona: persona::active_for(config, None, persona::resolve::default_user_root())
+            .map(|p| p.id),
     };
     for dev in devices {
         if let Some(f) = iface_filter
@@ -250,10 +260,17 @@ async fn rotate_one<P: Probe + ?Sized>(
     state.save(state_path)?;
 
     let forbidden = build_forbidden(state, dev.hw_address.as_deref());
+    // Roadmap M2 "Integration": when a persona is active, its `oui_pool`
+    // and `mac_byte_pattern` shape the generator. Falling back to the
+    // global `[mac] oui_pool` keeps the v0.2.x slider behaviour the
+    // default — no regression for users who haven't opted into a persona.
+    let active_persona = persona::active_for(config, None, persona::resolve::default_user_root());
+    let (effective_pool, suffix_pattern) = persona_shape_for(&active_persona, config);
     let opts = GenerateOptions {
-        pool: &config.mac.oui_pool,
+        pool: &effective_pool,
         forbidden: &forbidden,
         avoid,
+        suffix_pattern,
     };
     // Roadmap M2: probe-aware path runs the RFC 5227 ARP probe and the
     // IPv6 DAD probe inline with adaptive backoff. SystemProbe falls back
@@ -420,6 +437,54 @@ fn build_forbidden(state: &State, hw: Option<&str>) -> HashSet<Mac> {
     set
 }
 
+/// Map an active [`persona::Persona`] to the (pool, suffix_pattern) the
+/// generator should use. When `persona` is `None` we fall through to the
+/// global `[mac] oui_pool` — the v0.2.x default. When `persona` is set
+/// but its `oui_pool` doesn't resolve to any known prefixes (every token
+/// was unknown / unparseable), the persona pool is dropped and the
+/// global slider's pool wins so apply doesn't fail loud on a typo.
+fn persona_shape_for(
+    persona: &Option<crate::persona::Persona>,
+    config: &Config,
+) -> (Vec<String>, Option<ByteSuffixPattern>) {
+    let Some(p) = persona else {
+        return (config.mac.oui_pool.clone(), None);
+    };
+    // Only Stealth personas drive the OUI pool today; Randomizer mirrors
+    // are content-identical to the existing slider and use the global
+    // pool. Per roadmap Milestone 2: "Override `pool: &OuiPool` when
+    // `kind = stealth`."
+    let stealth = matches!(p.kind, crate::persona::PersonaKind::Stealth);
+    let resolved = oui::resolve_vendor_tokens(&p.oui_pool);
+    let pool = if stealth && !resolved.is_empty() {
+        // The generator iterates token strings, not raw prefixes. Use
+        // the persona's own token list so adaptive backoff can advance
+        // through `["apple", "intel"]` token-by-token. This relies on
+        // `Vendor::from_pool_token` understanding every persona token —
+        // verified by `oui::resolve_vendor_tokens` having returned a
+        // non-empty vec just now.
+        p.oui_pool.clone()
+    } else {
+        config.mac.oui_pool.clone()
+    };
+    let suffix = p
+        .mac_byte_pattern
+        .as_deref()
+        .and_then(|s| match ByteSuffixPattern::parse(s) {
+            Ok(pat) => Some(pat),
+            Err(e) => {
+                tracing::warn!(
+                    persona = %p.id,
+                    pattern = %s,
+                    error = %format!("{e:#}"),
+                    "ignoring malformed mac_byte_pattern; rolling all 3 trailing bytes"
+                );
+                None
+            }
+        });
+    (pool, suffix)
+}
+
 fn print_report(report: &RotateReport, explain: bool) {
     for r in &report.rotated {
         let prev = r.previous.as_deref().unwrap_or("?");
@@ -432,6 +497,12 @@ fn print_report(report: &RotateReport, explain: bool) {
         println!("skipped {}: {}", s.iface, s.reason);
     }
     if explain {
+        // Persona banner: the operator wants to see which OUI pool was
+        // actually in scope. Empty when no persona is active.
+        match &report.active_persona {
+            Some(id) => println!("explain: active persona = '{id}' (persona oui_pool in use)"),
+            None => println!("explain: no persona active; global [mac] oui_pool in use"),
+        }
         for entry in &report.explain {
             println!(
                 "explain {}: chosen-token={} oui-fallbacks={} candidates={}",
@@ -585,6 +656,7 @@ mod tests {
             pool: &pool,
             forbidden: &forbidden,
             avoid: &avoid,
+            suffix_pattern: None,
         };
         let probe_opts = {
             let mut p = ProbeOptions::for_iface("wlan0");
@@ -619,6 +691,7 @@ mod tests {
             pool: &pool,
             forbidden: &forbidden,
             avoid: &avoid,
+            suffix_pattern: None,
         };
         let mut probe_opts = ProbeOptions::for_iface("wlan0");
         probe_opts.run_nd_probe = false;
@@ -646,6 +719,138 @@ mod tests {
         );
     }
 
+    // === Roadmap M2 "Integration" — persona-aware MAC OUI shaping ===
+    //
+    // The integration tests assert that when `[persona] active = "iphone-15"`
+    // is set, `generate_with_probe` picks from Apple OUIs (not the global
+    // mac.oui_pool), and that when no persona is active the v0.2.x
+    // behaviour is preserved.
+
+    use crate::config::PerSsidPolicy;
+    use crate::mac::oui::APPLE;
+
+    fn cfg_with_global_pool() -> Config {
+        let mut c = crate::profile::Profile::Med.baseline();
+        c.persona.active = None;
+        c.per_ssid.clear();
+        // Use a non-Apple global pool so the test below distinguishes
+        // "persona path took us to Apple" vs "global path also has Apple".
+        c.mac.oui_pool = vec!["intel".into(), "samsung".into()];
+        c
+    }
+
+    /// Persona-active path: with `active = "iphone-15"`, the generator
+    /// picks from Apple OUIs even though the global `mac.oui_pool` is
+    /// Intel + Samsung.
+    #[test]
+    fn persona_active_drives_generator_to_apple_oui_pool() {
+        let mut cfg = cfg_with_global_pool();
+        cfg.persona.active = Some("iphone-15".into());
+        let persona = persona::active_for(&cfg, None, persona::resolve::default_user_root())
+            .expect("iphone-15 must load from built-ins");
+        let (pool, _suffix) = persona_shape_for(&Some(persona), &cfg);
+        // The persona declares `oui_pool = ["apple"]` — that's what the
+        // shape helper must surface.
+        assert_eq!(pool, vec!["apple".to_string()]);
+
+        // Drive the generator with the resolved pool and verify every MAC
+        // it produces lives in the Apple range.
+        let forbidden = HashSet::new();
+        let avoid = HashSet::new();
+        let probe = MockProbe::responds(false);
+        let opts = GenerateOptions {
+            pool: &pool,
+            forbidden: &forbidden,
+            avoid: &avoid,
+            suffix_pattern: None,
+        };
+        let mut probe_opts = ProbeOptions::for_iface("wlan0");
+        probe_opts.run_nd_probe = false;
+        for _ in 0..32 {
+            let out = generator::generate_with_probe(&opts, &probe, &probe_opts).expect("ok");
+            let oui = &out.chosen.octets()[..3];
+            assert!(
+                APPLE.iter().any(|p| p.as_slice() == oui),
+                "persona-shaped MAC {} should land in an Apple OUI",
+                out.chosen
+            );
+        }
+    }
+
+    /// Persona-unset path: with no persona, the global pool drives the
+    /// generator and behaviour is exactly v0.2.x. Surface: the shape
+    /// helper returns the config's pool verbatim and `suffix_pattern` is
+    /// `None`.
+    #[test]
+    fn persona_unset_keeps_global_pool_and_no_suffix_pattern() {
+        let cfg = cfg_with_global_pool();
+        let persona = persona::active_for(&cfg, None, persona::resolve::default_user_root());
+        let (pool, suffix) = persona_shape_for(&persona, &cfg);
+        assert_eq!(pool, cfg.mac.oui_pool);
+        assert!(suffix.is_none());
+    }
+
+    /// Per-SSID override beats the globally-active persona at shape time.
+    #[test]
+    fn per_ssid_persona_override_beats_global_persona() {
+        let mut cfg = cfg_with_global_pool();
+        cfg.persona.active = Some("iphone-15".into());
+        cfg.per_ssid.insert(
+            "coffee-shop".into(),
+            PerSsidPolicy {
+                persona: Some("pixel-8".into()),
+                ..PerSsidPolicy::default()
+            },
+        );
+        let p = persona::active_for(&cfg, Some("coffee-shop"), persona::resolve::default_user_root())
+            .expect("pixel-8 must load");
+        assert_eq!(p.id, "pixel-8");
+        // pixel-8's pool resolves through the vendor table; Google is the
+        // canonical one.
+        let (pool, _) = persona_shape_for(&Some(p), &cfg);
+        assert!(pool.iter().any(|t| t == "google"));
+    }
+
+    /// Persona missing on disk is not fatal: the resolver warn-logs and
+    /// returns `None`, the rotate path falls through to the global pool.
+    #[test]
+    fn persona_id_set_but_unknown_falls_through_to_global() {
+        let mut cfg = cfg_with_global_pool();
+        cfg.persona.active = Some("definitely-not-a-real-persona-xyz".into());
+        let p = persona::active_for(&cfg, None, persona::resolve::default_user_root());
+        assert!(p.is_none());
+        let (pool, _) = persona_shape_for(&p, &cfg);
+        assert_eq!(pool, cfg.mac.oui_pool);
+    }
+
+    /// Randomizer-kind personas don't drive the OUI pool — they're
+    /// content-identical to the global slider. Pin the surface so a
+    /// future persona type can't silently force the pool through.
+    #[test]
+    fn randomizer_persona_keeps_global_pool() {
+        let mut cfg = cfg_with_global_pool();
+        cfg.persona.active = Some("randomizer-med".into());
+        let p = persona::active_for(&cfg, None, persona::resolve::default_user_root())
+            .expect("randomizer-med builtin must load");
+        assert!(matches!(p.kind, crate::persona::PersonaKind::Randomizer));
+        let (pool, _) = persona_shape_for(&Some(p), &cfg);
+        assert_eq!(pool, cfg.mac.oui_pool, "randomizer mirrors keep slider pool");
+    }
+
+    /// `mac_byte_pattern` literal bytes pin the corresponding trailing
+    /// MAC byte. Pin the parser surface here; the generator-level
+    /// behaviour is tested in `mac::generator::tests`.
+    #[test]
+    fn mac_byte_pattern_parses_xx_and_literal_slots() {
+        let p = ByteSuffixPattern::parse("01:23:xx").unwrap();
+        assert_eq!(p.bytes, [Some(0x01), Some(0x23), None]);
+        let p = ByteSuffixPattern::parse("xx-xx-xx").unwrap();
+        assert_eq!(p.bytes, [None, None, None]);
+        // Wrong byte count -> error so a hand-edited persona surfaces it.
+        assert!(ByteSuffixPattern::parse("01:23").is_err());
+        assert!(ByteSuffixPattern::parse("zz:bb:cc").is_err());
+    }
+
     /// Active probe collision -> retry; eventual acceptance. End-to-end
     /// shape: collide once, then succeed, and confirm the rotated MAC is
     /// not the one that collided.
@@ -662,6 +867,7 @@ mod tests {
             pool: &pool,
             forbidden: &forbidden,
             avoid: &avoid,
+            suffix_pattern: None,
         };
         let mut probe_opts = ProbeOptions::for_iface("wlan0");
         probe_opts.run_nd_probe = false;

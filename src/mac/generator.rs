@@ -9,6 +9,56 @@ use super::oui::Vendor;
 use super::probe::{ARP_PROBE_TIMEOUT, ND_PROBE_TIMEOUT, Probe, ProbeOutcome};
 use super::{Mac, MacError};
 
+/// Shape of the trailing 3 MAC bytes a persona may pin via
+/// `mac_byte_pattern` (e.g. `xx:xx:xx`, `01:23:xx`, `aa-bb-cc`). `xx`
+/// (case-insensitive) marks an entropy slot; literal hex pairs pin the
+/// corresponding byte. `None` means "unconstrained" — the historical
+/// path that fills all three with `getrandom`. Roadmap Milestone 2.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ByteSuffixPattern {
+    /// Per-byte: `Some(literal)` pins the byte, `None` rolls it.
+    pub bytes: [Option<u8>; 3],
+}
+
+impl ByteSuffixPattern {
+    /// Parse `01:23:xx` / `01-23-xx` / `0123xx` into a pattern. The
+    /// caller supplies one of the three accepted separators and the
+    /// parser is lenient about case + the colon variant. Returns
+    /// `Err` on malformed input so a typo'd persona pattern lands at
+    /// the user, not as silently-rolled bytes.
+    pub fn parse(s: &str) -> Result<Self> {
+        let cleaned: String = s
+            .chars()
+            .filter(|c| !matches!(c, ':' | '-' | ' '))
+            .collect();
+        if cleaned.len() != 6 {
+            bail!(
+                "mac_byte_pattern '{s}' must encode 3 bytes (got {} hex/x chars)",
+                cleaned.len()
+            );
+        }
+        let mut bytes: [Option<u8>; 3] = [None, None, None];
+        for i in 0..3 {
+            let pair = &cleaned[i * 2..i * 2 + 2];
+            if pair.eq_ignore_ascii_case("xx") {
+                bytes[i] = None;
+                continue;
+            }
+            let v = u8::from_str_radix(pair, 16)
+                .map_err(|_| anyhow!("mac_byte_pattern '{s}' has non-hex byte '{pair}'"))?;
+            bytes[i] = Some(v);
+        }
+        Ok(Self { bytes })
+    }
+
+    /// Convenience: every byte rolled (the historical, no-pattern path).
+    pub const fn unconstrained() -> Self {
+        Self {
+            bytes: [None, None, None],
+        }
+    }
+}
+
 const MAX_GENERATION_ATTEMPTS: usize = 64;
 
 /// Roadmap M2 — adaptive backoff threshold. After this many consecutive
@@ -23,19 +73,40 @@ pub struct GenerateOptions<'a> {
     pub pool: &'a [String],
     pub forbidden: &'a HashSet<Mac>,
     pub avoid: &'a HashSet<Mac>,
+    /// Persona-supplied trailing-byte shape. `None` (default) keeps the
+    /// historical "all 3 bytes rolled" path. `Some(pat)` honours the
+    /// persona's `mac_byte_pattern`. Roadmap Milestone 2.
+    pub suffix_pattern: Option<ByteSuffixPattern>,
+}
+
+impl<'a> GenerateOptions<'a> {
+    /// Build options without a suffix pattern — the v0.2.x default.
+    pub fn new(
+        pool: &'a [String],
+        forbidden: &'a HashSet<Mac>,
+        avoid: &'a HashSet<Mac>,
+    ) -> Self {
+        Self {
+            pool,
+            forbidden,
+            avoid,
+            suffix_pattern: None,
+        }
+    }
 }
 
 pub fn generate(opts: &GenerateOptions<'_>) -> Result<Mac> {
     if opts.pool.is_empty() {
         bail!("OUI pool is empty");
     }
+    let suffix = opts.suffix_pattern.unwrap_or(ByteSuffixPattern::unconstrained());
     let mut last_err: Option<MacError> = None;
     for _ in 0..MAX_GENERATION_ATTEMPTS {
         let token_idx = (rand_u8()? as usize) % opts.pool.len();
         let token = &opts.pool[token_idx];
         let vendor = Vendor::from_pool_token(token)
             .ok_or_else(|| anyhow!("unknown OUI pool token '{token}'"))?;
-        let mac = match generate_for_vendor(vendor)? {
+        let mac = match generate_for_vendor(vendor, &suffix)? {
             Some(m) => m,
             None => continue,
         };
@@ -151,6 +222,7 @@ pub fn generate_with_probe<P: Probe + ?Sized>(
     // three times, hit collisions, advanced to intel, found one." A pure
     // random walk would surface as "we kept rolling until something landed"
     // which is harder to debug and less useful in `--explain` output.
+    let suffix = opts.suffix_pattern.unwrap_or(ByteSuffixPattern::unconstrained());
     let mut token_cursor: usize = (rand_u8()? as usize) % opts.pool.len();
     let mut consecutive_collisions: usize = 0;
     let mut attempts: Vec<CandidateAttempt> = Vec::new();
@@ -161,7 +233,7 @@ pub fn generate_with_probe<P: Probe + ?Sized>(
         let token = opts.pool[token_cursor].clone();
         let vendor = Vendor::from_pool_token(&token)
             .ok_or_else(|| anyhow!("unknown OUI pool token '{token}'"))?;
-        let mac = match generate_for_vendor(vendor)? {
+        let mac = match generate_for_vendor(vendor, &suffix)? {
             Some(m) => m,
             None => continue,
         };
@@ -315,24 +387,42 @@ pub fn generate_with_probe<P: Probe + ?Sized>(
     })
 }
 
-/// Build one candidate MAC for the given vendor token. Returns `Ok(None)`
-/// when entropy succeeds but the construction step is skipped (currently
-/// never — kept as the integration hook for future LAA quirks).
-fn generate_for_vendor(vendor: Vendor) -> Result<Option<Mac>> {
+/// Build one candidate MAC for the given vendor token, honouring the
+/// caller's [`ByteSuffixPattern`]. The pattern's `Some(literal)` slots
+/// override entropy on the corresponding trailing byte; `None` slots
+/// roll fresh from `getrandom`. Returns `Ok(None)` when entropy
+/// succeeds but the construction step is skipped (currently never —
+/// kept as the integration hook for future LAA quirks).
+fn generate_for_vendor(vendor: Vendor, suffix: &ByteSuffixPattern) -> Result<Option<Mac>> {
     let mac = match vendor.prefixes() {
         Some(prefixes) => {
             let prefix_idx = (rand_u8()? as usize) % prefixes.len();
             let prefix = prefixes[prefix_idx];
-            let suffix = rand_bytes::<3>()?;
+            let entropy = rand_bytes::<3>()?;
+            let mut tail = [0u8; 3];
+            for i in 0..3 {
+                tail[i] = match suffix.bytes[i] {
+                    Some(literal) => literal,
+                    None => entropy[i],
+                };
+            }
             let mut octets = [0u8; 6];
             octets[..3].copy_from_slice(&prefix);
-            octets[3..].copy_from_slice(&suffix);
+            octets[3..].copy_from_slice(&tail);
             Mac(octets)
         }
         None => {
             let mut octets = rand_bytes::<6>()?;
             // LAA bit set, multicast bit clear.
             octets[0] = (octets[0] | 0x02) & 0xFE;
+            // The pattern only covers the trailing 3 bytes — even for
+            // LAA, where we own the full 6, we keep the OUI half random
+            // so persona+LAA combos still uniquify.
+            for i in 0..3 {
+                if let Some(literal) = suffix.bytes[i] {
+                    octets[3 + i] = literal;
+                }
+            }
             Mac(octets)
         }
     };
@@ -381,6 +471,7 @@ mod tests {
             pool: &p,
             forbidden: &f,
             avoid: &a,
+            suffix_pattern: None,
         };
         for _ in 0..50 {
             let m = generate(&opts).unwrap();
@@ -402,6 +493,7 @@ mod tests {
             pool: &p,
             forbidden: &f,
             avoid: &a,
+            suffix_pattern: None,
         };
         for _ in 0..50 {
             let m = generate(&opts).unwrap();
@@ -422,6 +514,7 @@ mod tests {
             pool: &p,
             forbidden: &f,
             avoid: &a,
+            suffix_pattern: None,
         };
         // Just sanity-check that generation always returns a non-forbidden MAC.
         for _ in 0..100 {
@@ -440,6 +533,7 @@ mod tests {
             pool: &p,
             forbidden: &f,
             avoid: &a,
+            suffix_pattern: None,
         };
         assert!(generate(&opts).is_err());
     }
@@ -453,6 +547,7 @@ mod tests {
             pool: &p,
             forbidden: &f,
             avoid: &a,
+            suffix_pattern: None,
         };
         assert!(generate(&opts).is_err());
     }
@@ -468,6 +563,7 @@ mod tests {
             pool: &p,
             forbidden: &f,
             avoid: &a,
+            suffix_pattern: None,
         };
         let probe = MockProbe::responds(false);
         let outcome =
@@ -491,6 +587,7 @@ mod tests {
             pool: &p,
             forbidden: &f,
             avoid: &a,
+            suffix_pattern: None,
         };
         let probe = MockProbe::new();
         probe.queue_arp(ProbeOutcome::Collision {
@@ -527,6 +624,7 @@ mod tests {
             pool: &p,
             forbidden: &f,
             avoid: &a,
+            suffix_pattern: None,
         };
         let probe = MockProbe::new();
         for _ in 0..COLLISIONS_BEFORE_OUI_FALLBACK {
@@ -559,6 +657,7 @@ mod tests {
             pool: &p,
             forbidden: &f,
             avoid: &a,
+            suffix_pattern: None,
         };
         let probe = MockProbe::new();
         probe.queue_arp(ProbeOutcome::Collision {
@@ -591,6 +690,7 @@ mod tests {
             pool: &p,
             forbidden: &f,
             avoid: &a,
+            suffix_pattern: None,
         };
         let probe = MockProbe::new();
         probe.queue_arp(ProbeOutcome::Unsupported("test: no CAP_NET_RAW"));
@@ -620,6 +720,7 @@ mod tests {
             pool: &p,
             forbidden: &f,
             avoid: &a,
+            suffix_pattern: None,
         };
         let probe = MockProbe::new();
         // ARP free for the first try, ND collides → next round both Free.
@@ -662,6 +763,7 @@ mod tests {
             pool: &p,
             forbidden: &f,
             avoid: &a,
+            suffix_pattern: None,
         };
         let probe = MockProbe::responds(false);
         let outcome =
@@ -687,10 +789,76 @@ mod tests {
             pool: &p,
             forbidden: &f,
             avoid: &a,
+            suffix_pattern: None,
         };
         let probe = MockProbe::responds(false);
         let r = generate_with_probe(&opts, &probe, &no_nd_probe_opts("wlan0"));
         assert!(r.is_err());
+    }
+
+    // === Roadmap M2 "Integration" — ByteSuffixPattern ===
+
+    #[test]
+    fn byte_pattern_unconstrained_produces_random_suffix() {
+        let pat = ByteSuffixPattern::unconstrained();
+        for _ in 0..16 {
+            // Calling generate_for_vendor directly is the cheapest way to
+            // exercise the suffix path; we just need to confirm the
+            // pattern doesn't pin anything when None.
+            let m = generate_for_vendor(Vendor::Apple, &pat).unwrap().unwrap();
+            // First 3 bytes are an Apple OUI, last 3 are entropy. We
+            // can't assert the entropy is non-deterministic in one call,
+            // but we can confirm the format is valid.
+            assert!(m.validate_assignable().is_ok());
+        }
+    }
+
+    #[test]
+    fn byte_pattern_pins_literal_trailing_bytes() {
+        // Pattern `01:23:xx` -> bytes 4 and 5 are pinned, byte 6 entropy.
+        let pat = ByteSuffixPattern::parse("01:23:xx").unwrap();
+        for _ in 0..16 {
+            let m = generate_for_vendor(Vendor::Apple, &pat).unwrap().unwrap();
+            let octets = m.octets();
+            assert_eq!(octets[3], 0x01, "byte 4 must be pinned to 0x01");
+            assert_eq!(octets[4], 0x23, "byte 5 must be pinned to 0x23");
+            // byte 6 (octets[5]) is entropy — no assertion on its value.
+        }
+    }
+
+    #[test]
+    fn byte_pattern_all_xx_equals_unconstrained() {
+        let a = ByteSuffixPattern::parse("xx:xx:xx").unwrap();
+        let b = ByteSuffixPattern::unconstrained();
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn byte_pattern_full_literal_pins_every_trailing_byte() {
+        let pat = ByteSuffixPattern::parse("de:ad:be").unwrap();
+        for _ in 0..8 {
+            let m = generate_for_vendor(Vendor::Apple, &pat).unwrap().unwrap();
+            let oct = m.octets();
+            assert_eq!(&oct[3..], &[0xDE, 0xAD, 0xBE]);
+        }
+    }
+
+    #[test]
+    fn byte_pattern_short_input_errors() {
+        assert!(ByteSuffixPattern::parse("01:23").is_err());
+        assert!(ByteSuffixPattern::parse("").is_err());
+        assert!(ByteSuffixPattern::parse("zz:zz:zz").is_err());
+    }
+
+    #[test]
+    fn generate_options_new_has_no_suffix_pattern() {
+        // The convenience constructor must default to "no pattern" so
+        // call sites that don't care can ignore the field.
+        let p: Vec<String> = vec!["apple".into()];
+        let f = empty_set();
+        let a = empty_set();
+        let opts = GenerateOptions::new(&p, &f, &a);
+        assert!(opts.suffix_pattern.is_none());
     }
 
     #[test]
@@ -705,6 +873,7 @@ mod tests {
             pool: &p,
             forbidden: &f,
             avoid: &a,
+            suffix_pattern: None,
         };
         let probe = MockProbe::responds(false);
         let _ = generate_with_probe(&opts, &probe, &no_nd_probe_opts("eth42")).expect("ok");

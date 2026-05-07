@@ -45,6 +45,71 @@ pub fn snapshot_dhcp(settings: &ConnectionSettings) -> DhcpSettingsSnapshot {
     }
 }
 
+/// Roadmap M2 "Integration": shape DHCP options from a persona's
+/// `dhcp_fingerprint`. Persona values fill slots that are unset by the
+/// user's `[dhcp]` knobs — per-knob overrides always win, persona only
+/// claims what would otherwise be suppressed or left at default.
+///
+/// Concrete precedence per slot:
+///
+/// - `vendor-class-identifier` (option 60): when `suppress_vendor_class`
+///   is `true` the suppression wins (the slot is empty on the wire).
+///   When the user left `suppress_vendor_class = false`, persona's
+///   `vendor_class_identifier` (if non-empty) is written.
+/// - `hostname` / `fqdn` (options 12 / 81): `suppress_hostname = true`
+///   wins. Otherwise persona's `host_name` / `fqdn` are honoured when
+///   non-empty.
+///
+/// The parameter-request-list (option 55) and DUID/IAID slots are
+/// downstream of NM's own option handling — NM's `ipv4.dhcp-iaid` /
+/// `ipv4.dhcp-client-id` only accept a small grammar so the persona's
+/// raw byte list is logged at `tracing::debug!` for now and the
+/// `rotate_client_id` knob's `mac` / `ll` values stay authoritative.
+pub fn apply_persona_fingerprint(
+    settings: &mut ConnectionSettings,
+    persona: &crate::persona::Persona,
+    suppress_hostname: bool,
+    suppress_vendor_class: bool,
+) -> Result<bool> {
+    let fp = &persona.dhcp_fingerprint;
+    let mut changed = false;
+    if !suppress_vendor_class && !fp.vendor_class_identifier.is_empty() {
+        changed |= set_str(
+            settings,
+            SECTION_IPV4,
+            KEY_DHCP_VENDOR_CLASS_IDENTIFIER,
+            &fp.vendor_class_identifier,
+        )?;
+    }
+    if !suppress_hostname {
+        if !fp.host_name.is_empty() {
+            // Tell NM "send hostname" then write the persona's host_name
+            // — without flipping send_hostname back on, the previous
+            // suppress_hostname=true sticky setting would still force
+            // option 12 off. The user's per-connection knobs override
+            // this if they later explicitly toggle suppress_hostname.
+            changed |= set_bool(settings, SECTION_IPV4, KEY_DHCP_SEND_HOSTNAME, true)?;
+            changed |= set_str(settings, SECTION_IPV4, KEY_DHCP_HOSTNAME, &fp.host_name)?;
+        }
+        if !fp.fqdn.is_empty() {
+            changed |= set_str(settings, SECTION_IPV4, KEY_DHCP_FQDN, &fp.fqdn)?;
+        }
+    }
+    if !fp.parameter_request_list.is_empty() {
+        // NM doesn't expose option 55 directly; surface the persona's
+        // intent in the log so an operator running with `-v` can see it
+        // (a future backend-trait extension can pipe this through to
+        // dhclient.conf / networkd's `[DHCPv4] RequestOptions=`).
+        tracing::debug!(
+            persona = %persona.id,
+            options = ?fp.parameter_request_list,
+            "persona parameter-request-list captured but NM has no direct ipv4.dhcp-* slot \
+             (followup: pipe through backend trait)"
+        );
+    }
+    Ok(changed)
+}
+
 /// Mutate `settings` in place to apply Proteus DHCP suppression, honoring
 /// which knobs are enabled in config. Returns true if anything changed.
 pub fn apply_dhcp_settings(
@@ -601,6 +666,130 @@ mod tests {
         if let Some(section) = s.get(SECTION_CONNECTION) {
             assert!(section.get(KEY_USER_DATA).is_none());
         }
+    }
+
+    // === Roadmap M2 "Integration" — apply_persona_fingerprint ===
+
+    fn persona_with_dhcp(
+        vendor: &str,
+        host_name: &str,
+        fqdn: &str,
+    ) -> crate::persona::Persona {
+        crate::persona::Persona {
+            id: "test".into(),
+            display_name: "Test".into(),
+            kind: crate::persona::PersonaKind::Stealth,
+            category: crate::persona::PersonaCategory::Phone,
+            oui_pool: vec!["apple".into()],
+            mac_byte_pattern: None,
+            hostname_template: "h".into(),
+            dhcp_fingerprint: crate::persona::DhcpFingerprint {
+                vendor_class_identifier: vendor.into(),
+                fqdn: fqdn.into(),
+                parameter_request_list: vec![1, 3, 6, 15, 119, 252],
+                host_name: host_name.into(),
+            },
+            tcp_stack: Default::default(),
+            ipv6_traits: Default::default(),
+            mdns_advertise: true,
+            bt_name_template: String::new(),
+            rf_traits: Default::default(),
+            rotate_cadence: None,
+            notes: String::new(),
+        }
+    }
+
+    #[test]
+    fn persona_writes_vendor_class_when_not_suppressed() {
+        let mut s = empty_settings();
+        let p = persona_with_dhcp("iPhone", "", "");
+        let changed = apply_persona_fingerprint(&mut s, &p, false, false).unwrap();
+        assert!(changed);
+        let v = extract_str(&s, SECTION_IPV4, KEY_DHCP_VENDOR_CLASS_IDENTIFIER);
+        assert_eq!(v.as_deref(), Some("iPhone"));
+    }
+
+    #[test]
+    fn persona_skips_vendor_class_when_user_suppressed() {
+        // Per-knob override beats persona: when suppress_vendor_class is
+        // true, the persona's vendor_class_identifier must NOT land on
+        // the wire.
+        let mut s = empty_settings();
+        let p = persona_with_dhcp("iPhone", "", "");
+        let _ = apply_dhcp_settings(&mut s, true, true, true).unwrap();
+        // After suppression: vendor class is empty.
+        assert_eq!(
+            extract_str(&s, SECTION_IPV4, KEY_DHCP_VENDOR_CLASS_IDENTIFIER).as_deref(),
+            Some("")
+        );
+        // Now apply persona with suppress_vendor_class still true —
+        // persona must NOT overwrite the empty string.
+        apply_persona_fingerprint(&mut s, &p, true, true).unwrap();
+        assert_eq!(
+            extract_str(&s, SECTION_IPV4, KEY_DHCP_VENDOR_CLASS_IDENTIFIER).as_deref(),
+            Some(""),
+            "persona must not override user suppression"
+        );
+    }
+
+    #[test]
+    fn persona_writes_hostname_and_flips_send_hostname_back_on() {
+        // Suppression first, then persona: persona's host_name should
+        // win and `send_hostname` must be flipped back to true so the
+        // option actually leaves the box.
+        let mut s = empty_settings();
+        let p = persona_with_dhcp("iPhone", "alexs-iphone", "");
+        let _ = apply_dhcp_settings(&mut s, true, true, true).unwrap();
+        // After suppression: send_hostname is false.
+        assert_eq!(
+            extract_bool(&s, SECTION_IPV4, KEY_DHCP_SEND_HOSTNAME),
+            Some(false)
+        );
+        // Now apply persona with suppress_hostname=false (user un-set it):
+        let changed = apply_persona_fingerprint(&mut s, &p, false, false).unwrap();
+        assert!(changed);
+        assert_eq!(
+            extract_bool(&s, SECTION_IPV4, KEY_DHCP_SEND_HOSTNAME),
+            Some(true),
+            "persona must flip send_hostname back on"
+        );
+        assert_eq!(
+            extract_str(&s, SECTION_IPV4, KEY_DHCP_HOSTNAME).as_deref(),
+            Some("alexs-iphone")
+        );
+    }
+
+    #[test]
+    fn persona_writes_fqdn_when_set() {
+        let mut s = empty_settings();
+        let p = persona_with_dhcp("", "", "test.local");
+        apply_persona_fingerprint(&mut s, &p, false, false).unwrap();
+        assert_eq!(
+            extract_str(&s, SECTION_IPV4, KEY_DHCP_FQDN).as_deref(),
+            Some("test.local")
+        );
+    }
+
+    #[test]
+    fn persona_skips_hostname_when_user_suppressed() {
+        let mut s = empty_settings();
+        let p = persona_with_dhcp("", "alexs-iphone", "");
+        // Suppression first, then persona with suppress_hostname=true.
+        let _ = apply_dhcp_settings(&mut s, true, false, false).unwrap();
+        apply_persona_fingerprint(&mut s, &p, true, false).unwrap();
+        assert_eq!(
+            extract_bool(&s, SECTION_IPV4, KEY_DHCP_SEND_HOSTNAME),
+            Some(false),
+            "persona must not undo user suppression"
+        );
+    }
+
+    #[test]
+    fn persona_with_empty_fingerprint_is_a_noop() {
+        let mut s = empty_settings();
+        let p = persona_with_dhcp("", "", "");
+        let changed = apply_persona_fingerprint(&mut s, &p, false, false).unwrap();
+        assert!(!changed, "empty persona fingerprint should not mutate");
     }
 
     #[test]

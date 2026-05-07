@@ -171,6 +171,7 @@ fn preview_mac() -> String {
         pool: &pool,
         forbidden: &forbidden,
         avoid: &avoid,
+        suffix_pattern: None,
     };
     match generator::generate(&opts) {
         Ok(m) => m.to_string(),

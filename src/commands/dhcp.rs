@@ -419,9 +419,28 @@ async fn do_apply(
             config.dhcp.suppress_vendor_class,
             config.dhcp.rotate_client_id,
         )?;
+        // Roadmap M2 "Integration": persona-shaped option content lands
+        // AFTER suppression so persona slots fill exactly what the
+        // suppression path would have left empty. The user's per-knob
+        // suppression always wins (passed in here as the same bools).
+        let active_persona = crate::persona::active_for(
+            config,
+            None,
+            crate::persona::resolve::default_user_root(),
+        );
+        let changed_persona = if let Some(p) = active_persona.as_ref() {
+            nmdhcp::apply_persona_fingerprint(
+                &mut new_settings,
+                p,
+                config.dhcp.suppress_hostname,
+                config.dhcp.suppress_vendor_class,
+            )?
+        } else {
+            false
+        };
         nmdhcp::tag_user_data(&mut new_settings, version::VERSION, &applied_at)?;
         let was_managed = nmdhcp::is_proteus_managed(&settings);
-        let changed = changed_dhcp || !was_managed;
+        let changed = changed_dhcp || changed_persona || !was_managed;
         if changed {
             if let Err(e) = nmdhcp::update_connection(&conn, &path, new_settings).await {
                 outcomes.push(ApplyOutcome {

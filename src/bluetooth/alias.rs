@@ -41,6 +41,40 @@ pub fn select_alias(cfg: &BluetoothConfig) -> Result<String> {
     }
 }
 
+/// Roadmap M2 "Integration": pick the BlueZ adapter alias honouring an
+/// active persona. When a persona is set and supplies a `bt_name_template`,
+/// that template is rendered (against the same wordlist + token pools the
+/// hostname renderer uses) and returned. Otherwise the existing
+/// pinned/generic flow runs unchanged so v0.2.x users see no behaviour
+/// change.
+///
+/// `cfg.pinned_alias` (when `alias_source = "pinned"`) intentionally beats
+/// the persona path — the operator's explicit pin always wins. This
+/// mirrors the precedence rule used for DHCP and hostname.
+pub fn select_alias_with_persona(
+    cfg: &BluetoothConfig,
+    persona: Option<&crate::persona::Persona>,
+) -> Result<String> {
+    if cfg.alias_source.as_str() == "pinned" {
+        return cfg
+            .pinned_alias
+            .clone()
+            .ok_or_else(|| anyhow!("alias_source = 'pinned' but pinned_alias is unset"));
+    }
+    if let Some(p) = persona
+        && !p.bt_name_template.trim().is_empty()
+    {
+        // Wordlist piggybacks on the hostname pool — there's no separate
+        // BT-specific dictionary and the existing 534 entries cover the
+        // generic-name space well enough for now.
+        let words = crate::hostname::wordlist()?;
+        let rendered =
+            crate::persona::template::render_template(&p.bt_name_template, &words)?;
+        return Ok(rendered);
+    }
+    select_alias(cfg)
+}
+
 fn generic() -> Result<String> {
     let idx = unbiased_index(GENERIC_ALIASES.len(), getrandom_byte)?;
     Ok(GENERIC_ALIASES[idx].to_string())
@@ -140,6 +174,68 @@ mod tests {
     #[test]
     fn unknown_source_errors() {
         assert!(select_alias(&cfg("nonsense", None)).is_err());
+    }
+
+    // === Roadmap M2 "Integration" — persona-aware alias ===
+
+    fn persona_with_bt_template(template: &str) -> crate::persona::Persona {
+        crate::persona::Persona {
+            id: "iphone".into(),
+            display_name: "iPhone".into(),
+            kind: crate::persona::PersonaKind::Stealth,
+            category: crate::persona::PersonaCategory::Phone,
+            oui_pool: vec!["apple".into()],
+            mac_byte_pattern: None,
+            hostname_template: "host".into(),
+            dhcp_fingerprint: Default::default(),
+            tcp_stack: Default::default(),
+            ipv6_traits: Default::default(),
+            mdns_advertise: true,
+            bt_name_template: template.into(),
+            rf_traits: Default::default(),
+            rotate_cadence: None,
+            notes: String::new(),
+        }
+    }
+
+    #[test]
+    fn persona_template_drives_bt_alias_when_active() {
+        let cfg = cfg("generic", None);
+        let p = persona_with_bt_template("{owner}s iphone");
+        for _ in 0..16 {
+            let alias = select_alias_with_persona(&cfg, Some(&p)).expect("ok");
+            // Result must end with " iphone" and not be one of the
+            // generic pool entries (those are the without-persona path).
+            assert!(alias.ends_with(" iphone"), "got '{alias}'");
+            assert!(!GENERIC_ALIASES.contains(&alias.as_str()));
+        }
+    }
+
+    #[test]
+    fn persona_unset_uses_generic_pool_path() {
+        let cfg = cfg("generic", None);
+        // No persona → behaviour is exactly what `select_alias` does.
+        for _ in 0..16 {
+            let alias = select_alias_with_persona(&cfg, None).expect("ok");
+            assert!(GENERIC_ALIASES.contains(&alias.as_str()));
+        }
+    }
+
+    #[test]
+    fn pinned_alias_source_beats_persona_template() {
+        // Operator's explicit pin always wins, even with a persona set.
+        let cfg = cfg("pinned", Some("MyExplicitBT"));
+        let p = persona_with_bt_template("{owner}s iphone");
+        let alias = select_alias_with_persona(&cfg, Some(&p)).expect("ok");
+        assert_eq!(alias, "MyExplicitBT");
+    }
+
+    #[test]
+    fn persona_with_empty_template_falls_through_to_generic() {
+        let cfg = cfg("generic", None);
+        let p = persona_with_bt_template("   ");
+        let alias = select_alias_with_persona(&cfg, Some(&p)).expect("ok");
+        assert!(GENERIC_ALIASES.contains(&alias.as_str()));
     }
 
     #[test]

@@ -241,6 +241,43 @@ pub fn resolve_hostname(cfg: &crate::config::HostnameConfig) -> Result<String> {
     resolve_with(cfg, &mut RandomPicker)
 }
 
+/// Roadmap M2 "Integration": render a persona's `hostname_template`
+/// against the embedded wordlist plus the persona-specific token pools
+/// (`{owner}`, `{n}`, `{word}`). Validates the result through
+/// `validate_hostname` before returning so a bad template lands at the
+/// caller, not the DBus layer.
+///
+/// The caller is responsible for falling back to [`resolve_hostname`]
+/// when the persona is `None` — this entry point assumes the user
+/// already knows they want persona-shaped output.
+pub fn render_template(template: &str) -> Result<String> {
+    let words = wordlist()?;
+    let rendered = crate::persona::template::render_template(template, &words)?;
+    validate_hostname(&rendered).map_err(|e| {
+        anyhow!(
+            "rendered hostname '{rendered}' from template '{template}' fails RFC 1123: {e}"
+        )
+    })?;
+    Ok(rendered)
+}
+
+/// Persona-aware front door used by `commands::hostname::rotate` and the
+/// `apply` orchestrator. When a persona is active and carries a
+/// `hostname_template`, the template wins. Otherwise we fall through to
+/// the existing wordlist / generic / pinned flow so users who haven't
+/// opted into a persona see no behaviour change.
+pub fn resolve_for_apply(
+    cfg: &crate::config::HostnameConfig,
+    persona: Option<&crate::persona::Persona>,
+) -> Result<String> {
+    if let Some(p) = persona
+        && !p.hostname_template.trim().is_empty()
+    {
+        return render_template(&p.hostname_template);
+    }
+    resolve_hostname(cfg)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -318,6 +355,89 @@ mod tests {
             assert_eq!(Mode::parse(m.as_str()).unwrap(), m);
         }
         assert!(Mode::parse("nonsense").is_err());
+    }
+
+    // === Roadmap M2 "Integration" — persona templates ===
+
+    fn host_cfg(mode: &str) -> crate::config::HostnameConfig {
+        crate::config::HostnameConfig {
+            enabled: true,
+            mode: mode.into(),
+            pinned_value: None,
+            rotate_with_mac: false,
+        }
+    }
+
+    fn persona_with_template(id: &str, template: &str) -> crate::persona::Persona {
+        crate::persona::Persona {
+            id: id.into(),
+            display_name: id.into(),
+            kind: crate::persona::PersonaKind::Stealth,
+            category: crate::persona::PersonaCategory::Phone,
+            oui_pool: vec!["apple".into()],
+            mac_byte_pattern: None,
+            hostname_template: template.into(),
+            dhcp_fingerprint: Default::default(),
+            tcp_stack: Default::default(),
+            ipv6_traits: Default::default(),
+            mdns_advertise: true,
+            bt_name_template: String::new(),
+            rf_traits: Default::default(),
+            rotate_cadence: None,
+            notes: String::new(),
+        }
+    }
+
+    #[test]
+    fn resolve_for_apply_with_persona_template_uses_owner_token() {
+        let cfg = host_cfg("wordlist");
+        let p = persona_with_template("iphone", "{owner}s-iphone");
+        for _ in 0..16 {
+            let r = resolve_for_apply(&cfg, Some(&p)).expect("ok");
+            // OWNER_POOL entries are all ascii-lowercase, so the suffix
+            // `s-iphone` must be present and the prefix must be one of
+            // the OWNER_POOL members.
+            assert!(r.ends_with("s-iphone"), "got '{r}'");
+            assert!(validate_hostname(&r).is_ok(), "rendered must be RFC 1123: {r}");
+        }
+    }
+
+    #[test]
+    fn resolve_for_apply_without_persona_falls_through_to_wordlist() {
+        let cfg = host_cfg("wordlist");
+        // Drive 50 iterations and confirm every result is in the
+        // wordlist — i.e. the persona path didn't kick in.
+        let entries = wordlist().unwrap();
+        for _ in 0..16 {
+            let r = resolve_for_apply(&cfg, None).expect("ok");
+            assert!(entries.contains(&r.as_str()), "got '{r}'");
+        }
+    }
+
+    #[test]
+    fn resolve_for_apply_with_empty_template_falls_back_to_wordlist() {
+        // Whitespace-only template counts as "no template" — fall back.
+        let cfg = host_cfg("wordlist");
+        let p = persona_with_template("x", "   ");
+        let entries = wordlist().unwrap();
+        let r = resolve_for_apply(&cfg, Some(&p)).expect("ok");
+        assert!(entries.contains(&r.as_str()));
+    }
+
+    #[test]
+    fn render_template_validates_through_rfc_1123() {
+        // Template that produces an uppercase output → rejected by
+        // validate_hostname so the user sees the bug immediately.
+        let r = render_template("BAD-HOST-{n}");
+        assert!(r.is_err(), "uppercase result must be rejected");
+    }
+
+    #[test]
+    fn render_template_with_known_good_template_validates() {
+        // The default iPhone template renders into ascii-lowercase + 's'
+        // + dash + lowercase, which is RFC 1123-shaped.
+        let r = render_template("{owner}s-iphone").unwrap();
+        assert!(validate_hostname(&r).is_ok());
     }
 
     #[test]

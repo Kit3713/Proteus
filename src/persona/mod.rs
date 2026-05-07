@@ -38,6 +38,10 @@
 use serde::{Deserialize, Serialize};
 
 pub mod load;
+pub mod resolve;
+pub mod template;
+
+pub use resolve::active_for;
 
 /// Top-level persona record. Mirrors `data/personas/<id>.toml` 1:1 via
 /// serde; user-authored personas under `/etc/proteus/personas/<id>.toml`
