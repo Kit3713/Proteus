@@ -9,6 +9,7 @@ pub mod show_config;
 pub mod show_defaults;
 pub mod status;
 pub mod stub;
+pub mod timer;
 pub mod unpin;
 pub mod wiki_cmd;
 

@@ -61,7 +61,15 @@ The cooldown does not block the scheduled timer. If `proteus-rotate.timer` fires
 
 ## Inspecting timer state
 
-Standard systemd tools work:
+`proteus timer status` is the high-level view of every Proteus timer: enabled vs disabled, currently active, current cadence, next fire, last fire, and whether a user override is in effect. `--json` for wrappers.
+
+```
+proteus timer status
+proteus timer status --json
+proteus timer logs rotate --lines 50
+```
+
+Standard systemd tools still work as a fallback:
 
 ```
 systemctl list-timers proteus-*
@@ -72,7 +80,39 @@ journalctl -u proteus-boot -n 50
 
 `systemctl status proteus-rotate.timer` shows the next scheduled fire. `journalctl -t proteus -n 100` aggregates everything the binary itself logs, regardless of which unit invoked it.
 
-`proteus status` is the high-level view: when the last rotation ran, what triggered it, which interfaces are managed vs pinned, and the current portal classification.
+`proteus status` is the high-level view of identifiers: when the last rotation ran, what triggered it, which interfaces are managed vs pinned, and the current portal classification.
+
+## Managing timers via CLI
+
+`proteus timer` is the first-class CLI surface for changing cadences and enabling/disabling rotation jobs without hand-editing systemd units. Drop-ins land at `/etc/systemd/system/proteus-<name>.timer.d/override.conf` and carry a `# managed by proteus` header. `daemon-reload` and a unit restart happen automatically.
+
+```
+# See current timer state
+proteus timer status
+proteus timer status --json
+
+# List the timer types Proteus defines
+proteus timer list
+
+# Change rotate cadence to every 30 min
+sudo proteus timer set rotate --interval 30m
+
+# Disable the polling check timer (use NM dispatcher events instead)
+sudo proteus timer disable check
+
+# Enable rotate-on-resume
+sudo proteus timer enable resume
+
+# Reset a timer to the unit-file default
+sudo proteus timer reset rotate
+
+# Inspect journald
+proteus timer logs rotate --lines 50
+```
+
+`--interval` accepts compact durations (`30s`, `5m`, `2h`, `1d`, `1w`), the named systemd cadences (`hourly`, `daily`, ...), and full systemd calendar expressions (e.g. `*-*-* 04:00:00`). For "every N time" Proteus uses `OnUnitActiveSec=` rather than `OnCalendar=` because it tracks the last successful run rather than wall-clock alignment.
+
+Read commands (`status`, `list`, `logs`) work for any user. Mutating commands (`enable`, `disable`, `set`, `reset`) require root and exit `66` otherwise. If systemd isn't running, every subcommand exits `70`.
 
 ## Manual triggers
 

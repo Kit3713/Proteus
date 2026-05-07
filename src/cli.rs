@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 
 use crate::commands;
 use crate::exit;
@@ -144,6 +144,53 @@ pub enum Command {
         /// Feature or wiki page name.
         feature: Option<String>,
     },
+    /// Manage Proteus systemd timers (status, enable, set cadence, etc.).
+    Timer {
+        #[command(subcommand)]
+        action: TimerAction,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum TimerAction {
+    /// Show all proteus-* timers, their state, and current cadence.
+    Status {
+        #[arg(long)]
+        json: bool,
+    },
+    /// List the timer types Proteus defines.
+    List {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Enable + start a timer (e.g. `rotate`, `check`).
+    Enable(TimerNameArgs),
+    /// Disable + stop a timer.
+    Disable(TimerNameArgs),
+    /// Change a timer's cadence (writes a drop-in).
+    Set {
+        /// Timer name (`rotate`, `check`, ...).
+        name: String,
+        /// Cadence: `30s`, `5m`, `2h`, `1d`, or `hourly` / `daily`.
+        #[arg(long)]
+        interval: String,
+    },
+    /// Reset a timer's cadence back to its default (removes the drop-in).
+    Reset(TimerNameArgs),
+    /// Tail recent journald logs for a timer's unit.
+    Logs {
+        /// Timer name (`rotate`, `check`, ...).
+        name: String,
+        /// How many lines to tail.
+        #[arg(long, default_value_t = 50)]
+        lines: u32,
+    },
+}
+
+#[derive(Args, Debug)]
+pub struct TimerNameArgs {
+    /// Timer name (`rotate`, `check`, `resume`, `boot`).
+    pub name: String,
 }
 
 #[derive(Subcommand, Debug)]
@@ -215,6 +262,15 @@ pub fn run() -> ExitCode {
                 commands::bluetooth_cmd::apply(cli.state.as_deref(), cli.config.as_deref())
             }
             BluetoothAction::Revert { .. } => commands::bluetooth_cmd::revert(cli.state.as_deref()),
+        },
+        Command::Timer { action } => match action {
+            TimerAction::Status { json } => commands::timer::run_status(json),
+            TimerAction::List { json } => commands::timer::run_list(json),
+            TimerAction::Enable(a) => commands::timer::run_enable(&a.name),
+            TimerAction::Disable(a) => commands::timer::run_disable(&a.name),
+            TimerAction::Set { name, interval } => commands::timer::run_set(&name, &interval),
+            TimerAction::Reset(a) => commands::timer::run_reset(&a.name),
+            TimerAction::Logs { name, lines } => commands::timer::run_logs(&name, lines),
         },
         Command::Wiki { page } => commands::wiki_cmd::run(page.as_deref(), cli.no_color),
         Command::Help { feature } => commands::wiki_cmd::run_help(feature.as_deref(), cli.no_color),
