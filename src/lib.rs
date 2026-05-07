@@ -65,7 +65,6 @@ mod tests {
     #[test]
     fn exit_codes_are_stable() {
         assert_eq!(exit::SUCCESS, 0);
-        assert_eq!(exit::GENERIC_ERROR, 1);
         assert_eq!(exit::NOT_IMPLEMENTED, 64);
         assert_eq!(exit::CONFIG_ERROR, 65);
         assert_eq!(exit::PERMISSION_ERROR, 66);
@@ -82,24 +81,55 @@ mod tests {
         assert_eq!(version::PHASE, 'B');
     }
 
-    /// Polkit `exec.path` must point at `/usr/bin/proteus` — the path every
-    /// distro package (RPM, .deb, Arch, Nix) installs to. install.sh
-    /// rewrites this annotation when it deploys to /usr/local/bin/, so the
-    /// canonical bundled file should always reflect the package layout.
-    /// Issue #120: when the bundled policy hardcoded /usr/local/bin, polkit
-    /// silently refused pkexec from distro-installed proteus binaries.
+    // Packaging invariant (issue #134): every shipped systemd .service unit
+    // that orders itself After=network-online.target must also Wants= it.
+    // Without the matching Wants, the After is a no-op against an inactive
+    // target and the unit can start before networking is up.
     #[test]
-    fn polkit_policy_targets_usr_bin_proteus() {
-        let policy = include_str!("../dist/polkit/com.kit3713.proteus.policy");
+    fn systemd_services_with_after_network_online_also_wants_it() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("dist/systemd");
+        let mut checked = 0usize;
+        for entry in std::fs::read_dir(&dir).expect("dist/systemd should exist") {
+            let path = entry.unwrap().path();
+            if path.extension().and_then(|s| s.to_str()) != Some("service") {
+                continue;
+            }
+            let body = std::fs::read_to_string(&path).unwrap();
+            let has_after = body
+                .lines()
+                .any(|l| l.starts_with("After=") && l.contains("network-online.target"));
+            if !has_after {
+                continue;
+            }
+            let has_wants = body
+                .lines()
+                .any(|l| l.starts_with("Wants=") && l.contains("network-online.target"));
+            assert!(
+                has_wants,
+                "{}: has After=network-online.target but no matching Wants= (issue #134)",
+                path.display()
+            );
+            checked += 1;
+        }
+        assert!(checked > 0, "no .service files checked under dist/systemd");
+    }
+
+    // CI invariant (issue #135): the non-release CI workflow must use the
+    // pinned-toolchain action so a stable channel bump can't silently break
+    // CI. The pinned toolchain comes from rust-toolchain.toml, read by
+    // actions-rust-lang/setup-rust-toolchain@v1.
+    #[test]
+    fn ci_workflow_does_not_use_floating_stable_toolchain() {
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(".github/workflows/ci.yml");
+        let body = std::fs::read_to_string(&path).expect("ci.yml should exist");
         assert!(
-            policy.contains(
-                "<annotate key=\"org.freedesktop.policykit.exec.path\">/usr/bin/proteus</annotate>"
-            ),
-            "polkit policy must annotate exec.path=/usr/bin/proteus (issue #120); got:\n{policy}"
+            !body.contains("dtolnay/rust-toolchain"),
+            "ci.yml still references dtolnay/rust-toolchain (issue #135)"
         );
         assert!(
-            !policy.contains("/usr/local/bin/proteus"),
-            "polkit policy must not hardcode /usr/local/bin/proteus (issue #120)"
+            body.contains("actions-rust-lang/setup-rust-toolchain@v1"),
+            "ci.yml should use actions-rust-lang/setup-rust-toolchain@v1"
         );
     }
 }

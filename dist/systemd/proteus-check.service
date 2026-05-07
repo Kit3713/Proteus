@@ -1,7 +1,7 @@
 [Unit]
 Description=Proteus probe-driven rotation check
 After=NetworkManager.service network-online.target
-Wants=NetworkManager.service
+Wants=network-online.target NetworkManager.service
 
 [Service]
 Type=oneshot

@@ -2,6 +2,7 @@
 Description=Proteus rotate on resume from suspend
 After=suspend.target hibernate.target hybrid-sleep.target suspend-then-hibernate.target
 After=NetworkManager.service network-online.target
+Wants=network-online.target
 
 [Service]
 Type=oneshot
