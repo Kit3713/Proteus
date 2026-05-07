@@ -118,13 +118,31 @@ pub(crate) fn print_json<T: Serialize>(value: &T) -> Result<()> {
 
 /// Atomic file write: temp file + sync + rename. Used by both state and
 /// config writers so we share one durability story.
+///
+/// The destination always lands at mode `0o600` (owner read/write only). State
+/// and config files cache identifiers we just spent effort to randomise — the
+/// original MAC, original hostname, per-NM-connection identifiers — so they
+/// must not be world-readable on multi-user systems (issue #116). The
+/// `OpenOptions::mode` hint only takes effect when the file is newly created,
+/// so we also call `set_permissions` explicitly to cover the case where a
+/// stale `.tmp` from a crashed previous run gets reopened.
 pub(crate) fn write_atomic(path: &Path, contents: &[u8]) -> Result<()> {
+    use std::fs::Permissions;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
     let parent = path.parent().context("path has no parent directory")?;
     std::fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
     let tmp = path.with_extension("tmp");
     {
-        let mut f =
-            std::fs::File::create(&tmp).with_context(|| format!("creating {}", tmp.display()))?;
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&tmp)
+            .with_context(|| format!("creating {}", tmp.display()))?;
+        f.set_permissions(Permissions::from_mode(0o600))
+            .with_context(|| format!("chmod 0600 {}", tmp.display()))?;
         f.write_all(contents)?;
         f.sync_all()?;
     }
@@ -140,5 +158,60 @@ pub(crate) fn render_config(cfg: &Config, json: bool) -> Result<()> {
         let rendered = toml::to_string_pretty(cfg).context("serializing config to TOML")?;
         print!("{rendered}");
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    /// Issue #116: state.json caches the original MAC, original hostname, and
+    /// per-NM-connection identifiers — exactly the values we just tried to
+    /// hide from the network. Anything written through `write_atomic` must
+    /// land at `0o600` so an unprivileged user on the same machine can't
+    /// read those originals straight off disk.
+    #[test]
+    fn write_atomic_writes_0600_mode() {
+        let dir = std::env::temp_dir().join("proteus-write-atomic-mode-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("state.json");
+        write_atomic(&path, b"{}").unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            mode, 0o600,
+            "write_atomic must produce 0o600, got 0o{mode:o}"
+        );
+        // Re-writing the same path must keep the strict mode — the tmp file
+        // is reopened/truncated each time and renamed over the destination.
+        write_atomic(&path, b"{\"x\":1}").unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            mode, 0o600,
+            "write_atomic must keep 0o600 on overwrite, got 0o{mode:o}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Belt-and-suspenders: even if a stale `.tmp` from a previous crashed
+    /// run lingers with a permissive mode, the next `write_atomic` must
+    /// tighten it before the rename lands.
+    #[test]
+    fn write_atomic_tightens_stale_tmp_mode() {
+        let dir = std::env::temp_dir().join("proteus-write-atomic-stale-tmp-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("state.json");
+        let stale_tmp = path.with_extension("tmp");
+        std::fs::write(&stale_tmp, b"leftover").unwrap();
+        std::fs::set_permissions(&stale_tmp, std::fs::Permissions::from_mode(0o644)).unwrap();
+        write_atomic(&path, b"{}").unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            mode, 0o600,
+            "write_atomic must tighten a stale tmp's mode, got 0o{mode:o}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
