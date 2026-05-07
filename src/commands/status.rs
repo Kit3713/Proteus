@@ -153,6 +153,7 @@ fn feature_table(
     let host_state = hostname_state(state, config);
     let v6_state = ipv6_state(state, config);
     let ew_state = enterprise_wifi_state(state, config);
+    let stack_state = stack_state(state, config);
     vec![
         FeatureStatus {
             name: "mac-rotation",
@@ -206,8 +207,8 @@ fn feature_table(
         },
         FeatureStatus {
             name: "stack-fingerprint",
-            state: "not implemented".into(),
-            note: "phase E".into(),
+            state: stack_state.0,
+            note: stack_state.1,
         },
         FeatureStatus {
             name: "rf-tx-power",
@@ -215,6 +216,35 @@ fn feature_table(
             note: "phase E".into(),
         },
     ]
+}
+
+fn stack_state(state: Option<&State>, config: &Config) -> (String, String) {
+    let any_knob = config.stack.tcp_timestamps_off
+        || config.stack.icmpv6_hardening
+        || config.stack.suppress_gratuitous_arp;
+    if !any_knob {
+        return ("idle".to_string(), "every [stack] knob is off".to_string());
+    }
+    let dropin_present = Path::new(crate::stack::DROPIN_PATH).exists();
+    let captured = state
+        .map(|s| !s.originals.sysctls.is_empty())
+        .unwrap_or(false);
+    if dropin_present && captured {
+        return (
+            "applied".to_string(),
+            format!("drop-in at {}", crate::stack::DROPIN_PATH),
+        );
+    }
+    if dropin_present {
+        return (
+            "applied".to_string(),
+            "drop-in present (no captured originals — apply to refresh)".to_string(),
+        );
+    }
+    (
+        "idle".to_string(),
+        "configured; run `proteus stack apply` to write the drop-in".to_string(),
+    )
 }
 
 fn bluetooth_state(

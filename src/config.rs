@@ -18,6 +18,7 @@ pub struct Config {
     pub probes: ProbesConfig,
     pub ipv6: Ipv6Config,
     pub enterprise_wifi: EnterpriseWifiConfig,
+    pub stack: StackConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -122,6 +123,22 @@ impl Default for Ipv6Config {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct StackConfig {
+    // TCP timestamps off — leaks per-boot uptime via the timestamp clock.
+    pub tcp_timestamps_off: bool,
+    // ICMPv6/NDP hardening: per-iface accept_redirects=0, accept_source_route=0,
+    // ndisc_evict_nocarrier=1.
+    pub icmpv6_hardening: bool,
+    // Optional gratuitous ARP suppression. Off by default — breaks VRRP/keepalived
+    // failover detection on some networks.
+    pub suppress_gratuitous_arp: bool,
+    // Reserved for phase-E nft handler; surfaced here so the schema is stable.
+    // No sysctl effect — the sysctl writer ignores it.
+    pub icmp_info_replies_drop: bool,
+}
+
 impl Default for MacConfig {
     fn default() -> Self {
         Self {
@@ -194,6 +211,17 @@ impl Default for ProbesConfig {
                 "9.9.9.9:443".into(),
                 "142.250.190.78:443".into(),
             ],
+        }
+    }
+}
+
+impl Default for StackConfig {
+    fn default() -> Self {
+        Self {
+            tcp_timestamps_off: true,
+            icmpv6_hardening: true,
+            suppress_gratuitous_arp: false,
+            icmp_info_replies_drop: true,
         }
     }
 }

@@ -14,6 +14,7 @@ pub mod logging;
 pub mod mac;
 pub mod nm;
 pub mod probe;
+pub mod stack;
 pub mod state;
 pub mod timer;
 pub mod version;

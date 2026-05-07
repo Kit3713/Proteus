@@ -46,6 +46,11 @@ pub struct Originals {
     /// First-apply snapshot of per-NM-connection settings Proteus mutates
     /// (currently `802-1x.anonymous-identity`). Keyed by connection id.
     pub connections: BTreeMap<String, ConnectionOriginals>,
+    /// Cached sysctl values keyed by full sysctl name (e.g.
+    /// `net.ipv4.tcp_timestamps`). Populated on `proteus stack apply` before
+    /// any write, never overwritten on subsequent applies. Empty string means
+    /// "key did not exist on this kernel".
+    pub sysctls: BTreeMap<String, String>,
 }
 
 /// Cached pre-Proteus values for the per-connection 802.1X fields Proteus

@@ -155,6 +155,11 @@ pub enum Command {
         #[command(subcommand)]
         action: EnterpriseWifiAction,
     },
+    /// Stack-fingerprint sysctl drop-in (TCP/ICMP/NDP hardening).
+    Stack {
+        #[command(subcommand)]
+        action: StackAction,
+    },
     /// Browse the embedded wiki (or search it with `wiki search <query>`).
     #[command(args_conflicts_with_subcommands = true)]
     Wiki {
@@ -431,6 +436,25 @@ pub enum ConfigAction {
     },
 }
 
+#[derive(Subcommand, Debug)]
+pub enum StackAction {
+    /// Show current sysctl values + the drop-in we'd apply.
+    Status {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Write the drop-in to /etc/sysctl.d/95-proteus.conf and reload.
+    Apply {
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Remove the drop-in and reload defaults.
+    Revert {
+        #[arg(long)]
+        yes: bool,
+    },
+}
+
 pub fn run() -> ExitCode {
     let cli = Cli::parse();
     logging::init(cli.verbose, cli.quiet, cli.no_color);
@@ -510,6 +534,15 @@ pub fn run() -> ExitCode {
             EnterpriseWifiAction::Disable { connection, yes } => {
                 commands::enterprise_wifi::disable(&connection, yes, cli.state.as_deref())
             }
+        },
+        Command::Stack { action } => match action {
+            StackAction::Status { json } => {
+                commands::stack::status(json, cli.state.as_deref(), cli.config.as_deref())
+            }
+            StackAction::Apply { yes } => {
+                commands::stack::apply(yes, cli.state.as_deref(), cli.config.as_deref())
+            }
+            StackAction::Revert { yes } => commands::stack::revert(yes, cli.state.as_deref()),
         },
         Command::Timer { action } => match action {
             TimerAction::Status { json } => commands::timer::run_status(json),

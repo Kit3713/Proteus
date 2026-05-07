@@ -19,6 +19,7 @@ pub mod revert;
 pub mod rotate;
 pub mod show_config;
 pub mod show_defaults;
+pub mod stack;
 pub mod status;
 pub mod stub;
 pub mod timer;
