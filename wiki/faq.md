@@ -18,7 +18,7 @@ No. That is an application-layer or browser problem. Use Tor Browser, librewolf,
 
 ## Will this break my home Wi-Fi?
 
-Probably not. Some routers do MAC-based DHCP reservations or parental controls keyed on MAC; if you rely on those, pin the MAC for that connection with `proteus pin <ssid>`. Pinning is per-connection, so other networks still rotate. Cross-ref `proteus wiki mac-recipes`.
+Probably not. Some routers do MAC-based DHCP reservations or parental controls keyed on MAC; if you rely on those, pin the MAC for that connection with `proteus pin <ssid>` (today). Pinning is per-connection, so other networks still rotate. Cross-ref `proteus wiki mac-recipes`.
 
 ## Will this break my corporate Wi-Fi?
 
@@ -66,7 +66,7 @@ First-class handling. Default policy `rotate-before-auth`: get a fresh MAC, then
 
 ## Is `proteus revert` safe?
 
-Yes — it's a hard project invariant. Restores cached originals (MAC, hostname), removes our drop-ins, removes our nft rules, restores NM per-connection settings. Cross-ref `proteus wiki concepts`.
+Yes — it's a hard project invariant. Restores cached originals (MAC, hostname), removes our drop-ins, removes our nft rules, restores NM per-connection settings. Cross-ref `proteus wiki concepts`. Today the cross-cutting `proteus revert` umbrella is still a stub (planned, phase G); per-component reverts (`proteus bluetooth revert`, `proteus hostname revert`) ship today, and the manual rollback recipe lives in `proteus wiki uninstall`.
 
 ## Where does Proteus store state?
 

@@ -2,6 +2,8 @@ DHCP option suppression. Per-NetworkManager-connection settings written over DBu
 
 For the mental model, read `proteus wiki concepts` first. For MAC rotation context, `proteus wiki mac-recipes`. For IPv6 specifics including DUID derivation, `proteus wiki ipv6`. For hostname interactions, `proteus wiki hostname-recipes`.
 
+> **Status (audit 2026-05):** DHCP option suppression is **pending in PR #73** (DIRTY, awaiting maintainer rebase). The `[dhcp]` config section described below does not exist in `src/config.rs` yet, and `proteus apply` reports DHCP as `not yet implemented` today. Everything on this page describes the planned shape once PR #73 lands.
+
 ## What DHCP leaks
 
 Every DHCP DISCOVER and REQUEST is a broadcast. The local infrastructure — APs, switches, DHCP relays, captive-portal vendors, anyone passively listening on the L2 segment — sees the full option payload. Even with a fresh MAC every join, the option payload can correlate sessions back to the same device, the same OS, or the same human.

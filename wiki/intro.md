@@ -10,27 +10,29 @@ Three read-only commands work without root and tell you everything before you ch
 - `proteus current` — the live identifiers your machine is handing out right now: MAC per interface, hostname, DUID, Bluetooth alias.
 - `proteus original` — the cached permanent MAC and original hostname Proteus snapshotted on first run. Sacred, never re-captured.
 
-When you are ready to apply, `sudo proteus apply` is idempotent: running it ten times converges to the same state as running it once. `sudo proteus revert` puts everything back. `sudo proteus rotate` forces a fresh MAC immediately on the active interfaces.
+When you are ready to apply, `sudo proteus apply` is idempotent: running it ten times converges to the same state as running it once. `sudo proteus revert` (planned, phase G) puts everything back. `sudo proteus rotate` forces a fresh MAC immediately on the active interfaces.
 
 ## What gets erased
 
-**L2** — Wi-Fi MAC, Ethernet MAC, Bluetooth adapter alias and discoverability, BLE Resolvable Private Address mode where the controller supports it.
+Audit-aware list — `(today)` means shipped on current main; `(planned, phase X)` or `(pending PR #N)` flags features described accurately for the eventual implementation.
 
-**L3** — IPv6 stable-privacy and temp addresses, DUID rotated alongside MAC, ICMPv6/NDP fingerprint hardening.
+**L2** — Wi-Fi MAC, Ethernet MAC (today), Bluetooth adapter alias and discoverability (today), BLE Resolvable Private Address mode where the controller supports it (today).
 
-**L3-L4** — TCP timestamps off, ICMP info-replies dropped, optional gratuitous-ARP suppression.
+**L3** — IPv6 stable-privacy and temp addresses, DUID rotated alongside MAC, ICMPv6/NDP fingerprint hardening (planned, phase D/E — no PR yet for IPv6; sysctl drop-in is pending PR #69).
 
-**DHCP** — options 12, 60, 61, 81 suppressed.
+**L3-L4** — TCP timestamps off, ICMP info-replies dropped (planned, pending PR #69 sysctl + PR #70 nft); optional gratuitous-ARP suppression (planned).
 
-**Discovery** — mDNS responder and resolver, LLMNR, and NetBIOS silenced. SSDP and WSD blocked behind opt-in flags because they break KDE Connect and WS-Discovery printers.
+**DHCP** — options 12, 60, 61, 81 suppressed (planned, pending PR #73).
 
-**Hostname** — kernel, pretty, and transient names rotatable from a router-flavored wordlist, with a generic-default option (`fedora`) and an optional rotate-with-MAC.
+**Discovery** — mDNS responder and resolver, LLMNR, and NetBIOS silenced (planned, no PR yet for mDNS/LLMNR/NetBIOS via systemd-resolved drop-ins). SSDP and WSD blocked behind opt-in flags (planned, pending PR #70's nft writer).
 
-**Captive portals** — first-class detection, fresh MAC per visit to known portals, no rotation loops while authed.
+**Hostname** — kernel, pretty, and transient names rotatable from a router-flavored wordlist (today), with a generic-default option and an optional rotate-with-MAC (today; user-configurable `generic_value` is planned).
 
-**DNS** — one narrow knob: strip EDNS Client Subnet on systemd-resolved. Defers to dnscrypt-proxy, Pi-hole, AdGuard Home, or a custom `/etc/resolv.conf` when present.
+**Captive portals** — first-class detection, fresh MAC per visit to known portals, no rotation loops while authed (pending PR #66).
 
-**RF** — opt-in TX power reduction so the capture radius for passive listeners is smaller. Chipset reported in `proteus status` so you know what your hardware exposes.
+**DNS** — one narrow knob: strip EDNS Client Subnet on systemd-resolved (pending PR #71). Defers to dnscrypt-proxy, Pi-hole, AdGuard Home, or a custom `/etc/resolv.conf` when present.
+
+**RF** — opt-in TX power reduction so the capture radius for passive listeners is smaller (planned, no PR yet). Chipset reported in `proteus status` (planned).
 
 ## What Proteus is not
 
@@ -56,7 +58,7 @@ By default, on a 2h schedule via `proteus-rotate.timer`, and on probe-driven con
 
 Captive portals are the exception. Probe failures classified as portal-caused never trigger MAC rotation — that is how the loop is avoided. Periodic rotation is suppressed while you are authed behind a portal. Known-portal SSIDs get a fresh MAC per visit instead.
 
-Pinning a MAC per interface or per NetworkManager connection is supported; see `proteus wiki concepts` and the `mac-recipes` page (lands in phase B).
+Pinning a MAC per interface or per NetworkManager connection is supported (today, phase B); see `proteus wiki concepts` and the `mac-recipes` page.
 
 ## How it behaves
 
@@ -64,11 +66,11 @@ There is no daemon. The CLI is the whole product. Two systemd timers (`proteus-r
 
 State lives in `/var/lib/proteus/state.json`. Config lives in `/etc/proteus/config.toml`. The first time Proteus sees a system, it caches the permanent MAC and the original hostname before doing anything; those are sacred and never re-captured.
 
-Anything Proteus writes under `/etc/` carries a "managed by proteus" header plus a SHA of expected content, so `proteus diff` can spot manual edits.
+Anything Proteus writes under `/etc/` carries a "managed by proteus" header plus a SHA of expected content, so `proteus diff` (planned, phase G) can spot manual edits.
 
 All mutating commands need root and exit with a friendly error pointing at sudo when run unprivileged. Read commands work for any user and degrade quietly when the relevant files are not readable.
 
-`proteus revert` works at every release. Backing out is a real option from day one.
+`proteus revert` works at every release (planned cross-cutting umbrella, phase G — per-component revert paths ship today for bluetooth and hostname). Backing out is a real option from day one.
 
 Logging goes to journald via `tracing-journald`, with a stderr fallback when not under systemd. There is no telemetry, no update check, and no network egress beyond the configured probe targets. Ever.
 

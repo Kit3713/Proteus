@@ -65,7 +65,7 @@ First-class, not a heuristic.
 
 **Per visit.** Known-portal SSIDs get a fresh MAC every join, regardless of schedule.
 
-**Helper.** `proteus portal open` launches the portal page in your default browser. See `proteus wiki captive-portals`.
+**Helper.** `proteus portal open` (planned, pending PR #66) launches the portal page in your default browser. See `proteus wiki captive-portals`.
 
 ## Managed files
 
@@ -76,7 +76,7 @@ Anything Proteus writes to `/etc/` carries a header:
 # expected-sha256: <64 hex chars>
 ```
 
-`proteus diff` (phase G) compares the live file's SHA against the expected one. Drift from manual edits gets flagged loudly so you can decide: re-apply, accept the local change, or back the whole thing out with `proteus revert`.
+`proteus diff` (planned, phase G — currently a stub returning exit `64`) compares the live file's SHA against the expected one. Drift from manual edits gets flagged loudly so you can decide: re-apply, accept the local change, or back the whole thing out with `proteus revert` (planned, phase G).
 
 The original-MAC cache in `/var/lib/proteus/state.json` is sacred. Captured the first time Proteus sees a system, never re-captured. The original hostname is captured the same way at the same time. If you tinker, `proteus reset` clears your config but never touches the cache. `proteus uninstall --purge` is the only thing that removes it. This is so you can always get back to your system's original identity, no matter how badly you've broken the config.
 
@@ -104,7 +104,7 @@ The rule: detect first, defer to the more-specialized tool, surface the decision
 
 `proteus apply` is idempotent. Running it ten times converges to the same state as running it once. Implementations that aren't idempotent are bugs — file them.
 
-`proteus revert` is an invariant: it must work at every commit. If a feature can't be backed out cleanly, the feature isn't shipped. This is the safety net that lets you try Proteus without committing to it.
+`proteus revert` is the planned cross-cutting invariant: it must work at every commit. If a feature can't be backed out cleanly, the feature isn't shipped. The umbrella `proteus revert` is currently a stub (exit `64`, phase G); per-component revert paths exist for the components that have landed (`proteus bluetooth revert`, `proteus hostname revert`). This is the safety net that lets you try Proteus without committing to it.
 
 Together these two rules mean apply / revert / apply / revert is a no-op cycle. Try things.
 

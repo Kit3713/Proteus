@@ -1,5 +1,7 @@
 IPv6 has its own identifier surface, separate from MAC. Rotating the MAC without thinking about IPv6 leaves stable per-network identifiers in plain sight. This page covers what leaks, what Proteus sets, and what stays the user's call.
 
+> **Status (audit 2026-05):** IPv6 stable-privacy IID coupling, DUID rotation, and NDP hardening are **planned and not yet implemented**. There is no PR open for them yet. The `[ipv6]` config section described below does not exist in `src/config.rs`. Today, `proteus apply` does not write any `net.ipv6.conf.<iface>.*` sysctls and does not touch the DHCPv6 DUID — the page describes the planned design once IPv6 lands (likely co-shipped with PR #69's sysctl drop-in or alongside DHCP work in PR #73).
+
 ## The leak surface
 
 **Interface Identifier (IID).** The lower 64 bits of an IPv6 address. Under EUI-64 (RFC 4291 Appendix A) the IID is derived from the MAC: split the 48-bit MAC, inject `FF:FE` in the middle, flip the universal/local bit. The MAC is recoverable from any global address. Rotating the MAC doesn't help if even one address on the interface still uses EUI-64 — that one address keeps leaking.

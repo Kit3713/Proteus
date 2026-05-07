@@ -2,6 +2,8 @@ A field guide for using Proteus where the network is actively trying to identify
 
 Read `proteus wiki threat-model` first if you have not. This page is the operational follow-up to that one. The threat-model page covers what Proteus is and is not for; this one is the playbook for using what Proteus is for in the places it matters most.
 
+> **Status (audit 2026-05):** the recipes on this page assume the full feature set. Today, MAC rotation, hostname rotation, Bluetooth alias / RPA, and probes ship; DHCP suppression (PR #73), DNS ECS-strip (PR #71), discovery silencing (no PR / PR #70), captive-portal handling (PR #66), and IPv6 hardening (no PR yet) are pending. `proteus revert` (planned, phase G) is referenced as a panic button below; today it's a stub — use per-component reverts (`proteus bluetooth revert`, `proteus hostname revert`) and the manual recipe in `proteus wiki uninstall` until it lands.
+
 The voice on this page is deliberately under-promising. Network-layer fingerprint erasure is one piece of a privacy stack; running Proteus and assuming it makes you anonymous is the most common way users hurt themselves. Proteus is the floor underneath the rest of the stack — it makes the network-side leak stop being the weakest link. That is a useful and specific thing. It is not the same as anonymity.
 
 ## What "hostile environment" means
@@ -85,7 +87,7 @@ The casual end of the spectrum. Routine privacy hygiene, not paranoia.
 2. Connect, complete the captive portal if any, browse. Periodic rotation is suppressed while you are authed behind the portal — that is the captive-portal loop fix, not a bug. Cross-ref `proteus wiki captive-portals`.
 3. Before leaving, rotate manually: `sudo proteus rotate --yes`. The cafe's analytics platform now sees this visit's MAC disappear and cannot stitch it to the next one.
 4. Or trust the timer. Come back tomorrow and join again — Proteus will produce a fresh MAC at join, and the visit looks new from the operator's perspective.
-5. If you mark the SSID as a known portal (`proteus portal mark "Cafe Free WiFi"`), every visit gets a fresh MAC at join regardless of the schedule. Useful for spots you frequent.
+5. If you mark the SSID as a known portal (`proteus portal mark "Cafe Free WiFi"` — pending PR #66), every visit gets a fresh MAC at join regardless of the schedule. Useful for spots you frequent.
 
 What this gets you: the cafe's footfall analytics see uncorrelated visits. What it does not get you: anonymity from anything you actually log into. If you sign into your real Google account every visit, the network-layer rotation is not the link in that chain.
 
@@ -99,7 +101,7 @@ Higher density of adversaries and analytics. The peer-snooping risk is real — 
 2. **Carry a separate USB Wi-Fi adapter** if you want stronger rotation. A different radio rotates the L1 fingerprint as well as the L2 identifier. Cheap cards are fine — you are buying RF identity, not throughput. Cross-ref `proteus wiki rf-fingerprinting`.
 3. **During.** `proteus status` shows current state. `proteus current` shows the live identifiers you are emitting. If your conference Wi-Fi is one of the captive-portal-walled-garden kinds (university Wi-Fi often is), set `[captive_portal] policy = "preserve-mac"` so you are not rotating mid-session and re-authing.
 4. **Bluetooth.** Sponsor booths sometimes hand out swag in exchange for a Bluetooth scan. Treat this as adversarial — the swag is paid for by the BD_ADDR you donated. Keep `Discoverable=false`, BLE RPA enabled, and consider `rfkill block bluetooth` for the duration of the show floor.
-5. **Post-conference.** `sudo proteus revert --yes` clears session state and returns Proteus's view of the originals. Or keep going — there is no requirement to revert.
+5. **Post-conference.** `sudo proteus revert --yes` (planned, phase G) clears session state and returns Proteus's view of the originals. Or keep going — there is no requirement to revert. Today, use `sudo proteus bluetooth revert` and `sudo proteus hostname revert` for the per-component restores until the umbrella revert lands.
 
 What conferences do not care about: your hostname rotating mid-session. The vendor-supplied analytics platform is keying on MAC and behavior, not on whether your laptop says `fedora` or `seven-mauve-coyote.local`. The hostname work matters more for the LAN-side leak (mDNS, NetBIOS) than for the analytics platform.
 
@@ -112,7 +114,7 @@ Heavy passive collection environment. Multiple operators, multiple legal regimes
 1. **Pre-flight.** Rotate everything. `sudo proteus rotate --yes`, `sudo proteus apply --yes`. Set hostname to generic. Disable Bluetooth at the kernel level: `sudo rfkill block bluetooth`. Bluetooth on at an airport is broadcasting an identity to every gate.
 2. **At the gate.** Do not connect to the airport Wi-Fi unless you need to. Cellular has its own threats but they are different threats; for short gate dwells the cellular-data path leaks less to local infrastructure. If you must connect, do it briefly and intentionally — captive-portal email is fake, traffic is over a VPN, and you are off the network as soon as you do not need it.
 3. **In the lounge.** Lounge Wi-Fi is a different operator from the terminal Wi-Fi and the airline app. Each one is its own correlation event. Treat each network join as a fresh hostile event — let Proteus rotate.
-4. **After landing.** `sudo proteus rotate --yes` before you leave the terminal. `sudo proteus revert --yes` after you are home if you want a clean slate.
+4. **After landing.** `sudo proteus rotate --yes` before you leave the terminal. `sudo proteus revert --yes` (planned, phase G) after you are home if you want a clean slate.
 5. **Customs and border crossings.** A different problem. See the hostile-state-actor section below.
 
 Two specific airport gotchas worth flagging. **Saved-network history.** If you have ever joined the airport's free Wi-Fi at any airport in the chain (Boingo, Aircell, the global airport-Wi-Fi consortia), your laptop probes for that SSID at every airport. Either delete the saved network or `nmcli radio wifi off` until you actually need it. **Airline apps and gate kiosks.** Boarding-pass scanning, gate-display apps, in-flight Wi-Fi sign-on all want a stable account-level identity. Proteus does not help against any of those — those are application-layer correlation events, the airline already knows who you are from the ticket.
@@ -122,8 +124,8 @@ Two specific airport gotchas worth flagging. **Saved-network history.** If you h
 Hotels often charge per-MAC and bind your captive-portal session to your MAC for the duration of the stay. Aggressive rotation here will charge you twice or kick you off the portal repeatedly.
 
 1. **First night.** Let Proteus rotate normally at join. Auth the portal against that MAC. Periodic rotation is suppressed while authed (cross-ref `proteus wiki captive-portals`), so you should not get kicked off mid-session.
-2. **Multiple nights.** Pin the MAC for the duration of the stay so you do not get re-charged or re-prompted on every reconnect: `sudo proteus pin --connection "HotelWiFi"`. The connection-scoped pin survives suspends and reconnects. Cross-ref `proteus wiki mac-recipes`.
-3. **Last morning.** `sudo proteus unpin --connection "HotelWiFi"` before checkout. Rotation resumes on the next join.
+2. **Multiple nights.** Pin the MAC for the duration of the stay so you do not get re-charged or re-prompted on every reconnect: `sudo proteus pin "HotelWiFi"` (positional today; the `--connection` flag is planned). The connection-scoped pin survives suspends and reconnects. Cross-ref `proteus wiki mac-recipes`.
+3. **Last morning.** `sudo proteus unpin "HotelWiFi"` before checkout. Rotation resumes on the next join.
 4. **Across stays at the same chain.** Pinning is per-connection-profile; a different hotel of the same chain is a different SSID and connection profile, so your identity is uncorrelated across stays. The chain knows your name from the reservation regardless — Proteus is for the network-side leak, not the booking-side one.
 
 A note on per-MAC charging: this is a practice, not a law. Some chains charge per device per day. Pinning is the operational answer; do not try to defeat the charge by rotating mid-stay, you will just confuse the captive portal and possibly trigger their abuse heuristics.
@@ -166,7 +168,7 @@ If you find Proteus claiming to do any of these in its docs or output, that is a
 Coming back is its own checklist. The goal is to clear session state so the next environment is uncorrelated with this one.
 
 1. **Rotate immediately on the way out** if you have not already. `sudo proteus rotate --yes`.
-2. **Revert if you want a clean slate.** `sudo proteus revert --yes` drops the session state. The originals cache is preserved (it is sacred and never re-captured), so a subsequent `proteus apply` re-applies the configured policy fresh.
+2. **Revert if you want a clean slate.** `sudo proteus revert --yes` (planned, phase G) drops the session state. The originals cache is preserved (it is sacred and never re-captured), so a subsequent `proteus apply` re-applies the configured policy fresh. Today the per-component reverts (`bluetooth revert`, `hostname revert`) and `proteus reset` cover most of this surface.
 3. **Close every browser tab** from sessions on that network. Cookies and local storage outlive your network identity rotation.
 4. **Clear browser history if your threat model warrants it.** Better: use Tor Browser or a containerized browser profile so the history was already ephemeral.
 5. **Disable any one-shot exceptions you set for the trip.** If you raised the rotation cadence, dropped it back. If you marked an SSID as a known portal for the trip, unmark it. `proteus config show` to audit.

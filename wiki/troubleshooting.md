@@ -17,11 +17,11 @@ proteus -v doctor             # extra detail per check
 
 You just rotated and the link is dead. Start gentle, escalate.
 
-- Try a revert: `sudo proteus revert --iface <iface>` (lands in phase G). Failing that, restart NetworkManager: `sudo systemctl restart NetworkManager`.
+- Try a revert: `sudo proteus revert --iface <iface>` (planned, phase G — currently a stub). Failing that, restart NetworkManager: `sudo systemctl restart NetworkManager`.
 - Check whether the current MAC is wedged: `proteus status --json | jq .interfaces` and `proteus current --json | jq .interfaces[].mac`.
-- Captive portal in path? See `proteus wiki captive-portals` for the loop fix. The portal detector should classify it; if it didn't, check `proteus status --json | jq .portal`.
+- Captive portal in path? See `proteus wiki captive-portals` for the loop fix. The portal detector (pending PR #66) should classify it; until that PR lands, check `proteus probe --json | jq .classification` for the `portal-suspected` value.
 - Verify the rotated MAC didn't collide with the gateway. This should never happen — Proteus checks the ARP table before assigning — but it's the first thing to rule out: `arp -a` then compare with `proteus current --json`.
-- Recovery hatch: `sudo proteus reset` (phase G) clears your config back to defaults and re-applies. It does not touch the original-MAC cache, so this is safe.
+- Recovery hatch: `sudo proteus reset` (ships today) clears your config back to defaults. It does not touch the original-MAC cache, so this is safe.
 
 ## "My printer stopped being discovered"
 
@@ -44,10 +44,10 @@ Same family of problem.
 
 Enterprise Wi-Fi is fussy. The opt-in 802.1X knob is the usual cause.
 
-- Did you enable `enterprise_wifi.anonymous_outer_identity`? Some Microsoft NPS configs reject mismatched outer/inner identity and silently drop you.
-- Disable per-connection: `sudo proteus enterprise-wifi disable --connection "MyOrgWiFi"` (phase D command). Until that lands, edit `/etc/proteus/config.toml` and run `sudo proteus apply`.
+- Did you enable `enterprise_wifi.anonymous_outer_identity` (planned, no PR yet)? Some Microsoft NPS configs reject mismatched outer/inner identity and silently drop you.
+- Disable per-connection: `sudo proteus enterprise-wifi disable --connection "MyOrgWiFi"` (planned). Until that lands, edit `/etc/proteus/config.toml` and run `sudo proteus apply`.
 - Look for the EAP failure: `journalctl -u NetworkManager -n 100` and search for `EAP-Failure` or `auth failed`.
-- If your org also pins MAC for 802.1X cert binding, pin Proteus to a stable MAC for that connection: `sudo proteus pin --connection "MyOrgWiFi"` (phase B).
+- If your org also pins MAC for 802.1X cert binding, pin Proteus to a stable MAC for that connection: `sudo proteus pin "MyOrgWiFi"` (positional argument; flag-style `--connection` is planned).
 
 ## "My DHCP lease keeps renewing too often"
 
@@ -90,7 +90,7 @@ Look at the structured reason first.
 
 ## "I want to know what Proteus changed"
 
-- `proteus diff` (phase G) — config vs defaults vs live state, with drift flagged on managed files via the SHA in their headers.
+- `proteus diff` (planned, phase G — currently a stub) — config vs defaults vs live state, with drift flagged on managed files via the SHA in their headers.
 - `cat /etc/proteus/state.json | jq .` — see what's been captured (original MACs, original hostname, history).
 - `find /etc -name '*proteus*'` — see every drop-in Proteus has written.
 - `sudo nft list ruleset` — see the firewall rules in the `proteus` table.
@@ -98,9 +98,9 @@ Look at the structured reason first.
 
 ## "I want to fully remove Proteus"
 
-- One-shot: `sudo proteus uninstall --purge --yes` (phase G). Runs revert, removes the binary, clears `/etc/proteus/` and `/var/lib/proteus/`.
+- One-shot: `sudo proteus uninstall --purge --yes` (ships today). Runs revert (per-component where landed; cross-cutting `proteus revert` umbrella is planned), removes the binary, clears `/etc/proteus/` and `/var/lib/proteus/`.
 - Manually:
-  1. `sudo proteus revert --yes` to undo every applied change.
+  1. `sudo proteus revert --yes` (planned, phase G) to undo every applied change. Until then, run the per-component reverts (`bluetooth revert`, `hostname revert`) and use the manual recipe in `proteus wiki uninstall`.
   2. `sudo rm /usr/local/bin/proteus` to remove the binary.
   3. `sudo rm -rf /etc/proteus/ /var/lib/proteus/` to clear config and state.
   4. `sudo systemctl disable --now proteus-rotate.timer proteus-check.timer proteus-boot.service` if any units are still around.
@@ -127,7 +127,7 @@ Some commands are stubs in the current phase. This is by design — every subcom
 
 ## "Permission denied"
 
-- All mutating commands need root: `apply`, `rotate`, `revert`, `pin`, `unpin`, `reset`, `uninstall`. Prefix with `sudo`.
+- All mutating commands need root: `apply`, `rotate`, `pin`, `unpin`, `reset`, `uninstall` (today); `revert` (planned, phase G). Prefix with `sudo`.
 - Read commands work without root for any file the user can read. They degrade quietly when files aren't readable rather than failing loudly.
 
 ## "How do I run Proteus without systemd?"
@@ -142,8 +142,8 @@ You mostly can't. Proteus targets systemd as a primary dependency.
 
 Manual edits to a managed file get flagged loudly. This is a feature, not a bug.
 
-- Run `proteus diff` (phase G) to see the path, expected SHA, and current SHA.
-- Decide: re-apply Proteus's version with `sudo proteus apply`, or accept the local edit and update the header SHA, or back the whole thing out with `sudo proteus revert`.
+- Run `proteus diff` (planned, phase G — currently a stub) to see the path, expected SHA, and current SHA.
+- Decide: re-apply Proteus's version with `sudo proteus apply`, or accept the local edit and update the header SHA, or back the whole thing out with `sudo proteus revert` (planned, phase G).
 - The header on every managed file looks like `# managed by proteus — do not edit` followed by `# expected-sha256: <hex>`. If you removed those headers, Proteus will treat the file as foreign and refuse to overwrite it.
 
 ## "Probes keep triggering rotations on a flaky link"
@@ -153,7 +153,7 @@ The probe quorum exists for exactly this — but if your network is bad enough, 
 - Check the probe state: `proteus status --json | jq '.probes'`.
 - Recent rotations: `journalctl -u proteus-check -n 100`.
 - Loosen the quorum or extend the cooldown in `[probes]`. See `proteus wiki probes`.
-- Or pin the interface for that environment: `sudo proteus pin --iface <iface>` (phase B). Pinned interfaces are skipped by both schedule and probe-driven rotation.
+- Or pin the interface for that environment: `sudo proteus pin <iface>` (today; flag-style `--iface` is planned). Pinned interfaces are skipped by both schedule and probe-driven rotation.
 
 ## Logs and diagnostics
 

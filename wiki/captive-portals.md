@@ -2,6 +2,8 @@ Captive portals are first-class. Not a heuristic, not a check tacked onto the pr
 
 This page is honest about the complexity. Detecting a portal is the easy part. Not breaking your session every five minutes is the hard part.
 
+> **Status (audit 2026-05):** the captive-portal detector and the `proteus portal` subcommand family described on this page are **pending in PR #66** (currently DIRTY, awaiting maintainer rebase). Today, `proteus probe` reports `portal-suspected` as one of its four classifications, but no portal-aware suppression rules or `proteus portal mark / list / unmark / open` subcommands are wired into the binary yet. Behaviour described below applies once PR #66 lands.
+
 ## Why first-class
 
 Rotating a MAC behind a captive portal is a footgun. The shape of the bug:
@@ -69,14 +71,14 @@ Some networks you'll join again. Your usual cafe, the conference venue, the airp
 State lives in `/var/lib/proteus/state.json` under `known_portal_ssids`. A small list, manually curated.
 
 ```
-proteus portal mark <ssid>      # add an SSID to the known-portal list
-proteus portal list             # print the list
-proteus portal unmark <ssid>    # remove an SSID
+proteus portal mark <ssid>      # add an SSID to the known-portal list (pending PR #66)
+proteus portal list             # print the list (pending PR #66)
+proteus portal unmark <ssid>    # remove an SSID (pending PR #66)
 ```
 
 When you join an SSID on the list, you get a fresh MAC for that visit, regardless of where the schedule timer is. Inside the visit, the suppression rules above apply normally — fresh MAC at join, then no further rotation until the next disconnect.
 
-The `proteus portal mark` / `list` / `unmark` commands are phase C surface and ship as stubs in earlier phases. They print "not implemented in this phase" and point at this page.
+The `proteus portal mark` / `list` / `unmark` commands are pending PR #66 and have not yet shipped. Today the `proteus portal` subcommand does not exist at the CLI surface — invoking it returns clap's "unrecognized subcommand" error rather than a phase-pointer stub.
 
 ## Browser helper
 
@@ -86,7 +88,7 @@ proteus portal open
 
 Launches the portal page in your default browser. Tries `$BROWSER` first, then falls back to `xdg-open`. The detector identifies the redirect target so you don't have to type a URL.
 
-Phase C. Earlier phases stub it out.
+Pending PR #66. Not currently wired in the binary.
 
 ## Detection edge cases
 

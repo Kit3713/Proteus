@@ -1,5 +1,7 @@
 Recipes for confirming, on the wire and in `/etc/`, that Proteus is doing what it claims. Each section is a concrete command, an expected output snippet, and the interpretation that says "applied" or "broken". For the mental model, read `proteus wiki concepts` first.
 
+> **Status (audit 2026-05):** the verification recipes below are a mix of "works today" and "applies once the corresponding writer lands". Sections referencing `/etc/sysctl.d/95-proteus.conf` are pending PR #69; ICMP nft drops are pending PR #70; ECS-strip drop-in is pending PR #71; DHCP option suppression is pending PR #73. MAC, hostname, and Bluetooth verification recipes work against the current binary. `proteus diff` (phase G) is a stub today.
+
 Install once: `sudo dnf install tcpdump nmap bind-utils avahi-tools nftables iproute jq bluez`. Examples assume `wlan0`; substitute as needed.
 
 ## MAC rotation
@@ -271,7 +273,7 @@ proteus diff
 # expected: empty (no drift) OR one line per drifted file
 ```
 
-`proteus diff` lands in phase G. Until then, manual check:
+`proteus diff` is planned, phase G — currently a stub returning exit `64`. Until then, manual check:
 
 ```sh
 head -2 /etc/sysctl.d/95-proteus.conf

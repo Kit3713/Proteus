@@ -1,5 +1,7 @@
 A cookbook of routines for users who care about minimizing their network-layer fingerprint. Daily, weekly, monthly, pre-trip, post-trip, annual. Copy-paste each block into a terminal and read what comes back.
 
+> **Status (audit 2026-05):** several recipes below reference subcommands that are still planned. Notably: `proteus diff` (planned, phase G — currently a stub), `proteus revert` (planned, phase G — currently a stub; per-component `bluetooth revert` / `hostname revert` ship today), `proteus dhcp apply` and `proteus dns status` (planned alongside DHCP PR #73 and DNS PR #71). Lines tagged `(phase G)` etc. indicate where to expect the wired-up command.
+
 This page is operational only. The "why" lives in `proteus wiki threat-model`. The "what to do when it breaks" lives in `proteus wiki troubleshooting`. The "what each command does" lives in `proteus wiki cli`.
 
 Proteus runs idle most of the time. These checklists exist so you can confirm that "idle" actually means "working".
@@ -31,14 +33,14 @@ When to re-run something:
 
 Once a week, on a quiet morning.
 
-- Review drift: `proteus diff` (lands phase G). Flags any managed file whose SHA no longer matches the `# expected-sha256:` header. Treat drift as a manual-edit incident — decide whether to keep the edit or re-apply Proteus's version.
+- Review drift: `proteus diff` (planned, phase G — stub today). Flags any managed file whose SHA no longer matches the `# expected-sha256:` header. Treat drift as a manual-edit incident — decide whether to keep the edit or re-apply Proteus's version.
 - Skim the log: `journalctl -t proteus -n 200 --no-pager`. Look for repeated errors, DBus glitches, unexpected rotations.
 - Verify timers: `proteus timer status`. The `rotate` timer should be active with a sane next-fire time; the `check` timer too.
 - Confirm probes still work: `proteus probe`. Should classify `clear` on a normal connection. If it returns `inconclusive` or `down` from your home network, your probe endpoints may need updating — see `proteus wiki probes`.
 - Audit your config: `proteus config show`. Re-read it; does it still match what you actually want? Knobs accumulate.
 
 ```sh
-proteus diff                                    # phase G
+proteus diff                                    # planned, phase G (stub today)
 journalctl -t proteus -n 200 --no-pager
 proteus timer status
 proteus probe
@@ -52,12 +54,12 @@ Once a month, with coffee and ten minutes.
 - Re-read `proteus wiki threat-model`. Has the threat landscape shifted? New tracking technique you should know about? New tool to add to your stack?
 - Update Proteus itself: `cargo install --git https://github.com/Kit3713/Proteus.git --locked`. Or wait for distro packages once they land.
 - Re-verify the rest of your stack: dnscrypt-proxy still resolving; Tor Browser still launches; your VPN still authenticates; your Pi-hole or NextDNS subscription is current.
-- Test revert on a safe config: `sudo proteus revert --yes` (phase G) on a non-production config to confirm rollback still works cleanly. Then re-apply.
+- Test revert on a safe config: `sudo proteus revert --yes` (planned, phase G — stub today) on a non-production config to confirm rollback still works cleanly. Then re-apply.
 
 ```sh
 proteus wiki threat-model | less
 cargo install --git https://github.com/Kit3713/Proteus.git --locked
-sudo proteus revert --yes                       # phase G; test on a throwaway config
+sudo proteus revert --yes                       # planned, phase G (stub today); test on a throwaway config
 sudo proteus apply --yes                        # then re-apply
 ```
 
@@ -76,14 +78,14 @@ proteus original --json | jq .
 sudo proteus config set mac.rotation_interval 30m --yes
 sudo proteus timer set rotate --interval 30m
 
-# 4. Make sure Bluetooth is locked down (phase B)
+# 4. Make sure Bluetooth is locked down (today)
 sudo proteus bluetooth apply --yes
 
-# 5. Make sure DHCP suppression is on (phase D)
+# 5. Make sure DHCP suppression is on (planned, pending PR #73)
 sudo proteus config enable dhcp --yes
 sudo proteus dhcp apply --yes
 
-# 6. Make sure DNS hard guard is OK (phase D)
+# 6. Make sure DNS hard guard is OK (planned, pending PR #71)
 proteus dns status
 
 # 7. Browse outside Proteus's scope: launch Tor Browser or your VPN
@@ -98,7 +100,7 @@ When you're back on a trusted network. Drop the trip's session state, re-apply y
 
 ```sh
 # 1. Drop session state — fresh MACs, undo any per-trip pins
-sudo proteus revert --yes                       # phase G
+sudo proteus revert --yes                       # planned, phase G (stub today; use per-component reverts in the meantime)
 
 # 2. Re-apply your home config
 sudo proteus apply --yes
@@ -131,11 +133,11 @@ Once a year, or whenever your situation changes meaningfully (new job, new count
 
 Event-driven, not scheduled. Run these only when the trigger fires.
 
-- **Joined an unknown network**: `sudo proteus rotate --yes` (phase B) if Proteus didn't auto-rotate at join. Check `proteus current` to confirm.
+- **Joined an unknown network**: `sudo proteus rotate --yes` (today) if Proteus didn't auto-rotate at join. Check `proteus current` to confirm.
 - **Captive portal in path**: do not rotate manually — let Proteus's captive-portal logic handle it. Cross-ref `proteus wiki captive-portals`.
 - **Battery low / on the move**: nothing. Proteus is event-driven; the NM dispatcher and the systemd timers handle it. There is no battery-related action.
 - **Daemon misbehaving**: `proteus doctor`, then `journalctl -u proteus-rotate -n 50` for the rotate timer or `journalctl -u proteus-check -n 50` for the probe timer. Cross-ref `proteus wiki troubleshooting`.
-- **Want to verify nothing was missed**: `proteus diff` (phase G) to see config-vs-defaults-vs-live drift; `proteus status --json | jq .features` to see per-feature state.
+- **Want to verify nothing was missed**: `proteus diff` (planned, phase G — stub today) to see config-vs-defaults-vs-live drift; `proteus status --json | jq .features` to see per-feature state.
 - **About to give a public talk or demo**: `proteus current --json` to confirm what MAC will appear in any screenshots; consider rotating beforehand if the MAC will be visible.
 
 ## Out-of-scope reminders (don't expect Proteus to do these)

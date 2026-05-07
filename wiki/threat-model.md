@@ -16,16 +16,18 @@ The audience this page assumes: someone who already understands MAC addresses, D
 
 Each item below is a real, mostly-passive observation an attacker can make on a network you join, and Proteus's job is to make that observation either impossible or uncorrelated with your previous visits.
 
-- **Passive L2 tracking on public Wi-Fi.** Stores, conferences, airports, malls, and transit hubs log MAC addresses for analytics, footfall counting, and behavioral profiling. Proteus rotates Wi-Fi and Ethernet MACs on a schedule (default 2h) and on probe-driven connectivity loss (default 5m), so each visit is uncorrelated with the last. Captive-portal SSIDs get a fresh MAC every visit.
-- **DHCP correlation across networks.** DHCP option 12 (hostname), 60 (vendor-class identifier — `dhcpcd-9.4.1` is a banner), 61 (client identifier, often the MAC), and 81 (FQDN) tie your device across networks even when the MAC changes. Proteus suppresses or rotates each of these.
-- **mDNS, LLMNR, NetBIOS, SSDP, WSD broadcasts on local networks.** These announce your hostname, capabilities, and services to anyone on the LAN. Proteus silences them, with SSDP and WSD opt-in because they break KDE Connect and WS-Discovery printers.
-- **TCP timestamps that leak system uptime.** RFC 7323 timestamps are a monotonic clock anyone you talk to can read. Proteus disables them by default, with the documented PAWS edge case for high-bandwidth long-lived flows surfaced in the wiki.
-- **ICMP info-replies and address-mask replies.** Old OS-fingerprinting vectors (ICMP types 15/16/17/18) that most kernels still answer. Proteus drops them.
-- **EDNS Client Subnet on systemd-resolved.** Leaks a /24 prefix of your IP to upstream resolvers, which is enough to geolocate you. Proteus strips it — but only when systemd-resolved is the active resolver and no more-specialized DNS-privacy tool is detected.
-- **Bluetooth adapter alias broadcast.** A passive observer near you can read the discoverable name your Bluetooth adapter advertises and link it to you. Proteus generic-aliases it and turns discoverable off by default.
-- **BLE advertising address.** A passive observer can track BLE devices by their advertising address. Proteus enables Resolvable Private Address mode where the controller supports it.
-- **IPv6 derivation correlation.** Under EUI-64 the IPv6 IID leaks the MAC directly; under stable-privacy it derives deterministically from the MAC plus a network-scoped key. Proteus rotates the IID alongside the MAC and uses temp addresses by default.
-- **DUID stickiness across MAC rotations.** A static DHCPv6 client identifier defeats MAC rotation. Proteus rotates DUID alongside MAC.
+Audit-aware list — `(today)` means shipped; planned items are flagged inline.
+
+- **Passive L2 tracking on public Wi-Fi.** Stores, conferences, airports, malls, and transit hubs log MAC addresses for analytics, footfall counting, and behavioral profiling. Proteus rotates Wi-Fi and Ethernet MACs on a schedule (default 2h) and on probe-driven connectivity loss (default 5m) so each visit is uncorrelated with the last (today). Captive-portal SSIDs get a fresh MAC every visit (pending PR #66).
+- **DHCP correlation across networks.** DHCP option 12 (hostname), 60 (vendor-class identifier — `dhcpcd-9.4.1` is a banner), 61 (client identifier, often the MAC), and 81 (FQDN) tie your device across networks even when the MAC changes. Proteus will suppress or rotate each of these (planned, pending PR #73).
+- **mDNS, LLMNR, NetBIOS, SSDP, WSD broadcasts on local networks.** These announce your hostname, capabilities, and services to anyone on the LAN. Proteus will silence them, with SSDP and WSD opt-in because they break KDE Connect and WS-Discovery printers (planned — mDNS/LLMNR drop-ins are no-PR-yet; SSDP/WSD nft blocks are pending PR #70).
+- **TCP timestamps that leak system uptime.** RFC 7323 timestamps are a monotonic clock anyone you talk to can read. Proteus will disable them by default, with the documented PAWS edge case for high-bandwidth long-lived flows surfaced in the wiki (pending PR #69 sysctl drop-in).
+- **ICMP info-replies and address-mask replies.** Old OS-fingerprinting vectors (ICMP types 15/16/17/18) that most kernels still answer. Proteus will drop them (pending PR #70 nft writer).
+- **EDNS Client Subnet on systemd-resolved.** Leaks a /24 prefix of your IP to upstream resolvers, which is enough to geolocate you. Proteus will strip it — but only when systemd-resolved is the active resolver and no more-specialized DNS-privacy tool is detected (pending PR #71).
+- **Bluetooth adapter alias broadcast.** A passive observer near you can read the discoverable name your Bluetooth adapter advertises and link it to you. Proteus generic-aliases it and turns discoverable off by default (today).
+- **BLE advertising address.** A passive observer can track BLE devices by their advertising address. Proteus enables Resolvable Private Address mode where the controller supports it (today).
+- **IPv6 derivation correlation.** Under EUI-64 the IPv6 IID leaks the MAC directly; under stable-privacy it derives deterministically from the MAC plus a network-scoped key. Proteus will rotate the IID alongside the MAC and use temp addresses by default (planned, no PR yet — today the kernel default behaviour applies).
+- **DUID stickiness across MAC rotations.** A static DHCPv6 client identifier defeats MAC rotation. Proteus will rotate DUID alongside MAC (planned, pending PR #73).
 
 If your concern is on the list above, Proteus is the right tool for that part of your stack. If your concern is not on the list, read the rest of this page before assuming Proteus helps; the right answer is almost always a different tool.
 

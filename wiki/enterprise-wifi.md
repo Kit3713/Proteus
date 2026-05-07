@@ -1,5 +1,7 @@
 802.1X anonymous outer identity for enterprise Wi-Fi (eduroam, corporate). Opt-in, default off. This page exists because flipping it on can break some networks; read before enabling.
 
+> **Status (audit 2026-05):** 802.1X anonymous outer identity is **planned, no PR yet**. The `[enterprise_wifi]` config section described below does not exist in `src/config.rs`, and the `proteus enterprise-wifi enable / disable --connection ...` subcommand referenced in the testing recipe does not yet exist at the CLI surface. Everything below describes the planned design.
+
 ## The leak
 
 Enterprise Wi-Fi authenticates with EAP. The "outer identity" is the EAP-Identity sent in the clear before the TLS tunnel comes up — every passive listener within range sees it, and so does the visited network's RADIUS proxy on the way to your home server. By default, NetworkManager (and most other supplicants) sends your real username as the outer identity. That username is unique to you and persists across networks — a stable cross-site identifier, broadcast unencrypted on join.
@@ -64,14 +66,14 @@ per_connection_overrides = {}
 Pick one connection, enable, try to associate, watch the logs. If it works, leave it; if it doesn't, disable and you're back where you started.
 
 ```sh
-# Enable for one NM connection profile only
+# Enable for one NM connection profile only (planned)
 sudo proteus enterprise-wifi enable --connection "MyOrgWiFi"
 
 # Bring it up and watch
 nmcli connection up "MyOrgWiFi"
 journalctl -u NetworkManager -f
 
-# If association fails (look for EAP-Failure), revert just that connection
+# If association fails (look for EAP-Failure), revert just that connection (planned)
 sudo proteus enterprise-wifi disable --connection "MyOrgWiFi"
 ```
 

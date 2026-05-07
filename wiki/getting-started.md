@@ -126,7 +126,7 @@ For the full schema, see `proteus wiki config`.
 
 - **Most days, do nothing.** Proteus rotates on schedule, on probe-driven connectivity loss, and on link change. Set it up once and forget it.
 - **When joining a new network**, nothing special. Proteus does its thing. Captive portals get a fresh MAC at join under the default policy.
-- **When something breaks**, run `proteus doctor` first. Then `proteus wiki troubleshooting` for the symptom-based recovery recipes. `proteus revert` is the panic button.
+- **When something breaks**, run `proteus doctor` first. Then `proteus wiki troubleshooting` for the symptom-based recovery recipes. `proteus revert` (planned, phase G) is the panic button; until it lands, use `proteus reset` to clear config to defaults or the manual rollback recipe in `proteus wiki uninstall`.
 - **When you want a clean slate**, `sudo proteus reset --yes` clears your config back to defaults. The cached original MACs and hostname are not touched — those are sacred.
 
 There is no daemon. The CLI is the whole product. Two systemd timers and a boot oneshot do the work.

@@ -1,5 +1,14 @@
 When you join a network, your machine starts talking before you do. mDNS announces your hostname, LLMNR asks the LAN to resolve names, NetBIOS broadcasts on UDP 137, SSDP shouts UPnP capabilities at 1900, WSD hawks itself on 3702. Every one of those packets carries identifying information that long outlives the session. This page covers the protocols Proteus silences, the protocols it leaves alone, and the breakage tradeoffs you sign up for when you flip the opt-in knobs.
 
+> **Status (audit 2026-05):** the `[discovery]` config section exists in `src/config.rs` today (`mdns_silence`, `llmnr_silence`, `ssdp_block`, `wsd_block` — all default `false`), but the writers that actually apply these settings are split across multiple pending PRs:
+> - mDNS responder + LLMNR drop-in for systemd-resolved: planned, phase E
+> - NetBIOS / SSDP / WSD nftables rules: **pending PR #70** (nftables rule manager, DIRTY)
+> - sysctl drop-in for stack hardening (referenced from this page): **pending PR #69** (DIRTY)
+> - mDNS responder silencing via systemd-resolved drop-in is **planned with no PR yet**
+> - LLMNR / NetBIOS silencing is **planned with no PR yet**
+>
+> Today, `proteus apply` reports discovery and stack as `not yet implemented`. The configuration knobs documented further down (`mdns_responder`, `mdns_resolve`, `llmnr`, `netbios`, `wpad`, `ntp_normalize`) are the planned schema; the schema that ships today only has `mdns_silence`, `llmnr_silence`, `ssdp_block`, `wsd_block` (all booleans, default off).
+
 ## The discovery surface
 
 Joining a Wi-Fi or Ethernet network typically triggers, in the first few seconds:

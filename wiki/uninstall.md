@@ -1,6 +1,6 @@
 Full removal. Two paths: the one command that does it, and the manual fallback for when the binary itself is broken.
 
-`proteus uninstall` lands in phase G. Until then, the manual recipe below is the only path.
+`proteus uninstall` ships today (phase G). The cross-cutting `proteus revert` that it would call internally is still a stub (planned, phase G); today the uninstaller relies on per-component revert paths and direct file removal.
 
 ## The simple way
 
@@ -10,7 +10,7 @@ sudo proteus uninstall --purge --yes
 
 This:
 
-1. Runs `proteus revert --yes` — restores the original MAC and hostname, removes systemd drop-ins, removes nft rules, removes the per-connection settings Proteus wrote to NetworkManager.
+1. Runs the available per-component revert paths (`bluetooth revert`, `hostname revert`) — the cross-cutting `proteus revert --yes` that does the entire system restore in one call is **planned, phase G**. Today the uninstaller covers the components that have shipped and removes drop-ins / files Proteus wrote to disk where applicable. Once the umbrella revert lands, this step expands to cover every managed surface.
 2. Disables and removes the timers and services: `proteus-rotate.timer`, `proteus-check.timer`, `proteus-boot.service`.
 3. Removes the binary at `/usr/local/bin/proteus` (or wherever `install.sh` placed it).
 4. With `--purge`: removes `/etc/proteus/` (config) and `/var/lib/proteus/` (state, including the cached original-MAC).

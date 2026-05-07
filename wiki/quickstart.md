@@ -8,7 +8,7 @@
 
 ## Installing
 
-Phase A is pre-release. There is nothing to install yet. Once Phase A lands, the binary will be at `target/release/proteus` after `cargo build --release`. Once Phase F lands, `./install.sh` will copy the binary into place, drop the SELinux file contexts, and run `proteus apply`.
+Phases A and B have shipped; the binary is at `target/release/proteus` after `cargo build --release`. The `./install.sh` script ships today as well; the SELinux file-context drop and packaged distro releases are still planned (phase F).
 
 For now, build from source:
 
@@ -30,27 +30,34 @@ Read commands work without root when the relevant files are readable. Start by l
 - `proteus show-defaults` — built-in defaults.
 - `proteus show-config` — current config from `/etc/proteus/config.toml`.
 
-## Phase A scope: what works today vs later
+## What works today vs later
 
-Phase A ships the read surface and the wiki. The mutating commands parse and have help text, but they exit with `not implemented in this phase, see phase X` so you know exactly when to expect them.
+Phases A, B, and parts of C/D/G have shipped. The mutating commands listed below as "stub" parse and have help text, but they exit with `not implemented in this phase, see phase X` so you know exactly when to expect them.
 
-Working in phase A:
+Working today (shipped):
 
-- `proteus status`, `proteus current`, `proteus original`
-- `proteus show-config`, `proteus show-defaults`
-- `proteus wiki <page>`, `proteus help`
+- Read surface: `proteus status`, `proteus current`, `proteus original`, `proteus show-config`, `proteus show-defaults`
+- Wiki: `proteus wiki <page>`, `proteus help`
+- MAC: `proteus apply`, `proteus rotate`, `proteus pin`, `proteus unpin`
+- Bluetooth: `proteus bluetooth status / apply / revert`
+- Hostname: `proteus hostname status / rotate / pin / revert`
+- Probes: `proteus probe`
+- Timer management: `proteus timer status / list / enable / disable / set / reset / logs`
+- Config CLI: `proteus config show / get / set / enable / disable / edit / validate / reset / keys`
+- Diagnostics: `proteus doctor`
+- Hatches: `proteus reset`, `proteus uninstall`
 
-Parses but exits unimplemented in phase A:
+Parses but exits `64` (still planned):
 
-- `proteus apply`, `proteus revert`, `proteus rotate`
-- `proteus pin`, `proteus unpin`
-- `proteus diff`, `proteus dry-run`, `proteus reset`, `proteus uninstall`
+- `proteus revert` (planned, phase G — cross-cutting umbrella; per-component `bluetooth revert` and `hostname revert` ship today)
+- `proteus diff` (planned, phase G)
+- `proteus dry-run` (planned, phase G)
 
 Nothing surprises you. If a command isn't built yet, it says so and points at the phase that brings it.
 
-## A first rotation (post phase B)
+## A first rotation
 
-Once phase B lands, MAC rotation is one command:
+Phase B has shipped. MAC rotation is one command:
 
 ```
 sudo proteus rotate --iface wlan0
@@ -68,13 +75,11 @@ Rotate every managed interface at once:
 sudo proteus rotate --yes
 ```
 
-Until phase B lands, `proteus rotate` returns `not yet implemented`. There is no fallback path inside Proteus before then; if you need to rotate today, use `nmcli` or `macchanger` directly.
-
 ## Reverting
 
-`sudo proteus revert` restores everything to the original state Proteus cached on first run. This is the panic button. It lands in phase G.
+`sudo proteus revert` (planned, phase G) will restore everything to the original state Proteus cached on first run. This is the panic button.
 
-Until phase G ships, the only way to undo Proteus is manual: edit the affected NetworkManager profiles via `nmcli` and remove `/etc/proteus/`. Phase A doesn't write anything mutating, so there is nothing to revert from a phase A install.
+Until the cross-cutting `proteus revert` ships, per-component revert paths are available where their feature has landed: `proteus bluetooth revert`, `proteus hostname revert`. The umbrella `proteus revert` is the planned single-shot path; today the only complete undo is the manual recipe in `proteus wiki uninstall`.
 
 `proteus revert` is an invariant. It must work at every commit from phase B onward. If a feature can't be backed out cleanly, it doesn't ship.
 
@@ -105,10 +110,10 @@ Substitute the preset filename you picked. See `examples/README.md` for the full
 
 ## Captive portals
 
-- `proteus status` shows the current portal classification: `clear`, `portal-required`, `portal-authed`, or `unknown`.
+- `proteus status` shows the current portal classification: `clear`, `portal-required`, `portal-authed`, or `unknown` (planned, pending PR #66).
 - Default policy is `rotate-before-auth`: get a fresh MAC, then complete the portal flow. After auth, periodic rotation is suppressed so you don't loop and lose the session.
 - Probe failures classified as portal-caused never trigger MAC rotation. That's how the loop is avoided.
-- Portal handling lands in phase C. See `proteus wiki captive-portals`.
+- Portal handling and the `proteus portal` subcommand family are pending in PR #66 (DIRTY, awaiting maintainer rebase). See `proteus wiki captive-portals`.
 
 ## Logs
 

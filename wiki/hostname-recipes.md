@@ -1,6 +1,8 @@
-Hostname rotation patterns. Phase D.
+Hostname rotation patterns. Phase D — shipped today.
 
 Hostnames are network identifiers. mDNS announces them. DHCP option 12 sends them. Your shell prompt prints them. Same string, several layers, several daemons reading from different files. Proteus changes them coherently so they don't disagree.
+
+> **Status (audit 2026-05):** the hostname feature ships today (`proteus hostname status / rotate / pin / revert`). The `mode = "generic"` path uses a built-in default; the user-configurable `generic_value` knob is **planned**. The DHCP-side coupling described in the "DHCP interaction" section is **pending PR #73**.
 
 ## The three hostname fields
 
@@ -49,10 +51,11 @@ Default off because the failure modes are silent and annoying. Turn it on if the
 
 Captured into `/var/lib/proteus/state.json` on first apply, never re-captured. Sacred. Same rule as the original MAC. See `proteus wiki concepts`.
 
-- `proteus original` prints it
-- `proteus revert` (phase G) restores it
-- `proteus reset` clears your config but never touches the cache
-- `proteus uninstall --purge` is the only thing that removes it
+- `proteus original` prints it (today)
+- `proteus hostname revert` restores it (today, per-component path)
+- `proteus revert` (planned, phase G) is the cross-cutting umbrella that will restore everything in one shot
+- `proteus reset` clears your config but never touches the cache (today)
+- `proteus uninstall --purge` is the only thing that removes it (today)
 
 If you've broken things badly, the original hostname is still there.
 
@@ -96,9 +99,11 @@ Stays `trustedlaptop` across reboots and rotations. Useful when you have an SSH 
 
 ## DHCP interaction
 
-Hostname rotation coordinates with DHCP. The default `[dhcp] suppress_hostname = true` means option 12 isn't sent regardless of whatever the static or pretty hostname is set to. Your hostname stays local; the DHCP server learns nothing about it.
+Hostname rotation coordinates with DHCP (planned, pending PR #73). The default `[dhcp] suppress_hostname = true` means option 12 isn't sent regardless of whatever the static or pretty hostname is set to. Your hostname stays local; the DHCP server learns nothing about it.
 
 If you turn `suppress_hostname` off (some networks won't issue a lease without it), the static hostname goes out as option 12 on every DHCP request. Rotating the hostname then directly affects what the DHCP server sees.
+
+Today, with PR #73 not yet merged, NetworkManager's default DHCP behaviour applies — which sends option 12 by default on most distros. Proteus does not yet suppress it.
 
 See `proteus wiki dhcp`.
 

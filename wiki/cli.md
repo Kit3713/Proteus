@@ -24,7 +24,9 @@ These apply to every subcommand. They must precede the subcommand name.
 
 Alphabetical. Every subcommand parses today; the ones marked **stub** return exit `64` with a one-line pointer to the phase that brings the implementation. Mutating commands require root and accept `--yes` for non-interactive runs. Read commands degrade quietly when files aren't readable.
 
-### `apply` — phase **stub** (lands D)
+> **Honesty marker (audit 2026-05):** several subcommands tagged below as **stub** in earlier wiki revisions actually ship today (apply, rotate, pin, unpin, reset, uninstall, bluetooth, hostname, timer, config, doctor, probe). The ones that genuinely remain stubs and return exit `64` are: `revert`, `diff`, `dry-run`. Annotations inline below have been updated to reflect this.
+
+### `apply` — **shipped (phase B/D orchestrator)**
 
 ```
 proteus apply [--yes]
@@ -32,8 +34,10 @@ proteus apply [--yes]
 
 Apply the current config to the system: rotate MACs that need rotating, write managed files under `/etc/`, install systemd timers. Idempotent — running ten times converges to the same state as once. Mutating; requires root.
 
+Today the orchestrator runs the components that have landed (MAC rotation, hostname, Bluetooth) and surfaces every other component (DHCP, DNS, stack, nft, discovery silencing) as `not yet implemented` lines in the per-feature summary. The exit code stays non-zero if any landed component fails.
+
 Flags: `--yes` proceed without confirmation.
-Exit: `0` success · `1` generic · `64` stub · `65` config error · `66` not root · `70` system unsupported.
+Exit: `0` success · `1` generic · `65` config error · `66` not root · `70` system unsupported.
 Example: `sudo proteus apply --yes`
 
 ### `config` — phase **A**
@@ -83,7 +87,7 @@ Flags: `--json` machine-readable (see [`current` JSON](#proteus-current---json))
 Exit: `0` success · `1` generic.
 Example: `proteus current --json | jq '.[] | select(.type == "wifi")'`
 
-### `diff` — phase **stub** (lands G)
+### `diff` — phase **stub** (planned, phase G)
 
 ```
 proteus diff [--json]
@@ -93,6 +97,8 @@ Show the delta between current config, built-in defaults, and live system state.
 
 Flags: `--json` machine-readable diff.
 Exit: `0` no drift · `1` drift detected · `64` stub.
+
+Today this subcommand parses but exits `64` with `proteus: 'diff' is not yet implemented; targets phase G`.
 
 ### `doctor` — phase **A**
 
@@ -106,7 +112,7 @@ Flags: `--json` machine-readable (see [`doctor` JSON](#proteus-doctor---json)) �
 Exit: `0` no failures (warns and skips are fine) · `1` at least one `fail` · `2` invalid args.
 Example: `proteus doctor` then `proteus doctor --json | jq '.checks[] | select(.status=="fail")'`
 
-### `dry-run` — phase **stub** (lands G)
+### `dry-run` — phase **stub** (planned, phase G)
 
 ```
 proteus dry-run <SUBCOMMAND> [args...]
@@ -116,6 +122,8 @@ Preview the mutations a command would make without performing them. Every mutato
 
 Exit: `0` plan empty · `1` plan would have failed · `64` stub.
 Example: `sudo proteus dry-run rotate --iface wlan0`
+
+Today this subcommand parses but exits `64` with `proteus: 'dry-run' is not yet implemented; targets phase G`.
 
 ### `help` — phase **A**
 
@@ -142,16 +150,18 @@ Exit: `0` success (whether or not a cache exists) · `1` generic read failure.
 
 The cache itself only populates from phase B onward (when the first mutating commands run).
 
-### `pin` — phase **stub** (lands B)
+### `pin` — **shipped (phase B)**
 
 ```
-proteus pin <TARGET>
+proteus pin <TARGET> [--mac <MAC>] [--yes]
 ```
 
-Pin a MAC to a specific interface or NetworkManager connection. Pinned targets are skipped by both scheduled and probe-driven rotation. For environments that lock you to one MAC: corporate networks, hotel Wi-Fi after auth, MAC-bound DHCP reservations. `<TARGET>` is interface name or NM connection profile (profile preferred when ambiguous). Mutating; requires root.
+Pin a MAC to a specific interface or NetworkManager connection. Pinned targets are skipped by both scheduled and probe-driven rotation. For environments that lock you to one MAC: corporate networks, hotel Wi-Fi after auth, MAC-bound DHCP reservations. `<TARGET>` is interface name or NM connection profile (profile preferred when ambiguous). When `--mac` is omitted, pins to the current cloned MAC. Mutating; requires root.
 
-Exit: `0` success · `1` generic · `64` stub · `66` not root.
+Exit: `0` success · `1` generic · `66` not root.
 Example: `sudo proteus pin "Home Wi-Fi"`
+
+Note: the wiki examples elsewhere that use `--iface` and `--connection` flags (e.g. `proteus pin --iface wlan0` or `proteus pin --connection "Coffee Shop"`) describe the planned ergonomic flag-style invocation; today the positional form `proteus pin <target>` is what ships.
 
 ### `probe` — phase **C**
 
@@ -165,17 +175,18 @@ Flags: `--json` machine-readable (see [`probe` JSON](#proteus-probe---json)) · 
 Exit: `0` clear · `1` down · `2` inconclusive · `3` portal-suspected.
 Example: `proteus probe --json | jq .classification`
 
-### `reset` — phase **stub** (lands G)
+### `reset` — **shipped (phase G)**
 
 ```
-proteus reset [--yes]
+proteus reset [--yes] [--dry-run]
 ```
 
 Clear `/etc/proteus/config.toml` to defaults and re-apply. The "I tinkered and broke it" hatch. Deliberately does **not** touch the cached original MACs in `state.json` — those remain sacred. Mutating; requires root.
 
-Exit: `0` success · `64` stub · `66` not root.
+Flags: `--yes` proceed without confirmation · `--dry-run` print what would happen without writing.
+Exit: `0` success · `66` not root.
 
-### `revert` — phase **stub** (lands G)
+### `revert` — phase **stub** (planned, phase G)
 
 ```
 proteus revert [--yes]
@@ -183,10 +194,12 @@ proteus revert [--yes]
 
 Restore everything to the cached originals. The panic button. **Invariant**: must work at every commit from phase B onward — if a feature can't be backed out cleanly, it does not ship. Mutating; requires root.
 
-Exit: `0` success · `1` generic · `64` stub · `66` not root.
-Example: `sudo proteus revert --yes`
+Today this subcommand parses but exits `64` with `proteus: 'revert' is not yet implemented; targets phase G`. Per-component revert exists for the components that have landed (`bluetooth revert`, `hostname revert`); the global cross-cutting `proteus revert` is the planned umbrella. Until then, manual rollback recipes live in `proteus wiki uninstall`.
 
-### `rotate` — phase **stub** (lands B)
+Exit: `0` success · `1` generic · `64` stub · `66` not root.
+Example: `sudo proteus revert --yes` (planned)
+
+### `rotate` — **shipped (phase B)**
 
 ```
 proteus rotate [--iface <NAME>] [--yes]
@@ -195,7 +208,7 @@ proteus rotate [--iface <NAME>] [--yes]
 Generate a fresh MAC and apply it. With no `--iface`, rotates every managed interface. Skips pinned interfaces. Avoids picking a MAC that matches the gateway or anything else in the local ARP table. Mutating; requires root.
 
 Flags: `--iface <NAME>` limit to one interface · `--yes` proceed without confirmation.
-Exit: `0` success · `1` generic · `64` stub · `66` not root.
+Exit: `0` success · `1` generic · `66` not root.
 Example: `sudo proteus rotate --iface wlan0 --yes`
 
 ### `show-config` — phase **A**
@@ -322,18 +335,18 @@ Tail recent journald logs for a timer's unit (`journalctl -u <unit> -n N --no-pa
 Flags: `--lines N` (default 50).
 Exit: `0` success · `1` generic · `70` no systemd.
 
-### `uninstall` — phase **stub** (lands G)
+### `uninstall` — **shipped (phase G)**
 
 ```
 proteus uninstall [--purge] [--yes]
 ```
 
-Full removal. Runs `revert` first, removes the binary, removes the systemd timers. Mutating; requires root.
+Full removal. Runs `revert` first (planned — currently the cross-cutting revert is still a stub, so per-component revert paths are used where they exist), removes the binary, removes the systemd timers. Mutating; requires root.
 
 Flags: `--purge` also delete `/etc/proteus/` and `/var/lib/proteus/`. Without `--purge`, the original-MAC cache is preserved so a reinstall can restore the same identity. `--yes` proceed without confirmation.
-Exit: `0` success · `64` stub · `66` not root.
+Exit: `0` success · `66` not root.
 
-### `unpin` — phase **stub** (lands B)
+### `unpin` — **shipped (phase B)**
 
 ```
 proteus unpin <TARGET>
@@ -341,7 +354,28 @@ proteus unpin <TARGET>
 
 Remove a pin previously set with `pin`. The target rejoins the rotation pool. `<TARGET>` is interface name or NM connection profile. Mutating; requires root.
 
-Exit: `0` success · `1` no such pin · `64` stub · `66` not root.
+Exit: `0` success · `1` no such pin · `66` not root.
+
+### `bluetooth` — **shipped (phase B)**
+
+```
+proteus bluetooth status [--json]
+proteus bluetooth apply [--yes]
+proteus bluetooth revert [--yes]
+```
+
+Bluetooth alias / discoverable / BLE RPA management. `status` is read-only; `apply` and `revert` mutate via the BlueZ DBus API and require root. Cross-ref `proteus wiki bluetooth`.
+
+### `hostname` — **shipped (phase D)**
+
+```
+proteus hostname status [--json]
+proteus hostname rotate [--yes]
+proteus hostname pin <NAME> [--yes]
+proteus hostname revert [--yes]
+```
+
+Hostname (kernel/pretty/transient) management via systemd hostnamed. `status` is read-only; the rest mutate via the `org.freedesktop.hostname1` DBus API and require root. `revert` here is the per-component path that landed alongside the hostname feature; the cross-cutting `proteus revert` umbrella is still planned (phase G). Cross-ref `proteus wiki hostname-recipes`.
 
 ### `wiki` — phase **A**
 
@@ -565,11 +599,11 @@ Notes for GUI / automation wrappers. The CLI is designed to be wrappable; the JS
 | F | cross-cutting wiki (this page), search, packaging | (no new subcommands) |
 | G | diff, dry-run, reset, uninstall, full revert | `diff`, `dry-run`, `reset`, `revert`, `uninstall` |
 
-Stub commands print one line to stderr and exit `64`:
+Stub commands print one line to stderr and exit `64`. Today the remaining stubs are `revert`, `diff`, `dry-run`:
 
 ```
-$ sudo proteus rotate --iface wlan0
-proteus: 'rotate' is not yet implemented; targets phase B. See: proteus wiki mac-recipes
+$ sudo proteus revert --yes
+proteus: 'revert' is not yet implemented; targets phase G. See: revert is critical and lands in phase G
 $ echo $?
 64
 ```

@@ -71,7 +71,7 @@ If your prefix is what you wanted to rotate, you're back at "public IP rotation"
 
 The DUID is the persistent client identifier sent in DHCPv6. By default on most distros, the DUID is written to disk at first boot and reused across MAC changes — defeating the rotation.
 
-Proteus configures NetworkManager to use a **link-layer DUID** (`ipv6.dhcp-duid = "ll"`) derived from the current MAC, so the DUID rotates whenever the MAC does. Per-interface, not system-wide.
+Proteus will configure NetworkManager to use a **link-layer DUID** (`ipv6.dhcp-duid = "ll"`) derived from the current MAC, so the DUID rotates whenever the MAC does (planned, pending PR #73). Per-interface, not system-wide.
 
 Cross-ref `proteus wiki dhcp` for the full key list and verification recipes.
 
@@ -102,7 +102,7 @@ Proteus owns L2-L4, VPN owns the public IP. Order of operations:
 2. **Join the network.** Proteus's known-portal handling kicks in if it's a captive-portal SSID; auth as needed.
 3. **Bring up the VPN before sending real traffic.** Pre-VPN traffic still leaks a TLS ClientHello with your real IP visible to the local network. The VPN client itself does not, because that's the connection you're securing.
 4. **Use Proteus's normal cadence.** Every 2h (default), Proteus rotates MAC, IID, DUID. Local IP changes with them. The VPN tunnel may briefly drop and reconnect; most VPN clients reconnect to a different exit on their own cadence.
-5. **Pin the MAC if the VPN is bound to it.** Some corporate VPNs key authentication off the client MAC. `proteus pin --connection "Corporate VPN"` freezes the MAC for that profile while leaving everything else rotatable.
+5. **Pin the MAC if the VPN is bound to it.** Some corporate VPNs key authentication off the client MAC. `proteus pin "Corporate VPN"` (positional today; `--connection` is the planned ergonomic flag) freezes the MAC for that profile while leaving everything else rotatable.
 
 Combined effect: the local LAN sees a fresh MAC plus a fresh local IP each rotation. The public Internet sees the VPN's exit IP, which changes on the VPN's own cadence (or when you reconnect manually).
 

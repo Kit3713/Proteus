@@ -1,6 +1,6 @@
 Reference for every Proteus config knob: location, default, risk. Cross-references the per-feature wiki pages where each knob is discussed in depth.
 
-This page documents the full schema across phases A through F. Phase A ships only `[mac]`, `[hostname]`, `[dns]`, `[discovery]`, `[probes]`; the rest land in their respective phases. Unknown sections and unknown keys are tolerated by `serde(default)` so a config written for a later phase still parses on an older binary, and vice versa.
+This page documents the full schema across phases A through F. Today (audit 2026-05) the binary ships these top-level sections in `src/config.rs`: `[mac]`, `[bluetooth]`, `[hostname]`, `[dns]`, `[discovery]`, `[probes]`. Sections marked **(planned)** below — `[dhcp]`, `[ipv6]`, `[stack]`, `[captive_portal]`, `[enterprise_wifi]`, `[rf]`, `[rotation]` — and additional keys not present in `show-defaults` output are forward-looking design. Unknown sections and unknown keys are tolerated by `serde(default)` so a config written for a later phase still parses on an older binary, and vice versa.
 
 ## Location
 
@@ -17,13 +17,15 @@ This page documents the full schema across phases A through F. Phase A ships onl
 
 ```toml
 [mac]
-enabled = false                # default false in phase A; true in phase B+
-rotation_interval = "2h"       # systemd timer cadence
+enabled = false                       # default false in phase A; true in phase B+
+rotation_interval = "2h"              # systemd timer cadence
 oui_pool = ["apple", "intel", "samsung", "dell", "random-locally-administered"]
-exclude_gateways = true        # never assign a MAC matching the gateway
-exclude_arp_table = true       # never assign a MAC currently in the ARP table
-per_connection = true          # per-NM-connection rather than per-device
+exclude_gateways = true               # (planned) never assign a MAC matching the gateway
+exclude_arp_table = true              # (planned) never assign a MAC currently in the ARP table
+per_connection = true                 # (planned) per-NM-connection rather than per-device
 ```
+
+The keys actually shipping today are `enabled`, `rotation_interval`, `oui_pool`. `exclude_gateways`, `exclude_arp_table`, `per_connection` are planned config surface; collision avoidance against the gateway and ARP table is implemented in code today regardless of a config flag, and per-connection vs per-device behaviour is hard-coded to per-connection where possible.
 
 Knobs:
 
@@ -43,9 +45,11 @@ Cross-ref `proteus wiki mac-recipes`.
 enabled = true
 mode = "wordlist"              # "wordlist", "generic", "pinned"
 pinned_value = ""              # used when mode = "pinned"
-generic_value = "fedora"       # used when mode = "generic"
+generic_value = "fedora"       # (planned) used when mode = "generic"
 rotate_with_mac = false        # opt-in: hostname rotates each time MAC does
 ```
+
+Keys shipping today: `enabled`, `mode`, `pinned_value`, `rotate_with_mac`. `generic_value` is a planned addition; today the `"generic"` mode falls back to a built-in default rather than a user-configurable string.
 
 Knobs:
 
@@ -57,7 +61,7 @@ Knobs:
 
 Cross-ref `proteus wiki hostname-recipes`.
 
-### `[dhcp]`
+### `[dhcp]` — **planned, pending PR #73**
 
 ```toml
 [dhcp]
@@ -65,6 +69,8 @@ suppress_hostname = true       # option 12 + 81
 suppress_vendor_class = true   # option 60
 rotate_client_id = true        # option 61 + DUID coupling with MAC
 ```
+
+This section does not yet exist in `src/config.rs`. The schema, defaults, and writer all land with PR #73.
 
 Knobs:
 
@@ -74,7 +80,7 @@ Knobs:
 
 Lands in phase D. Cross-ref `proteus wiki dhcp`.
 
-### `[ipv6]`
+### `[ipv6]` — **planned, no PR yet**
 
 ```toml
 [ipv6]
@@ -83,6 +89,8 @@ use_temp_addresses = true
 addr_gen_mode = "stable-privacy"   # or "eui64" (not recommended)
 ndp_hardening = true
 ```
+
+This section does not yet exist in `src/config.rs`. IPv6 stable-privacy + DUID rotation is on the planning list with no PR open yet.
 
 Knobs:
 
@@ -93,19 +101,23 @@ Knobs:
 
 Lands in phase D. Cross-ref `proteus wiki ipv6`.
 
-### `[discovery]`
+### `[discovery]` — partially planned
 
 ```toml
 [discovery]
-mdns_responder = false         # disable mDNS announcements (default true → off in active config)
-mdns_resolve = true            # keep mDNS resolution working
-llmnr = false                  # disable LLMNR
-netbios = false                # disable NetBIOS (samba nmbd)
-ssdp_block = false             # OPT-IN; breaks KDE Connect
-wsd_block = false              # OPT-IN; breaks WSD printers
-wpad = false                   # disable WPAD via NM per-connection
-ntp_normalize = true           # normalize systemd-timesyncd; skip if chrony/ntpd
+mdns_silence = false           # (ships today) disable mDNS announcements (default off in current build)
+llmnr_silence = false          # (ships today) disable LLMNR (default off in current build)
+ssdp_block = false             # (planned, pending PR #70 nft writer) opt-in; breaks KDE Connect
+wsd_block = false              # (planned, pending PR #70 nft writer) opt-in; breaks WSD printers
+mdns_responder = false         # (planned key rename) the wiki-described knob mapping to mdns_silence
+mdns_resolve = true            # (planned) keep mDNS resolution working
+llmnr = false                  # (planned key rename) maps to llmnr_silence
+netbios = false                # (planned) disable NetBIOS (samba nmbd)
+wpad = false                   # (planned) disable WPAD via NM per-connection
+ntp_normalize = true           # (planned) normalize systemd-timesyncd; skip if chrony/ntpd
 ```
+
+What `src/config.rs` actually has today: `mdns_silence`, `llmnr_silence`, `ssdp_block`, `wsd_block` (all bools, default `false`). The richer schema described above (with `mdns_resolve`, `netbios`, `wpad`, `ntp_normalize`) lands in phase E along with the writers.
 
 Knobs:
 
@@ -120,7 +132,7 @@ Knobs:
 
 Lands in phase E. Cross-ref `proteus wiki discovery`.
 
-### `[stack]`
+### `[stack]` — **planned, pending PR #69 (sysctl) + PR #70 (nft)**
 
 ```toml
 [stack]
@@ -129,6 +141,8 @@ icmp_info_replies_drop = true
 icmpv6_hardening = true
 suppress_gratuitous_arp = false   # opt-in
 ```
+
+This section does not yet exist in `src/config.rs`. The sysctl drop-in writer lands with PR #69; the ICMP-drop nft rules land with PR #70.
 
 Knobs:
 
@@ -143,13 +157,15 @@ Lands in phase E. Cross-ref `proteus wiki stack-fingerprint`.
 
 ```toml
 [probes]
-enabled = true
+enabled = true                 # (planned) master switch for probe-driven rotation
 quorum_n = 3                   # need this many failures to declare down
 quorum_total = 4               # out of this many endpoints
 interval = "5m"
 cooldown = "60s"
 endpoints = ["1.1.1.1:443", "8.8.8.8:443", "9.9.9.9:443", "142.250.190.78:443"]
 ```
+
+Today `src/config.rs` ships `quorum_n`, `quorum_total`, `interval`, `cooldown`, `endpoints`. The `enabled` master switch is planned; today the probe-driven path is governed by whether `proteus-check.timer` is enabled, not by a config key.
 
 Knobs:
 
@@ -161,7 +177,7 @@ Knobs:
 
 Lands in phase C. Cross-ref `proteus wiki probes`.
 
-### `[captive_portal]`
+### `[captive_portal]` — **planned, pending PR #66**
 
 ```toml
 [captive_portal]
@@ -171,6 +187,8 @@ expected_response = "NetworkManager is online"
 policy = "rotate-before-auth"  # or "preserve-mac", "ask"
 fresh_mac_per_visit = true
 ```
+
+This section does not yet exist in `src/config.rs`. The schema, the detector, and the `proteus portal` subcommand all land with PR #66.
 
 Knobs:
 
@@ -188,9 +206,13 @@ Lands in phase C. Cross-ref `proteus wiki captive-portals`.
 [bluetooth]
 enabled = true
 generic_alias = true           # set adapter alias to generic
+alias_source = "generic"       # source for the alias string ("generic", future: other policies)
+pinned_alias = ""              # used when alias_source pins to a specific value
 discoverable = false           # default off
 ble_rpa = true                 # enable BLE Resolvable Private Address mode where supported
 ```
+
+Ships today as documented above. `alias_source` and `pinned_alias` are present in `src/config.rs` and were missing from earlier wiki revisions.
 
 Knobs:
 
@@ -201,7 +223,7 @@ Knobs:
 
 BR/EDR (classic) BD_ADDR rotation is chipset-specific HCI territory and intentionally not exposed; see `docs/PLAN.md`. Lands in phase B. Cross-ref `proteus wiki bluetooth`.
 
-### `[enterprise_wifi]`
+### `[enterprise_wifi]` — **planned, no PR yet**
 
 ```toml
 [enterprise_wifi]
@@ -210,6 +232,8 @@ realm_strip_strategy = "auto"      # "auto" or "manual"
 anonymous_realm = ""               # used when "manual"
 per_connection_overrides = {}
 ```
+
+This section does not yet exist in `src/config.rs` and there is no PR open for it.
 
 Knobs:
 
@@ -231,15 +255,17 @@ Knobs:
 
 - `strip_edns_client_subnet` — sets a systemd-resolved drop-in disabling EDNS Client Subnet. The hard guard is non-negotiable: if Proteus sees `dnscrypt-proxy`, Pi-hole, AdGuard Home, a custom `/etc/resolv.conf`, or any non-Proteus drop-in under `/etc/systemd/resolved.conf.d/`, it refuses to apply, names the detected tool in `proteus status`, and exits clean. Your DNS setup wins, every time.
 
-This is the only DNS knob Proteus exposes. Anything beyond ECS-strip is somebody else's domain. Lands in phase D. Cross-ref `proteus wiki dns`.
+The schema ships today (`strip_edns_client_subnet` is a real key in `src/config.rs`) but the writer is **pending in PR #71**. Today, `proteus apply` reports DNS as `not yet implemented`. Cross-ref `proteus wiki dns`.
 
-### `[rf]`
+### `[rf]` — **planned, no PR yet**
 
 ```toml
 [rf]
 tx_power_reduce = false        # opt-in; reduces capture radius
 tx_power_reduction_db = 6
 ```
+
+This section does not yet exist in `src/config.rs`.
 
 Knobs:
 
@@ -248,7 +274,7 @@ Knobs:
 
 L1 RF analog characteristics cannot be erased in software; this knob only narrows the capture radius. Lands in phase E. Cross-ref `proteus wiki rf-fingerprinting`.
 
-### `[rotation]`
+### `[rotation]` — **planned, no PR yet**
 
 ```toml
 [rotation]
@@ -257,6 +283,8 @@ on_probe_fail = true           # rotate on probe quorum failure
 on_link_change = true          # rotate when link comes up
 on_ssid_change = true          # rotate on Wi-Fi SSID change
 ```
+
+This separate `[rotation]` policy section does not yet exist in `src/config.rs`. Today the rotation cadence is set via `mac.rotation_interval`, and the event-driven triggers (NM dispatcher script, sleep hook) are wired into the systemd units rather than gated by config booleans. The split between `[mac]` (identity surface) and `[rotation]` (policy surface) is a planned refactor.
 
 Knobs:
 

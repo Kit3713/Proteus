@@ -2,6 +2,8 @@ Rotation is how Proteus keeps your network identifiers from settling into a stab
 
 For the mental model behind rotation, see `proteus wiki concepts`. For the probe quorum that decides "the network is down", see `proteus wiki probes`. For why captive portals are an exception, see `proteus wiki captive-portals`.
 
+> **Status (audit 2026-05):** the timers, the boot oneshot, the NetworkManager dispatcher script, and the sleep hook ship today (phase C event-driven triggers). The captive-portal classifier that gates probe-driven rotation is **pending PR #66**; until it lands, all probe failures are treated equally — there is no `portal-suspected` suppression in the rotation pipeline yet beyond what `proteus probe` reports as a classification. The dedicated `[rotation]` policy section in config is **planned, no PR yet** — today the cadence comes from `mac.rotation_interval`.
+
 ## The two timers and the boot oneshot
 
 Three units do the work. They all shell out to the same `proteus` binary.
@@ -14,19 +16,19 @@ All three are installed and enabled by `proteus apply`. None of them is required
 
 ## Configuration
 
-Rotation cadence and triggers live under `[rotation]` in `/etc/proteus/config.toml`:
+Rotation cadence and triggers will live under `[rotation]` in `/etc/proteus/config.toml` (planned, no PR yet — today only `mac.rotation_interval` ships):
 
 ```toml
-[rotation]
-interval = "2h"          # scheduled rotation cadence
-on_probe_fail = true     # rotate when probe quorum says "down"
-on_link_change = true    # rotate when an interface comes up after being down (e.g., re-plugged Ethernet)
-on_ssid_change = true    # rotate when joining a new Wi-Fi SSID
+[rotation]                  # planned, no PR yet
+interval = "2h"             # scheduled rotation cadence
+on_probe_fail = true        # rotate when probe quorum says "down" (planned config flag — today this is hard-wired on)
+on_link_change = true       # rotate when an interface comes up (planned config flag — today driven by NM dispatcher script)
+on_ssid_change = true       # rotate when joining a new Wi-Fi SSID (planned)
 ```
 
-`interval` accepts any systemd duration (`30m`, `1h`, `4h`, `8h`). Setting it to `0` disables the scheduled timer; the probe-driven and link-change triggers still apply unless you turn them off too.
+`interval` accepts any systemd duration (`30m`, `1h`, `4h`, `8h`). Setting it to `0` to disable the scheduled timer is planned; today the cleanest disable is `sudo proteus timer disable rotate`.
 
-The three boolean triggers are independent. Disabling `on_probe_fail` keeps the check timer running for status reporting but stops it from rotating. Disabling `on_link_change` or `on_ssid_change` is uncommon; the defaults are conservative.
+The three boolean triggers are independent. Disabling `on_probe_fail` keeps the check timer running for status reporting but stops it from rotating. Disabling `on_link_change` or `on_ssid_change` is uncommon; the defaults are conservative. (All three booleans are planned config keys; they aren't in `src/config.rs` yet.)
 
 ## Per-feature triggers
 
@@ -48,7 +50,7 @@ Some things are intentionally never touched by the timers.
 
 - **Cached "original" MACs** in `/var/lib/proteus/state.json`. Captured once, the first time Proteus sees a system, never rewritten. This is what `proteus revert` and `proteus original` read from. Cross-ref `proteus wiki concepts`.
 - **Pinned interfaces and connections.** `proteus pin <iface>` or `proteus pin <connection>` freezes a MAC. Pinned targets are skipped by both timers. Use this for corporate networks, hotel Wi-Fi after auth, MAC-bound DHCP reservations. Cross-ref `proteus wiki mac-recipes`.
-- **Captive-portal-classified states.** When the portal classifier reports `portal-required` or `portal-authed`, periodic rotation is suppressed and probe failures classified as portal-caused never trigger rotation. This is how the "rotate behind a portal forever" loop is avoided. Cross-ref `proteus wiki captive-portals`.
+- **Captive-portal-classified states.** When the portal classifier reports `portal-required` or `portal-authed`, periodic rotation is suppressed and probe failures classified as portal-caused never trigger rotation. This is how the "rotate behind a portal forever" loop is avoided. Cross-ref `proteus wiki captive-portals`. **Pending PR #66** — today there is no portal-aware suppression in the rotation pipeline, only the `portal-suspected` classification on the probe side.
 - **`/etc/machine-id`.** Out of scope. TPM, journald, and dbus all reference it; rotating it is real breakage risk, not a fingerprint win.
 
 If you see Proteus skip a rotation, `proteus status` will name the reason — pinned, portal-authed, cooldown, or disabled.
@@ -121,7 +123,7 @@ The CLI is the same surface the timers call. Manual invocations work identically
 ```
 sudo proteus rotate                        # rotate all managed interfaces now
 sudo proteus rotate --iface wlan0          # single interface by name
-sudo proteus rotate --connection home-wifi # single NM connection profile
+sudo proteus rotate --connection home-wifi # single NM connection profile (planned — today --iface is the only scoping flag)
 sudo systemctl start proteus-rotate.service # same effect via the service unit
 ```
 
@@ -137,7 +139,7 @@ sudo systemctl disable --now proteus-rotate.timer proteus-check.timer
 
 The boot oneshot still runs at boot unless you also disable `proteus-boot.service`. The CLI continues to work for one-off rotations regardless. Re-enable with `enable --now` when you want the timers back.
 
-A lighter option: leave the timers running and set `interval = "0"` plus `on_probe_fail = false` in `[rotation]`. The units stay enabled and visible in `systemctl list-timers`, but they don't rotate. This is closer to "paused" than "disabled".
+A lighter option (planned): leave the timers running and set `interval = "0"` plus `on_probe_fail = false` in `[rotation]`. The units stay enabled and visible in `systemctl list-timers`, but they don't rotate. This is closer to "paused" than "disabled". Today the `[rotation]` config section doesn't exist yet, so this lighter pause needs to use `proteus timer disable` for the same effect.
 
 ## Tuning rotation cadence
 

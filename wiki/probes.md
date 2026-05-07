@@ -1,6 +1,6 @@
 Probes answer one question: do we still have Internet? They run on a timer and feed the rotation logic. The whole point is to be conservative — one DNS hiccup or one dropped packet shouldn't trigger a MAC rotation, and a captive portal in the path should never trigger one.
 
-Probes ship in phase C.
+Probes ship today (phase C). The portal classifier that converts `portal-suspected` outcomes into rotation suppression is still **pending PR #66** — `proteus probe` reports the `portal-suspected` classification on its `--json` output today, but the rotation pipeline does not yet treat it specially.
 
 ## What probes do
 
@@ -93,7 +93,7 @@ Probes never go anywhere except the configured endpoint list. The "no telemetry,
 
 ```toml
 [probes]
-enabled = true
+enabled = true                # planned — today not yet a config key
 quorum_n = 3
 quorum_total = 4
 interval = "5m"
@@ -106,7 +106,7 @@ endpoints = [
 ]
 ```
 
-All fields are optional; omitted ones use the defaults shown. Run `proteus show-defaults` to print the canonical defaults.
+All fields are optional; omitted ones use the defaults shown. Run `proteus show-defaults` to print the canonical defaults. The `enabled` master switch is planned; today the probe-driven path is governed by whether `proteus-check.timer` is enabled.
 
 ## Tuning
 

@@ -1,5 +1,7 @@
 Read this first: Proteus is not a DNS-privacy tool. If you want encrypted DNS, ad-blocking, anti-tracking, or resolver choice, stop here and reach for a real DNS tool. Proteus owns one knob and refuses to fight anything else for control of your resolver.
 
+> **Status (audit 2026-05):** the ECS-strip drop-in mechanism described on this page is **pending in PR #71** (DIRTY, awaiting maintainer rebase). The `[dns]` config section already exists in `src/config.rs` (`strip_edns_client_subnet = true` by default) and `proteus apply` reports DNS as `not yet implemented` today. The detect-and-defer guard, the resolved.conf.d drop-in writer, and the verification recipes below all describe the planned behaviour for once PR #71 lands.
+
 ## What Proteus does
 
 One knob: strip EDNS Client Subnet (ECS) on systemd-resolved.

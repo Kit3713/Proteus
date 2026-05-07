@@ -34,6 +34,8 @@ Three things to take from this picture. One: config is input only — Proteus ne
 
 ## state.json schema (`/var/lib/proteus/state.json`)
 
+The schema below is the **planned v1.0 target** shape. Today's `src/state.rs` ships a flatter provisional shape (`original_macs`, `original_hostname`, `captured_by_version`, `captured_at`, plus per-component bits added as features land). The v1.0 target shape is what wrappers and GUIs should expect once the migration completes.
+
 ```json
 {
   "schema_version": 1,
@@ -155,15 +157,16 @@ Reading these does not require root. `proteus current` and `proteus status` work
 
 Exhaustive list. Anything outside this list, Proteus has not modified.
 
-- `/var/lib/proteus/state.json` — written by every mutating command.
-- `/etc/sysctl.d/95-proteus.conf` — written; phase E.
-- `/etc/systemd/resolved.conf.d/10-proteus-no-ecs.conf` — written; phase D.
-- `/etc/systemd/resolved.conf.d/10-proteus-discovery.conf` — written; phase E.
-- `/etc/systemd/timesyncd.conf.d/10-proteus.conf` — written; phase E.
-- nftables table `inet proteus` — created; phase E. Lives in the kernel, not on disk; `nft list table inet proteus` to inspect.
-- NetworkManager per-connection settings — written via DBus; phases B and D.
-- Hostname — written via the `hostname1` DBus interface; phase D.
-- Bluetooth adapter alias — written via the BlueZ DBus interface; phase B.
+- `/var/lib/proteus/state.json` — written by every mutating command (today).
+- `/etc/sysctl.d/95-proteus.conf` — planned, pending PR #69.
+- `/etc/systemd/resolved.conf.d/10-proteus-no-ecs.conf` — planned, pending PR #71.
+- `/etc/systemd/resolved.conf.d/10-proteus-discovery.conf` — planned (phase E).
+- `/etc/systemd/timesyncd.conf.d/10-proteus.conf` — planned (phase E).
+- nftables table `inet proteus` — planned, pending PR #70. Lives in the kernel, not on disk; `nft list table inet proteus` to inspect.
+- NetworkManager per-connection settings — written via DBus; MAC-related keys ship today; DHCP-related keys pending PR #73; 802.1X anonymous-identity planned.
+- Hostname — written via the `hostname1` DBus interface; ships today.
+- Bluetooth adapter alias — written via the BlueZ DBus interface; ships today.
+- Systemd timer drop-ins under `/etc/systemd/system/proteus-<name>.timer.d/override.conf` — ships today via `proteus timer set`.
 
 Notably absent: `/etc/ssh/`, `/etc/ssl/`, `/etc/crypto-policies/`, `/etc/machine-id`, `/etc/resolv.conf`. Proteus does not touch any of these.
 

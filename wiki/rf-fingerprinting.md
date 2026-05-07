@@ -1,5 +1,7 @@
 RF fingerprinting is a hardware problem. This page is about a limit, not a feature. Read it before you trust Proteus against an adversary with an SDR.
 
+> **Status (audit 2026-05):** the opt-in TX power reduction described on this page is **planned, no PR yet**. The `[rf]` config section does not exist in `src/config.rs`, and `proteus apply` does not invoke `iw dev <iface> set txpower` today. Chipset reporting in `proteus status` is a planned enhancement and is not yet wired through to the human or `--json` status output.
+
 ## What RF fingerprinting is
 
 Every Wi-Fi and Bluetooth radio has analog imperfections that are unique to that physical chip. They come from manufacturing tolerances and don't change over the life of the device:

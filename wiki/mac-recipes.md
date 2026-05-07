@@ -1,4 +1,6 @@
-Practical patterns for MAC rotation. Phase B. For the mental model, see `proteus wiki concepts`.
+Practical patterns for MAC rotation. Phase B has shipped. For the mental model, see `proteus wiki concepts`.
+
+> **Status (audit 2026-05):** core MAC rotation, pinning, OUI selection, and gateway/ARP collision avoidance ship today. The forward-looking flag-style invocations like `proteus pin --iface wlan0` and `proteus pin --connection "Coffee Shop"` are the **planned** ergonomic wrappers; today the binary takes a positional `<TARGET>` argument. The captive-portal `[captive-portal]` config section referenced below is **pending PR #66**, and DUID coupling is **pending PR #73 (DHCP)**.
 
 ## One-shot rotation
 
@@ -53,25 +55,27 @@ The check runs against the live ARP table at the moment of rotation, not a cache
 
 Freeze a MAC so neither the schedule nor the probe-driven trigger touches it.
 
-Per interface:
+Per interface (today's CLI uses a positional argument, not `--iface`):
 
 ```
-sudo proteus pin --iface wlan0
+sudo proteus pin wlan0
+# planned ergonomic form (not yet wired): sudo proteus pin --iface wlan0
 ```
 
 Per NetworkManager connection profile:
 
 ```
-sudo proteus pin --connection "Coffee Shop"
+sudo proteus pin "Coffee Shop"
+# planned ergonomic form (not yet wired): sudo proteus pin --connection "Coffee Shop"
 ```
 
 When both an interface pin and a connection pin would apply (the iface is currently joined to the connection), the connection profile wins. This is deliberate — connection-scoped pinning is more useful for the "MAC-bound DHCP reservation at one specific network" case.
 
-Release a pin:
+Release a pin (positional today; flag-style is planned):
 
 ```
-sudo proteus unpin --iface wlan0
-sudo proteus unpin --connection "Coffee Shop"
+sudo proteus unpin wlan0
+sudo proteus unpin "Coffee Shop"
 ```
 
 Pinned targets show up in `proteus status` under `pinned`. They are skipped by both `proteus rotate` (without `--force`) and by the timer-driven rotation path.
@@ -88,7 +92,7 @@ This means rotating mid-session on a Wi-Fi network triggers an NM reconnect — 
 
 Known-portal SSIDs get a fresh MAC every time you join, regardless of the periodic schedule. Combined with the `rotate-before-auth` policy, this means whoever runs the portal cannot correlate today's visit with yesterday's.
 
-Mark an SSID as a known portal in config:
+Mark an SSID as a known portal in config (planned, pending PR #66):
 
 ```toml
 [captive-portal]
@@ -99,15 +103,20 @@ For SMS-bound portals where the auth ticket is tied to your MAC, switch policy t
 
 ## Schedule
 
-Default is every 2h via `proteus-rotate.timer`. Tunable in `/etc/proteus/config.toml`:
+Default is every 2h via `proteus-rotate.timer`. Tunable today via `mac.rotation_interval` (the dedicated `[rotation]` policy section is planned, no PR yet):
 
 ```toml
+# Today
+[mac]
+rotation_interval = "2h"
+
+# Planned (separate policy section)
 [rotation]
-interval = "2h"        # systemd time spec; "0" disables the periodic timer
-jitter   = "10m"       # randomized delay so multiple machines don't sync
+interval = "2h"        # systemd time spec; "0" disables the periodic timer (planned)
+jitter   = "10m"       # randomized delay so multiple machines don't sync (planned)
 ```
 
-Set `interval = "0"` to drop the periodic timer entirely and rely only on probe-driven and manual rotation. See `proteus wiki rotation` for the full timer story and how the boot oneshot fits in.
+Setting `mac.rotation_interval` to `0` to disable the periodic timer is planned; today the cleanest way to disable the periodic rotate timer is `sudo proteus timer disable rotate`. See `proteus wiki rotation` for the full timer story and how the boot oneshot fits in.
 
 ## Probe-driven rotation
 
@@ -127,7 +136,7 @@ Probes target IPs, not hostnames — a broken resolver should not cause a rotati
 
 ## Reverting a single MAC
 
-Restore the original cached MAC for one interface:
+Restore the original cached MAC for one interface (planned, phase G):
 
 ```
 sudo proteus revert --iface wlan0
@@ -135,19 +144,19 @@ sudo proteus revert --iface wlan0
 
 This pulls the permanent MAC from `/var/lib/proteus/state.json` (captured the first time Proteus saw the system, never re-captured) and writes it back via the same NM-or-rtnetlink path. The DUID and IID for that interface are rolled back together.
 
-Whole-system revert is `sudo proteus revert` (no flags). Both land in phase G; until then, the only undo is manual `nmcli` plus `ip link set` plus removing `/etc/proteus/`.
+Whole-system revert is `sudo proteus revert` (no flags). Both are planned, phase G; today `proteus revert` is a stub (exit `64`). Until it lands, the only undo is manual `nmcli` plus `ip link set` plus removing `/etc/proteus/`. See `proteus wiki uninstall` for the manual recipe.
 
 ## DUID coupling
 
-Rotating the MAC also rotates the DHCPv6 DUID for that interface. Otherwise DHCP would hand the same client identity across MAC rotations, defeating the rotation.
+Rotating the MAC also rotates the DHCPv6 DUID for that interface (planned, pending PR #73). Otherwise DHCP would hand the same client identity across MAC rotations, defeating the rotation.
 
-DUID rotation is per-interface, not system-wide — better isolation, smaller blast radius if a DHCPv6 server caches aggressively. Lands in phase D. The DUID is regenerated using the link-layer-plus-time format (RFC 8415 §11.3) seeded with the freshly-assigned MAC.
+DUID rotation is per-interface, not system-wide — better isolation, smaller blast radius if a DHCPv6 server caches aggressively. The DUID is regenerated using the link-layer-plus-time format (RFC 8415 §11.3) seeded with the freshly-assigned MAC.
 
 ## IPv6 IID coupling
 
-Under stable-privacy (RFC 7217), the IPv6 IID derives deterministically from the MAC plus a network-scoped key. Rotate the MAC and the IID rotates with no extra action. Temp addresses (RFC 8981) are flushed on the same boundary.
+Under stable-privacy (RFC 7217), the IPv6 IID derives deterministically from the MAC plus a network-scoped key. Rotate the MAC and the IID rotates with no extra action. Temp addresses (RFC 8981) are flushed on the same boundary. (Planned: explicit IPv6 sysctl writes by Proteus — no PR yet. Today the kernel default behaviour applies, which on modern Linux is already stable-privacy plus temp addresses.)
 
-If you've manually disabled stable-privacy in NM, the IID falls back to EUI-64 (which leaks the MAC directly) or to randomized — Proteus surfaces which mode is active in `proteus status`. See `proteus wiki ipv6` for the full address-mode story and the kernel knobs involved.
+If you've manually disabled stable-privacy in NM, the IID falls back to EUI-64 (which leaks the MAC directly) or to randomized — Proteus surfaces which mode is active in `proteus status` (planned reporting). See `proteus wiki ipv6` for the full address-mode story and the kernel knobs involved.
 
 ## Cross-references
 

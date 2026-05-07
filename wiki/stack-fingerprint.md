@@ -1,5 +1,11 @@
 Your kernel's TCP and ICMP behavior is a fingerprint. Two laptops on the same Wi-Fi negotiating identical-looking ClientHellos can still be told apart by the SYN they sent first. Proteus narrows that signal to whatever Linux defaults look like with a few decade-old vestiges turned off.
 
+> **Status (audit 2026-05):** the stack-hardening pieces described on this page are split across two pending PRs:
+> - sysctl drop-in (`/etc/sysctl.d/95-proteus.conf` for `tcp_timestamps`, `accept_redirects`, `accept_source_route`, `ndisc_evict_nocarrier`, etc.): **pending PR #69** (DIRTY, awaiting maintainer rebase)
+> - nftables rule manager (`proteus` table for ICMP info-reply / timestamp drops, NetBIOS / SSDP / WSD blocks): **pending PR #70** (DIRTY)
+>
+> The `[stack]` config section described at the bottom of this page does not exist in `src/config.rs` yet. Today, `proteus apply` reports `stack` as `not yet implemented`.
+
 ## What "stack fingerprint" means
 
 A passive observer — your ISP, the AP at the cafe, a traffic-correlation database — does not need to decrypt anything to identify the OS that opened a connection. The choices a kernel makes when it builds a SYN packet are stack-specific: which TCP options it sets, in which order, what window scale it advertises, what initial TTL the IP header carries, whether it answers ICMP type 13 or 15. Combine those with the kernel's ICMP echo behavior, MTU, and timestamp clock origin, and the result is a fingerprint that survives MAC rotation, DHCP scrubbing, and most VPNs.

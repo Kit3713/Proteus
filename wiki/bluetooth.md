@@ -2,6 +2,8 @@ Bluetooth on Linux splits cleanly into two halves. Adapter alias, discoverabilit
 
 For the mental model behind identifiers and rotation, read `proteus wiki concepts` first.
 
+> **Status (audit 2026-05):** `proteus bluetooth status / apply / revert` ship today. BR/EDR BD_ADDR rotation remains deferred (no PR planned for v1).
+
 ## What Proteus touches
 
 **Adapter alias.** BlueZ exposes a per-adapter `Alias` property over DBus — the name your phone or laptop shows during pairing and discovery. By default this is the system hostname, which leaks the hostname Proteus is otherwise scrubbing. Proteus replaces the alias with a generic string (`BT Device` by default) so the discoverable name is no longer correlated with the host.
@@ -39,10 +41,12 @@ sudo proteus apply
 Writes the configured alias (default `BT Device`), sets `Discoverable=false`, and enables RPA where the controller supports it. Idempotent — running it ten times converges to the same state as running it once.
 
 ```
-sudo proteus revert
+sudo proteus bluetooth revert
 ```
 
-(Phase G.) Restores the original alias and discoverable setting from the cache that Proteus snapshotted on first run. Like every other identifier, the original Bluetooth alias is captured once and never re-captured.
+Per-component revert ships today. Restores the original alias and discoverable setting from the cache that Proteus snapshotted on first run. Like every other identifier, the original Bluetooth alias is captured once and never re-captured.
+
+The cross-cutting `proteus revert` umbrella that backs out every Proteus-managed surface in one command is planned (phase G).
 
 ## Detection logic
 
