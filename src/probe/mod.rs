@@ -12,12 +12,19 @@
 //! without poking the network.
 
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
+use std::sync::mpsc;
+use std::thread;
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
-/// Per-endpoint TCP connect timeout. Same number used by `Probe protocol`
-/// in the wiki (`wiki/probes.md`).
+/// Per-endpoint total timeout — bounds DNS resolve **and** TCP connect.
+///
+/// `TcpStream::connect_timeout` only covers the connect phase; a hostile or
+/// stalled resolver could leave us blocked in `to_socket_addrs` for far
+/// longer than this number. We run the whole resolve+connect on a worker
+/// thread and wait on a channel with this deadline so the round can never
+/// stretch past it (issue #128).
 pub const TCP_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Quorum classification — wire format. Names match the wiki page
@@ -85,12 +92,53 @@ pub fn run_endpoints(targets: &[String]) -> Vec<EndpointResult> {
 }
 
 fn run_endpoint(target: &str) -> EndpointResult {
+    run_with_timeout(target, TCP_CONNECT_TIMEOUT, connect_resolved)
+}
+
+/// Run `work` on a worker thread with `total_timeout` as a hard ceiling.
+///
+/// If the deadline expires we abandon the worker (the OS unblocks any
+/// in-flight resolve/connect when the process exits) and return a synthetic
+/// timeout error tagged against `target`. Bounding the whole resolve+connect
+/// this way is what fixes issue #128.
+fn run_with_timeout<F>(target: &str, total_timeout: Duration, work: F) -> EndpointResult
+where
+    F: FnOnce(&str, Duration, Instant) -> EndpointResult + Send + 'static,
+{
     let started = Instant::now();
+    let target_owned = target.to_string();
+    let (tx, rx) = mpsc::sync_channel::<EndpointResult>(1);
+    thread::spawn(move || {
+        let _ = tx.send(work(&target_owned, total_timeout, started));
+    });
+    rx.recv_timeout(total_timeout).unwrap_or_else(|_| {
+        endpoint_error(
+            target,
+            started,
+            format!(
+                "timeout after {} ms (resolve or connect stalled)",
+                total_timeout.as_millis()
+            ),
+        )
+    })
+}
+
+/// Synchronous resolve + connect. Caller must bound the total time; both
+/// phases here can block longer than the connect timeout alone
+/// (`to_socket_addrs` ignores the connect budget).
+fn connect_resolved(target: &str, total_timeout: Duration, started: Instant) -> EndpointResult {
     let addr = match resolve_first(target) {
         Ok(a) => a,
         Err(e) => return endpoint_error(target, started, e),
     };
-    match TcpStream::connect_timeout(&addr, TCP_CONNECT_TIMEOUT) {
+    // Cap the connect at whatever's left of the round budget. `connect_timeout`
+    // requires non-zero; clamp to 1ms so a near-elapsed budget still surfaces
+    // as a proper timeout error.
+    let remaining = total_timeout
+        .checked_sub(started.elapsed())
+        .filter(|d| !d.is_zero())
+        .unwrap_or(Duration::from_millis(1));
+    match TcpStream::connect_timeout(&addr, remaining) {
         Ok(_stream) => EndpointResult {
             target: target.to_string(),
             method: "tcp",
@@ -211,5 +259,56 @@ mod tests {
         assert_eq!(rep.successes, 2);
         assert_eq!(rep.classification, Classification::Clear);
         assert_eq!(rep.schema_version, 1);
+    }
+
+    /// Simulates a stalled DNS / connect by sleeping past the deadline. The
+    /// watchdog must surface a timeout error and not block on the worker —
+    /// regression cover for issue #128 (DNS resolve was previously unbounded
+    /// by `TCP_CONNECT_TIMEOUT`).
+    #[test]
+    fn run_with_timeout_bounds_slow_work() {
+        let started = Instant::now();
+        let r = run_with_timeout(
+            "stalled.example:443",
+            Duration::from_millis(50),
+            |t, _, started| {
+                std::thread::sleep(Duration::from_secs(2));
+                EndpointResult {
+                    target: t.to_string(),
+                    method: "tcp",
+                    ok: true,
+                    duration_ms: started.elapsed().as_millis() as u64,
+                    error: None,
+                }
+            },
+        );
+        let elapsed = started.elapsed();
+        assert!(!r.ok, "stalled work should not be reported as ok");
+        assert!(
+            r.error.as_deref().unwrap_or("").contains("timeout"),
+            "expected timeout error, got {:?}",
+            r.error
+        );
+        assert!(
+            elapsed < Duration::from_millis(500),
+            "watchdog must release within the deadline, took {elapsed:?}"
+        );
+    }
+
+    /// Fast work returns its real result without going through the timeout
+    /// branch — proves the watchdog isn't swallowing successful rounds.
+    #[test]
+    fn run_with_timeout_returns_fast_result() {
+        let r = run_with_timeout("ok.example:443", Duration::from_secs(1), |t, _, _| {
+            EndpointResult {
+                target: t.to_string(),
+                method: "tcp",
+                ok: true,
+                duration_ms: 1,
+                error: None,
+            }
+        });
+        assert!(r.ok);
+        assert_eq!(r.target, "ok.example:443");
     }
 }
