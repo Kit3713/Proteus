@@ -120,6 +120,21 @@ pub fn edit(config: Option<&Path>) -> Result<u8> {
     if !path.exists() {
         super::write_atomic(&path, b"")?;
     }
+    // Security audit L-4: `$EDITOR` runs as root with the user's HOME
+    // when sudo is invoked with `-E` or with `env_keep` rules that
+    // preserve HOME. Plugin/autoload files in that HOME (vimrc, init.el,
+    // and friends) then run as root and become an arbitrary-code-as-root
+    // path from a malicious dotfile. Surface the risk loudly so the
+    // operator can choose `sudo -H proteus config edit` (drops HOME) or
+    // an inline edit via `proteus config set <key> <value> --yes`.
+    if std::env::var_os("HOME").is_some_and(|h| h != *"/root") {
+        eprintln!(
+            "proteus: warning: $HOME is not /root — your editor's plugins / autoloads will run as root"
+        );
+        eprintln!(
+            "proteus: prefer `sudo -H proteus config edit` (drops HOME) or `proteus config set` for narrow edits"
+        );
+    }
     let editor = std::env::var_os("VISUAL")
         .or_else(|| std::env::var_os("EDITOR"))
         .unwrap_or_else(|| OsString::from(DEFAULT_EDITOR));
@@ -321,7 +336,17 @@ fn set_enabled(
 /// `[<component>]` table header. Surfaced in `proteus status`.
 fn annotate_disable_reason(doc: &mut DocumentMut, component: &str, reason: &str) {
     let date = super::now_iso8601();
-    let comment = format!("# Proteus: disabled at {date} - reason: {reason}\n");
+    // Security audit L-2: strip newlines so a multi-line `reason` cannot
+    // inject extra TOML keys or comment-out adjacent settings. Replace
+    // CR/LF with a single space to keep the comment readable.
+    let safe_reason: String = reason
+        .chars()
+        .map(|c| match c {
+            '\n' | '\r' => ' ',
+            other => other,
+        })
+        .collect();
+    let comment = format!("# Proteus: disabled at {date} - reason: {safe_reason}\n");
     let Some(item) = doc.get_mut(component) else {
         return;
     };

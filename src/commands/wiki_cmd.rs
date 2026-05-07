@@ -118,12 +118,40 @@ impl SearchHitJson {
 
 pub fn run_help(feature: Option<&str>, no_color: bool) -> Result<u8> {
     if let Some(name) = feature {
-        return print_page(name, no_color);
+        // Issue #166: when an exact page lookup misses (e.g.
+        // `proteus help apply` — there's a subcommand but no wiki page
+        // named `apply`), fall through to a search rather than dumping
+        // an alphabetical page list.
+        if wiki::get_page(name).is_some() {
+            return print_page(name, no_color);
+        }
+        return print_help_search_fallback(name, no_color);
     }
     println!("Usage: proteus help <feature>");
     println!();
     println!("Known wiki pages:");
     list_pages();
+    Ok(exit::SUCCESS)
+}
+
+/// Issue #166: fallback path for `proteus help <feature>` when no exact
+/// page matches. Runs a wiki search and surfaces the top hits with line
+/// snippets so the user can find the right page name.
+fn print_help_search_fallback(query: &str, no_color_flag: bool) -> Result<u8> {
+    let hits = wiki::search(query, 5);
+    if hits.is_empty() {
+        eprintln!("proteus: no wiki page or matches for '{query}'");
+        eprintln!("  try `proteus wiki` for the curated index");
+        return Ok(exit::GENERIC_ERROR);
+    }
+    eprintln!("proteus: no wiki page '{query}'; closest matches:");
+    for hit in &hits {
+        let snippet = wiki::snippet(hit.line, hit.match_offset, SNIPPET_WINDOW);
+        eprintln!("  {}:{}  {}", hit.page, hit.line_no, snippet);
+    }
+    eprintln!();
+    eprintln!("Run `proteus wiki <page>` to read one.");
+    let _ = no_color_flag; // search output is plain stderr; no styling
     Ok(exit::SUCCESS)
 }
 

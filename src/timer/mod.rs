@@ -114,6 +114,13 @@ pub fn parse_interval(s: &str) -> Result<Interval> {
     if trimmed.is_empty() {
         anyhow::bail!("interval is empty");
     }
+    // Security audit L-2: reject calendar expressions that could break
+    // out of the systemd unit by injecting newlines or section headers.
+    // `proteus timer set` is root-only so the threat is limited, but the
+    // input lands in a config file other tools read; defense in depth.
+    if trimmed.contains(['\n', '\r', '\0', '[', ']']) {
+        anyhow::bail!("interval contains forbidden characters (\\n, \\r, NUL, [, ]): {trimmed:?}");
+    }
     if is_named_cadence(trimmed) {
         return Ok(Interval::Calendar {
             expr: trimmed.to_lowercase(),
