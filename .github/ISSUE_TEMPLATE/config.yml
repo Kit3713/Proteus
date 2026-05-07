@@ -1,0 +1,14 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Plan feedback or discussion
+    url: https://github.com/Kit3713/Proteus/blob/main/docs/PLAN.md
+    about: The plan in `docs/PLAN.md` is the most useful place to give shape feedback before code lands — open an issue prefixed `[plan-feedback]` in the title for now.
+  - name: Security vulnerability
+    url: https://github.com/Kit3713/Proteus/security/advisories/new
+    about: Don't open public issues for vulnerabilities — use a private security advisory.
+  - name: Documentation typo or wording
+    url: https://github.com/Kit3713/Proteus/edit/main/README.md
+    about: Edit the file directly and open a pull request — small typo PRs are welcome without an issue.
+  - name: Out-of-scope feature (TLS, browser, DNS resolution policy, tracker blocking)
+    url: https://github.com/Kit3713/Proteus/blob/main/CONTRIBUTING.md#scope
+    about: Proteus is a network-layer fingerprint eraser. The scope section lists the right tools (dnscrypt-proxy, Tor Browser, Pi-hole, etc.) for adjacent problems.
