@@ -107,6 +107,35 @@ use anyhow::{Context, Result};
 use serde::Serialize;
 
 use crate::config::Config;
+use crate::exit;
+use crate::state_lock::{self, LockError, StateLockGuard};
+
+/// Acquire the state lock for a mutating command. On contention, returns
+/// `Err(exit_code)` so callers can `return Ok(code)` directly without
+/// duplicating the error-printing boilerplate. Any other error is bubbled
+/// via `anyhow`.
+///
+/// Issue #126: every mutating command entry point calls this so two
+/// concurrent `proteus` processes serialize on `<state-dir>/.lock`.
+pub(crate) fn acquire_state_lock_or_print(
+    override_state_path: Option<&Path>,
+) -> std::result::Result<StateLockGuard, u8> {
+    let path = state_path(override_state_path);
+    match state_lock::acquire_for_state_path(&path) {
+        Ok(g) => Ok(g),
+        Err(LockError::Busy { path }) => {
+            eprintln!(
+                "proteus: another proteus run holds the state lock at {}; retry shortly",
+                path.display()
+            );
+            Err(exit::CONFIG_ERROR)
+        }
+        Err(e) => {
+            eprintln!("proteus: failed to acquire state lock: {e:#}");
+            Err(exit::CONFIG_ERROR)
+        }
+    }
+}
 
 pub(crate) fn print_json<T: Serialize>(value: &T) -> Result<()> {
     let stdout = std::io::stdout();
@@ -140,5 +169,53 @@ pub(crate) fn render_config(cfg: &Config, json: bool) -> Result<()> {
         let rendered = toml::to_string_pretty(cfg).context("serializing config to TOML")?;
         print!("{rendered}");
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs::OpenOptions;
+    use std::os::unix::io::AsRawFd;
+
+    #[test]
+    fn acquire_state_lock_or_print_returns_config_error_when_busy() {
+        // Issue #126: a second mutating-command entry point must bail with
+        // CONFIG_ERROR (65) rather than blocking when another process holds
+        // the lock. Simulate the "another process" by taking the kernel flock
+        // through a separate fd, then call the helper.
+        //
+        // Serialize with the shared test mutex so we don't race with the
+        // lock-module's own tests touching the process-wide HELD flag.
+        let _serial = state_lock::test_serial_guard();
+
+        let dir = std::env::temp_dir().join(format!("proteus-helper-busy-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let state = dir.join("state.json");
+        let lock = dir.join(".lock");
+
+        let foreign = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&lock)
+            .unwrap();
+        let rc = unsafe { libc::flock(foreign.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+        assert_eq!(rc, 0, "test setup: foreign flock should succeed");
+
+        let result = acquire_state_lock_or_print(Some(&state));
+        assert_eq!(
+            result.err(),
+            Some(exit::CONFIG_ERROR),
+            "busy lock must surface CONFIG_ERROR"
+        );
+
+        unsafe {
+            libc::flock(foreign.as_raw_fd(), libc::LOCK_UN);
+        }
+        drop(foreign);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

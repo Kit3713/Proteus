@@ -100,6 +100,10 @@ pub fn apply(yes: bool, state_path: Option<&Path>, config_path: Option<&Path>) -
         eprintln!("proteus: 'rf apply' is mutating; pass --yes (see `proteus help rf`)");
         return Ok(exit::NOT_IMPLEMENTED);
     }
+    let _lock = match super::acquire_state_lock_or_print(state_path) {
+        Ok(g) => g,
+        Err(code) => return Ok(code),
+    };
     let state_path = super::state_path(state_path);
     let config_path = super::config_path(config_path);
     let config = Config::default_or_loaded(&config_path)?;
@@ -159,6 +163,10 @@ pub fn revert(yes: bool, state_path: Option<&Path>) -> Result<u8> {
         eprintln!("proteus: 'rf revert' is mutating; pass --yes (see `proteus help rf`)");
         return Ok(exit::NOT_IMPLEMENTED);
     }
+    let _lock = match super::acquire_state_lock_or_print(state_path) {
+        Ok(g) => g,
+        Err(code) => return Ok(code),
+    };
     let state_path = super::state_path(state_path);
     let mut state = State::load_or_default(&state_path)?;
 

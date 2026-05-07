@@ -44,6 +44,12 @@ pub fn run(yes: bool) -> Result<u8> {
         eprintln!("proteus: {e}");
         return Ok(exit::PERMISSION_ERROR);
     }
+    // Issue #126: hold the state lock while iterating through every revert
+    // step so a concurrent `apply`/`rotate`/etc. can't race us.
+    let _lock = match super::acquire_state_lock_or_print(None) {
+        Ok(g) => g,
+        Err(code) => return Ok(code),
+    };
 
     let mut warns: Vec<String> = Vec::new();
     revert_best_effort(&mut warns);

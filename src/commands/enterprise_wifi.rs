@@ -89,6 +89,10 @@ pub fn enable(
         );
         return Ok(exit::CONFIG_ERROR);
     }
+    let _lock = match super::acquire_state_lock_or_print(state_path) {
+        Ok(g) => g,
+        Err(code) => return Ok(code),
+    };
 
     let state_path = super::state_path(state_path);
     let config_path = super::config_path(config_path);
@@ -139,6 +143,10 @@ pub fn disable(connection: &str, yes: bool, state_path: Option<&Path>) -> Result
         );
         return Ok(exit::CONFIG_ERROR);
     }
+    let _lock = match super::acquire_state_lock_or_print(state_path) {
+        Ok(g) => g,
+        Err(code) => return Ok(code),
+    };
 
     let state_path = super::state_path(state_path);
     let mut state = State::load_or_default(&state_path)?;

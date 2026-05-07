@@ -91,6 +91,10 @@ pub fn apply(_yes: bool, config_path: Option<&Path>) -> Result<u8> {
         eprintln!("proteus: nft binary not on PATH; install nftables and retry");
         return Ok(exit::SYSTEM_NOT_SUPPORTED);
     }
+    let _lock = match super::acquire_state_lock_or_print(None) {
+        Ok(g) => g,
+        Err(code) => return Ok(code),
+    };
     let config_path = super::config_path(config_path);
     let config = Config::default_or_loaded(&config_path)?;
     if let Err(e) = nft::apply_ruleset(&config.discovery) {
@@ -121,6 +125,10 @@ pub fn revert(_yes: bool) -> Result<u8> {
         eprintln!("proteus: nft binary not on PATH; nothing to revert");
         return Ok(exit::SYSTEM_NOT_SUPPORTED);
     }
+    let _lock = match super::acquire_state_lock_or_print(None) {
+        Ok(g) => g,
+        Err(code) => return Ok(code),
+    };
     if let Err(e) = nft::revert_ruleset() {
         eprintln!("proteus: nft revert failed: {e:#}");
         return Ok(exit::GENERIC_ERROR);
