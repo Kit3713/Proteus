@@ -54,6 +54,12 @@ pub type ConnectionSettings = std::collections::HashMap<
 )]
 pub trait Connection {
     fn get_settings(&self) -> zbus::Result<ConnectionSettings>;
+    /// Fetch the secrets dict for one setting (e.g. `"802-1x"`). NM returns
+    /// the secrets keyed by setting name — the keys inside (e.g. `password`,
+    /// `private-key-password`) are exactly what NM accepts back through
+    /// `Update`, so the result can be merged straight into the settings
+    /// dict before calling `Update` to avoid clobbering the secrets store.
+    fn get_secrets(&self, setting_name: &str) -> zbus::Result<ConnectionSettings>;
     fn update(&self, settings: ConnectionSettings) -> zbus::Result<()>;
 }
 

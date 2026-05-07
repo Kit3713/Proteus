@@ -77,6 +77,12 @@ pub async fn read_snapshot(
 ///
 /// Every other field on the profile, including the inner identity, EAP
 /// method, certificate paths, and domain-suffix-match, is preserved verbatim.
+///
+/// `GetSettings` does NOT return secret-typed keys (passwords, PSKs, private
+/// key passphrases, etc.); calling `Update` with a secrets-stripped dict
+/// would overwrite NM's secrets store and break the user's auth. We pull
+/// the `802-1x` secrets via `GetSecrets` first and merge them back into the
+/// settings dict before pushing the update — see issue #114.
 pub async fn write_anonymous_identity(
     conn: &zbus::Connection,
     connection_path: &OwnedObjectPath,
@@ -95,11 +101,41 @@ pub async fn write_anonymous_identity(
         ANONYMOUS_IDENTITY_KEY.to_string(),
         Value::from(new_value.to_string()).try_into()?,
     );
+    // Pull the per-section secrets dict and graft it back onto the settings
+    // dict so passwords/cert-passphrases survive the `Update` round trip. If
+    // the connection has no secrets stored, NM returns an empty section and
+    // `merge_secrets` is a no-op.
+    let secrets: ConnectionSettings = proxy
+        .get_secrets(SECTION)
+        .await
+        .context("calling Settings.Connection.GetSecrets(\"802-1x\")")?;
+    merge_secrets(&mut settings, &secrets);
     proxy
         .update(settings)
         .await
         .context("calling Settings.Connection.Update")?;
     Ok(())
+}
+
+/// Merge a `GetSecrets` result into a settings dict in place.
+///
+/// NM's `GetSecrets(setting_name)` returns a dict shaped like
+/// `{ "802-1x": { "password": ..., "private-key-password": ... } }` — i.e.
+/// only the secret-typed keys, keyed by section. We graft each section's
+/// secrets onto the matching section in `settings`, preserving any settings
+/// already in place (so the caller's freshly-modified `anonymous-identity`
+/// survives) and overwriting only on key collisions inside a section.
+///
+/// This is the merge step that fixes issue #114: without it, `Update` would
+/// be called with a dict that lacks the secret keys NM already has stored,
+/// and NM would interpret that as "the user removed their password".
+pub fn merge_secrets(settings: &mut ConnectionSettings, secrets: &ConnectionSettings) {
+    for (section_name, section_secrets) in secrets {
+        let target = settings.entry(section_name.clone()).or_default();
+        for (key, value) in section_secrets {
+            target.insert(key.clone(), value.clone());
+        }
+    }
 }
 
 fn lookup_str(
@@ -117,6 +153,20 @@ fn lookup_str(
 mod tests {
     use super::*;
 
+    fn owned_str(s: &str) -> zbus::zvariant::OwnedValue {
+        Value::from(s.to_string()).try_into().unwrap()
+    }
+
+    /// Read a string-valued key from the settings dict — the test helper
+    /// equivalent of `lookup_str` so the assertions stay readable.
+    fn str_at(settings: &ConnectionSettings, section: &str, key: &str) -> Option<String> {
+        let v: &Value = settings.get(section)?.get(key)?;
+        match v {
+            Value::Str(s) => Some(s.as_str().to_string()),
+            _ => None,
+        }
+    }
+
     #[test]
     fn snapshot_from_empty_settings_has_no_eap_section() {
         let s = EapSnapshot::from_settings(&ConnectionSettings::new());
@@ -124,5 +174,101 @@ mod tests {
         assert!(!s.has_eap_section);
         assert!(s.identity.is_none());
         assert!(s.anonymous_identity.is_none());
+    }
+
+    #[test]
+    fn merge_secrets_grafts_passwords_into_existing_section() {
+        // Issue #114: simulate the read-modify-write cycle where the caller
+        // has already updated `anonymous-identity` in the settings dict, then
+        // GetSecrets returns the (separately stored) `password`. After merge,
+        // both must be present so `Update` doesn't wipe the secrets store.
+        let mut settings = ConnectionSettings::new();
+        let section = settings.entry(SECTION.to_string()).or_default();
+        section.insert("eap".to_string(), owned_str("peap"));
+        section.insert("identity".to_string(), owned_str("alice@example.edu"));
+        section.insert(
+            ANONYMOUS_IDENTITY_KEY.to_string(),
+            owned_str("anonymous@example.edu"),
+        );
+
+        let mut secrets = ConnectionSettings::new();
+        secrets
+            .entry(SECTION.to_string())
+            .or_default()
+            .insert("password".to_string(), owned_str("hunter2"));
+
+        merge_secrets(&mut settings, &secrets);
+
+        assert_eq!(
+            str_at(&settings, SECTION, ANONYMOUS_IDENTITY_KEY).as_deref(),
+            Some("anonymous@example.edu"),
+        );
+        assert_eq!(
+            str_at(&settings, SECTION, "identity").as_deref(),
+            Some("alice@example.edu"),
+        );
+        assert_eq!(
+            str_at(&settings, SECTION, "password").as_deref(),
+            Some("hunter2"),
+        );
+    }
+
+    #[test]
+    fn merge_secrets_creates_section_when_missing() {
+        let mut settings = ConnectionSettings::new();
+        let mut secrets = ConnectionSettings::new();
+        secrets
+            .entry(SECTION.to_string())
+            .or_default()
+            .insert("password".to_string(), owned_str("hunter2"));
+
+        merge_secrets(&mut settings, &secrets);
+
+        assert_eq!(
+            str_at(&settings, SECTION, "password").as_deref(),
+            Some("hunter2"),
+        );
+    }
+
+    #[test]
+    fn merge_secrets_overwrites_on_key_collision() {
+        // Defensive: GetSettings strips secrets, so the settings dict
+        // shouldn't have stale secret values; if it does, the GetSecrets
+        // value wins because NM's secrets store is the source of truth.
+        let mut settings = ConnectionSettings::new();
+        settings
+            .entry(SECTION.to_string())
+            .or_default()
+            .insert("password".to_string(), owned_str("stale"));
+
+        let mut secrets = ConnectionSettings::new();
+        secrets
+            .entry(SECTION.to_string())
+            .or_default()
+            .insert("password".to_string(), owned_str("fresh"));
+
+        merge_secrets(&mut settings, &secrets);
+
+        assert_eq!(
+            str_at(&settings, SECTION, "password").as_deref(),
+            Some("fresh"),
+        );
+    }
+
+    #[test]
+    fn merge_secrets_with_empty_input_is_noop() {
+        let mut settings = ConnectionSettings::new();
+        settings
+            .entry(SECTION.to_string())
+            .or_default()
+            .insert("identity".to_string(), owned_str("alice@example.edu"));
+
+        merge_secrets(&mut settings, &ConnectionSettings::new());
+
+        assert_eq!(
+            str_at(&settings, SECTION, "identity").as_deref(),
+            Some("alice@example.edu"),
+        );
+        assert_eq!(settings.get(SECTION).map(|s| s.len()), Some(1));
     }
 }
