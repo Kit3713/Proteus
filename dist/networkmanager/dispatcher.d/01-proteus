@@ -17,8 +17,17 @@
 #
 # All log lines go to journald via `logger -t proteus-dispatcher`.
 # We always exit 0 — NM treats nonzero as a script failure.
+#
+# Security: NM dispatcher runs as root. We MUST NOT trust $PATH for binary
+# resolution — any user-writable directory ahead of /usr/bin in PATH would
+# become a root code-execution surface. We pin to absolute paths and reset
+# PATH to a minimal, root-only set before any helper invocation.
 
 set -u
+
+# Minimal, root-owned PATH. Resets whatever NM inherited from its parent.
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
 
 iface="${1:-}"
 action="${NM_DISPATCHER_ACTION:-${2:-}}"
@@ -27,10 +36,19 @@ log() {
     logger -t proteus-dispatcher -- "$*" 2>/dev/null || true
 }
 
-# Be defensive: if the binary is gone, log a single line and exit clean.
-proteus_bin="$(command -v proteus 2>/dev/null || true)"
+# Resolve the proteus binary by absolute path only. Distro packages land
+# at /usr/bin/proteus; install.sh lands at /usr/local/bin/proteus. Both
+# directories are root-writable only, so the lookup itself can't be
+# subverted by an unprivileged user the way a $PATH search could.
+proteus_bin=""
+for candidate in /usr/bin/proteus /usr/local/bin/proteus; do
+    if [ -x "$candidate" ]; then
+        proteus_bin="$candidate"
+        break
+    fi
+done
 if [ -z "$proteus_bin" ]; then
-    log "proteus binary not in PATH; skipping (iface=$iface action=$action)"
+    log "proteus binary not found at /usr/bin/proteus or /usr/local/bin/proteus; skipping (iface=$iface action=$action)"
     exit 0
 fi
 
