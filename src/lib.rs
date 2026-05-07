@@ -55,6 +55,7 @@ mod tests {
     #[test]
     fn exit_codes_are_stable() {
         assert_eq!(exit::SUCCESS, 0);
+        assert_eq!(exit::GENERIC_ERROR, 1);
         assert_eq!(exit::NOT_IMPLEMENTED, 64);
         assert_eq!(exit::CONFIG_ERROR, 65);
         assert_eq!(exit::PERMISSION_ERROR, 66);
