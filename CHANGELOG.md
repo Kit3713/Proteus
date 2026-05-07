@@ -11,7 +11,64 @@ landed, what is in flight, and what is on the bench. See
 
 ## [Unreleased]
 
-(post-v0.1.0-alpha work lands here)
+(post-v0.2.0-alpha work lands here)
+
+## [0.2.0-alpha] - 2026-05-07
+
+Second alpha. Patches 28 issues across security, state safety, NM DBus correctness, CLI ergonomics, observability, and packaging. Adds a runtime-efficiency baseline. The CLI surface, config schema, and on-disk formats remain provisional.
+
+### Security
+- #112: CLI errors now print the full `anyhow` source chain to stderr instead of being swallowed silently.
+- #113: tracing-subscriber suppresses ANSI when stderr is not a TTY or `NO_COLOR` is set.
+- #114: enterprise-wifi `Connection.Update` now calls `GetSecrets` first so EAP passwords/certs survive the round-trip.
+- #115: NM `cloned-mac-address` now written as `ay` (byte array) and `ipv6.addr-gen-mode` as `i32` — the types older NM versions accept.
+- #116: `state.json` and `config.toml` writes now land at `0o600` mode.
+- #117: mutating commands return `CONFIRMATION_REQUIRED` (65) instead of the misleading `NOT_IMPLEMENTED` (64) when `--yes` is missing.
+- #118: `proteus pin` honors its `--yes` flag.
+- #119: every apply path persists captured originals to `state.json` *before* the destructive mutation (sacred-originals invariant).
+- #120: polkit `exec.path` now `/usr/bin/proteus` to match distro-package install paths.
+- #121: NM dispatcher hook uses absolute paths and resets `$PATH` to a root-owned set, removing the privilege-escalation surface.
+- #123: `original_macs` now records the burned-in factory MAC (via `phy80211/macaddress`, ethtool `ETHTOOL_GPERMADDR`, or `addr_assign_type == NET_ADDR_PERM`), not whatever was live when first observed.
+- #125 + #150: `commands::write_atomic` defends against TOCTOU/symlink attacks via random-suffix temp filenames + `O_CREAT | O_EXCL` + RAII cleanup, and now fsyncs the parent directory after rename.
+- #126: every mutating command acquires an advisory `flock(2)` on `<state-dir>/.lock` before mutating; concurrent runs serialize.
+- #127: `State::load` quarantines a malformed `state.json` (renaming to `<path>.corrupt-<ts>`) and returns an empty state so read-only commands keep working.
+- #128 + #129: probe and captive-portal flows now bound DNS resolution and HTTP body reads by their declared timeouts via std `mpsc::sync_channel` watchdogs.
+- #130: DNS detect-and-defer guard canonicalizes drop-in symlinks before string-matching, defeating attacker-controlled tail redirection.
+- #133: polkit mutating actions now use one-shot `auth_admin` (no `auth_admin_keep` cache window).
+- #136: release pipeline drops `--skipchecksums` from makepkg.
+
+### Bug fixes
+- #131: `proteus reset` writes a minimal `profile = "<name>"` TOML preserving the active profile rather than the resolved (frozen) defaults.
+- #132: `logging::parse_rust_log` keeps valid directives when one is malformed instead of dropping them all.
+- #134: systemd services with `After=network-online.target` now also have matching `Wants=` so the target actually pulls up.
+- #135: CI workflow uses the pinned `actions-rust-lang/setup-rust-toolchain` instead of the floating `dtolnay/rust-toolchain@stable`.
+- #137 + #141: `--config /nonexistent/path` is now a hard error for read commands instead of silently falling back to defaults.
+- #137 + #142: `NO_COLOR` env var is honored by logging init.
+- #139 + #144: hostname revert skips per-name when no original was captured instead of collapsing to "".
+- #140: `session::next_rotation_pair` parses systemctl with `LC_ALL=C` to avoid locale-dependent test failures.
+- #143: bluetooth alias picker uses rejection sampling to remove modulo bias.
+- #145 + #138: captive-portal URL parser handles IPv6 literals and userinfo correctly.
+- #146: `/proc/net/route` parser checks `RTF_GATEWAY`; ARP parse errors surface instead of silently dropping.
+- #147: `sysctl_path` validates the interface name (defense-in-depth).
+- #148: nft chains use distinct priorities; revert is idempotent against races.
+- #149: `src/stack/sha256.rs` uses `chunks_exact(64)` so the partial-block path is exercised correctly.
+- #151: `revert_dhcp_settings` no longer materializes an empty `[ipv6]` section when none existed.
+- #152 + #154: `bluetooth::apply_one` skips powered-off adapters instead of aborting the run.
+- #153 + #155: `revert_best_effort` tracks per-step results and skips unconditional restarts when nothing changed.
+- #157: kill switch documents the VPN-tunnel skip so wiki and code agree.
+- #158: removed the duplicate Debian install path (`dist/install` vs `dist/debian/rules`).
+
+### Performance
+- perf: lazy `tracing-subscriber::registry()` init when verbose=0 + RUST_LOG unset + JOURNAL_STREAM unset. Saves ~46K instructions per cold-path invocation.
+- New `docs/perf-baseline.md` captures methodology and baseline measurements.
+
+### CI / packaging
+- ci: raise the binary size cap from 3,750,000 bytes to 4,000,000 bytes. The defensive scaffolding from the security and state-safety fixes (state lock, atomic-write guard, `acquire_state_lock_or_print`, error-chain printing) added ~250 KB. The 4 MB target leaves ~250 KB headroom for v0.3 work.
+
+### Deferred to v0.3
+- Issues #122 + #124 (NM uuid keying, multi-profile updates) — implementation lives in branch `fix/issues-122-124-nm-uuid-keying-multi-profile`; conflicts deeply with #185 / #126 changes and needs a clean re-build against current main.
+- Tracking issues #168, #169 — buckets for follow-up low-severity findings.
+- The `claude/security-audit-sjnXX` branch's findings — incoming review will be addressed in v0.3.
 
 ## [0.1.0-alpha] - 2026-05-07
 
@@ -263,5 +320,6 @@ See [docs/ROADMAP.md](docs/ROADMAP.md) for the full status.
 - Bluetooth BR/EDR (classic) BD_ADDR rotation: deferred (chipset-specific
   HCI territory)
 
-[unreleased]: https://github.com/Kit3713/Proteus/compare/v0.1.0-alpha...HEAD
+[unreleased]: https://github.com/Kit3713/Proteus/compare/v0.2.0-alpha...HEAD
+[0.2.0-alpha]: https://github.com/Kit3713/Proteus/releases/tag/v0.2.0-alpha
 [0.1.0-alpha]: https://github.com/Kit3713/Proteus/releases/tag/v0.1.0-alpha
