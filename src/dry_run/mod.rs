@@ -2,16 +2,11 @@
 
 //! `proteus dry-run` plan model.
 //!
-//! Each mutating command can produce a `Plan`: a structured, side-effect-free
-//! description of what it would do. Plans are rendered to the user as either
-//! human text or `--json`. Per-module preview functions live alongside the
-//! module they describe (e.g. `mac::plan_rotate`); this file owns the shared
-//! types and the dispatch glue.
-//!
-//! Phase G: rotate / pin / apply / revert / reset / uninstall are wired.
-//! Modules that haven't landed yet (DHCP, DNS, IPv6, stack, nft) report
-//! `not yet implemented` so a future enable lights up the dry-run automatically
-//! when the matching apply path lands.
+//! Assemble a `Plan` enum that previews mutators by listing the operations they
+//! would perform. Each mutating command produces a structured, side-effect-free
+//! description rendered as either human text or `--json`. Per-module preview
+//! functions live alongside the module they describe (e.g. `mac::plan_rotate`);
+//! this file owns the shared types and the dispatch glue.
 //!
 //! No `Plan` step ever writes to disk, calls DBus, or shells out. The whole
 //! module is read-only. That invariant is what `proteus dry-run` exists to

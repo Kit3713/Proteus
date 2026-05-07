@@ -7,17 +7,14 @@
 //! a [`Plan`]. The plan is rendered as text or JSON. Nothing mutates: no DBus
 //! calls, no file writes, no `state.json` updates.
 //!
-//! Phase G covers the "easy" mutators that already exist in the binary:
+//! Every shipping mutator has a preview path:
 //! - `rotate` — preview a MAC rotation per managed interface
 //! - `pin <target>` — preview pinning the named target to its current MAC
-//! - `apply` — concatenated preview of every enabled component
+//! - `apply` — concatenated preview of every enabled component (mac, hostname,
+//!   bluetooth, ipv6, dhcp, dns, stack, nft)
 //! - `revert` — preview the originals each module would restore
 //! - `reset` — preview the config backup + defaults rewrite
 //! - `uninstall [--purge]` — preview the units/files removal
-//!
-//! Modules that haven't landed yet (DHCP/DNS/IPv6/stack/nft) return a
-//! `not yet implemented` note rather than a hard error so wrappers don't
-//! have to special-case them.
 //!
 //! Unknown inner commands exit `64` (NOT_IMPLEMENTED) with a one-line
 //! pointer at `proteus help`.
@@ -128,9 +125,8 @@ fn build_plan(inner: Inner, state_path: Option<&Path>, config_path: Option<&Path
 }
 
 /// Apply: walk components in the same order as the real orchestrator and
-/// concatenate each one's preview. Disabled components and modules that
-/// haven't landed get a one-line note so the preview matches what apply
-/// would emit at the summary line.
+/// concatenate each one's preview. Disabled components get a one-line
+/// note so the preview matches what apply would emit at the summary line.
 fn plan_apply(config: &Config, state: &State) -> Plan {
     let mut plan = Plan::new("apply");
     if config.mac.enabled {
@@ -148,10 +144,85 @@ fn plan_apply(config: &Config, state: &State) -> Plan {
     } else {
         plan.note("bluetooth: disabled in config (bluetooth.enabled = false)");
     }
-    for name in ["dhcp", "dns", "stack", "nft"] {
-        plan.note(format!("{name}: not yet implemented"));
-    }
+    // Both ipv6 and stack previews enumerate interfaces; share the read
+    // so dry-run touches /sys/class/net/ only once.
+    let ifaces = crate::stack::detect_managed_interfaces();
+    plan.note(preview_ipv6(config, &ifaces));
+    plan.note(preview_dhcp(config));
+    plan.note(preview_dns(config));
+    plan.note(preview_stack(config, &ifaces));
+    plan.note(preview_nft(config));
     plan
+}
+
+/// One-line preview of what `dhcp apply` would do given the current config.
+/// Phrased in managed-connection terms because dry-run must not perform
+/// DBus calls.
+fn preview_dhcp(config: &Config) -> String {
+    if !config.dhcp.enabled {
+        return "dhcp: skipped (dhcp.enabled = false)".into();
+    }
+    "dhcp: would suppress hostname/vendor-class/client-id on managed connections (no live changes)"
+        .into()
+}
+
+/// One-line preview of what `dns apply` would do. Live foreign-resolver
+/// detection only runs at real apply-time.
+fn preview_dns(config: &Config) -> String {
+    if !config.dns.strip_edns_client_subnet {
+        return "dns: skipped (dns.strip_edns_client_subnet = false)".into();
+    }
+    format!(
+        "dns: would write {dir}/{name} (or skip if a foreign resolver owns DNS)",
+        dir = crate::dns::RESOLVED_DROPIN_DIR,
+        name = crate::dns::PROTEUS_DROPIN_NAME,
+    )
+}
+
+/// One-line preview of what `stack apply` would do. Counts come from the
+/// same renderer the real apply uses, so the preview tracks the renderer
+/// without duplicating logic.
+fn preview_stack(config: &Config, ifaces: &[String]) -> String {
+    let count = crate::stack::lines_for(&config.stack, ifaces).len();
+    format!(
+        "stack: would write {path} with {count} keys",
+        path = crate::stack::DROPIN_PATH
+    )
+}
+
+/// One-line preview of what `nft apply` would do. The table is always
+/// installed when the apply runs; optional discovery blocks light up when
+/// their config flags are on.
+fn preview_nft(config: &Config) -> String {
+    let mut extras: Vec<&str> = Vec::new();
+    if config.discovery.ssdp_block {
+        extras.push("ssdp");
+    }
+    if config.discovery.wsd_block {
+        extras.push("wsd");
+    }
+    let base = format!(
+        "nft: would install table {family} {table} (icmp info-drops",
+        family = crate::nft::TABLE_FAMILY,
+        table = crate::nft::TABLE_NAME,
+    );
+    if extras.is_empty() {
+        format!("{base})")
+    } else {
+        format!("{base}, discovery blocks: {})", extras.join(", "))
+    }
+}
+
+/// One-line preview of what `ipv6 apply` would do.
+fn preview_ipv6(config: &Config, ifaces: &[String]) -> String {
+    if !config.ipv6.enabled {
+        return "ipv6: skipped (ipv6.enabled = false)".into();
+    }
+    let count = ifaces.len();
+    let suffix = if count == 1 { "" } else { "s" };
+    format!(
+        "ipv6: would set per-iface use_tempaddr/addr_gen_mode/ndp_hardening on {count} interface{suffix}"
+    )
 }
 
 /// Revert: preview restoring originals for the modules that have apply paths
@@ -202,7 +273,27 @@ fn plan_revert(state: &State) -> Plan {
         }
     }
 
-    plan.note("dhcp/dns/stack/nft: not yet implemented");
+    plan.note(
+        "dhcp: would clear proteus-managed flag on tagged connections and restore cached DHCP keys",
+    );
+    plan.note(format!(
+        "dns: would remove {dir}/{name} if present",
+        dir = crate::dns::RESOLVED_DROPIN_DIR,
+        name = crate::dns::PROTEUS_DROPIN_NAME,
+    ));
+    plan.note(format!(
+        "stack: would remove {path} and reload sysctls",
+        path = crate::stack::DROPIN_PATH
+    ));
+    plan.note(format!(
+        "nft: would delete table {family} {table} if present",
+        family = crate::nft::TABLE_FAMILY,
+        table = crate::nft::TABLE_NAME,
+    ));
+    plan.note(format!(
+        "ipv6: would restore cached per-iface sysctls and remove {path}",
+        path = crate::ipv6::DROPIN_PATH
+    ));
     plan
 }
 
@@ -353,12 +444,15 @@ mod tests {
             any_bluetooth,
             "apply preview should include a bluetooth step"
         );
-        for missing in ["dhcp", "dns", "stack", "nft"] {
+        // Each shipping module surfaces a "would …" preview line. The text
+        // is intentionally human; branching code should key on `kind`.
+        for module in ["dhcp", "dns", "stack", "nft", "ipv6"] {
             assert!(
                 plan.steps
                     .iter()
-                    .any(|s| s.message.contains(missing) && s.message.contains("not yet")),
-                "expected a not-yet-implemented note for '{missing}'"
+                    .any(|s| s.message.starts_with(&format!("{module}:"))
+                        && s.message.contains("would")),
+                "expected a 'would …' preview for '{module}'"
             );
         }
     }
@@ -375,6 +469,58 @@ mod tests {
                 "expected a 'disabled' note for component '{name}'"
             );
         }
+    }
+
+    #[test]
+    fn dry_run_apply_does_not_emit_not_yet_implemented_for_default_config() {
+        // Guard against regression: every module that ships must surface a
+        // real preview line, not the historical "not yet implemented" stub.
+        let cfg = Config::default();
+        let plan = plan_apply(&cfg, &State::default());
+        for step in &plan.steps {
+            assert!(
+                !step.message.contains("not yet implemented"),
+                "dry-run apply should not contain 'not yet implemented'; got: {}",
+                step.message
+            );
+            if let Some(d) = &step.detail {
+                assert!(
+                    !d.contains("not yet implemented"),
+                    "dry-run apply detail should not contain 'not yet implemented'; got: {d}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn dhcp_preview_skip_note_tracks_config_toggle() {
+        let mut cfg = Config::default();
+        cfg.dhcp.enabled = false;
+        let line = preview_dhcp(&cfg);
+        assert!(line.contains("skipped"));
+        assert!(line.contains("dhcp.enabled = false"));
+
+        cfg.dhcp.enabled = true;
+        let line = preview_dhcp(&cfg);
+        assert!(line.starts_with("dhcp:"));
+        assert!(line.contains("would suppress"));
+    }
+
+    #[test]
+    fn nft_preview_lists_optional_discovery_blocks() {
+        let mut cfg = Config::default();
+        cfg.discovery.ssdp_block = false;
+        cfg.discovery.wsd_block = false;
+        let line = preview_nft(&cfg);
+        assert!(line.contains("icmp info-drops"));
+        assert!(!line.contains("ssdp"));
+        assert!(!line.contains("wsd"));
+
+        cfg.discovery.ssdp_block = true;
+        cfg.discovery.wsd_block = true;
+        let line = preview_nft(&cfg);
+        assert!(line.contains("ssdp"));
+        assert!(line.contains("wsd"));
     }
 
     #[test]
