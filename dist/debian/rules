@@ -1,0 +1,23 @@
+#!/usr/bin/make -f
+%:
+	dh $@
+
+override_dh_auto_build:
+	cargo build --release --frozen
+
+override_dh_auto_test:
+	cargo test --release --frozen
+
+override_dh_auto_install:
+	install -Dm755 target/release/proteus debian/proteus/usr/bin/proteus
+	install -Dm644 dist/man/proteus.1 debian/proteus/usr/share/man/man1/proteus.1
+	install -Dm644 dist/completions/proteus.bash debian/proteus/usr/share/bash-completion/completions/proteus
+	install -Dm644 dist/completions/proteus.zsh debian/proteus/usr/share/zsh/vendor-completions/_proteus
+	install -Dm644 dist/completions/proteus.fish debian/proteus/usr/share/fish/vendor_completions.d/proteus.fish
+	for unit in dist/systemd/*.service dist/systemd/*.timer; do \
+		install -Dm644 "$$unit" "debian/proteus/lib/systemd/system/$$(basename $$unit)"; \
+	done
+	install -Dm755 dist/networkmanager/dispatcher.d/01-proteus debian/proteus/etc/NetworkManager/dispatcher.d/01-proteus
+	install -Dm644 dist/polkit/com.kit3713.proteus.policy debian/proteus/usr/share/polkit-1/actions/com.kit3713.proteus.policy
+	install -dm755 debian/proteus/etc/proteus
+	install -dm700 debian/proteus/var/lib/proteus
