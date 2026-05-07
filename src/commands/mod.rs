@@ -11,6 +11,7 @@ pub mod dns;
 pub mod doctor;
 pub mod dry_run;
 pub mod enterprise_wifi;
+pub mod events;
 pub mod hostname;
 pub mod ipv6;
 pub mod kill;

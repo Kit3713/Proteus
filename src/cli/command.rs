@@ -5,9 +5,9 @@
 use clap::Subcommand;
 
 use super::actions::{
-    BluetoothAction, ConfigAction, DhcpAction, DnsAction, EnterpriseWifiAction, HostnameAction,
-    Ipv6Action, KillAction, NftAction, NtpAction, PersonaAction, PortalAction, ResolvedAction,
-    RfAction, SsidAction, StackAction, TimerAction, WikiAction,
+    BluetoothAction, ConfigAction, DhcpAction, DnsAction, EnterpriseWifiAction, EventsAction,
+    HostnameAction, Ipv6Action, KillAction, NftAction, NtpAction, PersonaAction, PortalAction,
+    ResolvedAction, RfAction, SsidAction, StackAction, TimerAction, WikiAction,
 };
 
 #[derive(Subcommand, Debug)]
@@ -271,6 +271,19 @@ pub enum Command {
     Ssid {
         #[command(subcommand)]
         action: SsidAction,
+    },
+    /// Event-driven rotation framework (roadmap Milestone 4c).
+    ///
+    /// The long-lived `events run` subcommand subscribes to four
+    /// reactive trigger sources (NM connection-up, link-flap,
+    /// regulatory-domain change, captive-portal auth) and routes
+    /// detected events through an in-process `EventRegistry`. The
+    /// default handler invokes the same rotation entry point as
+    /// `proteus rotate`; the daemon is opt-in via `[events] enabled
+    /// = true` plus the `proteus-events.service` systemd unit.
+    Events {
+        #[command(subcommand)]
+        action: EventsAction,
     },
     /// Print the embedded shell-completion script for this binary's CLI.
     ///

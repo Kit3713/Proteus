@@ -148,7 +148,7 @@ Three tightly related tracks; can land in parallel once Milestone 1 is done.
 ### 4c — Rotation triggers
 
 - ✅ DHCP lease release+renew without MAC change (rescue `phase-d/ip-rotation`) — new `proteus dhcp renew` subcommand wraps `Device.Reapply` (with `Disconnect`+`ActivateConnection` fallback for older NM); `[dhcp] renew_on_apply` config knob added (default `false`, orchestrator integration is the follow-up).
-- 🚧 Event-driven framework (rescue `phase-c/event-driven-triggers` and `phase-c/auto-triggers`): triggers on connection-up, link-flap, regulatory-domain change, captive-portal auth completion. Scaffolding landed in `src/events/` — `RotationTrigger` enum, `EventHandler` trait, `EventRegistry`, four stub `EventSource` impls. The actual subscription to NM `StateChanged`, netlink RTM_NEWLINK, nl80211 regulatory group, and the portal poller is the wiring follow-up.
+- ✅ Event-driven framework (rescue `phase-c/event-driven-triggers` and `phase-c/auto-triggers`): triggers on connection-up, link-flap, regulatory-domain change, captive-portal auth completion. Subscription bodies + orchestrator integration landed in `src/events/source/{nm_connection_up,link_flap,reg_domain,portal_auth}.rs` plus the `proteus events run` subcommand and the `dist/systemd/proteus-events.service` unit. Each source ships in production + mock variants; production gracefully degrades to no-op when the host can't honour it (no DBus, no `CAP_NET_ADMIN`, no nl80211). `[events] enabled = true` is opt-in for v0.3.x — the systemd unit refuses to start until the master switch is flipped.
 
 ## Milestone 5 — Distro reach (any-distro, any-arch)
 

@@ -524,6 +524,37 @@ pub enum SsidAction {
     },
 }
 
+/// `proteus events ...` — Milestone 4c rotation-trigger daemon.
+///
+/// `run` starts the long-lived process: builds an `EventRegistry`,
+/// registers a default rotation handler, and spawns every available
+/// event source. The systemd unit (`dist/systemd/proteus-events.service`)
+/// is the production entry point; `proteus events run` from the
+/// shell is for development + the smoke-test path.
+#[derive(Subcommand, Debug)]
+pub enum EventsAction {
+    /// Run the long-lived event daemon. Reads `[events]` from
+    /// config; refuses to start when `enabled = false` unless
+    /// `--force` is passed.
+    Run {
+        /// Run the loop even when `[events] enabled = false`. Useful
+        /// for one-off smoke tests; the systemd unit never sets this.
+        #[arg(long)]
+        force: bool,
+        /// Exit after `n` triggers (or after `--once-after-secs`,
+        /// whichever comes first). `0` (the default) means run
+        /// forever — the production shape for the systemd unit.
+        #[arg(long, default_value_t = 0)]
+        max_triggers: u64,
+        /// Stop the daemon after the given number of seconds. `0`
+        /// (the default) means run forever. The smoke-test path
+        /// pairs this with `--max-triggers` so a CI run terminates
+        /// even when no triggers fire.
+        #[arg(long, default_value_t = 0)]
+        once_after_secs: u64,
+    },
+}
+
 #[derive(Subcommand, Debug)]
 pub enum RfAction {
     /// Show Wi-Fi/Bluetooth chipset inventory + current TX-power per iface.

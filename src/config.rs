@@ -51,6 +51,15 @@ pub struct Config {
     /// fingerprint write is the follow-up tracked in roadmap Milestone 2
     /// "Integration".
     pub persona: PersonaConfig,
+    /// Event-driven trigger framework (Milestone 4c). Off by default
+    /// for v0.3.x — operators opt in via `[events] enabled = true`,
+    /// then start `proteus-events.service` (or run `proteus events
+    /// run` directly). The four subscribed sources (NM connection-up,
+    /// netlink link-flap, nl80211 reg-domain, captive-portal poller)
+    /// each gracefully degrade when the host can't honour them, so
+    /// turning the master switch on is safe even on partial
+    /// platforms — degraded sources just don't fire.
+    pub events: EventsConfig,
     /// Backend selector (Milestone 1). `driver = "auto"` walks
     /// NM → networkd → raw at runtime; only the NM impl is fully
     /// wired in this PR.
@@ -113,6 +122,7 @@ impl Config {
             rf: RfConfig::default(),
             timers: TimersConfig::default(),
             persona: PersonaConfig::default(),
+            events: EventsConfig::default(),
             backend: BackendConfig::default(),
             per_ssid: BTreeMap::new(),
         }
@@ -222,6 +232,11 @@ impl Config {
             persona: Some(RawPersonaConfig {
                 active: self.persona.active.clone(),
             }),
+            events: Some(RawEventsConfig {
+                enabled: Some(self.events.enabled),
+                portal_poll_secs: Some(self.events.portal_poll_secs),
+                link_flap_window_secs: Some(self.events.link_flap_window_secs),
+            }),
             backend: Some(RawBackendConfig {
                 driver: Some(self.backend.driver.clone()),
             }),
@@ -257,6 +272,7 @@ pub struct RawConfig {
     pub rf: Option<RawRfConfig>,
     pub timers: Option<RawTimersConfig>,
     pub persona: Option<RawPersonaConfig>,
+    pub events: Option<RawEventsConfig>,
     pub backend: Option<RawBackendConfig>,
     /// Per-SSID policies (roadmap Milestone 3). Stored as a flat map so
     /// `[per_ssid."<ssid>"]` round-trips through TOML without losing
@@ -491,6 +507,17 @@ impl RawConfig {
         if let Some(p) = self.persona {
             cfg.persona.active = p.active;
         }
+        if let Some(e) = self.events {
+            if let Some(v) = e.enabled {
+                cfg.events.enabled = v;
+            }
+            if let Some(v) = e.portal_poll_secs {
+                cfg.events.portal_poll_secs = v;
+            }
+            if let Some(v) = e.link_flap_window_secs {
+                cfg.events.link_flap_window_secs = v;
+            }
+        }
         if let Some(b) = self.backend
             && let Some(v) = b.driver
         {
@@ -618,6 +645,10 @@ impl RawConfig {
         {
             return true;
         }
+        any_some!(
+            &self.events,
+            [enabled, portal_poll_secs, link_flap_window_secs]
+        );
         any_some!(&self.backend, [driver]);
         if !self.per_ssid.is_empty() {
             return true;
@@ -786,6 +817,15 @@ pub struct RawPersonaConfig {
 #[serde(default)]
 pub struct RawBackendConfig {
     pub driver: Option<String>,
+}
+
+/// Raw on-disk shape of `[events]`. Roadmap Milestone 4c.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct RawEventsConfig {
+    pub enabled: Option<bool>,
+    pub portal_poll_secs: Option<u64>,
+    pub link_flap_window_secs: Option<u64>,
 }
 
 // ---- Resolved (public) sub-configs --------------------------------------
@@ -1039,6 +1079,45 @@ pub struct PerSsidPolicy {
     /// through verbatim so future policies can land without a schema bump.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub portal_policy: Option<String>,
+}
+
+/// Event-driven trigger framework. Roadmap Milestone 4c.
+///
+/// Default `enabled = false`: the daemon (`proteus events run`) only
+/// kicks in once the operator opts in. Once on, the four
+/// `EventSource` impls run in a tokio task and feed
+/// `RotationTrigger`s through the in-process `EventRegistry`. Each
+/// source gracefully degrades when the host can't honour it (no
+/// `CAP_NET_ADMIN`, no NM on the bus, no nl80211 in the kernel) so
+/// flipping the master switch is safe even on partial platforms.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct EventsConfig {
+    /// Master switch. Off by default for v0.3.x — the
+    /// `proteus-events.service` unit checks this knob and refuses
+    /// to start if it's `false`, so the long-lived daemon stays
+    /// dormant on a stock install.
+    pub enabled: bool,
+    /// Captive-portal sampler poll cadence in seconds. Default 30 s
+    /// matches the `[captive_portal] timeout_secs` budget without
+    /// stacking timeouts. Below 5 s wastes battery; above 300 s
+    /// misses portal-auth windows on hostile networks.
+    pub portal_poll_secs: u64,
+    /// Window in seconds inside which two `down→up` carrier
+    /// transitions count as a "flap." Default 10 s — long enough to
+    /// absorb the kernel's bring-up jitter, short enough to pin a
+    /// real roam.
+    pub link_flap_window_secs: u64,
+}
+
+impl Default for EventsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            portal_poll_secs: 30,
+            link_flap_window_secs: 10,
+        }
+    }
 }
 
 /// `NetworkBackend` driver selector. Roadmap Milestone 1.
@@ -1457,6 +1536,64 @@ interval = "30m"
     fn timers_section_alone_triggers_has_overrides() {
         let raw: RawConfig = toml::from_str("[timers.rotate]\ninterval = \"1h\"\n").unwrap();
         assert!(raw.has_overrides());
+    }
+
+    /// Milestone 4c: `[events]` defaults are off + 30 / 10. The
+    /// systemd unit refuses to start when `enabled = false`, so this
+    /// is the load-bearing default that keeps the daemon dormant on
+    /// stock installs.
+    #[test]
+    fn events_defaults_are_off_and_baseline_cadence() {
+        let cfg = Config::default();
+        assert!(!cfg.events.enabled, "events daemon must be off by default");
+        assert_eq!(cfg.events.portal_poll_secs, 30);
+        assert_eq!(cfg.events.link_flap_window_secs, 10);
+    }
+
+    /// `[events]` round-trips through TOML losslessly.
+    #[test]
+    fn events_section_round_trips_through_toml() {
+        let toml_str = r#"
+profile = "med"
+
+[events]
+enabled = true
+portal_poll_secs = 60
+link_flap_window_secs = 5
+"#;
+        let raw: RawConfig = toml::from_str(toml_str).unwrap();
+        assert!(raw.has_overrides(), "non-default events fields must trip has_overrides");
+        let cfg = raw.resolve();
+        assert!(cfg.events.enabled);
+        assert_eq!(cfg.events.portal_poll_secs, 60);
+        assert_eq!(cfg.events.link_flap_window_secs, 5);
+        let raw_back = cfg.to_raw_explicit();
+        let s = toml::to_string(&raw_back).unwrap();
+        let parsed: RawConfig = toml::from_str(&s).unwrap();
+        let back = parsed.resolve();
+        assert!(back.events.enabled);
+        assert_eq!(back.events.portal_poll_secs, 60);
+        assert_eq!(back.events.link_flap_window_secs, 5);
+    }
+
+    /// `Profile::Off` short-circuits user `[events]` overrides — the
+    /// master switch must stay off when the panic-disable profile is
+    /// active, even if the operator left `enabled = true` in the
+    /// file. Mirrors the same contract every other section honours.
+    #[test]
+    fn events_off_profile_keeps_daemon_disabled() {
+        let toml_str = r#"
+profile = "off"
+
+[events]
+enabled = true
+"#;
+        let raw: RawConfig = toml::from_str(toml_str).unwrap();
+        let cfg = raw.resolve();
+        assert!(
+            !cfg.events.enabled,
+            "Profile::Off must keep events daemon disabled regardless of user overrides"
+        );
     }
 
     #[test]

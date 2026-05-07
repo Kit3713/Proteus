@@ -265,6 +265,20 @@ pub(super) fn dispatch(cli: Cli) -> Result<u8> {
         // CLI surface land here; the NM-connection-up dispatcher
         // integration is the follow-up.
         Command::Ssid { action } => commands::ssid::run(action, cli.config.as_deref()),
+        // Roadmap Milestone 4c: event-driven rotation framework.
+        Command::Events { action } => match action {
+            EventsAction::Run {
+                force,
+                max_triggers,
+                once_after_secs,
+            } => commands::events::run(
+                force,
+                max_triggers,
+                once_after_secs,
+                cli.state.as_deref(),
+                cli.config.as_deref(),
+            ),
+        },
         // Roadmap Milestone 6: print bundled shell completions.
         Command::Completions { shell } => commands::completions::run(&shell),
     }

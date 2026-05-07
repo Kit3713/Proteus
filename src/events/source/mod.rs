@@ -39,7 +39,9 @@ pub mod reg_domain;
 
 pub use link_flap::{LinkFlapSource, MockLinkFlapSource};
 pub use nm_connection_up::{MockNmConnectionUpSource, NmConnectionUpSource};
-pub use portal_auth::{MockPortalAuthSource, PortalAuthSource, PortalSampler};
+pub use portal_auth::{
+    MockPortalAuthSource, MockPortalSampler, PortalAuthSource, PortalSampler, SystemPortalSampler,
+};
 pub use reg_domain::{MockRegDomainChangeSource, RegDomainChangeSource};
 
 /// Sources that wrap a long-lived subscription implement this. The
