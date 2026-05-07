@@ -1,0 +1,78 @@
+name: Feature request
+description: A network-layer identifier or workflow that Proteus should handle
+title: "[feature] "
+labels: ["enhancement", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Proteus is a network-layer fingerprint eraser. Before filing, please skim [`CONTRIBUTING.md`](https://github.com/Kit3713/Proteus/blob/main/CONTRIBUTING.md) for what fits the scope, and [`docs/PLAN.md`](https://github.com/Kit3713/Proteus/blob/main/docs/PLAN.md) for the phased roadmap. Confirm the scope checks below before describing the request.
+
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope confirmation
+      description: All four must be checked. Out-of-scope requests will be closed with a pointer to the right tool.
+      options:
+        - label: I have read CONTRIBUTING.md and this fits the network-layer fingerprint eraser scope.
+          required: true
+        - label: This is NOT a TLS, browser, or SSH client fingerprint feature (those belong in Tor Browser, librewolf, or ssh_config).
+          required: true
+        - label: This is NOT a DNS resolution policy feature beyond ECS-strip (those belong in dnscrypt-proxy, NextDNS, AdGuard Home, or Pi-hole).
+          required: true
+        - label: This does NOT weaken Fedora's crypto-policies, touch ssh_config, or rotate machine-id.
+          required: true
+
+  - type: dropdown
+    id: phase
+    attributes:
+      label: Which phase does this fit?
+      description: See docs/PLAN.md. Pick "unsure" if unclear.
+      options:
+        - A skeleton
+        - B L2 identity
+        - C probes+timers+captive portals
+        - D DHCP+IPv6+hostname+DNS-strip
+        - E discovery+stack+RF
+        - F wiki+packaging
+        - G diff+dry-run+reset+uninstall
+        - post-v1
+        - unsure
+    validations:
+      required: true
+
+  - type: textarea
+    id: use-case
+    attributes:
+      label: Use case
+      description: Who is affected, what they need, why now.
+    validations:
+      required: true
+
+  - type: textarea
+    id: target
+    attributes:
+      label: Identifier or workflow targeted
+      description: e.g., "DHCPv6 vendor class identifier", "mDNS instance name in service announcements".
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Name the closest existing tool or workaround and explain why it is insufficient.
+    validations:
+      required: true
+
+  - type: textarea
+    id: cli-surface
+    attributes:
+      label: Proposed CLI surface
+      description: Optional. Flag name, subcommand, or config key.
+
+  - type: textarea
+    id: failure-modes
+    attributes:
+      label: Anticipated failure modes
+      description: Optional. What could break, and what is the revert path.
