@@ -8,6 +8,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::commands;
+use crate::kill_switch::KillSwitchState;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -19,6 +20,16 @@ pub struct State {
     // Phase B+ fields. `#[serde(default)]` keeps older state.json files loading.
     pub managed: ManagedState,
     pub originals: Originals,
+    /// Phase G — emergency kill switch state. `active = false` is the resting
+    /// shape; `proteus kill` flips it on, `proteus resume` flips it off.
+    /// Skip-serialised when inactive so a cold install does not grow the
+    /// state file with a useless object.
+    #[serde(skip_serializing_if = "kill_switch_inactive")]
+    pub kill_switch: KillSwitchState,
+}
+
+fn kill_switch_inactive(k: &KillSwitchState) -> bool {
+    !k.active && k.interfaces.is_empty() && k.activated_at.is_none()
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
