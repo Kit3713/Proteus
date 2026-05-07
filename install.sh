@@ -23,6 +23,8 @@ SYSTEMD_DIR="/etc/systemd/system"
 UNITS_SRC="dist/systemd"
 POLKIT_SRC="dist/polkit/com.kit3713.proteus.policy"
 POLKIT_DIR="/usr/share/polkit-1/actions"
+NM_DISPATCHER_SRC="dist/networkmanager/dispatcher.d/01-proteus"
+NM_DISPATCHER_DST="/etc/NetworkManager/dispatcher.d/01-proteus" 
 
 DRY_RUN=0
 
@@ -161,6 +163,20 @@ else
     warn "$POLKIT_SRC not found — skipping polkit policy"
 fi
 
+# ---- NetworkManager dispatcher ---------------------------------------------
+
+# Event-driven rotation hook. Fires on every NM connection state change so
+# Proteus reacts immediately to disconnect/reconnect — much faster than the
+# 5-minute polling check timer. See dist/networkmanager/README.md.
+if [ -f "$NM_DISPATCHER_SRC" ]; then
+    info "installing NM dispatcher to $NM_DISPATCHER_DST"
+    # Parent dir may not exist on systems without NM; create it idempotently.
+    run install -d -m 0755 "$(dirname "$NM_DISPATCHER_DST")"
+    run install -m 0755 -o root -g root "$NM_DISPATCHER_SRC" "$NM_DISPATCHER_DST"
+else
+    warn "$NM_DISPATCHER_SRC not found — skipping NM dispatcher hook"
+fi
+
 # ---- SELinux ----------------------------------------------------------------
 
 # Fedora 43 has SELinux enforcing by default. Without bin_t on the binary,
@@ -205,7 +221,7 @@ if [ "$UNITS_INSTALLED" -eq 1 ]; then
     # Idempotent: enable --now is a no-op when already enabled and active.
     # Under --dry-run we trust the just-printed copy step rather than re-checking
     # the destination (which we didn't actually write to).
-    for unit in proteus-rotate.timer proteus-check.timer proteus-boot.service; do
+    for unit in proteus-rotate.timer proteus-check.timer proteus-boot.service proteus-resume.service; do
         if [ "$DRY_RUN" -eq 1 ] || [ -f "$SYSTEMD_DIR/$unit" ]; then
             run systemctl enable --now "$unit" || warn "failed to enable $unit"
         fi

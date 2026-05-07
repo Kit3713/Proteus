@@ -1,0 +1,96 @@
+#!/bin/bash
+# managed by proteus — NetworkManager dispatcher hook for event-driven rotation
+#
+# Drop into /etc/NetworkManager/dispatcher.d/ (or /usr/lib/NetworkManager/
+# dispatcher.d/). Owner root, mode 0755.
+#
+# NM invokes this on every connection state change with two args:
+#   $1 = interface name
+#   $2 = action (up|down|pre-up|pre-down|vpn-up|vpn-down|hostname|
+#                dhcp4-change|dhcp6-change|connectivity-change)
+#
+# Newer NM also exports NM_DISPATCHER_ACTION; we prefer that when set.
+#
+# Architectural note: there is no daemon. Each event triggers a short-lived
+# CLI invocation. Honors the "no daemon" invariant from docs/PLAN.md.
+# See `proteus wiki rotation` for the full rationale.
+#
+# All log lines go to journald via `logger -t proteus-dispatcher`.
+# We always exit 0 — NM treats nonzero as a script failure.
+
+set -u
+
+iface="${1:-}"
+action="${NM_DISPATCHER_ACTION:-${2:-}}"
+
+log() {
+    logger -t proteus-dispatcher -- "$*" 2>/dev/null || true
+}
+
+# Be defensive: if the binary is gone, log a single line and exit clean.
+proteus_bin="$(command -v proteus 2>/dev/null || true)"
+if [ -z "$proteus_bin" ]; then
+    log "proteus binary not in PATH; skipping (iface=$iface action=$action)"
+    exit 0
+fi
+
+# Connectivity state (only meaningful for action=connectivity-change).
+# NM exports CONNECTIVITY_STATE in newer versions.
+conn_state="${CONNECTIVITY_STATE:-}"
+
+case "$action" in
+    up)
+        # Interface came up. Phase C will add `proteus rotate --if-needed`,
+        # which checks state.json + portal classification. Until that lands,
+        # fall back to a cooldown check via `proteus current --json`: skip
+        # rotation if last_rotated for this iface is within the configured
+        # cooldown window (default 60s; matches [probes] cooldown).
+        cooldown_secs=60
+        last_rotated=""
+        if current_json="$("$proteus_bin" current --json --iface "$iface" 2>/dev/null)"; then
+            # Pull last_rotated without requiring jq. Format is ISO-8601
+            # ("2026-05-06T12:34:56Z") inside a JSON string. If parsing
+            # fails we treat last_rotated as empty (no cooldown).
+            last_rotated="$(printf '%s' "$current_json" \
+                | sed -n 's/.*"last_rotated"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+                | head -n1)"
+        fi
+
+        skip=0
+        if [ -n "$last_rotated" ]; then
+            # `date -d` parses ISO-8601 on GNU coreutils (Fedora baseline).
+            if last_epoch="$(date -d "$last_rotated" +%s 2>/dev/null)"; then
+                now_epoch="$(date +%s)"
+                age=$(( now_epoch - last_epoch ))
+                if [ "$age" -ge 0 ] && [ "$age" -lt "$cooldown_secs" ]; then
+                    skip=1
+                fi
+            fi
+        fi
+
+        if [ "$skip" -eq 1 ]; then
+            log "iface=$iface up: within ${cooldown_secs}s cooldown (last=$last_rotated); skip rotate"
+        else
+            log "iface=$iface up: invoking rotate"
+            "$proteus_bin" rotate --iface "$iface" --yes >/dev/null 2>&1 \
+                || log "iface=$iface rotate exited nonzero"
+        fi
+        ;;
+
+    connectivity-change)
+        # Don't rotate behind a portal — that just loops. When connectivity
+        # is restored ('full'), Phase C's --if-needed predicate will decide
+        # whether to opportunistically rotate. For now we just log.
+        log "connectivity-change state=${conn_state:-unknown} iface=$iface (no action)"
+        ;;
+
+    down|pre-up|pre-down|vpn-up|vpn-down|dhcp4-change|dhcp6-change|hostname)
+        log "event action=$action iface=$iface (no action)"
+        ;;
+
+    *)
+        log "event action=${action:-?} iface=$iface (unhandled, no action)"
+        ;;
+esac
+
+exit 0

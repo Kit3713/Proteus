@@ -109,6 +109,25 @@ The default of 2h is a balance. The trade-offs:
 
 The reactive triggers (`on_probe_fail`, `on_link_change`, `on_ssid_change`) matter more than the cadence in practice. A laptop that moves between networks rotates on every join regardless of `interval`. The scheduled cadence mostly matters for stationary use.
 
+## Event-driven triggers
+
+The two timers are the baseline. On top of them, Proteus ships two event-driven hooks that react to network and power-state changes immediately, without any polling.
+
+- **NetworkManager dispatcher** (`/etc/NetworkManager/dispatcher.d/01-proteus`) — NM invokes this script on every connection state change. On an `up` event the hook calls `proteus rotate --iface <name> --yes`, subject to the cooldown window (default 60s, matches `[probes] cooldown`). On `connectivity-change` it logs only — rotating behind a captive portal would loop. `down`, `pre-up`, `pre-down`, `vpn-*`, `dhcp*`, and `hostname` events log only. This gives you near-immediate rotation on disconnect/reconnect, much faster than the 5-minute check timer.
+- **Sleep hook** (`proteus-resume.service`, `WantedBy=suspend.target hibernate.target hybrid-sleep.target suspend-then-hibernate.target`) — fires on resume from suspend or hibernate. Runs `proteus rotate --yes` so you wake with a fresh MAC. Same hardening profile as the other proteus units (`ProtectSystem=full`, `CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW CAP_NET_BIND_SERVICE`, etc.).
+
+With both hooks installed, `proteus-check.timer` (5-minute polling) becomes a backup safety net. Users who trust the event triggers can disable it:
+
+```
+sudo systemctl disable --now proteus-check.timer
+```
+
+The scheduled `proteus-rotate.timer` is independent and stays useful — it covers the stationary case where nothing else is changing.
+
+**Architectural note: no daemon.** Each event is a short-lived CLI invocation. The dispatcher is a bash script invoked by NM; the sleep hook is a oneshot systemd service. There is no long-lived process. This honors the "no daemon" invariant from `docs/PLAN.md`.
+
+See `dist/networkmanager/README.md` for installation details and the dispatcher event matrix.
+
 ## Where to go next
 
 - `proteus wiki probes` — the quorum logic that decides when "down" really means down, plus the cooldown rationale.
