@@ -4,7 +4,7 @@ Install once: `sudo dnf install tcpdump nmap bind-utils avahi-tools nftables ipr
 
 ## MAC rotation
 
-The most-fingerprinted byte sequence on your laptop. Verify the rotation happened on the wire and the OUI matches the configured pool.
+The most-fingerprinted byte sequence on a Linux system. Verify the rotation happened on the wire and the OUI matches the configured pool.
 
 ```sh
 # Before rotation
@@ -91,7 +91,7 @@ Cross-ref `proteus wiki ipv6` for the IID derivation, DUID coupling, and the dow
 
 ## mDNS responder silence
 
-From another machine on the same LAN, your machine should not appear:
+From another machine on the same LAN, the host should not appear:
 
 ```sh
 # From peer

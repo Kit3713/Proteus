@@ -18,15 +18,15 @@ What this means in practice: rotating your MAC defeats every adversary who only 
 
 ## What Proteus does
 
-Nothing fixes the analog characteristics. They're physically baked into the silicon. But the radio's *control surface* — what the OS asks the chip to emit, when, and at what power — is software. That part is in scope.
+Nothing fixes the analog characteristics. They're physically baked into the silicon. But the radio's *control surface* — what the OS asks the chip to emit, when, and at what power — is software. That part is in scope and ships now via the `proteus rf` subcommand family.
 
-**TX power reduction.** Opt-in. Reduces your transmit power so passive listeners need to be physically closer to capture you cleanly. The signature doesn't change; the audience that can read it shrinks. See the dedicated section below.
+**TX power reduction.** Opt-in via `[rf] tx_power_reduce`. Reduces transmit power so passive listeners need to be physically closer to capture cleanly. The signature does not change; the audience that can read it shrinks. The `proteus rf apply` command issues `iw dev <iface> set txpower fixed <mbm>` against every Wi-Fi interface; `proteus rf revert` restores the cached original. See the dedicated section below.
 
-**Probe-request privacy.** Per-scan MAC randomization at the NetworkManager / wpa_supplicant layer, plus suppression of unnecessary active probes when passive scanning is enough. A laptop searching for known SSIDs broadcasts a list of every network it remembers — that's an L2 leak that Proteus addresses by tightening the supplicant's scan behavior, not the radio.
+**Chipset and firmware inventory.** `proteus rf status` is read-only and works as any user. It surfaces, per Wi-Fi interface: driver name (e.g. `iwlwifi`, `rtw89`, `mt7921e`), PCI/USB vendor and device IDs from sysfs, firmware version where the driver exposes it, and the current TX power as reported by `iw dev <iface> info`. It also re-uses the BlueZ adapter inventory so Bluetooth chip vendor, address type, and powered state appear in the same view. Knowing what is in the system lets the operator cross-reference RF-fingerprinting research and size exposure.
 
-**Chipset and firmware inventory.** `proteus status` surfaces the Wi-Fi driver, chip ID, firmware version, and Bluetooth chip vendor and firmware. Knowing what's in your machine lets you cross-reference RF-fingerprinting research and understand your exposure.
+**Bluetooth radio policy.** `discoverable=off` by default, BLE Resolvable Private Address (RPA) where the controller supports it, generic device alias. The classic BR/EDR BD_ADDR rotation is chipset-specific HCI territory and stays deferred — too easy to brick across vendors. See `proteus wiki bluetooth`.
 
-**Bluetooth radio policy.** `discoverable=off` by default, BLE Resolvable Private Address (RPA) where the controller supports it, generic device alias. The classic BR/EDR BD_ADDR rotation is chipset-specific HCI territory and stays deferred — too easy to brick across vendors.
+**Probe-request privacy is still planned.** Per-scan MAC randomization at the NetworkManager / wpa_supplicant layer, plus suppression of unnecessary active probes when passive scanning is enough, is on the roadmap and is *not* part of the current `[rf]` schema. A laptop searching for known SSIDs broadcasts a list of every network it remembers — that is an L2 leak future releases will address by tightening the supplicant's scan behavior, not the radio. Track this work in `docs/ROADMAP.md`.
 
 What Proteus does *not* try to do, and won't:
 
@@ -90,7 +90,7 @@ See `proteus wiki threat-model` for the full picture and the line between in-sco
 
 ## What an SDR attack looks like
 
-So you can size the threat. A practical RF-fingerprinting attack against your laptop typically requires:
+So you can size the threat. A practical RF-fingerprinting attack against a target laptop typically requires:
 
 - An SDR receiver (HackRF, USRP, BladeRF — low thousands of dollars at the high end, low hundreds at the low end).
 - Physical proximity. Tens of meters at the upper bound, single meters for clean captures, depending on antenna and environment.

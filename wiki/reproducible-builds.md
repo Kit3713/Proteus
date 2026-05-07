@@ -1,4 +1,4 @@
-Proteus is a network-layer fingerprint eraser, which is a security-relevant tool. The published binary has to be auditable: a user (or a security researcher, or a packaging maintainer) needs a path to confirm the artifact they downloaded was built from the public source on GitHub, with no third-party patches between source and bytes.
+Proteus reduces every fingerprint the local OS can control on join and transmit, which makes it a security-relevant tool. The published binary has to be auditable: a user (or a security researcher, or a packaging maintainer) needs a path to confirm the artifact they downloaded was built from the public source on GitHub, with no third-party patches between source and bytes.
 
 This page documents what "reproducible" means for Proteus, how to verify a downloaded binary, and the known sources of non-determinism that are intentionally tolerated.
 

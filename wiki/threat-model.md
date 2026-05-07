@@ -32,7 +32,7 @@ If your concern is on the list above, Proteus is the right tool for that part of
 
 ## The threat model in plain terms
 
-Proteus assumes a passive listener. Someone — a Wi-Fi access point, a network operator, a local attacker with a packet capture, an analytics company aggregating store visits — is watching the L1 through L4 traffic your laptop emits when it joins a network and shortly after. They are not modifying your packets. They are not actively probing you. They are trying to recognize your laptop across visits and across networks.
+Proteus assumes a passive listener. Someone — a Wi-Fi access point, a network operator, a local attacker with a packet capture, an analytics company aggregating store visits — is watching the L1 through L4 traffic the host emits when it joins a network and shortly after. They are not modifying your packets. They are not actively probing you. They are trying to recognize the host across visits and across networks.
 
 The defense is to make the recognition fail. Different MAC every two hours. Different DHCP banner. Different hostname (or no hostname). No mDNS chatter to identify the OS. No TCP timestamp clock to read. No BLE address that matches across visits. Nothing in the packet stream that says "this is the same device that was here last Tuesday."
 
@@ -122,16 +122,16 @@ Proteus is not magic. Here are the realistic ways it does not deliver on its thr
 - **You leave Bluetooth discoverable on for pairing.** Anyone in range during that window sees the (now generic-aliased) name and the BD_ADDR. Proteus's `discoverable=off` default means you have to actively re-enable it; turn it back off when pairing is done.
 - **You're behind a corporate enterprise-Wi-Fi network with 802.1X.** Your inner identity (the username) authenticates you regardless of MAC. Proteus's anonymous outer identity feature is opt-in and may be rejected by some corporate auth servers; if your IT department recognizes you by username, no MAC change helps. This is by design.
 - **You use NTP without checking what your client sends.** Proteus normalizes systemd-timesyncd config (deferring if chrony or ntpd is installed) but cannot stop chrony or ntpd from emitting their own client signature. If you care, use systemd-timesyncd or accept the leak.
-- **Your laptop has multiple radios (Wi-Fi + WWAN).** Proteus targets Wi-Fi and Ethernet by default. Cellular WWAN modems have their own identifiers (IMSI, IMEI) that Proteus does not touch. Use airplane mode for cellular if it is in scope for you.
+- **The system has multiple radios (Wi-Fi + WWAN).** Proteus targets Wi-Fi and Ethernet by default. Cellular WWAN modems have their own identifiers (IMSI, IMEI) that Proteus does not touch. Use airplane mode for cellular if it is in scope for you.
 - **You manually edit a file Proteus manages.** Proteus's managed files carry a SHA header; `proteus diff` flags drift from the expected content. If you edit a managed file directly, your change is preserved until the next `proteus apply`, at which point Proteus either re-asserts its content (default) or warns and skips depending on your config.
-- **You expect Proteus to fix a problem on a network you don't control.** Proteus controls what your laptop emits. It does not control what the network sees of other devices, what the access point logs, or what an upstream ISP collects. Network-side adversaries with control of the infrastructure are a different threat class.
+- **You expect Proteus to fix a problem on a network you don't control.** Proteus controls what the host emits. It does not control what the network sees of other devices, what the access point logs, or what an upstream ISP collects. Network-side adversaries with control of the infrastructure are a different threat class.
 
 ## How to verify Proteus is doing what it claims
 
-Trust but verify. The `proteus wiki verifying` page (lands in phase F) will have detailed recipes; the gist:
+Trust but verify. The `proteus wiki verifying` page has detailed recipes; the gist:
 
 - `tcpdump -i wlan0 -nn 'port 67 or port 68'` — watch your DHCP requests. Confirm option 12, 60, 61, 81 are absent or rotated.
-- `avahi-browse -ar` from another host on the same LAN — confirm your laptop is not announcing services.
+- `avahi-browse -ar` from another host on the same LAN — confirm the host is not announcing services.
 - `nmap -O <your-ip>` from another host — see what OS fingerprint your stack still leaks. Compare before and after `proteus apply`.
 - `proteus current` — show what Proteus thinks the current identifiers are.
 - `proteus status` — show per-feature `applied / skipped (reason) / failed (reason)`.

@@ -127,7 +127,7 @@ sudo proteus timer disable rotate
 sudo proteus timer disable check
 ```
 
-**Switch rotate to a wall-clock cadence.** `OnCalendar=` makes rotation predictable but loses the "N time since last run" property — if your laptop was suspended at 6am, the 6am rotation is missed unless `Persistent=true` is set in the unit file (it is, for `proteus-rotate.timer`).
+**Switch rotate to a wall-clock cadence.** `OnCalendar=` makes rotation predictable but loses the "N time since last run" property — if the host was suspended at 6am, the 6am rotation is missed unless `Persistent=true` is set in the unit file (it is, for `proteus-rotate.timer`).
 
 ```sh
 sudo proteus timer set rotate --interval 'hourly'

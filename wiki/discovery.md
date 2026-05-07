@@ -1,13 +1,13 @@
-When you join a network, your machine starts talking before you do. mDNS announces your hostname, LLMNR asks the LAN to resolve names, NetBIOS broadcasts on UDP 137, SSDP shouts UPnP capabilities at 1900, WSD hawks itself on 3702. Every one of those packets carries identifying information that long outlives the session. This page covers the protocols Proteus silences, the protocols it leaves alone, and the breakage tradeoffs you sign up for when you flip the opt-in knobs.
+When a Linux system joins a network, it starts talking before the user does. mDNS announces the hostname, LLMNR asks the LAN to resolve names, NetBIOS broadcasts on UDP 137, SSDP shouts UPnP capabilities at 1900, WSD hawks itself on 3702. Every one of those packets carries identifying information that long outlives the session. This page covers the protocols Proteus silences, the protocols it leaves alone, and the breakage tradeoffs you sign up for when you flip the opt-in knobs.
 
 ## The discovery surface
 
 Joining a Wi-Fi or Ethernet network typically triggers, in the first few seconds:
 
-- **Hostname leakage.** mDNS responder publishes `<host>.local` on multicast. NetBIOS broadcasts the same name on UDP 137. Whoever is sniffing the LAN now has your machine's name.
-- **Service capability leakage.** SSDP advertises UPnP services. WSD advertises Web Services for Devices. Both enumerate your machine's capabilities to anyone listening.
+- **Hostname leakage.** mDNS responder publishes `<host>.local` on multicast. NetBIOS broadcasts the same name on UDP 137. Whoever is sniffing the LAN now has the system's name.
+- **Service capability leakage.** SSDP advertises UPnP services. WSD advertises Web Services for Devices. Both enumerate the system's capabilities to anyone listening.
 - **Bonjour / AirPrint preferences.** mDNS service announcements (`_workstation._tcp`, `_smb._tcp`, `_airplay._tcp`) say what kinds of services you're interested in or expose.
-- **Domain membership questions.** LLMNR asks the LAN to resolve names a Windows-style hostname lookup would. The questions themselves leak what your machine is looking for.
+- **Domain membership questions.** LLMNR asks the LAN to resolve names a Windows-style hostname lookup would. The questions themselves leak what the system is looking for.
 
 Proteus silences each of these where it can do so without breaking workflows you rely on. SSDP and WSD blocking are opt-in because they break real things — KDE Connect and WS-Discovery-only printers respectively.
 
@@ -18,7 +18,7 @@ mDNS is two roles in one protocol: a **responder** that answers queries for `<ho
 - **Responder** — `avahi-daemon` answers `<host>.local` queries on UDP 5353 multicast. Proteus disables this via a systemd-resolved drop-in: `MulticastDNS=resolve` (resolve only, do not respond). If `avahi-daemon` is installed and active, Proteus does not stop it directly — it disables responder behavior at the systemd-resolved layer and surfaces a note in `proteus status` if avahi is also running.
 - **Resolver** — kept enabled by default. You probably want to print to AirPrint or talk to a Sonos. Configurable: set `[discovery] mdns_resolve = false` in `config.toml` to disable resolution as well.
 
-The drop-in lives at `/etc/systemd/resolved.conf.d/10-proteus-discovery.conf` and carries the standard managed-file header (see `proteus wiki concepts`). Effect: nothing on the LAN can enumerate your machine via `<host>.local` lookups, but you can still resolve `printer.local` to print.
+The drop-in lives at `/etc/systemd/resolved.conf.d/10-proteus-discovery.conf` and carries the standard managed-file header (see `proteus wiki concepts`). Effect: nothing on the LAN can enumerate the system via `<host>.local` lookups, but you can still resolve `printer.local` to print.
 
 ## LLMNR (Link-Local Multicast Name Resolution)
 
@@ -95,9 +95,9 @@ The keys read as "should the protocol stay on" for the protocols Proteus disable
 
 A handful of commands to confirm Proteus actually silenced what it claims to.
 
-- `avahi-browse -arp` — should show no entry for your machine after the responder is off. Run from another machine on the LAN for a true external view.
-- `tcpdump -i wlan0 -nn 'multicast and (port 5353 or port 5355 or port 1900 or port 3702)'` — watch multicast discovery traffic. After `proteus apply` you should see no outbound packets from your machine on these ports beyond mDNS resolver queries you initiated.
-- `nmap --script broadcast-ms-sql-discover` — Microsoft-flavored discovery sweep. Should not enumerate your machine.
+- `avahi-browse -arp` — should show no entry for the host after the responder is off. Run from another machine on the LAN for a true external view.
+- `tcpdump -i wlan0 -nn 'multicast and (port 5353 or port 5355 or port 1900 or port 3702)'` — watch multicast discovery traffic. After `proteus apply` you should see no outbound packets from the host on these ports beyond mDNS resolver queries you initiated.
+- `nmap --script broadcast-ms-sql-discover` — Microsoft-flavored discovery sweep. Should not enumerate the host.
 - `nmap -sU -p 137,138,139,1900,3702,5353,5355 <your-ip>` — port scan from another machine on the LAN. After Proteus, the responder ports should be closed or filtered.
 - `resolvectl status` — confirms `MulticastDNS=resolve` and `LLMNR=no` on the global section.
 - `proteus status` — names every discovery feature as `applied / skipped (reason) / failed (reason)`. The truth, per feature.

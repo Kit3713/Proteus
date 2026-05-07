@@ -1,13 +1,13 @@
-An emergency network shutdown for hostile environments. One command brings every interface down, disables every radio, and powers off Bluetooth — all the network surface your laptop is exposing, off, immediately. One command later puts it back.
+An emergency network shutdown for hostile environments. One command brings every interface down, disables every radio, and powers off Bluetooth — all the network surface the system is exposing, off, immediately. One command later puts it back.
 
 This page is the operator-facing doc for `proteus kill` and `proteus resume`. For the threat-model framing of when to reach for it, read `proteus wiki hostile-environments` first.
 
 ## When to use it
 
-The kill switch is for the moment you decide the environment is no longer trustworthy and you want zero packets leaving your laptop, right now. Concretely:
+The kill switch is for the moment you decide the environment is no longer trustworthy and you want zero packets leaving the host, right now. Concretely:
 
 - **Suspected compromise.** A captive portal demanding more than it should, a hotspot you no longer trust, a coworker pointing at your screen and saying "wait, did your network just glitch?". When in doubt, kill first and figure out what happened later.
-- **Border crossings.** The minutes before customs is the time to make sure your laptop is not silently associating with anything. `sudo proteus kill --yes` makes the whole network surface visibly off.
+- **Border crossings.** The minutes before customs is the time to make sure the host is not silently associating with anything. `sudo proteus kill --yes` makes the whole network surface visibly off.
 - **Conference floor incidents.** A rogue AP appears, an evil twin gets noticed, a deauth attack starts. Kill the radios so your stack stops re-trying.
 - **Walking out of a hostile network.** Cleaner than waiting for the OS to drop the association. The kill switch is symmetric — `proteus resume --yes` brings everything back when you reach a network you trust again.
 - **Pre-flight discipline.** Some operators always kill before takeoff so the laptop is not whining at the airport network during the door-close announcements.
@@ -35,7 +35,7 @@ The kill switch is a network-layer hatch. It does not pretend to be more than th
 - **Does not kill running processes.** A Firefox tab waiting on TCP keeps waiting; the syscall returns when the kernel notices the link is down. SSH sessions, VPN sessions, Slack, Spotify — they all just see network errors and retry. Nothing crashes; nothing exits gracefully either.
 - **Does not drop in-flight TLS sessions on the wire.** Anything mid-handshake when the kill switch fires will time out from the peer's perspective rather than tearing down cleanly. Servers see a flow that just stops responding. There is no "I am leaving now" goodbye.
 - **Does not encrypt or hide local data.** Anyone with physical access to your unlocked laptop sees the same files they would have seen before. A network kill switch is not a panic button for the disk.
-- **Does not affect cellular modems Proteus does not see.** If your laptop has a WWAN modem managed by NetworkManager, this disables it. If it has a cellular modem managed by something else (a vendor utility, ModemManager outside NM), Proteus does not touch it. `rfkill block all` is the brute hammer if you need the modem off.
+- **Does not affect cellular modems Proteus does not see.** If the host has a WWAN modem managed by NetworkManager, this disables it. If it has a cellular modem managed by something else (a vendor utility, ModemManager outside NM), Proteus does not touch it. `rfkill block all` is the brute hammer if you need the modem off.
 - **Does not survive a reboot.** State is recorded in `state.json`, but the kernel itself comes back up with interfaces enabled on next boot. If you rebooted while killed, run `proteus kill --yes` again or `nmcli radio all off`.
 
 The list of "does not" matters: people occasionally mistake a network kill switch for a panic-room button. It is one specific tool — the network-side off switch — and not a substitute for any other defense.

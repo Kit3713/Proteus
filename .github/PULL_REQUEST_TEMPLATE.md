@@ -22,7 +22,7 @@
 
 ## Scope check
 
-- [ ] This change fits the network-layer fingerprint eraser scope (see [CONTRIBUTING.md](../CONTRIBUTING.md))
+- [ ] This change fits the local controllable fingerprint reduction scope — L2 through L4 network identifiers, network-joining protocols, or the OS-controllable parts of the L1 RF surface (see [CONTRIBUTING.md](../CONTRIBUTING.md))
 - [ ] This change does NOT weaken Fedora's `crypto-policies`, touch `/etc/ssh/ssh_config`, or rotate `/etc/machine-id` (or if it does, it's opt-in, default off, and documented in a wiki page with concrete failure modes)
 
 ## Linked issue

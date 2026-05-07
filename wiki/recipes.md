@@ -4,7 +4,7 @@ For the mental model behind these flows, read `proteus wiki concepts` first. For
 
 ## Scenario: First install + verify
 
-You just installed the binary. Confirm the system is healthy, see what your machine currently exposes, and read the cached originals before doing anything mutating.
+You just installed the binary. Confirm the system is healthy, see what the system currently exposes, and read the cached originals before doing anything mutating.
 
 ```sh
 proteus --version

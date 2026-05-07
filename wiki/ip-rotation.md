@@ -77,7 +77,7 @@ Cross-ref `proteus wiki dhcp` for the full key list and verification recipes.
 
 ## What Proteus does NOT do for IP
 
-- **Public IP rotation.** Your public IP is set by your ISP, your cellular carrier, your VPN exit, or your Tor exit. Proteus runs on your laptop; it does not control the path your traffic takes once it leaves the local segment.
+- **Public IP rotation.** Your public IP is set by your ISP, your cellular carrier, your VPN exit, or your Tor exit. Proteus runs on the local host; it does not control the path your traffic takes once it leaves the local segment.
 - **VPN management.** Out of scope. Proteus does not bring tunnels up, down, or rotate exits. Use your VPN's own client.
 - **Tor integration.** Out of scope. Use Tor Browser, the `tor` daemon, or `torsocks`.
 - **Per-application IP.** Different apps using different exit IPs is a routing/policy problem solved by `iproute2` rules, network namespaces, or SOCKS proxies. Not Proteus.

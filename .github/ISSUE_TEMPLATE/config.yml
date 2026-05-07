@@ -11,4 +11,4 @@ contact_links:
     about: Edit the file directly and open a pull request — small typo PRs are welcome without an issue.
   - name: Out-of-scope feature (TLS, browser, DNS resolution policy, tracker blocking)
     url: https://github.com/Kit3713/Proteus/blob/main/CONTRIBUTING.md#scope
-    about: Proteus is a network-layer fingerprint eraser. The scope section lists the right tools (dnscrypt-proxy, Tor Browser, Pi-hole, etc.) for adjacent problems.
+    about: Proteus reduces every fingerprint the local OS can control. The scope section lists the right tools (dnscrypt-proxy, Tor Browser, Pi-hole, etc.) for adjacent problems.

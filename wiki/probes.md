@@ -29,7 +29,7 @@ Four stable, public, popular IPs. Hard-coded as IPs, not hostnames, so DNS resol
 - `9.9.9.9:443` — Quad9 resolver
 - `142.250.190.78:443` — a public-facing Google IP
 
-These are all anycast, geographically distributed, and run by organizations that handle global outage budgets in seconds rather than minutes. If three of these four are unreachable from your laptop, your link is the problem, not their backbones.
+These are all anycast, geographically distributed, and run by organizations that handle global outage budgets in seconds rather than minutes. If three of these four are unreachable from a single host, the link is the problem, not their backbones.
 
 You can replace the list in `/etc/proteus/config.toml`. Reasons you might:
 
@@ -41,7 +41,7 @@ If you change the list, prefer raw IPs over hostnames for the same DNS-independe
 
 ## Probe protocol
 
-TCP-connect to port 443 is the default. A successful 3-way handshake counts as "up"; a connection refused, reset, timeout, or unreachable counts as "down". This is cheap, supported everywhere, and indistinguishable from any other HTTPS-bound socket on your machine.
+TCP-connect to port 443 is the default. A successful 3-way handshake counts as "up"; a connection refused, reset, timeout, or unreachable counts as "down". This is cheap, supported everywhere, and indistinguishable from any other HTTPS-bound socket on the system.
 
 ICMP echo (ping) is the fallback for endpoints that block TCP on a given network. Some hotel and airport Wi-Fi networks drop outbound TCP to public DNS servers but allow ICMP, or vice versa. The probe code tries TCP first, falls back to ICMP only if every endpoint fails TCP, and surfaces the choice in `proteus status` so you know what's happening.
 
@@ -79,11 +79,11 @@ The `portal-suspected` exit is the load-bearing one. Probe failures classified a
 
 ## Privacy note
 
-The probe targets become part of your outbound traffic. By default that's four well-known public IPs, hit every 5 minutes from your machine. They're popular enough that they don't single you out — almost every laptop on a network is talking to at least one of these — but they are a pattern.
+The probe targets become part of your outbound traffic. By default that's four well-known public IPs, hit every 5 minutes from the system. They're popular enough that they don't single anyone out — almost every laptop on a network is talking to at least one of these — but they are a pattern.
 
 If your threat model treats probe traffic as a leak, you have three options:
 
-- Replace `probes.endpoints` with IPs your machine already talks to regularly, so the probes blend in.
+- Replace `probes.endpoints` with IPs the system already talks to regularly, so the probes blend in.
 - Lengthen `probes.interval` so the cadence is less distinctive.
 - Set `probes.enabled = false` and rely on scheduled rotation only.
 
@@ -120,4 +120,4 @@ All fields are optional; omitted ones use the defaults shown. Run `proteus show-
 - `proteus wiki rotation` — what happens when probes return `down`. Pin state, cooldown enforcement, OUI selection, collision avoidance.
 - `proteus wiki captive-portals` — the portal classifier that intercepts `portal-suspected` outcomes and runs its own flow.
 - `proteus wiki concepts` — the rotation-and-probes mental model in one page.
-- `proteus wiki config` — full config schema. Lands in phase F.
+- `proteus wiki config` — full config schema.

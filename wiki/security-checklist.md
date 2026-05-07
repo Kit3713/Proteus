@@ -1,4 +1,4 @@
-A cookbook of routines for users who care about minimizing their network-layer fingerprint. Daily, weekly, monthly, pre-trip, post-trip, annual. Copy-paste each block into a terminal and read what comes back.
+A cookbook of routines for users who care about minimizing every locally controllable fingerprint — L2 through L4 network identifiers, network-joining protocol chatter, and the OS-controllable RF surface. Daily, weekly, monthly, pre-trip, post-trip, annual. Copy-paste each block into a terminal and read what comes back.
 
 This page is operational only. The "why" lives in `proteus wiki threat-model`. The "what to do when it breaks" lives in `proteus wiki troubleshooting`. The "what each command does" lives in `proteus wiki cli`.
 
@@ -125,7 +125,7 @@ Once a year, or whenever your situation changes meaningfully (new job, new count
 - Re-evaluate your browser, VPN, and DNS choices. Has your VPN been bought? Has your DNS provider changed policy? Is your browser still maintained?
 - Verify your dnscrypt-proxy / Pi-hole / NextDNS / AdGuard subscription is current and the upstream resolver still reflects your privacy preferences.
 - Re-verify Tor Browser is updated — `Help` -> `About Tor Browser`. Old Tor Browser is dangerous Tor Browser.
-- Re-verify your laptop firmware and OS are current — `sudo dnf upgrade --refresh` on Fedora.
+- Re-verify the system firmware and OS are current — `sudo dnf upgrade --refresh` on Fedora.
 
 ## Triggers — when to run something
 
