@@ -12,7 +12,7 @@ These apply to every subcommand. They must precede the subcommand name.
 
 - `-v`, `--verbose` — increase log verbosity. Repeatable: `-v` debug, `-vv` trace.
 - `-q`, `--quiet` — decrease log verbosity. Repeatable: `-q` warn, `-qq` error.
-- `--config <PATH>` — override `/etc/proteus/config.toml`. Useful for testing.
+- `--config <PATH>` — override `/etc/proteus/config.toml`. Useful for testing. Errors with exit `65` if `<PATH>` does not exist (except for commands that exist to create the file: `reset`, `config edit`, `config set`, `config set-profile`, `config enable`, `config disable`, `config reset`).
 - `--state <PATH>` — override `/var/lib/proteus/state.json`. Useful for testing.
 - `--no-color` — disable ANSI colors on stderr log output. Honors `NO_COLOR` too.
 - `-h`, `--help` — print help and exit 0.
@@ -168,10 +168,10 @@ Example: `proteus probe --json | jq .classification`
 ### `reset` — phase **stub** (lands G)
 
 ```sh
-proteus reset [--yes]
+proteus reset [--yes] [--dry-run]
 ```
 
-Clear `/etc/proteus/config.toml` to defaults and re-apply. The "I tinkered and broke it" hatch. Deliberately does **not** touch the cached original MACs in `state.json` — those remain sacred. Mutating; requires root.
+Rewrite `/etc/proteus/config.toml` to a minimal `profile = "<name>"` file, preserving the active profile from the existing config. The "I tinkered and broke it" hatch. Resolution at load time fills in every other knob from the profile baseline, so the on-disk file stays human-readable instead of bloating with every default explicitly set. Deliberately does **not** touch the cached original MACs in `state.json` — those remain sacred. Mutating; requires root. Pass `--dry-run` to preview the action without writing.
 
 Exit: `0` success · `64` stub · `66` not root.
 
