@@ -59,9 +59,8 @@ impl Tally {
 }
 
 pub fn run(yes: bool, state_path: Option<&Path>, config_path: Option<&Path>) -> Result<u8> {
-    if !yes {
-        eprintln!("proteus: 'apply' is mutating; pass --yes to confirm (see `proteus help apply`)");
-        return Ok(exit::NOT_IMPLEMENTED);
+    if let Err(code) = super::require_yes(yes, "'apply' is mutating", "proteus help apply") {
+        return Ok(code);
     }
     if let Err(e) = super::require_root() {
         eprintln!("proteus: {e}");

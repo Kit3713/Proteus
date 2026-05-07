@@ -9,7 +9,14 @@ use crate::mac::Mac;
 use crate::nm::{self, DeviceInfo};
 use crate::state::State;
 
-pub fn run(target: &str, mac: Option<&str>, _yes: bool, state_path: Option<&Path>) -> Result<u8> {
+pub fn run(target: &str, mac: Option<&str>, yes: bool, state_path: Option<&Path>) -> Result<u8> {
+    if let Err(code) = super::require_yes(
+        yes,
+        "'pin' is mutating (writes state.json)",
+        "proteus help pin",
+    ) {
+        return Ok(code);
+    }
     if let Err(e) = super::require_root() {
         eprintln!("proteus: {e}");
         return Ok(exit::PERMISSION_ERROR);
@@ -117,4 +124,32 @@ async fn resolve_mac_for_device(
 fn parse_mac(s: &str) -> Result<Mac> {
     s.parse::<Mac>()
         .with_context(|| format!("parsing MAC '{s}'"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Issue #118 regression: `pin` used to ignore `--yes` and always
+    /// mutate `state.json`. The fix gates the call before the root check
+    /// and any state load so a missing `--yes` is a fast, observable bail.
+    /// We assert on the exit code AND that no state file is written
+    /// (calling with a path that points into an empty temp dir; the gate
+    /// returns before the state code path runs).
+    #[test]
+    fn pin_without_yes_returns_confirmation_required_and_does_not_touch_state() {
+        let dir = std::env::temp_dir().join("proteus-pin-noyes-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let state_path = dir.join("state.json");
+
+        let code = run("wlan0", None, false, Some(&state_path)).unwrap();
+        assert_eq!(code, exit::CONFIRMATION_REQUIRED);
+        assert!(
+            !state_path.exists(),
+            "pin without --yes must not create state.json"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

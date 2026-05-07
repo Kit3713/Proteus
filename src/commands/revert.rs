@@ -34,11 +34,8 @@ const RESOLVED_DROPIN_PREFIX: &str = "10-proteus-";
 
 /// `proteus revert [--yes]` entry point.
 pub fn run(yes: bool) -> Result<u8> {
-    if !yes {
-        eprintln!(
-            "proteus: revert is destructive; pass --yes to confirm (see `proteus help revert`)"
-        );
-        return Ok(exit::NOT_IMPLEMENTED);
+    if let Err(code) = super::require_yes(yes, "revert is destructive", "proteus help revert") {
+        return Ok(code);
     }
     if let Err(e) = super::require_root() {
         eprintln!("proteus: {e}");

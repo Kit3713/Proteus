@@ -133,9 +133,8 @@ pub fn apply(yes: bool, state_path: Option<&Path>, config_path: Option<&Path>) -
         eprintln!("proteus: {e}");
         return Ok(exit::PERMISSION_ERROR);
     }
-    if !yes {
-        eprintln!("proteus: 'ipv6 apply' is mutating; pass --yes (see `proteus help ipv6`)");
-        return Ok(exit::NOT_IMPLEMENTED);
+    if let Err(code) = super::require_yes(yes, "'ipv6 apply' is mutating", "proteus help ipv6") {
+        return Ok(code);
     }
     let state_path = super::state_path(state_path);
     let config_path = super::config_path(config_path);
@@ -221,9 +220,8 @@ pub fn revert(yes: bool, state_path: Option<&Path>) -> Result<u8> {
         eprintln!("proteus: {e}");
         return Ok(exit::PERMISSION_ERROR);
     }
-    if !yes {
-        eprintln!("proteus: 'ipv6 revert' is mutating; pass --yes (see `proteus help ipv6`)");
-        return Ok(exit::NOT_IMPLEMENTED);
+    if let Err(code) = super::require_yes(yes, "'ipv6 revert' is mutating", "proteus help ipv6") {
+        return Ok(code);
     }
     let state_path = super::state_path(state_path);
     let mut state = State::load_or_default(&state_path)?;
