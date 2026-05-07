@@ -13,6 +13,15 @@ use crate::kill_switch::KillSwitchState;
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct State {
+    /// Burned-in (factory) MAC address per interface, captured the first time
+    /// Proteus rotates that iface and never re-captured. The value MUST be
+    /// the permanent driver-reported address — NOT whatever the kernel
+    /// currently shows at `/sys/class/net/<iface>/address`, which after a
+    /// prior rotation is the cloned value. See `mac::factory` for the
+    /// resolution order: `phy80211/macaddress` (Wi-Fi), `ethtool -P`
+    /// (ethernet), then live `address` only when `addr_assign_type` reports
+    /// `NET_ADDR_PERM`. Used by `proteus revert` to restore originals — a
+    /// wrong value here turns "revert" into "set to last cloned".
     pub original_macs: BTreeMap<String, String>,
     pub original_hostname: Option<String>,
     pub captured_by_version: Option<String>,
