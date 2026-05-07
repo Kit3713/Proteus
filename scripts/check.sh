@@ -97,7 +97,7 @@ run_step "cargo clippy --all-targets -- -D warnings" \
     cargo clippy --all-targets -- -D warnings
 
 # --- step 3: test ----------------------------------------------------------
-run_step "cargo test" cargo test
+run_step "cargo test --locked" cargo test --locked
 
 if [ "$NO_BUILD" -eq 1 ]; then
     emit_summary "SUMMARY (quick mode)" 0
@@ -106,7 +106,7 @@ if [ "$NO_BUILD" -eq 1 ]; then
 fi
 
 # --- step 4: release build -------------------------------------------------
-run_step "cargo build --release" cargo build --release
+run_step "cargo build --release --locked" cargo build --release --locked
 
 # --- step 5: strip ---------------------------------------------------------
 # `strip` only ships on Linux/BSD; on macOS dev hosts the size invariant

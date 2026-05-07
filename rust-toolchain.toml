@@ -1,5 +1,32 @@
-# Pin to stable channel; specific version handled by CI matrix when needed.
+# Pinned Rust toolchain for reproducible builds.
+#
+# Why pin a specific version (not "stable")?
+#   - Reproducible builds: `stable` floats with whatever rustc release happens
+#     to be current, which means a `cargo build --release --frozen --locked`
+#     today and tomorrow can produce different bytes even from the same source.
+#     Pinning makes the toolchain part of the build manifest.
+#   - Security-relevant: Proteus erases network-layer fingerprints, so users
+#     should be able to verify a downloaded binary was built from the public
+#     source. See `wiki/reproducible-builds.md` for the verification recipe.
+#
+# Choosing the version:
+#   - 1.93.0 is several stable releases old at the time of this pin, so it is
+#     widely available in distro packages, rustup, and Docker images.
+#   - It is well above the project's MSRV (`rust-version = "1.85"` in
+#     Cargo.toml), so the pin never blocks the lockfile.
+#   - Not nightly: nightly is reproducible per-day but rotates every day, so
+#     verifying a binary days later requires installing a specific dated
+#     nightly. Stable is more verifier-friendly.
+#
+# Updating this pin:
+#   - Bumping the channel is an intentional, reviewable change. Open a PR,
+#     re-run the verification recipe, update the release notes, and call out
+#     the bump in CHANGELOG.md.
+#   - Do NOT bump the pin without re-checking that
+#     `cargo build --release --frozen --locked` still succeeds and the
+#     stripped-binary sha256 matches across two clean rebuilds on the same
+#     host.
 [toolchain]
-channel = "stable"
+channel = "1.93.0"
 components = ["rustfmt", "clippy"]
 profile = "minimal"
