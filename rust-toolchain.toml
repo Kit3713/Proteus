@@ -1,0 +1,5 @@
+# Pin to stable channel; specific version handled by CI matrix when needed.
+[toolchain]
+channel = "stable"
+components = ["rustfmt", "clippy"]
+profile = "minimal"
