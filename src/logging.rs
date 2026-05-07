@@ -10,6 +10,7 @@
 //!
 //! See `wiki/cli.md` Logging section for the user-facing surface.
 
+use std::io::IsTerminal;
 use std::str::FromStr;
 
 use tracing::Level;
@@ -36,13 +37,31 @@ pub fn init(verbose: u8, quiet: u8, no_color: bool) {
 
     let fmt_layer = fmt::layer()
         .with_writer(std::io::stderr)
-        .with_ansi(!no_color)
+        .with_ansi(should_use_ansi(no_color, std::io::stderr().is_terminal()))
         .without_time()
         .with_target(false);
     let _ = tracing_subscriber::registry()
         .with(filter)
         .with(fmt_layer)
         .try_init();
+}
+
+/// Decide whether the fmt layer should emit ANSI escape codes.
+///
+/// ANSI is only enabled when **all** of the following hold:
+///
+/// * `--no-color` was not passed,
+/// * the `NO_COLOR` environment variable is unset or empty
+///   (per <https://no-color.org/>),
+/// * the writer (stderr) is attached to a terminal.
+///
+/// This prevents `tracing-subscriber` from embedding ANSI escape bytes when the
+/// log writer is a file or pipe, which previously polluted captured stderr.
+pub(crate) fn should_use_ansi(no_color_flag: bool, stderr_is_tty: bool) -> bool {
+    if no_color_flag || !stderr_is_tty {
+        return false;
+    }
+    !matches!(std::env::var_os("NO_COLOR"), Some(v) if !v.is_empty())
 }
 
 /// Parse `RUST_LOG` into a `Targets` filter. Falls back to the requested
@@ -144,5 +163,84 @@ mod tests {
         let t = parse_rust_log("", LevelFilter::WARN);
         assert!(t.would_enable("x", &Level::WARN));
         assert!(!t.would_enable("x", &Level::INFO));
+    }
+
+    /// `should_use_ansi` is the single source of truth for the fmt layer's
+    /// ANSI flag; these tests pin its decision matrix so a regression here
+    /// can't reintroduce ANSI escape bytes on captured stderr.
+    mod ansi {
+        use super::*;
+
+        /// Serialize tests that mutate `NO_COLOR`; otherwise parallel tests
+        /// race against the shared process environment.
+        fn lock() -> std::sync::MutexGuard<'static, ()> {
+            static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+            LOCK.lock().unwrap_or_else(|e| e.into_inner())
+        }
+
+        struct ScopedNoColor {
+            prev: Option<std::ffi::OsString>,
+        }
+
+        impl ScopedNoColor {
+            fn set(value: Option<&str>) -> Self {
+                let prev = std::env::var_os("NO_COLOR");
+                // SAFETY: the surrounding `lock()` serializes env mutation.
+                unsafe {
+                    match value {
+                        Some(v) => std::env::set_var("NO_COLOR", v),
+                        None => std::env::remove_var("NO_COLOR"),
+                    }
+                }
+                Self { prev }
+            }
+        }
+
+        impl Drop for ScopedNoColor {
+            fn drop(&mut self) {
+                // SAFETY: same lock as `set`.
+                unsafe {
+                    match self.prev.take() {
+                        Some(v) => std::env::set_var("NO_COLOR", v),
+                        None => std::env::remove_var("NO_COLOR"),
+                    }
+                }
+            }
+        }
+
+        #[test]
+        fn off_when_stderr_is_not_a_tty() {
+            let _g = lock();
+            let _env = ScopedNoColor::set(None);
+            assert!(!should_use_ansi(false, false));
+        }
+
+        #[test]
+        fn off_when_no_color_flag_set() {
+            let _g = lock();
+            let _env = ScopedNoColor::set(None);
+            assert!(!should_use_ansi(true, true));
+        }
+
+        #[test]
+        fn off_when_no_color_env_set() {
+            let _g = lock();
+            let _env = ScopedNoColor::set(Some("1"));
+            assert!(!should_use_ansi(false, true));
+        }
+
+        #[test]
+        fn empty_no_color_env_is_ignored() {
+            let _g = lock();
+            let _env = ScopedNoColor::set(Some(""));
+            assert!(should_use_ansi(false, true));
+        }
+
+        #[test]
+        fn on_when_tty_and_no_overrides() {
+            let _g = lock();
+            let _env = ScopedNoColor::set(None);
+            assert!(should_use_ansi(false, true));
+        }
     }
 }
