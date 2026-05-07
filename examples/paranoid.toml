@@ -1,0 +1,138 @@
+# examples/paranoid.toml
+# purpose: maximize privacy and accept significant breakage. Same as
+# aggressive.toml plus: 30m MAC rotation, hostname rotates with MAC,
+# SSDP/WSD blocked, gratuitous ARP suppressed, 9 dB TX power
+# reduction, 2-of-4 probe quorum.
+#
+# WARNING: This config breaks:
+#   - KDE Connect (SSDP block)
+#   - WSD-only printers (some HP, some Brother models)
+#   - Reduces Wi-Fi range significantly (9 dB ≈ 1/8 the radiated
+#     power; expect dropouts in distant rooms or behind walls)
+#   - May trigger DHCP renewal throttling on networks with short
+#     leases (30m rotation)
+#   - Splits per-host bash history; shell prompt changes constantly
+#     (rotate-with-MAC)
+#   - May slow failover detection on networks with HSRP/VRRP
+#     (gratuitous ARP suppressed)
+#   - May be rejected by corporate 802.1X auth servers
+#     (anonymous outer identity on)
+#
+# Test before relying on it. There is no value in a privacy config
+# you have to disable mid-trip because something stopped working.
+#
+# install:
+#   sudo cp examples/paranoid.toml /etc/proteus/config.toml
+#   sudo proteus apply
+#
+# schema reference: proteus wiki config
+# threat model: proteus wiki threat-model
+
+# MAC: 30m rotation for faster churn.
+# WARNING: some networks throttle DHCP renewal at sub-30m cadence;
+# see the risk table in `proteus wiki config`.
+[mac]
+enabled = true
+rotation_interval = "30m"
+oui_pool = ["apple", "intel", "samsung", "dell", "random-locally-administered"]
+exclude_gateways = true
+exclude_arp_table = true
+per_connection = true
+
+# Hostname: rotate from wordlist AND with MAC.
+# WARNING: shell prompt and per-host bash history change every 30m.
+[hostname]
+enabled = true
+mode = "wordlist"
+rotate_with_mac = true
+
+# DHCP: suppress everything that fingerprints.
+[dhcp]
+suppress_hostname = true
+suppress_vendor_class = true
+rotate_client_id = true
+
+# IPv6: stable-privacy + temp + NDP hardening.
+[ipv6]
+enabled = true
+use_temp_addresses = true
+addr_gen_mode = "stable-privacy"
+ndp_hardening = true
+
+# Discovery: silence everything, including SSDP and WSD.
+# WARNING: ssdp_block = true breaks KDE Connect, DLNA, smart-home
+# discovery.
+# WARNING: wsd_block = true breaks WSD-only printers.
+[discovery]
+mdns_responder = false
+mdns_resolve = true
+llmnr = false
+netbios = false
+ssdp_block = true
+wsd_block = true
+wpad = false
+ntp_normalize = true
+
+# Stack fingerprint: drop the leaks plus suppress gratuitous ARP.
+# WARNING: suppress_gratuitous_arp = true slows failover detection
+# on networks using HSRP/VRRP.
+[stack]
+tcp_timestamps_off = true
+icmp_info_replies_drop = true
+icmpv6_hardening = true
+suppress_gratuitous_arp = true
+
+# Probes: 2-of-4 quorum (more sensitive). 2m interval, 30s cooldown.
+# WHY: lower quorum reacts faster to real outages. The trade-off is
+# more false positives — single-endpoint flakiness may now trigger
+# rotation. If you see unwanted rotations, raise quorum_n back to 3.
+[probes]
+enabled = true
+quorum_n = 2
+quorum_total = 4
+interval = "2m"
+cooldown = "30s"
+endpoints = ["1.1.1.1:443", "8.8.8.8:443", "9.9.9.9:443", "142.250.190.78:443"]
+
+# Captive portals: rotate-before-auth, fresh MAC per visit.
+[captive_portal]
+enabled = true
+detect_url = "http://nmcheck.gnome.org/check_network_status.txt"
+expected_response = "NetworkManager is online"
+policy = "rotate-before-auth"
+fresh_mac_per_visit = true
+
+# Bluetooth: full hygiene.
+[bluetooth]
+enabled = true
+generic_alias = true
+discoverable = false
+ble_rpa = true
+
+# Enterprise Wi-Fi: anonymous outer identity on.
+# WARNING: may break corporate Wi-Fi with strict outer-identity
+# checking. If your work network stops connecting, set this to false.
+[enterprise_wifi]
+anonymous_outer_identity = true
+realm_strip_strategy = "auto"
+
+# DNS: ECS strip on; hard guard handles tool detection.
+[dns]
+strip_edns_client_subnet = true
+
+# RF: 9 dB TX power reduction. About 1/8 the radiated power, half-ish
+# the range.
+# WARNING: 9 dB is aggressive. Expect signal drop in distant rooms,
+# behind walls, or in noisy RF environments. Hardware caps the
+# effective floor; if your card does not allow this much reduction,
+# Proteus logs a skip line and sets the closest supported value.
+[rf]
+tx_power_reduce = true
+tx_power_reduction_db = 9
+
+# Rotation: matches MAC cadence.
+[rotation]
+interval = "30m"
+on_probe_fail = true
+on_link_change = true
+on_ssid_change = true

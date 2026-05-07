@@ -1,0 +1,139 @@
+# examples/standard.toml
+# purpose: balanced privacy + compatibility. Recommended starting point
+# for most users.
+#
+# Enables: MAC rotation, hostname rotation (wordlist), DHCP option
+# suppression (12/60/61/81), IPv6 stable-privacy + temp addresses +
+# DUID coupling, mDNS responder off + LLMNR off + NetBIOS off, TCP
+# timestamps off, ICMP info-replies dropped, EDNS Client Subnet
+# stripped (with the hard guard that defers to dnscrypt-proxy / Pi-hole
+# / AdGuard Home / custom resolv.conf), Bluetooth alias + RPA.
+#
+# Leaves alone: SSDP and WSD (so KDE Connect and WSD printers keep
+# working), enterprise 802.1X anonymous outer identity, TX power
+# reduction, gratuitous ARP suppression. Each of those is opt-in
+# because they break common things.
+#
+# install:
+#   sudo cp examples/standard.toml /etc/proteus/config.toml
+#   sudo proteus apply
+#
+# schema reference: proteus wiki config
+
+# MAC: rotate Wi-Fi/Ethernet MACs every 2h. Default OUI pool covers
+# Apple, Intel, Samsung, Dell plus locally-administered randoms so the
+# new MAC blends in.
+[mac]
+enabled = true
+rotation_interval = "2h"
+oui_pool = ["apple", "intel", "samsung", "dell", "random-locally-administered"]
+exclude_gateways = true
+exclude_arp_table = true
+per_connection = true
+
+# Hostname: rotate from the embedded ~500-word router-flavored list.
+# rotate_with_mac = false because rotating hostname mid-session splits
+# per-host bash history and changes the shell prompt.
+[hostname]
+enabled = true
+mode = "wordlist"
+rotate_with_mac = false
+
+# DHCP: suppress the four DHCP options that fingerprint you across
+# networks (12 hostname, 60 vendor-class, 61 client id, 81 FQDN).
+# rotate_client_id couples the DHCPv6 DUID to the MAC so DUID does not
+# defeat MAC rotation.
+[dhcp]
+suppress_hostname = true
+suppress_vendor_class = true
+rotate_client_id = true
+
+# IPv6: stable-privacy IIDs (RFC 7217) plus temp addresses (RFC 8981).
+# eui64 leaks the MAC directly and is never recommended.
+[ipv6]
+enabled = true
+use_temp_addresses = true
+addr_gen_mode = "stable-privacy"
+ndp_hardening = true
+
+# Discovery: silence the noisy ones (mDNS announcements, LLMNR,
+# NetBIOS, WPAD). Keep mDNS resolution on so .local lookups work.
+# SSDP and WSD stay off because blocking them breaks KDE Connect and
+# WSD-only printers; see aggressive.toml if you accept that.
+# ntp_normalize defers to chrony / ntpd if either is installed.
+[discovery]
+mdns_responder = false
+mdns_resolve = true
+llmnr = false
+netbios = false
+ssdp_block = false
+wsd_block = false
+wpad = false
+ntp_normalize = true
+
+# Stack fingerprint: drop the easy leaks. TCP timestamps leak system
+# uptime (RFC 7323 §7.1). ICMP types 15/16/17/18 are old OS-fingerprint
+# vectors. ICMPv6/NDP hardening tunes hop limits and RA acceptance.
+# Gratuitous ARP suppression stays opt-in because it slows failover
+# detection on some networks.
+[stack]
+tcp_timestamps_off = true
+icmp_info_replies_drop = true
+icmpv6_hardening = true
+suppress_gratuitous_arp = false
+
+# Probes: 3-of-4 quorum, 5m interval, 60s cooldown. Defaults are tuned
+# for typical home / café / office connectivity.
+[probes]
+enabled = true
+quorum_n = 3
+quorum_total = 4
+interval = "5m"
+cooldown = "60s"
+endpoints = ["1.1.1.1:443", "8.8.8.8:443", "9.9.9.9:443", "142.250.190.78:443"]
+
+# Captive portals: rotate-before-auth so the portal cannot correlate
+# this visit to past visits. fresh_mac_per_visit applies to the
+# known-portal SSID list (managed via `proteus portal mark`).
+[captive_portal]
+enabled = true
+detect_url = "http://nmcheck.gnome.org/check_network_status.txt"
+expected_response = "NetworkManager is online"
+policy = "rotate-before-auth"
+fresh_mac_per_visit = true
+
+# Bluetooth: generic adapter alias, discoverable off, BLE Resolvable
+# Private Address mode where the controller supports it. BR/EDR
+# (classic) BD_ADDR is not rotated — too chipset-specific. See
+# `proteus wiki bluetooth` for the long version.
+[bluetooth]
+enabled = true
+generic_alias = true
+discoverable = false
+ble_rpa = true
+
+# Enterprise Wi-Fi: anonymous outer identity stays off because some
+# corporate auth servers reject it. Flip on per-environment if your
+# IT department supports it.
+[enterprise_wifi]
+anonymous_outer_identity = false
+
+# DNS: strip EDNS Client Subnet from systemd-resolved. The hard guard
+# refuses to apply if dnscrypt-proxy / Pi-hole / AdGuard Home / custom
+# resolv.conf is detected — your DNS setup wins, every time.
+[dns]
+strip_edns_client_subnet = true
+
+# RF: TX power reduction stays off by default. Reducing TX power
+# narrows the capture radius for passive listeners but also reduces
+# range from your APs.
+[rf]
+tx_power_reduce = false
+
+# Rotation policy surface (mirrors mac.rotation_interval; if the two
+# disagree, [rotation] wins).
+[rotation]
+interval = "2h"
+on_probe_fail = true
+on_link_change = true
+on_ssid_change = true

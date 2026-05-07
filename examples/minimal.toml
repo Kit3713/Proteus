@@ -1,0 +1,69 @@
+# examples/minimal.toml
+# purpose: only MAC rotation. Everything else stays at OS defaults.
+#
+# install:
+#   sudo cp examples/minimal.toml /etc/proteus/config.toml
+#   sudo proteus apply
+#
+# schema reference: proteus wiki config
+
+# MAC rotation: rotate Wi-Fi/Ethernet MACs every 2 hours.
+[mac]
+enabled = true
+rotation_interval = "2h"
+
+# Hostname: leave kernel/pretty/transient hostname alone.
+[hostname]
+enabled = false
+
+# DHCP options: leave 12 (hostname), 60 (vendor-class), 61 (client id),
+# 81 (FQDN) alone. Your DHCP banner stays as-is.
+[dhcp]
+suppress_hostname = false
+suppress_vendor_class = false
+rotate_client_id = false
+
+# IPv6: leave temp addresses, addr-gen mode, NDP at kernel defaults.
+[ipv6]
+enabled = false
+
+# Discovery: leave mDNS, LLMNR, NetBIOS, SSDP, WSD at OS defaults.
+# WHY: minimal config does not silence anything. Avahi, KDE Connect,
+# Samba, etc. behave exactly as the distro shipped them.
+[discovery]
+mdns_responder = true
+mdns_resolve = true
+llmnr = true
+netbios = true
+ssdp_block = false
+wsd_block = false
+wpad = true
+ntp_normalize = false
+
+# Stack fingerprint: leave TCP timestamps, ICMP info-replies,
+# ICMPv6/NDP hardening alone.
+[stack]
+tcp_timestamps_off = false
+icmp_info_replies_drop = false
+icmpv6_hardening = false
+suppress_gratuitous_arp = false
+
+# DNS: do not touch your resolver. EDNS Client Subnet (geolocation
+# leak) stays as your resolver configures it.
+[dns]
+strip_edns_client_subnet = false
+
+# Bluetooth: do not touch BlueZ. Adapter alias and discoverability
+# stay as-is.
+[bluetooth]
+enabled = false
+
+# Probes: keep the connectivity probe loop on so probe-driven
+# rotation still works alongside the timer.
+[probes]
+enabled = true
+
+# Captive portals: keep first-class portal handling on so MAC
+# rotation does not loop behind a portal.
+[captive_portal]
+enabled = true

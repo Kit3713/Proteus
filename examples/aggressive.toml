@@ -1,0 +1,126 @@
+# examples/aggressive.toml
+# purpose: stronger privacy at the cost of some breakage. Same as
+# standard.toml plus SSDP block, WSD block, hostname rotate-with-MAC,
+# opt-in TX power reduction, enterprise-Wi-Fi anonymous outer
+# identity, gratuitous-ARP suppression.
+#
+# Each of the "more aggressive" knobs has a # WARNING: comment
+# explaining what it might break. Read them before applying.
+#
+# install:
+#   sudo cp examples/aggressive.toml /etc/proteus/config.toml
+#   sudo proteus apply
+#
+# schema reference: proteus wiki config
+
+# MAC: rotate Wi-Fi/Ethernet MACs every 2h. Same OUI pool as standard.
+[mac]
+enabled = true
+rotation_interval = "2h"
+oui_pool = ["apple", "intel", "samsung", "dell", "random-locally-administered"]
+exclude_gateways = true
+exclude_arp_table = true
+per_connection = true
+
+# Hostname: rotate from the wordlist AND with each MAC rotation.
+# WARNING: rotate_with_mac = true splits per-host bash history and
+# changes the shell prompt every rotation interval. Some app data
+# stores keyed on hostname (rare) will see new entries.
+[hostname]
+enabled = true
+mode = "wordlist"
+rotate_with_mac = true
+
+# DHCP: suppress 12, 60, 61, 81 and rotate DUID with MAC.
+[dhcp]
+suppress_hostname = true
+suppress_vendor_class = true
+rotate_client_id = true
+
+# IPv6: stable-privacy + temp addresses + NDP hardening.
+[ipv6]
+enabled = true
+use_temp_addresses = true
+addr_gen_mode = "stable-privacy"
+ndp_hardening = true
+
+# Discovery: silence everything, including SSDP and WSD.
+# WARNING: ssdp_block = true breaks KDE Connect, some smart-home
+# discovery, and DLNA. Many users discover this only after their
+# phone-to-laptop file transfer stops working.
+# WARNING: wsd_block = true breaks WSD-only printers (some HP, some
+# Brother). If your printer has IPP/AirPrint as well it will still be
+# discoverable; WSD-only models stop being seen on the network.
+[discovery]
+mdns_responder = false
+mdns_resolve = true
+llmnr = false
+netbios = false
+ssdp_block = true
+wsd_block = true
+wpad = false
+ntp_normalize = true
+
+# Stack fingerprint: drop the easy leaks plus suppress gratuitous ARP.
+# WARNING: suppress_gratuitous_arp = true slows failover detection on
+# some networks. If your work network has HSRP/VRRP gateway failover,
+# expect a longer outage on failover events than usual.
+[stack]
+tcp_timestamps_off = true
+icmp_info_replies_drop = true
+icmpv6_hardening = true
+suppress_gratuitous_arp = true
+
+# Probes: same defaults as standard.
+[probes]
+enabled = true
+quorum_n = 3
+quorum_total = 4
+interval = "5m"
+cooldown = "60s"
+endpoints = ["1.1.1.1:443", "8.8.8.8:443", "9.9.9.9:443", "142.250.190.78:443"]
+
+# Captive portals: rotate-before-auth, fresh MAC per visit.
+[captive_portal]
+enabled = true
+detect_url = "http://nmcheck.gnome.org/check_network_status.txt"
+expected_response = "NetworkManager is online"
+policy = "rotate-before-auth"
+fresh_mac_per_visit = true
+
+# Bluetooth: generic alias, discoverable off, BLE RPA on.
+[bluetooth]
+enabled = true
+generic_alias = true
+discoverable = false
+ble_rpa = true
+
+# Enterprise Wi-Fi: anonymous outer identity on.
+# WARNING: anonymous_outer_identity = true is rejected by some corporate
+# 802.1X auth servers (FreeRADIUS, Cisco ISE, Aruba ClearPass with
+# strict outer-identity matching). If your corp Wi-Fi stops connecting
+# after applying this, flip back to false. The inner identity (your
+# username) still authenticates you to your employer regardless.
+[enterprise_wifi]
+anonymous_outer_identity = true
+realm_strip_strategy = "auto"
+
+# DNS: ECS strip on, hard guard handles the rest.
+[dns]
+strip_edns_client_subnet = true
+
+# RF: opt-in TX power reduction, 6 dB (about a quarter of radiated
+# power, half the range).
+# WARNING: tx_power_reduce = true reduces range from your own APs.
+# At 6 dB you may notice weaker signal in distant rooms. At higher
+# values the effect is more pronounced. Hardware caps the floor.
+[rf]
+tx_power_reduce = true
+tx_power_reduction_db = 6
+
+# Rotation: same cadence as MAC.
+[rotation]
+interval = "2h"
+on_probe_fail = true
+on_link_change = true
+on_ssid_change = true

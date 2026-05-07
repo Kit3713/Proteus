@@ -84,6 +84,25 @@ Until phase G ships, the only way to undo Proteus is manual: edit the affected N
 - `proteus show-config` — print the current config from `/etc/proteus/config.toml`, plus where each value came from (default vs file).
 - Configure by writing TOML to `/etc/proteus/config.toml`. The path may need `sudo` to create. Schema is documented in `proteus wiki config`, which lands in phase F.
 
+## Presets
+
+Annotated example configs live in [`examples/`](../examples/) in the repo. Each is a starting point you copy into place and tweak, not a one-true-config. After copying, run `proteus show-config --json` to confirm it parses, then `sudo proteus apply`.
+
+- `examples/minimal.toml` — only MAC rotation; everything else stays at OS defaults.
+- `examples/standard.toml` — balanced privacy + compatibility; recommended for most users.
+- `examples/aggressive.toml` — stronger privacy at the cost of breaking KDE Connect, WSD printers, and possibly corporate Wi-Fi.
+- `examples/captive-portal-heavy.toml` — for daily public-Wi-Fi routines (cafés, conferences, hotels, airports).
+- `examples/paranoid.toml` — maximum privacy with significant breakage; read the warning header before using.
+- `examples/disabled.toml` — every section off; equivalent to not running `proteus apply`.
+- `examples/development.toml` — fast cycles for Proteus contributors; not a real-world preset.
+
+```sh
+sudo cp examples/standard.toml /etc/proteus/config.toml
+sudo proteus apply
+```
+
+Substitute the preset filename you picked. See `examples/README.md` for the full index plus a "choosing a preset" decision guide.
+
 ## Captive portals
 
 - `proteus status` shows the current portal classification: `clear`, `portal-required`, `portal-authed`, or `unknown`.

@@ -1,0 +1,93 @@
+# examples/disabled.toml
+# purpose: every section's master switch is off. This is essentially
+# equivalent to not running `proteus apply` at all. Useful when you
+# want Proteus installed for the read-only commands (`proteus status`,
+# `proteus current`, `proteus original`, `proteus show-config`,
+# `proteus show-defaults`, `proteus wiki <page>`) but you do not want
+# Proteus to mutate anything on the system.
+#
+# Common reasons to use this preset:
+#   - You already run macchanger / nmcli MAC randomization / your own
+#     script and want a single source of truth (Proteus's read
+#     commands let you verify what your own tools are doing).
+#   - You run dnscrypt-proxy / Pi-hole / AdGuard Home and want
+#     Proteus's DNS knob to defer (it would anyway, but explicit is
+#     clearer).
+#   - You are on a system where you do not have root and just want
+#     read-only inspection.
+#
+# install:
+#   sudo cp examples/disabled.toml /etc/proteus/config.toml
+#   sudo proteus apply    # no-op, but idempotent
+#
+# schema reference: proteus wiki config
+
+# MAC: do not rotate.
+[mac]
+enabled = false
+
+# Hostname: do not touch.
+[hostname]
+enabled = false
+
+# DHCP: leave all options alone.
+[dhcp]
+suppress_hostname = false
+suppress_vendor_class = false
+rotate_client_id = false
+
+# IPv6: do not touch addr-gen mode, temp addresses, or NDP.
+[ipv6]
+enabled = false
+
+# Discovery: leave mDNS, LLMNR, NetBIOS, SSDP, WSD, WPAD, NTP alone.
+[discovery]
+mdns_responder = true
+mdns_resolve = true
+llmnr = true
+netbios = true
+ssdp_block = false
+wsd_block = false
+wpad = true
+ntp_normalize = false
+
+# Stack fingerprint: leave TCP timestamps, ICMP info-replies, NDP,
+# gratuitous ARP at kernel defaults.
+[stack]
+tcp_timestamps_off = false
+icmp_info_replies_drop = false
+icmpv6_hardening = false
+suppress_gratuitous_arp = false
+
+# Probes: off. No probe-driven rotation (there's nothing to rotate
+# anyway with [mac] off).
+[probes]
+enabled = false
+
+# Captive portals: off. With detection off and no MAC rotation,
+# there is nothing for portal handling to coordinate.
+[captive_portal]
+enabled = false
+
+# Bluetooth: do not touch BlueZ.
+[bluetooth]
+enabled = false
+
+# Enterprise Wi-Fi: leave 802.1X identity alone.
+[enterprise_wifi]
+anonymous_outer_identity = false
+
+# DNS: leave ECS alone (the hard guard would defer most of the time
+# anyway, but explicit is clearer).
+[dns]
+strip_edns_client_subnet = false
+
+# RF: TX power untouched.
+[rf]
+tx_power_reduce = false
+
+# Rotation: nothing to rotate.
+[rotation]
+on_probe_fail = false
+on_link_change = false
+on_ssid_change = false

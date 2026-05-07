@@ -1,0 +1,116 @@
+# examples/development.toml
+# purpose: development aid for Proteus contributors. Fast cycles,
+# every feature on so every code path runs, no concern for breakage.
+#
+# This is NOT a real-world preset. Do not use this on a daily-driver
+# machine.  It rotates MAC every 5 minutes (which trips DHCP renewal
+# throttling on most networks), enables every opt-in knob (which
+# breaks KDE Connect, WSD printers, etc.), and turns on aggressive
+# probing.
+#
+# install (in a VM or test machine):
+#   sudo cp examples/development.toml /etc/proteus/config.toml
+#   sudo proteus apply
+#
+# schema reference: proteus wiki config
+
+# MAC: 5 minute rotation for fast feedback during development.
+[mac]
+enabled = true
+rotation_interval = "5m"
+oui_pool = ["apple", "intel", "samsung", "dell", "random-locally-administered"]
+exclude_gateways = true
+exclude_arp_table = true
+per_connection = true
+
+# Hostname: every code path. Wordlist + rotate with MAC so the
+# hostname mutator runs every 5m alongside the MAC rotation.
+[hostname]
+enabled = true
+mode = "wordlist"
+rotate_with_mac = true
+
+# DHCP: every option suppressed. Exercises the NM-settings code path.
+[dhcp]
+suppress_hostname = true
+suppress_vendor_class = true
+rotate_client_id = true
+
+# IPv6: every code path. Stable-privacy + temp + NDP hardening.
+[ipv6]
+enabled = true
+use_temp_addresses = true
+addr_gen_mode = "stable-privacy"
+ndp_hardening = true
+
+# Discovery: every code path. SSDP/WSD blocks force the
+# firewalld/nftables backend to run.
+[discovery]
+mdns_responder = false
+mdns_resolve = true
+llmnr = false
+netbios = false
+ssdp_block = true
+wsd_block = true
+wpad = false
+ntp_normalize = true
+
+# Stack fingerprint: every code path. Includes opt-in gratuitous ARP
+# suppression so the nft rule runs.
+[stack]
+tcp_timestamps_off = true
+icmp_info_replies_drop = true
+icmpv6_hardening = true
+suppress_gratuitous_arp = true
+
+# Probes: 1m interval, 15s cooldown — fast feedback. Lower quorum
+# (2-of-4) makes single-endpoint failures trigger rotation, which is
+# useful for testing the probe-driven rotation path.
+[probes]
+enabled = true
+quorum_n = 2
+quorum_total = 4
+interval = "1m"
+cooldown = "15s"
+endpoints = ["1.1.1.1:443", "8.8.8.8:443", "9.9.9.9:443", "142.250.190.78:443"]
+
+# Captive portals: every code path on. Use `proteus portal mark` to
+# add a test SSID.
+[captive_portal]
+enabled = true
+detect_url = "http://nmcheck.gnome.org/check_network_status.txt"
+expected_response = "NetworkManager is online"
+policy = "rotate-before-auth"
+fresh_mac_per_visit = true
+
+# Bluetooth: every BlueZ code path on.
+[bluetooth]
+enabled = true
+generic_alias = true
+discoverable = false
+ble_rpa = true
+
+# Enterprise Wi-Fi: anonymous outer identity on so the 802.1X path
+# runs in tests with a stub auth server.
+[enterprise_wifi]
+anonymous_outer_identity = true
+realm_strip_strategy = "auto"
+anonymous_realm = "example.com"
+
+# DNS: ECS strip on. Hard guard runs even in dev so test for both
+# paths (deferred and applied) by toggling fixtures.
+[dns]
+strip_edns_client_subnet = true
+
+# RF: TX power reduction on, modest 3 dB so dev hardware does not
+# lose signal. Exercises the chipset reporting path in `status`.
+[rf]
+tx_power_reduce = true
+tx_power_reduction_db = 3
+
+# Rotation: every trigger on, fast cadence.
+[rotation]
+interval = "5m"
+on_probe_fail = true
+on_link_change = true
+on_ssid_change = true
