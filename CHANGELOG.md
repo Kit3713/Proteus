@@ -50,7 +50,7 @@ landed, what is in flight, and what is on the bench. See
   on any mtime advance, so `proteus config edit` and hand-edits are
   picked up on the next call.
 - **Built-in persona cache** — every embedded persona TOML is parsed
-  once at first access into a `LazyLock<HashMap<id, Persona>>`. A
+  once at first access into a `OnceLock<HashMap<id, Persona>>`. A
   single `proteus apply` cycle resolves the persona at six sites
   (rotate / hostname / dhcp / bluetooth / ntp / nft); the cache turns
   the per-site cost from O(parse) into O(hash).
@@ -63,6 +63,12 @@ landed, what is in flight, and what is on the bench. See
   wpa_supplicant / dnscrypt-proxy / kresd / AdGuardHome). Now splits
   PATH once into a `OnceLock<Vec<PathBuf>>` and reuses for every
   lookup in the same CLI invocation.
+- **Hostname wordlist cache** — `hostname::wordlist()` previously
+  re-trimmed and re-validated all ~560 embedded entries on every
+  call. The function is hit 2-3 times per `proteus rotate` / `apply`
+  (MAC OUI shaping path, hostname rendering, Bluetooth alias);
+  caching collapses the per-call cost to a pointer load + Vec clone
+  of static references.
 
 ### Fixes
 
@@ -77,6 +83,19 @@ landed, what is in flight, and what is on the bench. See
   arms into a single OR-pattern so the dispatch helper that
   implements `--format json` is one match expression rather than
   thirteen.
+- **`rf chipset` table headers** — header rows in the `proteus rf
+  chipset` table now inline the trailing column literal into the
+  format string, which silenced the empty-format-string clippy
+  warning without changing the rendered output.
+- **field-assignment style** — three test helpers (`commands::ntp`,
+  `commands::resolved`, `commands::rotate`) now build their structs
+  in struct-literal-with-spread form instead of mutating after
+  `Default::default`. Pure style; no functional difference.
+- **`commands::rotate` test idiom** — replaced an
+  `original_macs.get("eth0").is_none()` assertion with the more
+  idiomatic `!original_macs.contains_key("eth0")`.
+
+After this batch, `cargo clippy --all-targets` produces zero warnings.
 
 
 

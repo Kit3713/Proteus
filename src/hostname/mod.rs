@@ -55,21 +55,37 @@ impl Mode {
 /// blanks and `#`-comments are skipped. Each entry is checked against
 /// `validate_hostname`; an invalid entry aborts loading rather than silently
 /// shipping a bad name.
+///
+/// Backed by a process-level `OnceLock` so the per-call cost on every
+/// `proteus rotate` / `apply` (which hits this from MAC, hostname, and
+/// Bluetooth alias paths) collapses from 560-entry validation to a
+/// pointer load. The result is `Result<Vec<...>>` rather than just
+/// `Vec<...>` because a malformed embedded wordlist must surface as
+/// the same error every call rather than panicking on the first one.
 pub fn wordlist() -> Result<Vec<&'static str>> {
-    let mut out = Vec::with_capacity(560);
-    for (lineno, raw) in WORDLIST_RAW.lines().enumerate() {
-        let line = raw.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
+    use std::sync::OnceLock;
+    static CACHE: OnceLock<std::result::Result<Vec<&'static str>, String>> = OnceLock::new();
+    let cached = CACHE.get_or_init(|| {
+        let mut out = Vec::with_capacity(560);
+        for (lineno, raw) in WORDLIST_RAW.lines().enumerate() {
+            let line = raw.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            if let Err(e) = validate_hostname(line) {
+                return Err(format!("hostname-wordlist.txt line {}: {}", lineno + 1, e));
+            }
+            out.push(line);
         }
-        validate_hostname(line)
-            .map_err(|e| anyhow!("hostname-wordlist.txt line {}: {}", lineno + 1, e))?;
-        out.push(line);
+        if out.is_empty() {
+            return Err("hostname wordlist is empty".to_string());
+        }
+        Ok(out)
+    });
+    match cached {
+        Ok(v) => Ok(v.clone()),
+        Err(e) => Err(anyhow!("{}", e)),
     }
-    if out.is_empty() {
-        return Err(anyhow!("hostname wordlist is empty"));
-    }
-    Ok(out)
 }
 
 /// RFC 1123-style hostname validator. Stricter than RFC 952 in that we permit

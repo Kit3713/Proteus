@@ -252,12 +252,13 @@ mod tests {
     use std::fs;
 
     fn cfg_with_ntp(enabled: bool) -> Config {
-        let mut cfg = Config::default();
-        cfg.ntp = NtpConfig {
-            enabled,
-            ..NtpConfig::default()
-        };
-        cfg
+        Config {
+            ntp: NtpConfig {
+                enabled,
+                ..NtpConfig::default()
+            },
+            ..Config::default()
+        }
     }
 
     fn clean_root() -> TempRoot {

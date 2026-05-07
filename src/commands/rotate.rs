@@ -734,7 +734,7 @@ mod tests {
         let empty = stub_permanent(HashMap::new());
         capture_original_mac_under(&mut state, "eth0", &empty);
         assert!(
-            state.original_macs.get("eth0").is_none(),
+            !state.original_macs.contains_key("eth0"),
             "no factory source — must not cache the live (cloned) address"
         );
     }
@@ -811,8 +811,10 @@ mod tests {
         state
             .original_macs
             .insert("wlan0".into(), "aa:bb:cc:dd:ee:ff".into());
-        let mut rec = crate::state::InterfaceRecord::default();
-        rec.pinned = Some("02:00:00:00:00:99".into());
+        let rec = crate::state::InterfaceRecord {
+            pinned: Some("02:00:00:00:00:99".into()),
+            ..Default::default()
+        };
         state.managed.interfaces.insert("wlan0".into(), rec);
 
         let cfg = cfg();

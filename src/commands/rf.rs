@@ -445,8 +445,8 @@ fn print_chipset_human(r: &ChipsetReport) {
         // firmware. Wider than `rf status` but tighter — the brief asked
         // for a table, not the multi-line indented view.
         println!(
-            "  {:<10} {:<10} {:<14} {:<10} {}",
-            "iface", "driver", "vendor:device", "phy", "firmware"
+            "  {:<10} {:<10} {:<14} {:<10} firmware",
+            "iface", "driver", "vendor:device", "phy"
         );
         for c in &r.interfaces {
             let vd = match (c.vendor_id.as_deref(), c.device_id.as_deref()) {
@@ -471,8 +471,8 @@ fn print_chipset_human(r: &ChipsetReport) {
         println!("  (none)");
     } else {
         println!(
-            "  {:<6} {:<19} {:<10} {}",
-            "hci", "address", "addr-type", "name"
+            "  {:<6} {:<19} {:<10} name",
+            "hci", "address", "addr-type"
         );
         for b in &r.bluetooth {
             println!(
