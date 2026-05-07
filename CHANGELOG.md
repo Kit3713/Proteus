@@ -11,7 +11,28 @@ landed, what is in flight, and what is on the bench. See
 
 ## [Unreleased]
 
-(post-v0.2.0-alpha work lands here)
+(post-v0.2.6-alpha work lands here)
+
+## [0.2.6-alpha] - 2026-05-07
+
+Fifth alpha point release after v0.2.0. Closes the remaining low-severity issue queue and the 2026-05-07 security audit.
+
+### Security
+- **L-2** timer expressions: reject `\n`, `\r`, `\0`, `[`, `]` in `proteus timer set` interval input so a calendar expression cannot break out of its systemd drop-in unit.
+- **L-2** disable-reason: `proteus config disable --reason` strips `\n` / `\r` from the reason before it lands in the on-disk comment.
+- **L-4** editor-as-root: `proteus config edit` warns when `$HOME != /root` because `$EDITOR` plugins / autoloads will inherit root privileges; recommends `sudo -H proteus config edit` or `proteus config set` for narrow edits.
+- v0.2.5-alpha covered the higher-severity audit findings: **H-1** removed root-side `xdg-open` for portal URLs (now print-only with http(s) scheme guard), **M-3** CRLF rejection on captive-portal HTTP requests, **L-3** interface-name validation for `iw`/`ip` shell-outs.
+
+### Bug fixes
+- **#161** `proteus reset` prunes config backups beyond `MAX_BACKUPS = 5` so cached identifiers don't accumulate indefinitely.
+- **#163** `proteus portal status` (and `proteus session`) caches the last detector result for 60 s so `watch -n 1` polling stops hammering shared third-party detect endpoints.
+- **#166** `proteus help <feature>` falls back to wiki search with line snippets when no exact page name matches, instead of dumping an alphabetical page list.
+- **#160** RF parser hardening for `iw dev <iface> info`.
+- **#165** `build.rs` reruns at file-level granularity so wiki edits don't invalidate the whole build cache.
+
+### Packaging
+- **deb**: `debian/rules` uses `--locked` (offline mode for the cargo fetch step), drops the conflicting `dist/debian/compat`, and the lane skips `dpkg-checkbuilddeps` since `rustc` is rustup-provided and not in the dpkg DB.
+- All five distro pipelines (x86_64 raw, aarch64 cross, RPM, .deb, Arch) ship release artifacts.
 
 ## [0.2.0-alpha] - 2026-05-07
 
