@@ -1,0 +1,10 @@
+# rpkg configuration. Consumed by `rpkg srpm` (called from .copr/Makefile)
+# to assemble a Source0 tarball straight from the current git checkout
+# instead of requiring a published release tarball on GitHub. This is what
+# lets Copr's "custom" method build SRPMs from arbitrary commits.
+#
+# Reference: https://docs.pagure.org/rpkg-util/v3/configuration_file.html
+
+[git]
+# Mirror Cargo.toml's `version` field. Bump in lockstep on every release.
+current_version = 0.1.0
