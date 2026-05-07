@@ -153,10 +153,16 @@ pub fn apply(yes: bool, state_path: Option<&Path>, config_path: Option<&Path>) -
     }
 
     // Capture originals BEFORE writing live values so revert can undo cleanly
-    // even if the apply is interrupted between sysctl writes.
+    // even if the apply is interrupted between sysctl writes. Persist the
+    // capture to disk immediately so a crash between the drop-in write and
+    // the final state.save() at the end of `apply` cannot leave the system
+    // mutated with no on-disk record of the originals (sacred-originals
+    // invariant; issue #119).
     for (iface, _) in &ifaces {
         capture_originals(&mut state, iface);
     }
+    persist_capture_metadata(&mut state);
+    state.save(&state_path)?;
 
     let names: Vec<&str> = ifaces.iter().map(|(n, _)| n.as_str()).collect();
     let body = ipv6::render_dropin(&names);
@@ -594,5 +600,39 @@ mod tests {
         assert!(keys.contains(&"temp_valid_lft"));
         assert!(keys.contains(&"temp_prefered_lft"));
         assert_eq!(keys.len(), 4);
+    }
+
+    /// Issue #119 — sacred-originals invariant. The ipv6 apply path saves
+    /// state.json AFTER capturing per-iface IPv6 sysctls and BEFORE the
+    /// drop-in / sysctl writes. This test pins the round-trip half:
+    /// captured per-iface originals must survive a crash between save and
+    /// the sysctl write.
+    #[test]
+    fn captured_ipv6_originals_persist_to_disk() {
+        let dir = crate::testing::TempRoot::new("ipv6");
+        let state_path = dir.path.join("state.json");
+
+        let mut state = State::default();
+        state.originals.ipv6.insert(
+            "wlan0".into(),
+            Ipv6Originals {
+                use_tempaddr: Some("2".into()),
+                addr_gen_mode: Some("0".into()),
+                temp_valid_lft: Some("604800".into()),
+                temp_prefered_lft: Some("86400".into()),
+            },
+        );
+        persist_capture_metadata(&mut state);
+
+        state.save(&state_path).expect("state.save");
+        drop(state);
+
+        let loaded = State::load(&state_path).expect("load").expect("present");
+        let orig = loaded.originals.ipv6.get("wlan0").expect("captured");
+        assert_eq!(orig.use_tempaddr.as_deref(), Some("2"));
+        assert_eq!(orig.addr_gen_mode.as_deref(), Some("0"));
+        assert_eq!(orig.temp_valid_lft.as_deref(), Some("604800"));
+        assert_eq!(orig.temp_prefered_lft.as_deref(), Some("86400"));
+        assert!(loaded.captured_at.is_some());
     }
 }

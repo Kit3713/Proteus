@@ -21,6 +21,8 @@ pub mod profile;
 pub mod rf;
 pub mod stack;
 pub mod state;
+#[cfg(test)]
+pub mod testing;
 pub mod timer;
 pub mod version;
 pub mod wiki;
@@ -65,14 +67,11 @@ mod tests {
     #[test]
     fn exit_codes_are_stable() {
         assert_eq!(exit::SUCCESS, 0);
+        assert_eq!(exit::GENERIC_ERROR, 1);
         assert_eq!(exit::NOT_IMPLEMENTED, 64);
         assert_eq!(exit::CONFIG_ERROR, 65);
         assert_eq!(exit::PERMISSION_ERROR, 66);
         assert_eq!(exit::SYSTEM_NOT_SUPPORTED, 70);
-        // CONFIRMATION_REQUIRED is an intent alias; pinning the numeric
-        // value documents that it's wire-compatible with CONFIG_ERROR so
-        // existing wrappers don't break when callers migrate off the
-        // legacy NOT_IMPLEMENTED return.
         assert_eq!(exit::CONFIRMATION_REQUIRED, 65);
     }
 
@@ -81,11 +80,23 @@ mod tests {
         assert_eq!(version::PHASE, 'B');
     }
 
-<<<<<<< HEAD
-    // Packaging invariant (issue #134): every shipped systemd .service unit
-    // that orders itself After=network-online.target must also Wants= it.
-    // Without the matching Wants, the After is a no-op against an inactive
-    // target and the unit can start before networking is up.
+    /// Polkit `exec.path` must point at `/usr/bin/proteus`. Issue #120.
+    #[test]
+    fn polkit_policy_targets_usr_bin_proteus() {
+        let policy = include_str!("../dist/polkit/com.kit3713.proteus.policy");
+        assert!(
+            policy.contains(
+                "<annotate key=\"org.freedesktop.policykit.exec.path\">/usr/bin/proteus</annotate>"
+            ),
+            "polkit policy must annotate exec.path=/usr/bin/proteus (issue #120)"
+        );
+        assert!(
+            !policy.contains("/usr/local/bin/proteus"),
+            "polkit policy must not hardcode /usr/local/bin/proteus (issue #120)"
+        );
+    }
+
+    /// Issue #134: services with After=network-online.target need matching Wants=.
     #[test]
     fn systemd_services_with_after_network_online_also_wants_it() {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("dist/systemd");
@@ -115,10 +126,7 @@ mod tests {
         assert!(checked > 0, "no .service files checked under dist/systemd");
     }
 
-    // CI invariant (issue #135): the non-release CI workflow must use the
-    // pinned-toolchain action so a stable channel bump can't silently break
-    // CI. The pinned toolchain comes from rust-toolchain.toml, read by
-    // actions-rust-lang/setup-rust-toolchain@v1.
+    /// Issue #135: CI must use the pinned toolchain.
     #[test]
     fn ci_workflow_does_not_use_floating_stable_toolchain() {
         let path =
@@ -134,9 +142,7 @@ mod tests {
         );
     }
 
-    /// Issue #136: passing `--skipchecksums` plus an unverified remote
-    /// tarball lets an MITM swap the source. Comment lines are stripped so
-    /// explanatory prose can still mention the flag without false-positive.
+    /// Issue #136: makepkg must not run with --skipchecksums.
     #[test]
     fn release_workflow_does_not_skip_makepkg_checksums() {
         const RELEASE_WORKFLOW: &str = include_str!("../.github/workflows/release.yml");
@@ -153,9 +159,7 @@ mod tests {
         }
     }
 
-    /// Issue #133: `auth_admin_keep` caches elevation for ~5 minutes,
-    /// leaving a walk-away replay window. Mutating actions must use the
-    /// one-shot `auth_admin`.
+    /// Issue #133: mutating polkit actions must use one-shot auth_admin.
     #[test]
     fn polkit_mutating_actions_do_not_cache_auth() {
         const POLKIT_POLICY: &str = include_str!("../dist/polkit/com.kit3713.proteus.policy");

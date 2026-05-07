@@ -140,15 +140,19 @@ pub fn apply(yes: bool, state_path: Option<&Path>, config_path: Option<&Path>) -
         state.originals.sysctls.insert(l.key.clone(), captured);
     }
 
+    // Persist originals to disk BEFORE the destructive drop-in write so a
+    // crash or SIGKILL between here and `sysctl --system` cannot leave the
+    // system mutated with no on-disk record of the originals to revert to
+    // (sacred-originals invariant; see issue #119).
+    persist_capture_metadata(&mut state);
+    state.save(&state_path)?;
+
     let rendered = stack::render_dropin(&config.stack, &ifaces);
 
     if let Err(e) = write_dropin(&rendered) {
         eprintln!("proteus: writing {DROPIN_PATH} failed: {e:#}");
         return Ok(exit::GENERIC_ERROR);
     }
-
-    persist_capture_metadata(&mut state);
-    state.save(&state_path)?;
 
     let reload = sysctl_system_reload();
     match reload {
@@ -319,5 +323,88 @@ mod tests {
     fn extract_header_sha_returns_none_for_blank_value() {
         let body = "# sha256:\n";
         assert!(extract_header_sha(body.as_bytes()).is_none());
+    }
+
+    /// Issue #119 — sacred-originals invariant. Verifies that captured sysctl
+    /// originals round-trip through `State::save()` and land on disk. The
+    /// apply path now saves state BEFORE writing the drop-in, so a crash
+    /// between save and `sysctl --system` cannot lose the originals; this
+    /// test pins the round-trip half of that contract.
+    #[test]
+    fn captured_sysctl_originals_persist_to_disk() {
+        let dir = crate::testing::TempRoot::new("stack");
+        let state_path = dir.path.join("state.json");
+
+        let mut state = State::default();
+        state
+            .originals
+            .sysctls
+            .insert("net.ipv4.tcp_timestamps".into(), "1".into());
+        state
+            .originals
+            .sysctls
+            .insert("net.ipv6.conf.default.use_tempaddr".into(), "".into());
+
+        state.save(&state_path).expect("state.save");
+        assert!(state_path.exists(), "state.json must be on disk");
+
+        let loaded = State::load(&state_path).expect("load").expect("present");
+        assert_eq!(
+            loaded
+                .originals
+                .sysctls
+                .get("net.ipv4.tcp_timestamps")
+                .map(String::as_str),
+            Some("1")
+        );
+        assert_eq!(
+            loaded
+                .originals
+                .sysctls
+                .get("net.ipv6.conf.default.use_tempaddr")
+                .map(String::as_str),
+            Some(""),
+            "empty-string capture (key absent on kernel) must round-trip"
+        );
+    }
+
+    /// Issue #119 — simulates a crash AFTER state.save() but BEFORE mutation
+    /// completes. After such a crash, the state file must still exist with
+    /// captured originals so revert can restore. This test pins that
+    /// post-save / pre-mutation crash window leaves the originals durable.
+    #[test]
+    fn originals_survive_simulated_crash_between_save_and_mutate() {
+        let dir = crate::testing::TempRoot::new("stack");
+        let state_path = dir.path.join("state.json");
+
+        // Step 1: capture into in-memory state (mirrors apply()).
+        let mut state = State::default();
+        state
+            .originals
+            .sysctls
+            .insert("net.ipv4.tcp_timestamps".into(), "1".into());
+        persist_capture_metadata(&mut state);
+
+        // Step 2: persist to disk BEFORE any mutation (the fix).
+        state.save(&state_path).expect("state.save");
+
+        // Step 3: simulate a crash — drop in-memory state without writing
+        // the drop-in. The on-disk file must still contain the original.
+        drop(state);
+
+        let loaded = State::load(&state_path).expect("load").expect("present");
+        assert_eq!(
+            loaded
+                .originals
+                .sysctls
+                .get("net.ipv4.tcp_timestamps")
+                .map(String::as_str),
+            Some("1"),
+            "post-save crash must leave originals durable for revert"
+        );
+        assert!(
+            loaded.captured_at.is_some(),
+            "captured_at must be on disk so the originals are dated"
+        );
     }
 }

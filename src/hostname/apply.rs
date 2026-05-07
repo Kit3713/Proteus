@@ -31,20 +31,32 @@ fn snapshot_to_triple(s: HostnameSnapshot) -> HostnameOriginals {
     }
 }
 
-/// Apply `name` to all three hostname fields and persist the originals into
-/// `state` on the first apply. Caller is responsible for `state.save(path)`
-/// after this returns.
-pub async fn apply_hostname(
+/// Capture the live hostname triple into `state.originals.hostname` if not
+/// already cached, and return the live snapshot. Splitting capture from
+/// mutation lets the caller persist the originals to disk via
+/// `state.save()` BEFORE any DBus write — so a crash between capture and
+/// mutation can never strand the system without an on-disk record of what
+/// to revert to (sacred-originals invariant; see issue #119).
+pub async fn capture_originals_step(state: &mut State) -> Result<HostnameSnapshot> {
+    let proxy = dbus::proxy().await?;
+    let before = dbus::read_snapshot(&proxy).await;
+    capture_originals(state, &before);
+    Ok(before)
+}
+
+/// Apply `name` to all three hostname fields. Originals must already have
+/// been captured + persisted via `capture_originals_step` followed by
+/// `state.save()`. `before` is the pre-mutation snapshot returned by
+/// `capture_originals_step` so we don't need a second DBus round-trip to
+/// fill `ApplyOutcome.previous`.
+pub async fn mutate_hostname(
     name: &str,
     mode_label: &str,
-    state: &mut State,
+    before: HostnameSnapshot,
 ) -> Result<ApplyOutcome> {
     super::validate_hostname(name)?;
 
     let proxy = dbus::proxy().await?;
-    let before = dbus::read_snapshot(&proxy).await;
-
-    capture_originals(state, &before);
 
     proxy
         .set_static_hostname(name, false)
