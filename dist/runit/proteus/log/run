@@ -1,0 +1,8 @@
+#!/bin/sh
+# managed by proteus — runit log service
+#
+# Pipes stdout/stderr from the supervised proteus rotate loop into
+# svlogd, the standard runit logging daemon. Logs land under
+# /var/log/proteus/ with rotation handled by svlogd's own config.
+
+exec svlogd -tt /var/log/proteus

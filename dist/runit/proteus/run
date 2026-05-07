@@ -1,0 +1,20 @@
+#!/bin/sh
+# managed by proteus — runit service for Void / Artix-Runit
+#
+# Mirrors the artifact shape produced by
+# `init::runit::Runit::schedule_periodic("rotate", 7200, ...)`:
+# runit doesn't ship a cron driver, so a long-running supervised
+# service loops with `sleep` between rotations. Each tick is then
+# supervised the same as any other runit job.
+#
+# Symlink /var/service/proteus -> /etc/sv/proteus to enable.
+# Override the interval by editing /etc/proteus/config.toml's
+# [rotation] interval and re-running `proteus apply`.
+
+exec 2>&1
+INTERVAL="${PROTEUS_INTERVAL:-7200}"
+
+while :; do
+	sleep "$INTERVAL"
+	/usr/bin/proteus rotate --yes || true
+done

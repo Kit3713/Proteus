@@ -1,0 +1,21 @@
+#!/bin/sh
+# managed by proteus — Alpine post-install scriptlet
+#
+# Runs once on `apk add proteus`. Keep it short: Alpine packagers
+# discourage interactive prompts here, and we don't want to enable
+# anything implicitly. The actual rotation cadence comes from the
+# OpenRC periodic shims (see dist/openrc/), not from this script.
+
+cat <<'EOF'
+proteus has been installed.
+
+Run `proteus doctor` to verify your init system, libc, and backend are
+all detected correctly. Then:
+
+  rc-service proteus start         # apply config + first rotation
+  rc-update add proteus default    # enable on boot
+
+Periodic rotation is wired via /etc/periodic/hourly/proteus-rotate; the
+OpenRC `cron` provider must be running for it to fire (`rc-service crond
+start`). See `proteus wiki rotation` for tuning.
+EOF

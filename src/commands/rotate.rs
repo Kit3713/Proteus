@@ -101,6 +101,21 @@ pub fn run(
     let config = Config::default_or_loaded(&config_path)?;
     let mut state = State::load_or_default(&state_path)?;
 
+    // Roadmap M2 "Integration": print the persona banner up front under
+    // `--explain` so the operator sees which OUI pool is in scope even
+    // when the run fails before reaching the per-iface explain trace
+    // (e.g. NM not on the bus). The end-of-run print also includes
+    // this for regular-success runs.
+    if explain {
+        match persona::active_for(&config, None, persona::resolve::default_user_root()) {
+            Some(p) => println!(
+                "explain: active persona = '{}' (oui_pool={:?}; mac_byte_pattern={:?})",
+                p.id, p.oui_pool, p.mac_byte_pattern
+            ),
+            None => println!("explain: no persona active; global [mac] oui_pool in use"),
+        }
+    }
+
     // Roadmap M2: layered exclusion set —
     // 1. Live `/proc/net/arp` snapshot,
     // 2. Default-gateway MAC,
@@ -497,12 +512,9 @@ fn print_report(report: &RotateReport, explain: bool) {
         println!("skipped {}: {}", s.iface, s.reason);
     }
     if explain {
-        // Persona banner: the operator wants to see which OUI pool was
-        // actually in scope. Empty when no persona is active.
-        match &report.active_persona {
-            Some(id) => println!("explain: active persona = '{id}' (persona oui_pool in use)"),
-            None => println!("explain: no persona active; global [mac] oui_pool in use"),
-        }
+        // Persona banner is printed earlier (before NM probe) so the
+        // operator sees it even on a NM-unavailable failure. Here we
+        // just dump the per-iface candidate trace.
         for entry in &report.explain {
             println!(
                 "explain {}: chosen-token={} oui-fallbacks={} candidates={}",
