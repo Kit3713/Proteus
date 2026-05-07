@@ -13,6 +13,17 @@ landed, what is in flight, and what is on the bench. See
 
 (work in progress; see [docs/ROADMAP.md](docs/ROADMAP.md))
 
+### Changed
+
+- chore: trim binary by ~316 KB via feature-flag audit (was 3,083,400 bytes,
+  now 2,760,032 bytes stripped). Dropped `tracing-subscriber/env-filter` (it
+  pulled `matchers` + `regex-automata` + `regex-syntax`, ~175 KB), replaced
+  with a hand-rolled `RUST_LOG` parser on top of `tracing_subscriber::filter::Targets`
+  that supports the same `RUST_LOG=debug` and `RUST_LOG=proteus=trace,zbus=warn`
+  syntax we document. Also dropped `tokio/macros` (no `#[tokio::main]`/`select!`
+  used) and `tracing/attributes` (no `#[instrument]` used). The binary is now
+  comfortably under the 3,000,000-byte CI cap.
+
 ## [0.1.0-alpha] - 2026-05-07
 
 Pre-release. Phase A skeleton, Phase B L2 identity, partial Phase C, partial

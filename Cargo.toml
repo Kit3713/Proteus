@@ -20,12 +20,15 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = { version = "0.8", default-features = false, features = ["parse", "display"] }
 toml_edit = { version = "0.22", default-features = false, features = ["display", "parse"] }
-tracing = { version = "0.1", default-features = false, features = ["std", "attributes"] }
-tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter"] }
+# bloat-trim 2026-05-07: dropped tracing/attributes (no `#[instrument]` in src) — saves proc-macro compile time, tiny .text shrink.
+tracing = { version = "0.1", default-features = false, features = ["std"] }
+# bloat-trim 2026-05-07: dropped tracing-subscriber/env-filter — eliminates `matchers` + `regex-automata` + `regex-syntax` (~175 KB stripped). RUST_LOG is now parsed by a hand-rolled adapter on top of `Targets` in src/logging.rs; supports `RUST_LOG=debug` and `RUST_LOG=proteus=trace,zbus=warn` (the syntax we document).
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt"] }
 tracing-journald = "0.3"
 anyhow = "1"
 thiserror = "2"
 include_dir = "0.7"
 zbus = { version = "5", default-features = false, features = ["tokio"] }
-tokio = { version = "1", default-features = false, features = ["rt", "macros", "sync", "time"] }
+# bloat-trim 2026-05-07: dropped tokio/macros (no `#[tokio::main]`/`select!`/`pin!` used). zbus pulls tokio/sync+time+net via its default feature set, so our `sync`+`time` were already covered transitively.
+tokio = { version = "1", default-features = false, features = ["rt"] }
 getrandom = "0.2"
