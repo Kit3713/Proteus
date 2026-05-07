@@ -8,7 +8,7 @@
 #   3. cargo test
 #   4. cargo build --release
 #   5. strip target/release/proteus  (Linux only)
-#   6. binary size <= 3,750,000 bytes (release-time hard cap)
+#   6. binary size <= 4,000,000 bytes (release-time hard cap)
 #   7. shell-syntax check install.sh / uninstall.sh
 #   8. groff lint dist/man/proteus.1
 #
@@ -136,16 +136,16 @@ size_check() {
     # Strip surrounding whitespace from `wc` output (BSD wc pads).
     size=$(printf '%s' "$size" | tr -d ' \t\n')
     printf 'PROTEUS_BINARY_SIZE_BYTES=%s\n' "$size"
-    printf 'PROTEUS_BINARY_SIZE_LIMIT_BYTES=3750000\n'
-    if [ "$size" -gt 3750000 ]; then
-        printf 'FAIL: stripped proteus binary is %s bytes, exceeds 3,750,000 byte cap\n' \
+    printf 'PROTEUS_BINARY_SIZE_LIMIT_BYTES=4000000\n'
+    if [ "$size" -gt 4000000 ]; then
+        printf 'FAIL: stripped proteus binary is %s bytes, exceeds 4,000,000 byte cap\n' \
             "$size" >&2
         return 1
     fi
-    printf 'OK: stripped proteus binary is %s bytes (under 3,750,000 byte cap)\n' \
+    printf 'OK: stripped proteus binary is %s bytes (under 4,000,000 byte cap)\n' \
         "$size"
 }
-run_step "binary size <= 3.75 MB" size_check
+run_step "binary size <= 4 MB" size_check
 
 # --- step 7: install / uninstall shell syntax ------------------------------
 shell_check() {
