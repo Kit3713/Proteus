@@ -80,9 +80,11 @@ pub async fn read_snapshot(
 ///
 /// `GetSettings` does NOT return secret-typed keys (passwords, PSKs, private
 /// key passphrases, etc.); calling `Update` with a secrets-stripped dict
-/// would overwrite NM's secrets store and break the user's auth. We pull
-/// the `802-1x` secrets via `GetSecrets` first and merge them back into the
-/// settings dict before pushing the update — see issue #114.
+/// would overwrite NM's secrets store and break the user's auth. The shared
+/// `nm::update_with_secrets` helper round-trips every secret-bearing
+/// section through `GetSecrets` before pushing the update — see issues
+/// #114 (initial fix) and #207 (lifted into a shared helper covering the
+/// rotate / DHCP / IPv6 sites too).
 pub async fn write_anonymous_identity(
     conn: &zbus::Connection,
     connection_path: &OwnedObjectPath,
@@ -101,42 +103,14 @@ pub async fn write_anonymous_identity(
         ANONYMOUS_IDENTITY_KEY.to_string(),
         Value::from(new_value.to_string()).try_into()?,
     );
-    // Pull the per-section secrets dict and graft it back onto the settings
-    // dict so passwords/cert-passphrases survive the `Update` round trip. If
-    // the connection has no secrets stored, NM returns an empty section and
-    // `merge_secrets` is a no-op.
-    let secrets: ConnectionSettings = proxy
-        .get_secrets(SECTION)
-        .await
-        .context("calling Settings.Connection.GetSecrets(\"802-1x\")")?;
-    merge_secrets(&mut settings, &secrets);
-    proxy
-        .update(settings)
-        .await
-        .context("calling Settings.Connection.Update")?;
-    Ok(())
+    drop(proxy);
+    crate::nm::update_with_secrets(conn, connection_path, settings).await
 }
 
-/// Merge a `GetSecrets` result into a settings dict in place.
-///
-/// NM's `GetSecrets(setting_name)` returns a dict shaped like
-/// `{ "802-1x": { "password": ..., "private-key-password": ... } }` — i.e.
-/// only the secret-typed keys, keyed by section. We graft each section's
-/// secrets onto the matching section in `settings`, preserving any settings
-/// already in place (so the caller's freshly-modified `anonymous-identity`
-/// survives) and overwriting only on key collisions inside a section.
-///
-/// This is the merge step that fixes issue #114: without it, `Update` would
-/// be called with a dict that lacks the secret keys NM already has stored,
-/// and NM would interpret that as "the user removed their password".
-pub fn merge_secrets(settings: &mut ConnectionSettings, secrets: &ConnectionSettings) {
-    for (section_name, section_secrets) in secrets {
-        let target = settings.entry(section_name.clone()).or_default();
-        for (key, value) in section_secrets {
-            target.insert(key.clone(), value.clone());
-        }
-    }
-}
+/// Re-export of `nm::merge_secrets` so existing tests in this module keep
+/// compiling. New callers should reach for `crate::nm::merge_secrets` (or
+/// the higher-level `nm::update_with_secrets`) directly — see issue #207.
+pub use crate::nm::merge_secrets;
 
 fn lookup_str(
     section: &std::collections::HashMap<String, zbus::zvariant::OwnedValue>,

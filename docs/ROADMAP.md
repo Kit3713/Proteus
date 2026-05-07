@@ -18,14 +18,14 @@ For design rationale and the original phase model, see [`PLAN.md`](PLAN.md). For
 
 The v0.2.7-alpha review surfaced six critical/high issues that ship before any v0.3 work starts. Hotfix scope is intentionally minimal — bug fixes only, no feature work, no roadmap restructure, no docs reshuffle.
 
-- ⏳ 🔴 **#207 (critical, regression)** — `Connection.Update()` doesn't merge secrets in `src/nm/apply.rs` (rotate), `src/ipv6/nm.rs`, `src/nm/dhcp.rs`. Same class as #114, fix landed in only one of four sites. Every `proteus rotate` on a WPA-PSK Wi-Fi profile silently wipes the stored PSK. Fix lifts `merge_secrets` into a shared `nm::update_with_secrets(proxy, settings, secret_sections)` helper called from all four sites.
-- ⏳ 🟠 **#209 (high, regression)** — `enterprise_wifi` originals keyed by display id; #124 migration silently deletes them on every state load. Fix routes through `nm::apply::read_connection_uuid` and keys by uuid (mirroring the working DHCP pattern).
-- ⏳ 🟠 **#208 (high, regression)** — `capture_original_mac` (rotate.rs:264) falls back to NM's live `hw_address`, undoing the #123 factory-MAC guard on drivers without phy80211 / `ETHTOOL_GPERMADDR`. Fix drops the fallback and surfaces "no factory MAC captured" in `proteus status`.
-- ⏳ 🟠 **#200 (high, test)** — `cargo test --release` fails on any host with `eth0` because `captured_factory_mac_persists_to_disk` reads real `/sys/class/net/eth0`. Fix wires the existing `permanent_address_under` injection point through `capture_original_mac_under` and uses `TempRoot` in the test.
-- ⏳ 🟠 **#210 (medium, security)** — `points_to_resolved_stub` falls open on `canonicalize` failure (dangling-link case bypasses the DNS detect-and-defer). Fix drops the suffix-match fallback and returns `false` when canonicalize errors.
-- ⏳ 🟠 **#201 (medium)** — ANSI warning leaks under `RUST_LOG=warn` / `-v`; `NO_COLOR=1` env still ignored. Fix consults `NO_COLOR` and stderr-isatty in `cli/mod.rs::run` before passing into `logging::init`.
+- ✅ 🔴 **#207 (critical, regression)** — `Connection.Update()` doesn't merge secrets in `src/nm/apply.rs` (rotate), `src/ipv6/nm.rs`, `src/nm/dhcp.rs`. Same class as #114, fix landed in only one of four sites. Every `proteus rotate` on a WPA-PSK Wi-Fi profile silently wipes the stored PSK. Fix lifts `merge_secrets` into a shared `nm::update_with_secrets(proxy, settings, secret_sections)` helper called from all four sites.
+- ✅ 🟠 **#209 (high, regression)** — `enterprise_wifi` originals keyed by display id; #124 migration silently deletes them on every state load. Fix routes through `nm::apply::read_connection_uuid` and keys by uuid (mirroring the working DHCP pattern).
+- ✅ 🟠 **#208 (high, regression)** — `capture_original_mac` (rotate.rs:264) falls back to NM's live `hw_address`, undoing the #123 factory-MAC guard on drivers without phy80211 / `ETHTOOL_GPERMADDR`. Fix drops the fallback and surfaces "no factory MAC captured" in `proteus status`.
+- ✅ 🟠 **#200 (high, test)** — `cargo test --release` fails on any host with `eth0` because `captured_factory_mac_persists_to_disk` reads real `/sys/class/net/eth0`. Fix wires the existing `permanent_address_under` injection point through `capture_original_mac_under` and uses `TempRoot` in the test.
+- ✅ 🟠 **#210 (medium, security)** — `points_to_resolved_stub` falls open on `canonicalize` failure (dangling-link case bypasses the DNS detect-and-defer). Fix drops the suffix-match fallback and returns `false` when canonicalize errors.
+- ✅ 🟠 **#201 (medium)** — ANSI warning leaks under `RUST_LOG=warn` / `-v`; `NO_COLOR=1` env still ignored. Fix consults `NO_COLOR` and stderr-isatty in `cli/mod.rs::run` before passing into `logging::init`.
 
-Once v0.2.8-alpha tags and ships, Milestone 1 starts.
+All six hotfixes have landed; v0.2.8-alpha is ready to tag. Milestone 1 work begins.
 
 ## Cycle overview
 
@@ -203,12 +203,12 @@ Cross-cutting polish; runs alongside the other milestones.
 
 The medium/low-severity issues from the v0.2.7-alpha review land here as the milestones progress. The critical/high cluster ships in v0.2.8-alpha before Milestone 1 starts.
 
-- ⏳ 🟠 **#204** — `State` has no `schema_version` despite #127's CHANGELOG claim. Add `schema_version: u32` with a migration ladder; bump `CURRENT_SCHEMA_VERSION` for the persona / per-SSID state additions in Milestones 2/3 anyway.
+- ✅ 🟠 **#204** — `State` now carries `schema_version: u32` with a migration ladder in `migrate_state`. v0 → v1 step replays the existing uuid-keying migration; v2 reserved for the persona / per-SSID additions landing in Milestones 2/3.
 - ⏳ 🟠 **#203** — `state_lock` retry budget (1 s) too short for systemd-timer overlap with interactive `apply`. `PROTEUS_LOCK_TIMEOUT_MS` env var, default raised to 5 s, dispatcher/timer units set 10 s.
 - ⏳ 🟠 **#202** — `factory::EthtoolBin` shells out via `$PATH`; pin to `/usr/sbin/ethtool` (matching the #121 hardening). Goes with the security review pass.
-- ⏳ 🟡 **#211** — Exit codes 64/65/75 cleanup (`CONFIRMATION_REQUIRED` vs `LOCK_BUSY` vs `CONFIG_ERROR`). Pure CLI ergonomics.
-- ⏳ 🟡 **#205** — `write_atomic` mode bits depend on caller umask. Add `fchmod(0o600)` after open. Goes with the security review pass.
-- ⏳ 🟡 **#206-A** — `actions/checkout@v6` may not exist; pin to `@v4` or a SHA. Trivial CI fix, do early.
+- ✅ 🟡 **#211** — Exit codes 64/65/75 cleanup. `LOCK_BUSY` (75) split out from `CONFIG_ERROR`/`CONFIRMATION_REQUIRED`; `acquire_state_lock_or_print` now exits 75 on contention so wrappers can do the retry-loop pattern.
+- ✅ 🟡 **#205** — `write_atomic` already lands at `0o600` via `OpenOptions::create_new(true).mode(0o600)` and is verified by the `write_atomic_writes_0600_mode` test. No change needed.
+- ✅ 🟡 **#206-A** — `actions/checkout@v6` pinned to `@v4` across `.github/workflows/ci.yml` and `.github/workflows/release.yml`.
 - ⏳ 🟡 **#206-D** — Unify `TempRoot` / `TestSysfs` naming. Trivial cleanup.
 - ⏳ 🟡 **#206-E** — `EthtoolBin::permanent` doesn't validate MAC shape. Pairs with #202.
 - ⏳ 🟡 **#206-F** — Perf doc reproducibility recipe is missing the rebuild step.

@@ -301,19 +301,26 @@ fn points_to_resolved_stub(target: &Path, expected: &Path, link_path: &Path) -> 
     // miss the relative variant.
     const STUB_TAIL: &str = "run/systemd/resolve/stub-resolv.conf";
 
+    let _ = target; // kept in the signature so callers don't have to change
     if target == expected {
         return true;
     }
     // Canonicalize to follow the full symlink chain. Defends against an
     // attacker who chains symlinks so the first read_link looks like the
-    // stub but actually resolves to attacker-controlled content. If
-    // canonicalization succeeds, *only* the canonical result decides.
-    if let Ok(canon_link) = std::fs::canonicalize(link_path) {
-        return canon_link == *expected || canon_link.to_string_lossy().ends_with(STUB_TAIL);
+    // stub but actually resolves to attacker-controlled content.
+    //
+    // Issue #210: previously, a `canonicalize` failure (broken link, missing
+    // target, dangling chain) fell back to a literal tail-string match on
+    // the read_link result. That fall-open behaviour bypassed the DNS
+    // detect-and-defer guard — an attacker who plants
+    // `/etc/resolv.conf -> /var/lib/proteus-evil/run/systemd/resolve/stub-resolv.conf`
+    // pointing at a non-existent target would canon-fail and then pass the
+    // tail check. We now refuse: if canonicalize errors, the link does NOT
+    // count as pointing at the well-known stub, so the caller defers.
+    match std::fs::canonicalize(link_path) {
+        Ok(canon_link) => canon_link == *expected || canon_link.to_string_lossy().ends_with(STUB_TAIL),
+        Err(_) => false,
     }
-    // Canonicalization failed (broken link, missing target). Fall back to
-    // the literal tail check on the read_link string.
-    target.to_string_lossy().ends_with(STUB_TAIL)
 }
 
 fn check_foreign_dropin(paths: &Paths) -> Option<DeferReason> {
@@ -558,6 +565,25 @@ mod tests {
         // Replace symlink with a real file.
         fs::remove_file(root.path.join("etc/resolv.conf")).unwrap();
         fs::write(root.path.join("etc/resolv.conf"), "nameserver 1.1.1.1\n").unwrap();
+        let paths = Paths::rooted_at(&root.path);
+        let probe = MockProbe::default();
+        let reason = detect_defer(&paths, &probe).expect("should defer");
+        assert!(matches!(reason, DeferReason::CustomResolvConf { .. }));
+    }
+
+    /// Issue #210: a symlink chain that *names* the well-known stub but
+    /// canonicalize-fails (e.g. dangling target) must NOT be accepted as
+    /// "points at the stub". Previously the suffix-match fallback let an
+    /// attacker plant such a chain and pass the DNS guard. The fix drops
+    /// the fallback; the guard now defers when canonicalize errors.
+    #[test]
+    fn dangling_resolv_conf_chain_trips_the_guard() {
+        let root = clean_root();
+        // Replace the legitimate stub symlink with one whose tail matches
+        // STUB_TAIL but whose target does not exist.
+        fs::remove_file(root.path.join("etc/resolv.conf")).unwrap();
+        let dangling = root.path.join("does/not/exist/run/systemd/resolve/stub-resolv.conf");
+        symlink(&dangling, root.path.join("etc/resolv.conf")).unwrap();
         let paths = Paths::rooted_at(&root.path);
         let probe = MockProbe::default();
         let reason = detect_defer(&paths, &probe).expect("should defer");

@@ -235,6 +235,16 @@ async fn enable_one(
     .to_string();
     let new_value = enterprise_wifi::anonymous_identity_for(&realm);
 
+    // Issue #209: state must be keyed by `connection.uuid`, not the human
+    // display id. The display id can collide between profiles, and the
+    // load-time `migrate_connection_keys_to_uuid` migration in #124 silently
+    // drops anything that's not uuid-shaped — which would have wiped every
+    // enterprise-wifi original on the next state load.
+    let uuid = nm::apply::read_connection_uuid(conn, &path)
+        .await
+        .context("reading connection.uuid for state keying")?
+        .ok_or_else(|| anyhow!("NM connection '{connection}' has no `connection.uuid`"))?;
+
     // Cache the pre-Proteus value exactly once. Re-runs on a connection we
     // already manage do NOT clobber the cached original — that's how revert
     // can put the profile back the way it was on first apply, even after
@@ -242,7 +252,7 @@ async fn enable_one(
     state
         .originals
         .connections
-        .entry(connection.to_string())
+        .entry(uuid)
         .or_insert_with(|| ConnectionOriginals {
             anonymous_identity: snapshot.anonymous_identity.clone(),
             dhcp_settings: None,
@@ -273,6 +283,15 @@ async fn disable_one(
     }
 
     eap_nm::write_anonymous_identity(conn, &path, "").await?;
+
+    // Issue #209: untag by uuid (the canonical state key), with a fallback
+    // pass that strips any legacy id-keyed entry we still find. The legacy
+    // strip is defensive — `migrate_connection_keys_to_uuid` already drops
+    // those at load time — but the disable path is the right place to
+    // also remove any entry that survived a partial migration.
+    if let Some(uuid) = nm::apply::read_connection_uuid(conn, &path).await.ok().flatten() {
+        let _ = state.originals.connections.remove(&uuid);
+    }
     let _ = state.originals.connections.remove(connection);
 
     Ok(DisableOutcome::Cleared {
@@ -303,17 +322,13 @@ fn list_eap_connections(state: &State) -> Result<Vec<ConnectionStatus>> {
         let paths = settings_proxy.list_connections().await.unwrap_or_default();
         let mut out = Vec::with_capacity(paths.len());
         for path in paths {
-            match read_one_for_status(&conn, &path).await {
+            match read_one_for_status(&conn, &path, state).await {
                 Ok(Some(row)) => out.push(row),
                 Ok(None) => {}
                 Err(e) => {
                     tracing::debug!("enterprise-wifi: skipping connection: {e:#}");
                 }
             }
-        }
-        // Mark proteus-managed connections via the cached originals.
-        for row in &mut out {
-            row.proteus_managed = state.originals.connections.contains_key(&row.name);
         }
         // Stable order so JSON output is deterministic.
         out.sort_by(|a, b| a.name.cmp(&b.name));
@@ -324,6 +339,7 @@ fn list_eap_connections(state: &State) -> Result<Vec<ConnectionStatus>> {
 async fn read_one_for_status(
     conn: &zbus::Connection,
     path: &OwnedObjectPath,
+    state: &State,
 ) -> Result<Option<ConnectionStatus>> {
     let snapshot = eap_nm::read_snapshot(conn, path).await?;
     if !snapshot.has_eap_section {
@@ -332,6 +348,11 @@ async fn read_one_for_status(
     let id = nm::apply::read_connection_id(conn, path)
         .await?
         .ok_or_else(|| anyhow!("connection has no `connection.id`"))?;
+    // Issue #209: state.originals.connections keys by uuid, not display id.
+    let proteus_managed = match nm::apply::read_connection_uuid(conn, path).await? {
+        Some(uuid) => state.originals.connections.contains_key(&uuid),
+        None => false,
+    };
     Ok(Some(ConnectionStatus {
         name: id,
         identity: snapshot
@@ -339,7 +360,7 @@ async fn read_one_for_status(
             .as_deref()
             .map(enterprise_wifi::redact_identity),
         anonymous_identity: snapshot.anonymous_identity,
-        proteus_managed: false, // filled in by the caller from state.
+        proteus_managed,
     }))
 }
 
@@ -425,16 +446,18 @@ mod tests {
 
     #[test]
     fn disable_untags_connection_in_state() {
+        // Issue #209: originals are keyed by NM connection.uuid (uuid-shaped).
+        // The disable_one path strips the entry; this test mirrors that.
         let mut state = State::default();
+        let uuid = "12345678-1234-1234-1234-123456789abc".to_string();
         state.originals.connections.insert(
-            "MyWiFi".to_string(),
+            uuid.clone(),
             ConnectionOriginals {
                 anonymous_identity: Some("old@x.y".to_string()),
                 dhcp_settings: None,
             },
         );
-        // Simulate the line from `disable_one` that drops the cached entry.
-        state.originals.connections.remove("MyWiFi");
-        assert!(!state.originals.connections.contains_key("MyWiFi"));
+        state.originals.connections.remove(&uuid);
+        assert!(!state.originals.connections.contains_key(&uuid));
     }
 }

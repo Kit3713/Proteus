@@ -139,6 +139,17 @@ use crate::state_lock::{self, LockError, StateLockGuard};
 ///
 /// Issue #126: every mutating command entry point calls this so two
 /// concurrent `proteus` processes serialize on `<state-dir>/.lock`.
+///
+/// Issue #211: lock contention now exits with the dedicated `LOCK_BUSY` (75)
+/// code so wrappers can distinguish a retryable contention from an
+/// unrecoverable config error (65). The two-and-a-half-line bash retry
+/// pattern wrapping `proteus apply` becomes legible:
+///
+/// ```sh
+/// while ! proteus apply --yes; do
+///     case $? in 75) sleep 2 ;; *) exit $? ;; esac
+/// done
+/// ```
 pub(crate) fn acquire_state_lock_or_print(
     override_state_path: Option<&Path>,
 ) -> std::result::Result<StateLockGuard, u8> {
@@ -150,11 +161,11 @@ pub(crate) fn acquire_state_lock_or_print(
                 "proteus: another proteus run holds the state lock at {}; retry shortly",
                 path.display()
             );
-            Err(exit::CONFIG_ERROR)
+            Err(exit::LOCK_BUSY)
         }
         Err(e) => {
             eprintln!("proteus: failed to acquire state lock: {e:#}");
-            Err(exit::CONFIG_ERROR)
+            Err(exit::GENERIC_ERROR)
         }
     }
 }
@@ -419,9 +430,9 @@ mod write_atomic_tests {
     }
 
     #[test]
-    fn acquire_state_lock_or_print_returns_config_error_when_busy() {
-        // Issue #126: a second mutating-command entry point must bail with
-        // CONFIG_ERROR (65) rather than blocking when another process holds
+    fn acquire_state_lock_or_print_returns_lock_busy_when_busy() {
+        // Issue #126 / #211: a second mutating-command entry point must bail
+        // with LOCK_BUSY (75) rather than blocking when another process holds
         // the lock. Simulate the "another process" by taking the kernel flock
         // through a separate fd, then call the helper.
         //
@@ -448,8 +459,8 @@ mod write_atomic_tests {
         let result = acquire_state_lock_or_print(Some(&state));
         assert_eq!(
             result.err(),
-            Some(exit::CONFIG_ERROR),
-            "busy lock must surface CONFIG_ERROR"
+            Some(exit::LOCK_BUSY),
+            "busy lock must surface LOCK_BUSY (75)"
         );
 
         unsafe {

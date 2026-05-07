@@ -79,13 +79,13 @@ jobs:
     runs-on: ubuntu-latest
     container: fedora:43
     steps:
-      # `actions/checkout@v6` falls back to a tarball download when git is
+      # `actions/checkout@v4` falls back to a tarball download when git is
       # absent inside the container, which leaves no .git for the
       # SOURCE_DATE_EPOCH computation below. Install git first so the
       # checkout uses native git and preserves the repository history.
       - name: Install git for checkout
         run: dnf install -y git
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v4
         with:
           # Need the tagged commit, not a shallow snapshot, so we can read
           # the commit timestamp for SOURCE_DATE_EPOCH.
@@ -156,7 +156,7 @@ jobs:
     env:
       CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
       - name: Install aarch64 cross-compile toolchain
@@ -230,7 +230,7 @@ jobs:
     steps:
       - name: Install git for checkout
         run: dnf install -y git
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v4
       - name: Install rpmbuild toolchain
         run: dnf install -y rpm-build rpmdevtools tar gzip gcc pkg-config dbus-devel openssl-devel rust cargo systemd-rpm-macros
       - name: Set up rpmbuild tree
@@ -287,7 +287,7 @@ jobs:
         run: |
           apt-get update
           apt-get install -y --no-install-recommends git ca-certificates
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v4
       - name: Install Debian build tooling
         run: |
           set -euo pipefail
@@ -363,7 +363,7 @@ jobs:
     steps:
       - name: Install git for checkout
         run: pacman -Sy --noconfirm --needed git
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v4
       - name: Refresh pacman and install helpers
         run: |
           set -euo pipefail

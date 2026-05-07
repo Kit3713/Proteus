@@ -83,7 +83,16 @@ pub struct Cli {
 /// sees both the top-level message and the underlying cause(s).
 pub fn run() -> ExitCode {
     let cli = Cli::parse();
-    logging::init(cli.verbose, cli.quiet, cli.no_color);
+    // Issue #201: ANSI codes leaked under `RUST_LOG=warn` / `-v` because
+    // `logging::init` only consulted the `--no-color` flag. Resolve color
+    // policy here so all three knobs participate:
+    //
+    //   1. explicit `--no-color` flag — wins outright
+    //   2. `NO_COLOR` env var (set to anything non-empty) — wins outright
+    //   3. stderr is not a TTY — implicit no-color so piping into a file or
+    //      journal grep doesn't capture ANSI escapes
+    let no_color_resolved = cli.no_color || color_disabled_by_env_or_tty();
+    logging::init(cli.verbose, cli.quiet, no_color_resolved);
     if let Err(code) = validate_config_override(cli.config.as_deref(), &cli.command) {
         return ExitCode::from(code);
     }
@@ -95,6 +104,28 @@ pub fn run() -> ExitCode {
         }
     };
     ExitCode::from(code)
+}
+
+/// True if either `NO_COLOR` is set to a non-empty value or stderr is not a
+/// TTY. Either condition means "do not emit ANSI escape codes". See the
+/// no-color spec at https://no-color.org/.
+fn color_disabled_by_env_or_tty() -> bool {
+    if std::env::var_os("NO_COLOR")
+        .map(|v| !v.is_empty())
+        .unwrap_or(false)
+    {
+        return true;
+    }
+    !stderr_is_tty()
+}
+
+/// Direct `isatty(stderr)` via libc — already a transitive dep through zbus
+/// and added directly for the lock fcntl. No new crates needed.
+fn stderr_is_tty() -> bool {
+    // SAFETY: `libc::isatty` only reads the descriptor's terminal flag; it
+    // has no side effects and accepts any int. Stderr's fd is the standard
+    // 2.
+    unsafe { libc::isatty(libc::STDERR_FILENO) != 0 }
 }
 
 /// When the user passes `--config <path>` explicitly we treat a missing file

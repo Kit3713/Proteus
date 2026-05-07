@@ -29,7 +29,8 @@ pub mod version;
 pub mod wiki;
 
 pub mod exit {
-    // Stable, documented exit codes. Do not renumber.
+    // Stable, documented exit codes. Do not renumber published codes — the
+    // installer / wrappers / man page document them. New codes go above 70.
     pub const SUCCESS: u8 = 0;
     pub const GENERIC_ERROR: u8 = 1;
     // 2 is reserved for clap's invalid-args default.
@@ -47,6 +48,13 @@ pub mod exit {
     /// keep working; the alias just makes the intent legible at the call
     /// site.
     pub const CONFIRMATION_REQUIRED: u8 = CONFIG_ERROR;
+
+    /// Issue #211: state-lock contention has its own code so wrappers can
+    /// distinguish "another proteus run is in progress" (retryable) from a
+    /// generic config error (not retryable). Picked 75 — sysexits.h's
+    /// `EX_TEMPFAIL` ("temporary failure; try again") which is the closest
+    /// semantic fit.
+    pub const LOCK_BUSY: u8 = 75;
 }
 
 #[cfg(test)]
@@ -74,6 +82,7 @@ mod tests {
         assert_eq!(exit::PERMISSION_ERROR, 66);
         assert_eq!(exit::SYSTEM_NOT_SUPPORTED, 70);
         assert_eq!(exit::CONFIRMATION_REQUIRED, 65);
+        assert_eq!(exit::LOCK_BUSY, 75);
     }
 
     #[test]

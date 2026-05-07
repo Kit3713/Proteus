@@ -171,20 +171,17 @@ pub fn is_proteus_managed(settings: &ConnectionSettings) -> bool {
 }
 
 /// Push a settings dict back to NM via `Settings.Connection.Update`.
+///
+/// Issue #207: routed through the shared `nm::update_with_secrets` helper
+/// so DHCP/IPv6 mutations on a Wi-Fi or 802.1X profile preserve the
+/// stored PSK / EAP password. The trailing `_proxy` arg is retained for
+/// signature stability with older callers.
 pub async fn update_connection(
     conn: &zbus::Connection,
     path: &OwnedObjectPath,
     settings: ConnectionSettings,
 ) -> Result<()> {
-    let proxy = ConnectionProxy::builder(conn)
-        .path(path.clone())?
-        .build()
-        .await?;
-    proxy
-        .update(settings)
-        .await
-        .context("calling Settings.Connection.Update")?;
-    Ok(())
+    super::update_with_secrets(conn, path, settings).await
 }
 
 /// Read the current settings dict for a connection.

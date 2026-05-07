@@ -243,26 +243,41 @@ async fn rotate_one(
     })
 }
 
-/// Issue #123: cache the BURNED-IN factory MAC, never a live (possibly
+/// Issue #123 / #208: cache the BURNED-IN factory MAC, never a live (possibly
 /// cloned) value.
 ///
 /// The kernel surfaces the current netdev MAC at
 /// `/sys/class/net/<iface>/address`, which after even one prior rotation is
 /// the cloned value — caching that as "original" makes `proteus revert`
-/// restore to a non-original. We instead consult `factory::permanent_address`
-/// which prefers `phy80211/macaddress` (Wi-Fi) then `ethtool -P` (ethernet)
-/// before falling back to the live address (and only when the kernel agrees
-/// it's burned-in via `addr_assign_type == NET_ADDR_PERM`).
+/// restore to a non-original. We consult `factory::permanent_address` which
+/// prefers `phy80211/macaddress` (Wi-Fi) then `ethtool -P` (ethernet) and
+/// only accepts the live `address` when `addr_assign_type == NET_ADDR_PERM`.
 ///
-/// `hw_hint` is the NM-reported `HwAddress`. We only consult it when every
-/// other source produces nothing, which in practice means an unusual driver
-/// that exposes neither phy80211 nor ethtool's permanent-address ioctl.
-fn capture_original_mac(state: &mut State, iface: &str, hw_hint: Option<&str>) {
+/// Issue #208 dropped the previous `hw_hint` fallback that consulted NM's
+/// live `HwAddress`. NM surfaces whatever the kernel currently reports — on
+/// a driver without phy80211 *and* without `ETHTOOL_GPERMADDR`, that's the
+/// live address, which post-rotation is the cloned MAC. Caching it as
+/// "factory" silently undid the #123 guard. The new contract: when
+/// `factory::permanent_address` returns `None`, we leave `original_macs`
+/// untouched and let `proteus status` surface "no factory MAC captured" so
+/// the operator can intervene rather than the tool quietly recording a
+/// known-cloned value as the restoration target.
+fn capture_original_mac(state: &mut State, iface: &str, _hw_hint: Option<&str>) {
+    capture_original_mac_under(state, iface, |i| factory::permanent_address(i))
+}
+
+/// Test-injectable form of [`capture_original_mac`]. The closure stands in
+/// for `factory::permanent_address` so unit tests don't have to read the
+/// real `/sys/class/net`. Issue #200.
+fn capture_original_mac_under(
+    state: &mut State,
+    iface: &str,
+    permanent: impl Fn(&str) -> Option<String>,
+) {
     if state.original_macs.contains_key(iface) {
         return;
     }
-    let mac = factory::permanent_address(iface).or_else(|| hw_hint.map(str::to_string));
-    if let Some(mac) = mac {
+    if let Some(mac) = permanent(iface) {
         state.original_macs.insert(iface.to_string(), mac);
     }
 }
@@ -311,7 +326,17 @@ fn print_report(report: &RotateReport) {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use super::*;
+
+    /// Build a stub `permanent_address` lookup so tests don't poke real sysfs.
+    /// Issue #200: the previous test read `/sys/class/net/eth0` directly which
+    /// flaked on hosts that actually had an `eth0`. The injected closure is
+    /// the production-equivalent of `factory::permanent_address_under`.
+    fn stub_permanent(map: HashMap<&'static str, &'static str>) -> impl Fn(&str) -> Option<String> {
+        move |iface| map.get(iface).map(|s| s.to_string())
+    }
 
     /// Issue #119 — sacred-originals invariant. `rotate_one` now saves
     /// state.json AFTER `capture_original_mac` and BEFORE the
@@ -324,8 +349,12 @@ mod tests {
         let state_path = dir.path.join("state.json");
 
         let mut state = State::default();
-        capture_original_mac(&mut state, "wlan0", Some("aa:bb:cc:dd:ee:ff"));
-        capture_original_mac(&mut state, "eth0", Some("11:22:33:44:55:66"));
+        let lookup = stub_permanent(HashMap::from([
+            ("wlan0", "aa:bb:cc:dd:ee:ff"),
+            ("eth0", "11:22:33:44:55:66"),
+        ]));
+        capture_original_mac_under(&mut state, "wlan0", &lookup);
+        capture_original_mac_under(&mut state, "eth0", &lookup);
         persist_capture_metadata(&mut state);
 
         state.save(&state_path).expect("state.save");
@@ -349,12 +378,31 @@ mod tests {
     #[test]
     fn capture_original_mac_is_idempotent() {
         let mut state = State::default();
-        capture_original_mac(&mut state, "wlan0", Some("aa:bb:cc:dd:ee:ff"));
-        capture_original_mac(&mut state, "wlan0", Some("00:00:00:00:00:00"));
+        let first = stub_permanent(HashMap::from([("wlan0", "aa:bb:cc:dd:ee:ff")]));
+        let second = stub_permanent(HashMap::from([("wlan0", "00:00:00:00:00:00")]));
+        capture_original_mac_under(&mut state, "wlan0", &first);
+        capture_original_mac_under(&mut state, "wlan0", &second);
         assert_eq!(
             state.original_macs.get("wlan0").map(String::as_str),
             Some("aa:bb:cc:dd:ee:ff"),
             "second capture must not overwrite (sacred-originals)"
+        );
+    }
+
+    /// Issue #208 — when no factory source produces a MAC (no phy80211, no
+    /// `ethtool -P`, and the live address fails the `addr_assign_type` guard),
+    /// `capture_original_mac` must leave `original_macs` empty rather than
+    /// papering over with a known-cloned value. The previous behaviour fell
+    /// back to NM's live `HwAddress`, silently undoing the #123 guard on
+    /// drivers without phy80211 / `ETHTOOL_GPERMADDR`.
+    #[test]
+    fn capture_skips_when_factory_lookup_yields_none() {
+        let mut state = State::default();
+        let empty = stub_permanent(HashMap::new());
+        capture_original_mac_under(&mut state, "eth0", &empty);
+        assert!(
+            state.original_macs.get("eth0").is_none(),
+            "no factory source — must not cache the live (cloned) address"
         );
     }
 }

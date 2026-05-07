@@ -10,9 +10,31 @@ use serde::{Deserialize, Serialize};
 use crate::commands;
 use crate::kill_switch::KillSwitchState;
 
+/// Issue #204: state.json schema version. Bumped when a structural change
+/// requires a migration (not a backwards-compatible additive field). The
+/// load path runs the migration ladder before handing the state out so old
+/// files keep working without operator intervention.
+///
+/// Ladder so far:
+///   0 — implicit pre-versioning (anything missing this field is treated as 0)
+///   1 — `state.originals.connections` and `state.managed.connections` keyed
+///       by NM `connection.uuid` instead of display id (issue #124).
+///       Migration drops legacy entries (already implemented in
+///       `migrate_connection_keys_to_uuid`).
+///
+/// Reserved upcoming versions:
+///   2 — persona / per-SSID state additions (Milestones 2 / 3).
+pub const CURRENT_SCHEMA_VERSION: u32 = 1;
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct State {
+    /// Issue #204: schema version. Defaults to 0 for state files written
+    /// before this field landed; the migration ladder in `migrate_state`
+    /// upgrades them in place on load. Anything written by a current build
+    /// stamps this with `CURRENT_SCHEMA_VERSION`.
+    #[serde(default)]
+    pub schema_version: u32,
     /// Burned-in (factory) MAC address per interface, captured the first time
     /// Proteus rotates that iface and never re-captured. The value MUST be
     /// the permanent driver-reported address — NOT whatever the kernel
@@ -199,7 +221,7 @@ impl State {
         };
         match serde_json::from_slice::<State>(&bytes) {
             Ok(mut state) => {
-                migrate_connection_keys_to_uuid(&mut state);
+                migrate_state(&mut state);
                 Ok(Some(state))
             }
             Err(e) => {
@@ -222,9 +244,26 @@ impl State {
     }
 
     pub fn save(&self, path: &Path) -> Result<()> {
-        let bytes = serde_json::to_vec_pretty(self)?;
+        // Always stamp the current schema version on write so we know what
+        // shape the file is in next time `migrate_state` runs.
+        let mut to_write = self.clone();
+        to_write.schema_version = CURRENT_SCHEMA_VERSION;
+        let bytes = serde_json::to_vec_pretty(&to_write)?;
         commands::write_atomic(path, &bytes)
     }
+}
+
+/// Issue #204: run every applicable migration step, in order, so a state
+/// file written by an older Proteus arrives at the current schema before
+/// callers see it. Each step is idempotent — running the ladder against an
+/// already-current state is a no-op.
+fn migrate_state(state: &mut State) {
+    if state.schema_version < 1 {
+        // v0 → v1: drop legacy id-keyed connection entries. Issue #124.
+        migrate_connection_keys_to_uuid(state);
+        state.schema_version = 1;
+    }
+    // v1 → v2 reserved for persona / per-SSID additions (Milestones 2 / 3).
 }
 
 /// Issue #124: `state.originals.connections` and `state.managed.connections`
@@ -306,6 +345,41 @@ mod tests {
             Some("aa:bb:cc:dd:ee:ff")
         );
         assert!(s.managed.interfaces.is_empty());
+    }
+
+    /// Issue #204: a state file written before `schema_version` existed has
+    /// `schema_version = 0` after parse. The migration ladder advances it to
+    /// `CURRENT_SCHEMA_VERSION` and replays every applicable migration step.
+    #[test]
+    fn migration_ladder_advances_unversioned_state() {
+        let json = r#"{"original_macs":{"wlan0":"aa:bb:cc:dd:ee:ff"}}"#;
+        let mut s: State = serde_json::from_str(json).unwrap();
+        assert_eq!(s.schema_version, 0, "unversioned files default to 0");
+        migrate_state(&mut s);
+        assert_eq!(s.schema_version, CURRENT_SCHEMA_VERSION);
+    }
+
+    /// Save round-trip stamps the current schema version onto the file
+    /// even when the in-memory state has stale-version 0 (which can happen
+    /// if a caller built `State::default()` and then mutated fields without
+    /// going through `load`).
+    #[test]
+    fn save_stamps_current_schema_version() {
+        let dir =
+            std::env::temp_dir().join(format!("proteus-state-stamp-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("state.json");
+        let s = State::default();
+        assert_eq!(s.schema_version, 0);
+        s.save(&path).unwrap();
+        let bytes = fs::read(&path).unwrap();
+        let json = std::str::from_utf8(&bytes).unwrap();
+        assert!(
+            json.contains(&format!("\"schema_version\": {CURRENT_SCHEMA_VERSION}")),
+            "save did not stamp schema_version: {json}"
+        );
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

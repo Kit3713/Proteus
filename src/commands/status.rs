@@ -441,6 +441,28 @@ fn mac_rotation_state(state: Option<&State>, config: &Config) -> (String, String
         .unwrap_or(false);
     if any_managed {
         let n = state.map(|s| s.managed.interfaces.len()).unwrap_or(0);
+        // Issue #208: surface interfaces that have been rotated but have no
+        // factory MAC captured. Without a captured original, `proteus revert`
+        // is a no-op for that interface — the operator should know.
+        let missing: Vec<&str> = state
+            .map(|s| {
+                s.managed
+                    .interfaces
+                    .keys()
+                    .filter(|iface| !s.original_macs.contains_key(*iface))
+                    .map(String::as_str)
+                    .collect()
+            })
+            .unwrap_or_default();
+        if !missing.is_empty() {
+            return (
+                "applied".to_string(),
+                format!(
+                    "{n} interface(s) tracked; no factory MAC captured for {} (revert will be a no-op there); see `proteus current`",
+                    missing.join(", ")
+                ),
+            );
+        }
         return (
             "applied".to_string(),
             format!("{n} interface(s) tracked; see `proteus current`"),

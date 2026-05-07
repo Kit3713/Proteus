@@ -5,6 +5,7 @@ pub mod dhcp;
 
 use anyhow::{Context, Result, anyhow, bail};
 use zbus::proxy;
+use zbus::zvariant::OwnedObjectPath;
 
 use crate::mac::Mac;
 
@@ -153,6 +154,102 @@ pub fn mac_string_to_bytes(s: &str) -> Result<Vec<u8>> {
         .parse()
         .with_context(|| format!("parsing MAC '{s}' for NM cloned-mac-address (ay)"))?;
     Ok(mac.octets().to_vec())
+}
+
+/// Connection-setting sections that may carry NM-stored secrets. Whenever we
+/// `Settings.Connection.Update` a profile, we must merge each of these
+/// sections' `GetSecrets` results back in or NM will interpret the absence of
+/// the keys as "user cleared their password" and wipe its secrets store.
+///
+/// Issue #207 (and original #114 fix): four call sites mutate connection
+/// settings via `Update` — `nm::apply::set_cloned_mac`, `nm::dhcp::update_connection`,
+/// `ipv6::nm::apply_settings`, and `enterprise_wifi::nm::write_anonymous_identity`.
+/// Each one must round-trip through this list, not just the section it
+/// directly touches: rotating a Wi-Fi MAC must preserve the WPA-PSK; updating
+/// 802.1X anonymous-identity must preserve PEAP/EAP-TLS passwords; updating
+/// IPv6 keys on an enterprise Wi-Fi connection must preserve both. The list
+/// is the union of every secret-bearing section NM exposes that Proteus
+/// could plausibly touch.
+pub const SECRET_SECTIONS: &[&str] = &[
+    "802-11-wireless-security",
+    "802-1x",
+    "vpn",
+    "wireguard",
+    "gsm",
+    "cdma",
+    "pppoe",
+    "macsec",
+];
+
+/// Merge a `GetSecrets` result into a settings dict in place.
+///
+/// NM's `GetSecrets(setting_name)` returns a dict shaped like
+/// `{ "802-1x": { "password": ..., "private-key-password": ... } }` — only
+/// the secret-typed keys, keyed by section. We graft each section's secrets
+/// onto the matching section in `settings`, preserving any settings already
+/// in place (so the caller's freshly-modified key survives) and overwriting
+/// only on key collisions inside a section.
+///
+/// Issue #114 / #207: without this merge, `Update` would be called with a
+/// dict that lacks the secret keys NM already has stored, and NM interprets
+/// that as "the user removed their password".
+pub fn merge_secrets(settings: &mut ConnectionSettings, secrets: &ConnectionSettings) {
+    for (section_name, section_secrets) in secrets {
+        let target = settings.entry(section_name.clone()).or_default();
+        for (key, value) in section_secrets {
+            target.insert(key.clone(), value.clone());
+        }
+    }
+}
+
+/// Push a `Settings.Connection.Update` after grafting every relevant secrets
+/// section back onto `settings`. Issue #207: every NM `Update` site must go
+/// through this so a connection's stored PSK / EAP passwords / VPN secrets
+/// survive the round trip.
+///
+/// `GetSettings` strips secret-typed keys, so calling `Update` with the
+/// stripped dict tells NM "the user cleared this password" and wipes the
+/// secrets store. We pull `GetSecrets` for each section in [`SECRET_SECTIONS`]
+/// (best-effort — sections that don't exist on this connection or that
+/// are not flagged as "system-owned" return errors NM emits as
+/// `NoSecrets`/`PermissionDenied`, which we deliberately swallow) and merge
+/// them back in.
+pub async fn update_with_secrets(
+    conn: &zbus::Connection,
+    connection_path: &OwnedObjectPath,
+    mut settings: ConnectionSettings,
+) -> Result<()> {
+    let proxy = ConnectionProxy::builder(conn)
+        .path(connection_path.clone())?
+        .build()
+        .await?;
+    for section in SECRET_SECTIONS {
+        // GetSecrets failure modes we tolerate:
+        //
+        // - NM returns NoSecrets when the section exists but stores no secrets.
+        // - NM returns InvalidProperty / generic when the section isn't on this
+        //   profile (e.g. asking for `802-1x` on a plain WPA-PSK Wi-Fi).
+        // - PermissionDenied if the connection is user-owned and the agent
+        //   refuses to surface secrets to a non-interactive caller.
+        //
+        // None of these is a reason to abort the update — they just mean
+        // there's nothing to merge for that section. A real DBus failure on
+        // the subsequent `update` call still surfaces.
+        match proxy.get_secrets(section).await {
+            Ok(s) => merge_secrets(&mut settings, &s),
+            Err(e) => {
+                tracing::debug!(
+                    section = section,
+                    "GetSecrets returned no secrets to merge: {e}"
+                );
+            }
+        }
+    }
+    proxy
+        .update(settings)
+        .await
+        .context("calling Settings.Connection.Update")?;
+    Ok(())
 }
 
 /// Map an `ipv6.addr-gen-mode` token (as it appears in our config and on the

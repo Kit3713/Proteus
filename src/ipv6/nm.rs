@@ -97,11 +97,11 @@ pub async fn apply_settings(
         "dhcp-iaid".to_string(),
         Value::from(new.dhcp_iaid.clone()).try_into()?,
     );
-    proxy
-        .update(settings)
-        .await
-        .context("calling Settings.Connection.Update")?;
-    Ok(())
+    drop(proxy);
+    // Issue #207: writing IPv6 keys on a Wi-Fi or 802.1X profile must not
+    // wipe the WPA-PSK / EAP password. Round-trip through the shared
+    // secrets-aware updater.
+    crate::nm::update_with_secrets(conn, connection_path, settings).await
 }
 
 /// Snapshot of the three keys we read off a connection. Carries `Option`

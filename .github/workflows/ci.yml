@@ -37,7 +37,7 @@ jobs:
     name: cargo fmt
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v4
       # Reads rust-toolchain.toml so the pinned channel installs verbatim;
       # rustfmt + clippy are listed in `components` there, so no `with:` here.
       - uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -53,7 +53,7 @@ jobs:
     name: lockfile freshness
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v4
       - uses: actions-rust-lang/setup-rust-toolchain@v1
       - name: cargo metadata --locked
         run: cargo metadata --locked --format-version 1 > /dev/null
@@ -63,7 +63,7 @@ jobs:
     name: cargo clippy
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v4
       - uses: actions-rust-lang/setup-rust-toolchain@v1
       - uses: Swatinem/rust-cache@v2
       - name: cargo clippy --all-targets -- -D warnings
@@ -76,7 +76,7 @@ jobs:
     runs-on: ubuntu-latest
     container: fedora:43
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v4
       # gcc + pkg-config for crates that link to system libs.
       # dbus-devel is pre-installed because zbus pulls it in for system-bus
       # tests starting in phase B; staging it here keeps the container ready
@@ -103,7 +103,7 @@ jobs:
     runs-on: ubuntu-latest
     container: fedora:43
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v4
       # See test job for rationale on each package.
       # binutils provides `strip`; coreutils provides `wc`; both are
       # already in the base image but listed defensively.
@@ -156,7 +156,7 @@ jobs:
     env:
       CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v4
       - name: Install aarch64 cross-compile toolchain
         run: |
           set -euo pipefail

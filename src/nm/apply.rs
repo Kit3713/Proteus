@@ -41,11 +41,10 @@ pub async fn set_cloned_mac(
         "assigned-mac-address".to_string(),
         Value::from(mac.to_string()).try_into()?,
     );
-    proxy
-        .update(settings)
-        .await
-        .context("calling Settings.Connection.Update")?;
-    Ok(())
+    // Issue #207: rotate must preserve the WPA-PSK / 802.1X password the user
+    // already saved on the profile, so we go through `update_with_secrets`
+    // which round-trips secrets back through `GetSecrets` before `Update`.
+    super::update_with_secrets(conn, connection_path, settings).await
 }
 
 fn cloned_mac_value(mac: Mac) -> Value<'static> {
