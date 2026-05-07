@@ -3,8 +3,10 @@
 pub mod apply;
 pub mod dhcp;
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, anyhow, bail};
 use zbus::proxy;
+
+use crate::mac::Mac;
 
 #[proxy(
     interface = "org.freedesktop.NetworkManager",
@@ -138,4 +140,80 @@ pub async fn find_device_by_iface(conn: &zbus::Connection, iface: &str) -> Resul
     devs.into_iter()
         .find(|d| d.interface == iface)
         .ok_or_else(|| anyhow!("no NetworkManager device for interface '{iface}'"))
+}
+
+/// Parse a colon/dash/bare-hex MAC string into the 6-byte vector NM expects on
+/// the wire. NM's `cloned-mac-address` (and equivalent on `802-3-ethernet`) is
+/// declared as `ay` in the DBus introspection XML; older NM (1.20–1.36) hard
+/// rejects a string. We feed the result through `Mac::from_str` so callers get
+/// the same parse behaviour and error messages they already have for
+/// rotation/pin paths.
+pub fn mac_string_to_bytes(s: &str) -> Result<Vec<u8>> {
+    let mac: Mac = s
+        .parse()
+        .with_context(|| format!("parsing MAC '{s}' for NM cloned-mac-address (ay)"))?;
+    Ok(mac.octets().to_vec())
+}
+
+/// Map an `ipv6.addr-gen-mode` token (as it appears in our config and on the
+/// wire in NM keyfile/nmcli) to the integer DBus expects. Per NM's
+/// `NMSettingIP6ConfigAddrGenMode` enum:
+///
+/// - `default`           → `0`
+/// - `eui64`             → `1`
+/// - `stable-privacy`    → `2`
+/// - `default-or-eui64`  → `3`
+///
+/// The DBus property is signature `i` (i32). NM 1.37+ tolerates a string and
+/// coerces, but 1.20–1.36 rejects it, leaving the connection inconsistent.
+pub fn addr_gen_mode_to_int(s: &str) -> Result<i32> {
+    match s {
+        "default" => Ok(0),
+        "eui64" => Ok(1),
+        "stable-privacy" => Ok(2),
+        "default-or-eui64" => Ok(3),
+        other => bail!(
+            "unknown ipv6.addr-gen-mode '{other}'; expected one of \
+             default, eui64, stable-privacy, default-or-eui64"
+        ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mac_string_to_bytes_parses_uppercase_colon_form() {
+        let bytes = mac_string_to_bytes("AA:BB:CC:DD:EE:FF").unwrap();
+        assert_eq!(bytes, vec![0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]);
+    }
+
+    #[test]
+    fn mac_string_to_bytes_parses_lowercase_dash_form() {
+        let bytes = mac_string_to_bytes("aa-bb-cc-dd-ee-ff").unwrap();
+        assert_eq!(bytes, vec![0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]);
+    }
+
+    #[test]
+    fn mac_string_to_bytes_rejects_garbage() {
+        assert!(mac_string_to_bytes("not-a-mac").is_err());
+        assert!(mac_string_to_bytes("AA:BB:CC:DD:EE").is_err());
+        assert!(mac_string_to_bytes("").is_err());
+    }
+
+    #[test]
+    fn addr_gen_mode_to_int_known_modes() {
+        assert_eq!(addr_gen_mode_to_int("default").unwrap(), 0);
+        assert_eq!(addr_gen_mode_to_int("eui64").unwrap(), 1);
+        assert_eq!(addr_gen_mode_to_int("stable-privacy").unwrap(), 2);
+        assert_eq!(addr_gen_mode_to_int("default-or-eui64").unwrap(), 3);
+    }
+
+    #[test]
+    fn addr_gen_mode_to_int_rejects_unknown() {
+        assert!(addr_gen_mode_to_int("garbage").is_err());
+        assert!(addr_gen_mode_to_int("").is_err());
+        assert!(addr_gen_mode_to_int("STABLE-PRIVACY").is_err());
+    }
 }
