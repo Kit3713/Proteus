@@ -21,6 +21,8 @@ pub mod profile;
 pub mod rf;
 pub mod stack;
 pub mod state;
+#[cfg(test)]
+pub mod testing;
 pub mod timer;
 pub mod version;
 pub mod wiki;
