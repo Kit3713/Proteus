@@ -148,6 +148,12 @@ pub fn apply(state_path: Option<&Path>, config_path: Option<&Path>) -> Result<u8
         eprintln!("proteus: {e}");
         return Ok(exit::PERMISSION_ERROR);
     }
+    // Issue #126: lock is reentrant within a process, so the orchestrator
+    // calling us is fine; a parallel `proteus bluetooth apply` is not.
+    let _lock = match super::acquire_state_lock_or_print(state_path) {
+        Ok(g) => g,
+        Err(code) => return Ok(code),
+    };
     let state_path = super::state_path(state_path);
     let config_path = super::config_path(config_path);
     let config = Config::default_or_loaded(&config_path)?;
@@ -228,6 +234,10 @@ pub fn revert(state_path: Option<&Path>) -> Result<u8> {
         eprintln!("proteus: {e}");
         return Ok(exit::PERMISSION_ERROR);
     }
+    let _lock = match super::acquire_state_lock_or_print(state_path) {
+        Ok(g) => g,
+        Err(code) => return Ok(code),
+    };
     let state_path = super::state_path(state_path);
     let state = State::load_or_default(&state_path)?;
 

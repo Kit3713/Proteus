@@ -121,6 +121,10 @@ pub fn apply(yes: bool, state_path: Option<&Path>, config_path: Option<&Path>) -
         eprintln!("proteus: {e}");
         return Ok(exit::PERMISSION_ERROR);
     }
+    let _lock = match commands::acquire_state_lock_or_print(state_path) {
+        Ok(g) => g,
+        Err(code) => return Ok(code),
+    };
     let config_path = commands::config_path(config_path);
     let state_path = commands::state_path(state_path);
     let config = Config::default_or_loaded(&config_path)?;
@@ -168,7 +172,7 @@ pub fn apply(yes: bool, state_path: Option<&Path>, config_path: Option<&Path>) -
     Ok(exit::SUCCESS)
 }
 
-pub fn revert(yes: bool, _state_path: Option<&Path>) -> Result<u8> {
+pub fn revert(yes: bool, state_path: Option<&Path>) -> Result<u8> {
     if let Err(code) =
         commands::require_yes(yes, "'stack revert' is mutating", "proteus help stack")
     {
@@ -178,6 +182,10 @@ pub fn revert(yes: bool, _state_path: Option<&Path>) -> Result<u8> {
         eprintln!("proteus: {e}");
         return Ok(exit::PERMISSION_ERROR);
     }
+    let _lock = match commands::acquire_state_lock_or_print(state_path) {
+        Ok(g) => g,
+        Err(code) => return Ok(code),
+    };
     match fs::remove_file(DROPIN_PATH) {
         Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {

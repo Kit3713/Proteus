@@ -192,12 +192,7 @@ mod tests {
                 p
             );
             let resolved = raw.resolve();
-            assert_eq!(
-                resolved.profile,
-                p,
-                "resolved profile mismatch for {:?}",
-                p
-            );
+            assert_eq!(resolved.profile, p, "resolved profile mismatch for {:?}", p);
         }
     }
 

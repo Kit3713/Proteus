@@ -12,6 +12,10 @@ pub fn run(target: &str, state_path: Option<&Path>) -> Result<u8> {
         eprintln!("proteus: {e}");
         return Ok(exit::PERMISSION_ERROR);
     }
+    let _lock = match super::acquire_state_lock_or_print(state_path) {
+        Ok(g) => g,
+        Err(code) => return Ok(code),
+    };
     let state_path = super::state_path(state_path);
     let mut state = State::load_or_default(&state_path)?;
 

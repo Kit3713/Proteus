@@ -309,8 +309,7 @@ fn points_to_resolved_stub(target: &Path, expected: &Path, link_path: &Path) -> 
     // stub but actually resolves to attacker-controlled content. If
     // canonicalization succeeds, *only* the canonical result decides.
     if let Ok(canon_link) = std::fs::canonicalize(link_path) {
-        return canon_link == *expected
-            || canon_link.to_string_lossy().ends_with(STUB_TAIL);
+        return canon_link == *expected || canon_link.to_string_lossy().ends_with(STUB_TAIL);
     }
     // Canonicalization failed (broken link, missing target). Fall back to
     // the literal tail check on the read_link string.
@@ -336,10 +335,7 @@ fn check_foreign_dropin(paths: &Paths) -> Option<DeferReason> {
         // closes the redirection where an attacker plants
         // `10-proteus-X.conf -> /attacker/payload` and slips past the
         // prefix-skip below.
-        let is_symlink = entry
-            .file_type()
-            .map(|t| t.is_symlink())
-            .unwrap_or(false);
+        let is_symlink = entry.file_type().map(|t| t.is_symlink()).unwrap_or(false);
         let name = entry.file_name();
         let is_proteus_owned =
             !is_symlink && name.to_string_lossy().starts_with(PROTEUS_DROPIN_PREFIX);

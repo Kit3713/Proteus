@@ -179,6 +179,16 @@ pub struct ConnectionRecord {
 }
 
 impl State {
+    /// Load state from disk.
+    ///
+    /// `Ok(None)` means the file does not exist (cold install).
+    ///
+    /// Issue #127: a malformed state.json must not brick read-only commands
+    /// (`status`, `current`, `original`, `diff`, ...). When parsing fails we
+    /// quarantine the bad file as `<path>.corrupt-<utc-stamp>` and return
+    /// `Ok(None)`. The next mutating apply re-captures originals and writes a
+    /// fresh state.json, while read-only callers see an empty state and keep
+    /// working.
     pub fn load(path: &Path) -> Result<Option<Self>> {
         let bytes = match fs::read(path) {
             Ok(b) => b,
@@ -187,9 +197,21 @@ impl State {
                 return Err(e).with_context(|| format!("reading state file {}", path.display()));
             }
         };
-        let state: State = serde_json::from_slice(&bytes)
-            .with_context(|| format!("parsing state file {}", path.display()))?;
-        Ok(Some(state))
+        match serde_json::from_slice::<State>(&bytes) {
+            Ok(state) => Ok(Some(state)),
+            Err(e) => {
+                let quarantine = quarantine_path(path);
+                tracing::warn!(
+                    "state.json parse failed ({e}); quarantining {} -> {}",
+                    path.display(),
+                    quarantine.display()
+                );
+                // Best-effort rename; if it fails the next apply will overwrite
+                // via write_atomic, so we still degrade to an empty state.
+                let _ = fs::rename(path, &quarantine);
+                Ok(None)
+            }
+        }
     }
 
     pub fn load_or_default(path: &Path) -> Result<Self> {
@@ -200,6 +222,20 @@ impl State {
         let bytes = serde_json::to_vec_pretty(self)?;
         commands::write_atomic(path, &bytes)
     }
+}
+
+/// `<path>.corrupt-<UTC-iso-with-colons-replaced>` so the bad bytes are
+/// preserved for a postmortem and don't collide on a rapid retry. Colons are
+/// stripped from the timestamp because some shells and recovery tools treat
+/// them awkwardly in filenames.
+fn quarantine_path(path: &Path) -> std::path::PathBuf {
+    let stamp = commands::now_iso8601().replace(':', "-");
+    let mut name = path
+        .file_name()
+        .map(|f| f.to_os_string())
+        .unwrap_or_else(|| std::ffi::OsString::from("state.json"));
+    name.push(format!(".corrupt-{stamp}"));
+    path.with_file_name(name)
 }
 
 #[cfg(test)]
@@ -235,5 +271,62 @@ mod tests {
             Some("aa:bb:cc:dd:ee:ff")
         );
         assert!(s.managed.interfaces.is_empty());
+    }
+
+    #[test]
+    fn load_quarantines_corrupt_state_file() {
+        // Issue #127: a corrupt state.json (e.g. half-written from a crash)
+        // must not brick read-only commands. `load` quarantines the file and
+        // returns Ok(None) so callers can proceed with an empty state.
+        let dir =
+            std::env::temp_dir().join(format!("proteus-state-corrupt-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("state.json");
+        fs::write(&path, b"{\"original_macs\": this is not json").unwrap();
+
+        let result = State::load(&path).expect("load returns Ok even on corrupt input");
+        assert!(result.is_none(), "corrupt state must yield Ok(None)");
+        assert!(!path.exists(), "corrupt file should be renamed away");
+
+        let quarantines: Vec<_> = fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().contains(".corrupt-"))
+            .collect();
+        assert_eq!(
+            quarantines.len(),
+            1,
+            "expected exactly one quarantined file, got {quarantines:?}"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_returns_none_for_missing_file() {
+        let path = std::env::temp_dir().join("proteus-state-does-not-exist.json");
+        let _ = fs::remove_file(&path);
+        let result = State::load(&path).expect("missing path is Ok(None)");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn load_or_default_yields_empty_on_corrupt_file() {
+        // The mutating-command path goes through load_or_default; verify the
+        // resilience hook reaches it so apply/rotate keep working even after
+        // a state.json corruption.
+        let dir =
+            std::env::temp_dir().join(format!("proteus-state-default-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("state.json");
+        fs::write(&path, b"\x00\x00not-json\x00").unwrap();
+
+        let s = State::load_or_default(&path).expect("load_or_default never errors on corruption");
+        assert!(s.original_macs.is_empty());
+        assert!(s.managed.interfaces.is_empty());
+
+        let _ = fs::remove_dir_all(&dir);
     }
 }

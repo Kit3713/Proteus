@@ -21,6 +21,7 @@ pub mod profile;
 pub mod rf;
 pub mod stack;
 pub mod state;
+pub mod state_lock;
 #[cfg(test)]
 pub mod testing;
 pub mod timer;

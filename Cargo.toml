@@ -32,3 +32,7 @@ zbus = { version = "5", default-features = false, features = ["tokio"] }
 # bloat-trim 2026-05-07: dropped tokio/macros (no `#[tokio::main]`/`select!`/`pin!` used). zbus pulls tokio/sync+time+net via its default feature set, so our `sync`+`time` were already covered transitively.
 tokio = { version = "1", default-features = false, features = ["rt"] }
 getrandom = "0.2"
+# Issue #126: advisory flock(2) on /var/lib/proteus/.lock so concurrent `proteus
+# apply`/`rotate`/etc. runs serialize. libc is already a transitive dep
+# (zbus/tokio), promoting it to a direct dep keeps build graph stable.
+libc = { version = "0.2", default-features = false, features = ["std"] }

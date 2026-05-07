@@ -51,6 +51,11 @@ pub fn run(
         eprintln!("proteus: {e}");
         return Ok(exit::PERMISSION_ERROR);
     }
+    // Issue #126: serialize concurrent rotates on <state-dir>/.lock.
+    let _lock = match super::acquire_state_lock_or_print(state_path) {
+        Ok(g) => g,
+        Err(code) => return Ok(code),
+    };
 
     let state_path = super::state_path(state_path);
     let config_path = super::config_path(config_path);

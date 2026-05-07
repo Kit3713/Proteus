@@ -55,7 +55,16 @@ pub fn run(purge: bool, yes: bool) -> Result<u8> {
     let layout = Layout::from_env();
     let mut warns: Vec<String> = Vec::new();
 
-    revert_best_effort(&mut warns);
+    // Issue #126: hold the state lock during revert so a concurrent
+    // mutating run can't race us. Released before the (optional) purge step
+    // since purge wipes the lock-file directory itself.
+    {
+        let _lock = match super::acquire_state_lock_or_print(None) {
+            Ok(g) => g,
+            Err(code) => return Ok(code),
+        };
+        revert_best_effort(&mut warns);
+    }
     teardown_units(&layout, &mut warns);
     let _ = run_quiet("systemctl", &["daemon-reload"]);
 

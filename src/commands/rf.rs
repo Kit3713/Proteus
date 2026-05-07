@@ -99,6 +99,10 @@ pub fn apply(yes: bool, state_path: Option<&Path>, config_path: Option<&Path>) -
     if let Err(code) = super::require_yes(yes, "'rf apply' is mutating", "proteus help rf") {
         return Ok(code);
     }
+    let _lock = match super::acquire_state_lock_or_print(state_path) {
+        Ok(g) => g,
+        Err(code) => return Ok(code),
+    };
     let state_path = super::state_path(state_path);
     let config_path = super::config_path(config_path);
     let config = Config::default_or_loaded(&config_path)?;
@@ -162,6 +166,10 @@ pub fn revert(yes: bool, state_path: Option<&Path>) -> Result<u8> {
     if let Err(code) = super::require_yes(yes, "'rf revert' is mutating", "proteus help rf") {
         return Ok(code);
     }
+    let _lock = match super::acquire_state_lock_or_print(state_path) {
+        Ok(g) => g,
+        Err(code) => return Ok(code),
+    };
     let state_path = super::state_path(state_path);
     let mut state = State::load_or_default(&state_path)?;
 

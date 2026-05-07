@@ -97,7 +97,6 @@ pub fn run() -> ExitCode {
     ExitCode::from(code)
 }
 
-
 /// When the user passes `--config <path>` explicitly we treat a missing file
 /// as a hard error: silently falling back to defaults masks typos and is the
 /// kind of trap that costs people half an hour. The implicit default path
