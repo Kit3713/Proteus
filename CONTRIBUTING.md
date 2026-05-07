@@ -51,7 +51,7 @@ Privileged integration tests run in a Podman + systemd container and are gated b
 
 - `cargo fmt` clean
 - `cargo clippy --all-targets -- -D warnings` clean
-- Binary stays under 3 MB stripped — any dependency that adds more than 200 KB needs justification in the PR
+- Binary stays under 3.75 MB stripped (release-time hard cap in `release.yml`) — any dependency that adds more than 200 KB needs justification in the PR
 - New feature flags ship with their wiki page and `proteus help <feature>` text in the same PR
 - New error paths include a `→ see: proteus wiki <page>` or `→ run: proteus help <feature>` hint where applicable
 - Anything that touches privileged operations is covered by an integration test

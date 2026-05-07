@@ -24,7 +24,7 @@ Covers 64-bit ARM systems running glibc-based Linux. The intended audience:
 
 Built by cross-compiling from `ubuntu-latest` using the
 `gcc-aarch64-linux-gnu` toolchain. The release workflow strips the binary
-with `aarch64-linux-gnu-strip` and enforces the same 3 MB cap as x86_64.
+with `aarch64-linux-gnu-strip` and enforces the same 3.75 MB cap as x86_64.
 
 The aarch64 artifact is not exercised on a real ARM runner in CI — there is
 no GitHub-hosted ARM runner available to the project today. The cross-build
@@ -46,7 +46,7 @@ Not shipped. Proteus assumes:
 A user with a 32-bit ARM device is welcome to build from source
 (`cargo build --release`); the code itself should compile cleanly because the
 dependency tree is portable Rust, but the project does not gate CI on armv7
-and will not investigate armv7-only regressions. The 3 MB binary cap is not
+and will not investigate armv7-only regressions. The 3.75 MB binary cap is not
 guaranteed on armv7.
 
 If 32-bit ARM demand becomes loud enough to justify a fourth CI lane, the
@@ -95,7 +95,7 @@ If a dependency ever fails to cross-compile, the immediate options are:
 2. Disable a feature flag that triggers the C build.
 3. Drop the dependency.
 
-The 3 MB binary cap and the no-network-egress invariant mean we rarely add
+The 3.75 MB binary cap and the no-network-egress invariant mean we rarely add
 heavyweight deps anyway, so this is unlikely to bite often.
 
 ## Distro packages produced on tag

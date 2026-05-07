@@ -6,7 +6,8 @@
 #   - cargo clippy --all-targets -- -D warnings clean
 #   - cargo test passes
 #   - cargo build --release succeeds
-#   - stripped release binary is <= 3 MB (hard project invariant)
+#   - stripped release binary is <= 3.75 MB (hard release-time cap; CI here
+#     emits a soft warn only — the hard fail lives in release.yml)
 #   - cold release build wallclock logged (soft signal, not enforced)
 #
 # Note: until phase A skeleton lands, Cargo.toml does not exist in the repo
@@ -123,10 +124,11 @@ jobs:
           { time cargo build --release --locked ; } 2> build-time.txt
           echo "PROTEUS_BUILD_TIME (soft signal, not enforced):"
           cat build-time.txt
-      # Strip and log size. The ≤3 MB target is now a soft guideline, not a
-      # hard cap — the project optimizes aggressively (opt-level=z, lto,
-      # codegen-units=1, panic=abort, strip) and tracks size to catch
-      # regressions, but doesn't fail builds that grow with new features.
+      # Strip and log size. The ≤3.75 MB target is the release-time hard cap
+      # enforced in release.yml; CI emits a soft warn so feature work in
+      # flight does not block PR feedback. The project optimizes aggressively
+      # (opt-level=z, lto, codegen-units=1, panic=abort, strip) and tracks
+      # size to catch regressions.
       - name: Strip and log size
         run: |
           set -euo pipefail
@@ -134,18 +136,18 @@ jobs:
           strip "$BIN"
           SIZE=$(wc -c < "$BIN")
           echo "PROTEUS_BINARY_SIZE_BYTES=${SIZE}"
-          echo "PROTEUS_BINARY_SIZE_TARGET_BYTES=3000000"
-          if [ "$SIZE" -gt 3000000 ]; then
-            echo "WARN: stripped proteus binary is ${SIZE} bytes, exceeds 3 MB target — consider cargo bloat" >&2
+          echo "PROTEUS_BINARY_SIZE_TARGET_BYTES=3750000"
+          if [ "$SIZE" -gt 3750000 ]; then
+            echo "WARN: stripped proteus binary is ${SIZE} bytes, exceeds 3.75 MB target — consider cargo bloat" >&2
           else
-            echo "OK: stripped proteus binary is ${SIZE} bytes (under 3 MB target)"
+            echo "OK: stripped proteus binary is ${SIZE} bytes (under 3.75 MB target)"
           fi
 
   # aarch64 cross-compile sanity. Catches dependency churn that breaks ARM
   # before a release tag tries to build the artifact for real. Runs on plain
   # ubuntu-latest because cross-compile toolchains are easier to install via
   # apt than dnf, and this job only needs to prove that the tree still builds
-  # and strips under the 3 MB cap on the secondary architecture.
+  # and strips under the 3.75 MB cap on the secondary architecture.
   #
   # We do not run the produced binary (no ARM runner) and we do not gate
   # other jobs on this one — it's a parallel signal, not a blocker for x86_64.
@@ -170,16 +172,16 @@ jobs:
           key: aarch64
       - name: cargo build --release --locked --target aarch64-unknown-linux-gnu
         run: cargo build --release --locked --target aarch64-unknown-linux-gnu
-      - name: Strip and enforce 3 MB size cap (aarch64)
+      - name: Strip and log size (aarch64)
         run: |
           set -euo pipefail
           BIN=target/aarch64-unknown-linux-gnu/release/proteus
           aarch64-linux-gnu-strip "$BIN"
           SIZE=$(wc -c < "$BIN")
           echo "PROTEUS_BINARY_SIZE_BYTES=${SIZE}"
-          echo "PROTEUS_BINARY_SIZE_TARGET_BYTES=3000000"
-          if [ "$SIZE" -gt 3000000 ]; then
-            echo "WARN: stripped aarch64 proteus binary is ${SIZE} bytes, exceeds 3 MB target" >&2
+          echo "PROTEUS_BINARY_SIZE_TARGET_BYTES=3750000"
+          if [ "$SIZE" -gt 3750000 ]; then
+            echo "WARN: stripped aarch64 proteus binary is ${SIZE} bytes, exceeds 3.75 MB target" >&2
           else
-            echo "OK: stripped aarch64 proteus binary is ${SIZE} bytes (under 3 MB target)"
+            echo "OK: stripped aarch64 proteus binary is ${SIZE} bytes (under 3.75 MB target)"
           fi

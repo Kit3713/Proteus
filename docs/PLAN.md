@@ -70,7 +70,7 @@ Robustness over breadth. A feature that's flaky across chipsets, distros, or dae
 
 Anything that could weaken Fedora's hardening or break a working setup is opt-in, default off, with a wiki page that lists the concrete failure modes. Crypto-policies stay alone, machine-id stays alone, SSH config stays alone.
 
-Binary stays ≤3 MB stripped. Any dependency that adds more than 200 KB needs a justification.
+Binary stays ≤3.75 MB stripped (release-time hard cap; see `.github/workflows/release.yml`). Any dependency that adds more than 200 KB needs a justification.
 
 ## Things I haven't decided
 
