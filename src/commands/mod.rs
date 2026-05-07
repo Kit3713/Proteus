@@ -3,6 +3,7 @@
 pub mod bluetooth_cmd;
 pub mod config_cmd;
 pub mod current;
+pub mod doctor;
 pub mod original;
 pub mod pin;
 pub mod rotate;
@@ -32,17 +33,17 @@ pub(crate) fn config_path(override_path: Option<&Path>) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(DEFAULT_CONFIG_PATH))
 }
 
+/// Read the effective UID from procfs (Linux-only, avoids pulling in libc).
+pub(crate) fn read_uid() -> Option<u32> {
+    let s = std::fs::read_to_string("/proc/self/status").ok()?;
+    s.lines()
+        .find(|l| l.starts_with("Uid:"))
+        .and_then(|l| l.split_whitespace().nth(1))
+        .and_then(|n| n.parse().ok())
+}
+
 pub(crate) fn require_root() -> anyhow::Result<()> {
-    // Linux-only: read from procfs to avoid pulling in libc.
-    let uid = std::fs::read_to_string("/proc/self/status")
-        .ok()
-        .and_then(|s| {
-            s.lines()
-                .find(|l| l.starts_with("Uid:"))
-                .and_then(|l| l.split_whitespace().nth(1).map(str::to_string))
-        })
-        .and_then(|u| u.parse::<u32>().ok());
-    match uid {
+    match read_uid() {
         Some(0) => Ok(()),
         Some(other) => anyhow::bail!(
             "this command must be run as root (current uid {other}); try `sudo proteus ...`"

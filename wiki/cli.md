@@ -94,6 +94,18 @@ Show the delta between current config, built-in defaults, and live system state.
 Flags: `--json` machine-readable diff.
 Exit: `0` no drift · `1` drift detected · `64` stub.
 
+### `doctor` — phase **A**
+
+```
+proteus doctor [--json] [--quick]
+```
+
+Self-diagnostic. Runs a battery of read-only checks across system / daemons / files / detect-and-defer / runtime / Proteus state and prints `ok / warn / fail / skip` per check with remediation pointers. The first thing to run when something looks wrong. Works without root — checks needing root degrade to `skip` rather than `fail`.
+
+Flags: `--json` machine-readable (see [`doctor` JSON](#proteus-doctor---json)) · `--quick` skip slower checks (filesystem walks, DBus probes). Use the global `-v` for extra detail per check (check id beneath each line).
+Exit: `0` no failures (warns and skips are fine) · `1` at least one `fail` · `2` invalid args.
+Example: `proteus doctor` then `proteus doctor --json | jq '.checks[] | select(.status=="fail")'`
+
 ### `dry-run` — phase **stub** (lands G)
 
 ```
@@ -414,6 +426,38 @@ When no cache exists, the same shape with empty/null fields plus a `note`:
 
 Detect "no cache" via `captured_at == null` or via `note` presence.
 
+### `proteus doctor --json`
+
+```json
+{
+  "schema_version": 1,
+  "proteus_version": "0.1.0",
+  "phase": "A",
+  "checks": [
+    {
+      "category": "system",
+      "name": "linux_kernel",
+      "status": "ok",
+      "message": "Linux 6.x.y"
+    },
+    {
+      "category": "daemons",
+      "name": "network_manager",
+      "status": "fail",
+      "message": "NetworkManager not running — required for MAC rotation",
+      "remediation": "systemctl start NetworkManager"
+    }
+  ],
+  "summary": { "ok": 8, "warn": 2, "fail": 0, "skip": 4 }
+}
+```
+
+- `schema_version` is the integer doctor JSON schema; `1` today. Bumped only if a backwards-incompatible change is made; new fields without one don't bump it.
+- `checks[].category` is one of `system`, `daemons`, `files`, `detect_and_defer`, `runtime`, `proteus_state`.
+- `checks[].status` is one of `ok`, `warn`, `fail`, `skip`. Wrappers should treat new statuses defensively.
+- `checks[].remediation` is omitted when there's nothing actionable to suggest.
+- `summary` aggregates the four statuses across all checks. Exit code is `1` iff `summary.fail > 0`.
+
 ### `proteus show-config --json` and `show-defaults --json`
 
 The full `Config` struct serialized as JSON. Schema and every default cross-referenced in `proteus wiki config` (lands phase F alongside this page). Phase A shape:
@@ -477,7 +521,7 @@ Notes for GUI / automation wrappers. The CLI is designed to be wrappable; the JS
 
 | Phase | Brings | Subcommands wired |
 |-------|--------|-------------------|
-| A | skeleton, read surface, embedded wiki, config CLI | `status`, `current`, `original`, `show-config`, `show-defaults`, `config`, `wiki`, `help` |
+| A | skeleton, read surface, embedded wiki, config CLI, diagnostics | `status`, `current`, `original`, `show-config`, `show-defaults`, `config`, `doctor`, `wiki`, `help` |
 | B | L2 identity (MAC, Bluetooth alias) | `rotate`, `pin`, `unpin` |
 | C | probes, timers, captive portals | (extends `apply` / `status`) |
 | D | DHCP, IPv6, hostname, 802.1X, DNS knob | first wiring of `apply` |

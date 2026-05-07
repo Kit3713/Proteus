@@ -154,6 +154,15 @@ pub enum Command {
         #[command(subcommand)]
         action: ConfigAction,
     },
+    /// Run a battery of self-diagnostic checks (read-only).
+    Doctor {
+        /// Emit JSON instead of human-readable output.
+        #[arg(long)]
+        json: bool,
+        /// Skip the slower checks (DBus probes, filesystem walks).
+        #[arg(long)]
+        quick: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -341,6 +350,14 @@ pub fn run() -> ExitCode {
         Command::Config { action } => dispatch_config(action, cli.config.as_deref()),
         Command::Wiki { page } => commands::wiki_cmd::run(page.as_deref(), cli.no_color),
         Command::Help { feature } => commands::wiki_cmd::run_help(feature.as_deref(), cli.no_color),
+        Command::Doctor { json, quick } => commands::doctor::run(commands::doctor::Options {
+            json,
+            quick,
+            verbose: cli.verbose > 0,
+            no_color: cli.no_color,
+            state_path: cli.state.as_deref(),
+            config_path: cli.config.as_deref(),
+        }),
     };
 
     ExitCode::from(code.unwrap_or(exit::GENERIC_ERROR))
