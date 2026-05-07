@@ -80,8 +80,13 @@ jobs:
   # the stripped binary size depends on glibc version and Fedora 43 is the
   # primary target (PLAN.md "CI runner: start with GitHub-hosted Fedora
   # container, switch to self-hosted only if it hurts").
+  # Compilation jobs (build + cross-build) are expensive. We run them only on
+  # push to main and on tagged releases — not on PRs — to keep PR feedback fast
+  # (fmt + clippy + test in ~1-2 min). Tags trigger the full release.yml
+  # workflow, which produces published binaries.
   build-and-size:
     name: build + size check
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     container: fedora:43
     steps:
@@ -130,6 +135,7 @@ jobs:
   # other jobs on this one — it's a parallel signal, not a blocker for x86_64.
   cross-build-aarch64:
     name: cross-build aarch64
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     env:
       CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
