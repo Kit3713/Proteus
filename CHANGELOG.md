@@ -11,7 +11,88 @@ landed, what is in flight, and what is on the bench. See
 
 ## [Unreleased]
 
-(post-v0.2.7-alpha work lands here)
+(post-v0.3.0-alpha work lands here)
+
+## [0.3.0-alpha] - 2026-05-07
+
+First v0.3 cycle release. v0.2.8-alpha hotfix batch + Milestones 1-6
+substantial completion. Roadmap moved from 31⏳/13✅ to 11⏳/72✅
+(~80% complete on bullet count). Test suite grew 421 → 755 (+334).
+
+### v0.2.8-alpha hotfix batch (rolled into 0.3.0-alpha)
+
+- **#207 (critical)** `Connection.Update()` now merges secrets at every
+  call site via the shared `nm::update_with_secrets` helper. Rotate /
+  DHCP / IPv6 / 802.1X paths all preserve the stored PSK + EAP password.
+- **#209 (high)** `enterprise_wifi` originals now keyed by NM
+  `connection.uuid` (mirrors the working DHCP pattern), so the v0.2.6
+  uuid-keying migration no longer wipes them on every state load.
+- **#208 (high)** `capture_original_mac` no longer falls back to NM's
+  live `hw_address`; on drivers without phy80211 / `ETHTOOL_GPERMADDR`
+  the original is left empty and `proteus status` surfaces "no factory
+  MAC captured".
+- **#200 (high)** `cargo test --release` is hermetic on hosts with
+  `eth0`. The factory-address lookup is injected through the existing
+  `permanent_address_under` test hook.
+- **#210 (medium)** `points_to_resolved_stub` no longer falls open on
+  canonicalize failure. Dangling-link case defers cleanly.
+- **#201 (medium)** `NO_COLOR=1` and stderr-isatty are now consulted
+  before `logging::init`; ANSI warning no longer leaks under
+  `RUST_LOG=warn` / `-v`.
+
+### v0.3 cycle — milestones
+
+- **Milestone 1 — `NetworkBackend` abstraction.** Trait + three impls
+  (NM full, networkd / raw stubs documented as such), backend
+  selection via `[backend] driver`, doctor matrix, all per-command
+  call sites routed through the trait. `state_lock` migrated to
+  `Mutex<Option<File>>` (#206-B). NM dispatcher script replaced with
+  `proteus rotate-if-needed` (#206-C).
+- **Milestone 2 — Persona / Randomizer dual-mode stealth.** 25
+  stealth covers + 6 randomizer mirrors. Schema, loader, validator,
+  full 11-subcommand CLI surface, persona integration with apply /
+  rotate / hostname / DHCP / Bluetooth. RFC 5227 ARP probe + IPv6
+  DAD + adaptive backoff with persona oui_pool rotation. Wiki page +
+  threat-model addendum.
+- **Milestone 3 — Per-SSID profile policies.** `[per_ssid."<ssid>"]`
+  config, `proteus ssid list / show / set / clear`, four-layer
+  resolver with source trace, v1→v2 schema migration that mirrors
+  legacy `known_portal_ssids` into per-SSID seed entries.
+- **Milestone 4a — Fingerprint hardening.** `proteus resolved`
+  (mDNS+LLMNR off), `proteus ntp` (timesyncd normalization,
+  detect-and-defer for chrony / ntpd), nftables `extra_drops`
+  chain (ICMPv4 timestamp / broadcast ping / IGMP query, all opt-in).
+- **Milestone 4b — RF surface.** `proteus rf scan` + `proteus rf
+  chipset`, per-scan MAC randomization, probe-request hygiene,
+  chipset+firmware in `proteus status`.
+- **Milestone 4c — Rotation triggers.** `proteus dhcp renew`
+  (Reapply with Disconnect+ActivateConnection fallback). Event-driven
+  framework scaffolding (`RotationTrigger` / `EventHandler` /
+  `EventRegistry`); source bodies stubbed for the wiring follow-up.
+- **Milestone 5 — Distro reach.** Init-system abstraction
+  (`Systemd`/`Openrc`/`Runit`/`Sysvinit`), ARM + i686 cross-compile
+  matrix, Alpine APKBUILD + Void template + Gentoo ebuild + AUR
+  `-bin`/`-git` variants + Copr spec polish + Debian submission-prep,
+  `wiki/distro-support.md`.
+- **Milestone 6 — Ergonomics + bug-fix queue.** Short aliases
+  (`proteus s/r/a`), `--watch` mode for `status`/`current`/`session`,
+  `proteus completions <bash|zsh|fish>`, `LOCK_BUSY` exit code
+  (#211), `State::schema_version` migration ladder (#204), 13
+  bug-fix-queue items (#202 / #203 / #205 / #206-A/E/F/G/H / #211).
+
+### Deferred to v0.3.1+
+
+- Persona-aware NTP / nftables variants (the per-knob defaults ship
+  now; persona-driven values are a follow-up).
+- Event-source bodies (raw socket / netlink / nl80211 subscriptions).
+- networkd / raw write paths (NM is the only fully-wired backend
+  today; the trait + scenario scripts are in place for the follow-up).
+- Image-diff verification of clean install/uninstall.
+- `nmap -O` persona-effectiveness scenario in CI.
+- `wiki/backend.md`, `docs/security/dbus-surface.md`.
+- `--format yaml` for readers (would pull a YAML dep).
+- Debian ITP filing + sponsor handoff.
+- Unifying `TempRoot`/`TestSysfs` (#206-D).
 
 ## [0.2.7-alpha] - 2026-05-07
 
