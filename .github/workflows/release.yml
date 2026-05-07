@@ -79,13 +79,19 @@ jobs:
     runs-on: ubuntu-latest
     container: fedora:43
     steps:
+      # `actions/checkout@v6` falls back to a tarball download when git is
+      # absent inside the container, which leaves no .git for the
+      # SOURCE_DATE_EPOCH computation below. Install git first so the
+      # checkout uses native git and preserves the repository history.
+      - name: Install git for checkout
+        run: dnf install -y git
       - uses: actions/checkout@v6
         with:
           # Need the tagged commit, not a shallow snapshot, so we can read
           # the commit timestamp for SOURCE_DATE_EPOCH.
           fetch-depth: 0
       - name: Install build dependencies
-        run: dnf install -y gcc pkg-config dbus-devel openssl-devel binutils coreutils git
+        run: dnf install -y gcc pkg-config dbus-devel openssl-devel binutils coreutils
       - name: Compute SOURCE_DATE_EPOCH from tag commit
         run: |
           set -euo pipefail
@@ -103,8 +109,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: release-x86_64
-      - name: cargo build --release --frozen --locked
-        run: cargo build --release --frozen --locked
+      - name: cargo build --release --locked
+        run: cargo build --release --locked
       - name: Strip, size-check, and stage artifact
         run: |
           set -euo pipefail
@@ -171,8 +177,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: release-aarch64
-      - name: cargo build --release --frozen --locked --target aarch64-unknown-linux-gnu
-        run: cargo build --release --frozen --locked --target aarch64-unknown-linux-gnu
+      - name: cargo build --release --locked --target aarch64-unknown-linux-gnu
+        run: cargo build --release --locked --target aarch64-unknown-linux-gnu
       - name: Strip, size-check, and stage artifact
         run: |
           set -euo pipefail
@@ -222,6 +228,8 @@ jobs:
     needs: [build-x86_64]
     continue-on-error: true
     steps:
+      - name: Install git for checkout
+        run: dnf install -y git
       - uses: actions/checkout@v6
       - name: Install rpmbuild toolchain
         run: dnf install -y rpm-build rpmdevtools tar gzip gcc pkg-config dbus-devel openssl-devel rust cargo systemd-rpm-macros
@@ -269,15 +277,23 @@ jobs:
     continue-on-error: true
     env:
       DEBIAN_FRONTEND: noninteractive
+    defaults:
+      run:
+        # ubuntu:24.04 ships dash as /bin/sh; force bash so `set -o pipefail`
+        # below works in every shell-script step in this job.
+        shell: bash
     steps:
+      - name: Install git for checkout
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends git ca-certificates
       - uses: actions/checkout@v6
       - name: Install Debian build tooling
         run: |
           set -euo pipefail
-          apt-get update
           apt-get install -y --no-install-recommends \
             build-essential devscripts debhelper dh-make fakeroot \
-            rustc cargo pkg-config libdbus-1-dev ca-certificates
+            rustc cargo pkg-config libdbus-1-dev
       - name: dpkg-buildpackage -us -uc -b
         env:
           # Skip the cargo test invocation in debian/rules; the release
@@ -321,6 +337,8 @@ jobs:
     container: archlinux:base-devel
     continue-on-error: true
     steps:
+      - name: Install git for checkout
+        run: pacman -Sy --noconfirm --needed git
       - uses: actions/checkout@v6
       - name: Refresh pacman and install helpers
         run: |
