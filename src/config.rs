@@ -20,6 +20,7 @@ pub struct Config {
     pub enterprise_wifi: EnterpriseWifiConfig,
     pub stack: StackConfig,
     pub dhcp: DhcpConfig,
+    pub captive_portal: CaptivePortalConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -156,6 +157,17 @@ pub struct DhcpConfig {
     pub rotate_client_id: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CaptivePortalConfig {
+    pub enabled: bool,
+    pub detect_url: String,
+    pub expected_response: String,
+    pub policy: String,
+    pub fresh_mac_per_visit: bool,
+    pub timeout_secs: u64,
+}
+
 impl Default for MacConfig {
     fn default() -> Self {
         Self {
@@ -250,6 +262,19 @@ impl Default for DhcpConfig {
             suppress_hostname: true,
             suppress_vendor_class: true,
             rotate_client_id: true,
+        }
+    }
+}
+
+impl Default for CaptivePortalConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            detect_url: "http://nmcheck.gnome.org/check_network_status.txt".into(),
+            expected_response: "NetworkManager is online".into(),
+            policy: "rotate-before-auth".into(),
+            fresh_mac_per_visit: true,
+            timeout_secs: 5,
         }
     }
 }

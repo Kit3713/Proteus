@@ -156,6 +156,7 @@ fn feature_table(
     let stack_state = stack_state(state, config);
     let dns_state = dns_ecs_state(config);
     let dhcp_state = dhcp_state(state, config);
+    let portal_state = captive_portal_state(state, config);
     vec![
         FeatureStatus {
             name: "mac-rotation",
@@ -174,8 +175,8 @@ fn feature_table(
         },
         FeatureStatus {
             name: "captive-portals",
-            state: "not implemented".into(),
-            note: "phase C".into(),
+            state: portal_state.0,
+            note: portal_state.1,
         },
         FeatureStatus {
             name: "dhcp-options",
@@ -408,6 +409,30 @@ fn hostname_state(state: Option<&State>, config: &Config) -> (String, String) {
             config.hostname.mode
         ),
     )
+}
+
+fn captive_portal_state(state: Option<&State>, config: &Config) -> (String, String) {
+    if !config.captive_portal.enabled {
+        return (
+            "idle".to_string(),
+            "disabled in config (captive_portal.enabled = false)".to_string(),
+        );
+    }
+    let known = state.map(|s| s.known_portal_ssids.len()).unwrap_or(0);
+    let last = state.and_then(|s| s.last_portal_check.as_ref());
+    match last {
+        Some(rec) => (
+            "applied".to_string(),
+            format!(
+                "last check: {} at {}; {known} known portal SSID(s)",
+                rec.classification, rec.timestamp
+            ),
+        ),
+        None => (
+            "idle".to_string(),
+            format!("detector ready; {known} known portal SSID(s); run `proteus portal status`"),
+        ),
+    }
 }
 
 fn mac_rotation_state(state: Option<&State>, config: &Config) -> (String, String) {

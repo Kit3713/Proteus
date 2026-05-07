@@ -26,10 +26,22 @@ pub struct State {
     /// state file with a useless object.
     #[serde(skip_serializing_if = "kill_switch_inactive")]
     pub kill_switch: KillSwitchState,
+    // Phase C: captive portal state.
+    pub known_portal_ssids: Vec<String>,
+    pub last_portal_check: Option<PortalCheckRecord>,
 }
 
 fn kill_switch_inactive(k: &KillSwitchState) -> bool {
     !k.active && k.interfaces.is_empty() && k.activated_at.is_none()
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PortalCheckRecord {
+    pub timestamp: String,
+    pub classification: String,
+    pub ssid: Option<String>,
+    pub note: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
