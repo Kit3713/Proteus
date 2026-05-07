@@ -9,7 +9,7 @@ use serde::Serialize;
 use crate::config::Config;
 use crate::exit;
 use crate::mac::generator::{self, GenerateOptions};
-use crate::mac::{Mac, arp};
+use crate::mac::{Mac, arp, factory};
 use crate::nm::{self, DeviceInfo, DeviceKind};
 use crate::state::State;
 use crate::version;
@@ -201,14 +201,27 @@ async fn rotate_one(
     })
 }
 
-fn capture_original_mac(state: &mut State, iface: &str, hw: Option<&str>) {
+/// Issue #123: cache the BURNED-IN factory MAC, never a live (possibly
+/// cloned) value.
+///
+/// The kernel surfaces the current netdev MAC at
+/// `/sys/class/net/<iface>/address`, which after even one prior rotation is
+/// the cloned value — caching that as "original" makes `proteus revert`
+/// restore to a non-original. We instead consult `factory::permanent_address`
+/// which prefers `phy80211/macaddress` (Wi-Fi) then `ethtool -P` (ethernet)
+/// before falling back to the live address (and only when the kernel agrees
+/// it's burned-in via `addr_assign_type == NET_ADDR_PERM`).
+///
+/// `hw_hint` is the NM-reported `HwAddress`. We only consult it when every
+/// other source produces nothing, which in practice means an unusual driver
+/// that exposes neither phy80211 nor ethtool's permanent-address ioctl.
+fn capture_original_mac(state: &mut State, iface: &str, hw_hint: Option<&str>) {
     if state.original_macs.contains_key(iface) {
         return;
     }
-    if let Some(mac) = hw {
-        state
-            .original_macs
-            .insert(iface.to_string(), mac.to_string());
+    let mac = factory::permanent_address(iface).or_else(|| hw_hint.map(str::to_string));
+    if let Some(mac) = mac {
+        state.original_macs.insert(iface.to_string(), mac);
     }
 }
 

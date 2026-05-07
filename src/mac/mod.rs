@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 pub mod arp;
+pub mod factory;
 pub mod generator;
 pub mod oui;
 pub mod plan;
