@@ -212,10 +212,6 @@ pub enum Command {
         quick: bool,
     },
     /// Emergency network kill switch — bring all interfaces down + radios off.
-    ///
-    /// `proteus kill --yes` cuts every managed interface and disables Wi-Fi,
-    /// WWAN, and Bluetooth radios. `proteus kill status` reports the current
-    /// state. Use `proteus resume --yes` to restore. See `proteus wiki kill-switch`.
     Kill {
         #[command(subcommand)]
         action: Option<KillAction>,
@@ -233,33 +229,10 @@ pub enum Command {
         #[command(subcommand)]
         action: NftAction,
     },
-}
-
-#[derive(Subcommand, Debug)]
-pub enum KillAction {
-    /// Show whether the kill switch is currently active.
-    Status {
-        #[arg(long)]
-        json: bool,
-    },
-}
-
-#[derive(Subcommand, Debug)]
-pub enum NftAction {
-    /// Show whether our nft table is installed plus the rendered ruleset.
-    Status {
-        #[arg(long)]
-        json: bool,
-    },
-    /// Install or refresh the Proteus nft table (idempotent).
-    Apply {
-        #[arg(long)]
-        yes: bool,
-    },
-    /// Remove the Proteus nft table.
-    Revert {
-        #[arg(long)]
-        yes: bool,
+    /// Captive portal detection + known-portal SSID list.
+    Portal {
+        #[command(subcommand)]
+        action: PortalAction,
     },
 }
 
@@ -306,6 +279,34 @@ pub struct TimerNameArgs {
 }
 
 #[derive(Subcommand, Debug)]
+pub enum KillAction {
+    /// Show whether the kill switch is currently active.
+    Status {
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum NftAction {
+    /// Show whether our nft table is installed plus the rendered ruleset.
+    Status {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Install or refresh the Proteus nft table (idempotent).
+    Apply {
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Remove the Proteus nft table.
+    Revert {
+        #[arg(long)]
+        yes: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
 pub enum HostnameAction {
     /// Show current kernel/pretty/transient + Proteus mode + cached originals.
     Status {
@@ -326,6 +327,37 @@ pub enum HostnameAction {
     },
     /// Restore the cached original hostname.
     Revert {
+        #[arg(long)]
+        yes: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum PortalAction {
+    /// Show current portal classification (clear / portal-required / portal-authed / unknown).
+    Status {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Add an SSID to the known-portal list.
+    Mark {
+        ssid: String,
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Remove an SSID from the known-portal list.
+    Unmark {
+        ssid: String,
+        #[arg(long)]
+        yes: bool,
+    },
+    /// List known-portal SSIDs.
+    List {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Open the captive portal page in the default browser.
+    Open {
         #[arg(long)]
         yes: bool,
     },
@@ -638,6 +670,19 @@ pub fn run() -> ExitCode {
             TimerAction::Logs { name, lines } => commands::timer::run_logs(&name, lines),
         },
         Command::Config { action } => dispatch_config(action, cli.config.as_deref()),
+        Command::Portal { action } => match action {
+            PortalAction::Status { json } => {
+                commands::portal::run_status(json, cli.state.as_deref(), cli.config.as_deref())
+            }
+            PortalAction::List { json } => commands::portal::run_list(json, cli.state.as_deref()),
+            PortalAction::Mark { ssid, .. } => commands::portal::run_mark(&ssid, cli.state.as_deref()),
+            PortalAction::Unmark { ssid, .. } => {
+                commands::portal::run_unmark(&ssid, cli.state.as_deref())
+            }
+            PortalAction::Open { .. } => {
+                commands::portal::run_open(cli.state.as_deref(), cli.config.as_deref())
+            }
+        },
         Command::Wiki { action, page } => match action {
             Some(WikiAction::Search { query, json, limit }) => {
                 commands::wiki_cmd::run_search(&query, json, limit)

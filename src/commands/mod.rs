@@ -16,6 +16,7 @@ pub mod kill;
 pub mod nft;
 pub mod original;
 pub mod pin;
+pub mod portal;
 pub mod probe;
 pub mod reset;
 pub mod revert;
