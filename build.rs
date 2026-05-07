@@ -36,6 +36,13 @@ fn main() {
             let Some(stem) = path.file_stem().and_then(OsStr::to_str) else {
                 continue;
             };
+            // `_index.md` is the curated TOC page; it mentions every other
+            // page by name, so leaving it in the search index would always
+            // outrank the actual content for broad queries. Skip at index
+            // build time and keep `wiki::CURATED_INDEX_PAGE` in sync.
+            if stem == "_index" {
+                continue;
+            }
             entries.push((stem.to_string(), path));
         }
     }

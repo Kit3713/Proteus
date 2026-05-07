@@ -10,6 +10,11 @@ static WIKI: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/wiki");
 // avoids duplicating ~270KB of wiki content in the binary.
 include!(concat!(env!("OUT_DIR"), "/wiki_index.rs"));
 
+/// Page name reserved for the curated TOC; never appears in `list_pages()`
+/// and never participates in alphabetical search ranking — it would always
+/// dominate "what's the wiki say about X" because it mentions every page.
+pub const CURATED_INDEX_PAGE: &str = "_index";
+
 pub fn list_pages() -> Vec<String> {
     let mut names: Vec<String> = WIKI
         .files()
@@ -20,6 +25,7 @@ pub fn list_pages() -> Vec<String> {
             }
             path.file_stem().and_then(|s| s.to_str()).map(str::to_owned)
         })
+        .filter(|n| n != CURATED_INDEX_PAGE)
         .collect();
     names.sort();
     names
@@ -28,6 +34,13 @@ pub fn list_pages() -> Vec<String> {
 pub fn get_page(name: &str) -> Option<&'static str> {
     let path = format!("{name}.md");
     WIKI.get_file(&path).and_then(|f| f.contents_utf8())
+}
+
+/// Curated table-of-contents page (`_index.md`). When present, `proteus wiki`
+/// renders this instead of the alphabetical page list. Returns `None` if
+/// the file is missing — callers must fall back gracefully.
+pub fn curated_index() -> Option<&'static str> {
+    get_page(CURATED_INDEX_PAGE)
 }
 
 /// One ranked search hit. `line` is the full source line (no trim) so the
@@ -747,6 +760,35 @@ mod tests {
             !WIKI_LINES.is_empty(),
             "build.rs should populate WIKI_LINES"
         );
+    }
+
+    #[test]
+    fn curated_index_present_and_excluded_from_listing() {
+        // The TOC must exist (it's the page `proteus wiki` shows by default
+        // when no arg is given) and must not appear as a regular page in
+        // `list_pages()` — otherwise it would show in `--help` listings,
+        // search results, and tab completion.
+        let content = curated_index().expect("wiki/_index.md must exist");
+        assert!(
+            content.contains("Curated guide"),
+            "_index.md should look like the curated TOC, got first 80 chars: {}",
+            &content[..content.len().min(80)]
+        );
+        assert!(
+            !list_pages().iter().any(|p| p == CURATED_INDEX_PAGE),
+            "list_pages() must filter out the curated index"
+        );
+    }
+
+    #[test]
+    fn curated_index_excluded_from_search() {
+        // Even if a user searches for a generic term, _index should never
+        // appear as a hit — it would dominate (it mentions every page) and
+        // hide real content.
+        let hits = search("curated guide", 50);
+        for h in &hits {
+            assert_ne!(h.page, CURATED_INDEX_PAGE, "_index leaked into search hits");
+        }
     }
 
     #[test]

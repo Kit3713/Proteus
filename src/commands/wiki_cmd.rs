@@ -19,8 +19,26 @@ pub fn run(page: Option<&str>, no_color: bool) -> Result<u8> {
     if let Some(name) = page {
         return print_page(name, no_color);
     }
-    list_pages();
+    // Prefer the curated TOC. Fall back to the alphabetical list when the
+    // index file is missing (older trees, partial extraction).
+    if let Some(content) = wiki::curated_index() {
+        render_to_stdout(content, no_color);
+    } else {
+        list_pages();
+    }
     Ok(exit::SUCCESS)
+}
+
+fn render_to_stdout(content: &str, no_color_flag: bool) {
+    let no_color_env = std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty());
+    let style = pick_style(
+        std::io::stdout().is_terminal(),
+        no_color_flag || no_color_env,
+    );
+    let rendered = wiki::render(content, style);
+    let stdout = std::io::stdout();
+    let mut handle = stdout.lock();
+    let _ = handle.write_all(rendered.as_bytes());
 }
 
 /// Implements `proteus wiki search <query...>`. Tokenizes the query by
