@@ -19,6 +19,7 @@ pub struct Config {
     pub ipv6: Ipv6Config,
     pub enterprise_wifi: EnterpriseWifiConfig,
     pub stack: StackConfig,
+    pub dhcp: DhcpConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -139,6 +140,22 @@ pub struct StackConfig {
     pub icmp_info_replies_drop: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DhcpConfig {
+    pub enabled: bool,
+    // Suppresses option 12 (Hostname) + 81 (Client FQDN) by setting
+    // ipv4.dhcp-send-hostname=no and clearing ipv4.dhcp-fqdn.
+    pub suppress_hostname: bool,
+    // Suppresses option 60 (Vendor Class Identifier) by clearing
+    // ipv4.dhcp-vendor-class-identifier.
+    pub suppress_vendor_class: bool,
+    // Couples option 61 (Client Identifier) and DHCPv6 DUID to the current
+    // MAC. Without this, rotating MAC still leaves a stable client identity
+    // visible to the DHCP server.
+    pub rotate_client_id: bool,
+}
+
 impl Default for MacConfig {
     fn default() -> Self {
         Self {
@@ -222,6 +239,17 @@ impl Default for StackConfig {
             icmpv6_hardening: true,
             suppress_gratuitous_arp: false,
             icmp_info_replies_drop: true,
+        }
+    }
+}
+
+impl Default for DhcpConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            suppress_hostname: true,
+            suppress_vendor_class: true,
+            rotate_client_id: true,
         }
     }
 }

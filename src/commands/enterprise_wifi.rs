@@ -235,6 +235,7 @@ async fn enable_one(
         .entry(connection.to_string())
         .or_insert_with(|| ConnectionOriginals {
             anonymous_identity: snapshot.anonymous_identity.clone(),
+            dhcp_settings: None,
         });
 
     eap_nm::write_anonymous_identity(conn, &path, &new_value).await?;

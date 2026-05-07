@@ -155,6 +155,7 @@ fn feature_table(
     let ew_state = enterprise_wifi_state(state, config);
     let stack_state = stack_state(state, config);
     let dns_state = dns_ecs_state(config);
+    let dhcp_state = dhcp_state(state, config);
     vec![
         FeatureStatus {
             name: "mac-rotation",
@@ -178,8 +179,8 @@ fn feature_table(
         },
         FeatureStatus {
             name: "dhcp-options",
-            state: "not implemented".into(),
-            note: "phase D".into(),
+            state: dhcp_state.0,
+            note: dhcp_state.1,
         },
         FeatureStatus {
             name: "ipv6-privacy",
@@ -298,6 +299,42 @@ fn ipv6_state(state: Option<&State>, config: &Config) -> (String, String) {
     (
         "idle".to_string(),
         "configured; run `proteus ipv6 apply` to harden".to_string(),
+    )
+}
+
+fn dhcp_state(state: Option<&State>, config: &Config) -> (String, String) {
+    if !config.dhcp.enabled {
+        return (
+            "idle".to_string(),
+            "disabled in config (dhcp.enabled = false)".to_string(),
+        );
+    }
+    let any_cached = state
+        .map(|s| {
+            s.originals
+                .connections
+                .values()
+                .any(|c| c.dhcp_settings.is_some())
+        })
+        .unwrap_or(false);
+    if any_cached {
+        let n = state
+            .map(|s| {
+                s.originals
+                    .connections
+                    .values()
+                    .filter(|c| c.dhcp_settings.is_some())
+                    .count()
+            })
+            .unwrap_or(0);
+        return (
+            "applied".to_string(),
+            format!("{n} connection(s) tracked; see `proteus dhcp status`"),
+        );
+    }
+    (
+        "idle".to_string(),
+        "run `proteus dhcp apply` to suppress 12/60/61/81 + DUID".to_string(),
     )
 }
 

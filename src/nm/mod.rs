@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 pub mod apply;
+pub mod dhcp;
 
 use anyhow::{Context, Result, anyhow};
 use zbus::proxy;

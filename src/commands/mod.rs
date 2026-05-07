@@ -4,6 +4,7 @@ pub mod apply;
 pub mod bluetooth_cmd;
 pub mod config_cmd;
 pub mod current;
+pub mod dhcp;
 pub mod diff;
 pub mod dns;
 pub mod doctor;

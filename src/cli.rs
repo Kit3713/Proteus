@@ -165,6 +165,11 @@ pub enum Command {
         #[command(subcommand)]
         action: DnsAction,
     },
+    /// DHCP option suppression (12/60/61/81 + DHCPv6 DUID/IAID).
+    Dhcp {
+        #[command(subcommand)]
+        action: DhcpAction,
+    },
     /// Browse the embedded wiki (or search it with `wiki search <query>`).
     #[command(args_conflicts_with_subcommands = true)]
     Wiki {
@@ -365,6 +370,25 @@ pub enum EnterpriseWifiAction {
         /// NM connection profile id (the human-friendly name).
         #[arg(long)]
         connection: String,
+        #[arg(long)]
+        yes: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum DhcpAction {
+    /// Show DHCP suppression state per NM connection.
+    Status {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Apply DHCP suppression to all managed NM connections.
+    Apply {
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Restore NM defaults on all proteus-managed connections.
+    Revert {
         #[arg(long)]
         yes: bool,
     },
@@ -596,6 +620,13 @@ pub fn run() -> ExitCode {
             DnsAction::Status { json } => commands::dns::status(json, cli.config.as_deref()),
             DnsAction::Apply { .. } => commands::dns::apply(cli.config.as_deref()),
             DnsAction::Revert { .. } => commands::dns::revert(),
+        },
+        Command::Dhcp { action } => match action {
+            DhcpAction::Status { json } => commands::dhcp::status(json),
+            DhcpAction::Apply { .. } => {
+                commands::dhcp::apply(cli.state.as_deref(), cli.config.as_deref())
+            }
+            DhcpAction::Revert { .. } => commands::dhcp::revert(cli.state.as_deref()),
         },
         Command::Timer { action } => match action {
             TimerAction::Status { json } => commands::timer::run_status(json),
