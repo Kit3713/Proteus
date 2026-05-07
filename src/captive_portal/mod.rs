@@ -20,7 +20,9 @@
 
 use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
-use std::time::Duration;
+use std::sync::mpsc;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
@@ -77,7 +79,11 @@ impl HttpResponse {
 /// Run the detector against `url`, comparing the response body to
 /// `expected_body`. Returns an outcome with classification + note.
 ///
-/// `timeout` applies to both connect and read.
+/// `timeout` is a **total** budget — DNS resolve, TCP connect, write, and
+/// body-read all run on a worker thread that we abandon if the deadline
+/// expires. Per-socket read/write timeouts cover the steady-state case;
+/// the watchdog covers DNS resolution and any phase that ignores the
+/// per-socket timeout (issue #129).
 pub fn detect(url: &str, expected_body: &str, timeout: Duration) -> DetectionOutcome {
     let parsed = match parse_http_url(url) {
         Some(p) => p,
@@ -89,7 +95,7 @@ pub fn detect(url: &str, expected_body: &str, timeout: Duration) -> DetectionOut
             };
         }
     };
-    match http_get(&parsed, timeout) {
+    match run_bounded(timeout, move || http_get(&parsed, timeout)) {
         Ok(resp) => {
             let outcome = classify_response(&resp, expected_body);
             DetectionOutcome {
@@ -104,6 +110,32 @@ pub fn detect(url: &str, expected_body: &str, timeout: Duration) -> DetectionOut
             redirect_target: None,
         },
     }
+}
+
+/// Run `work` on a worker thread bounded by `total_timeout`. If the worker
+/// is still running when the deadline expires we abandon it (the OS unblocks
+/// any in-flight resolve/connect/read when the process exits) and surface a
+/// synthetic `TimedOut` error. This is what fixes issue #129 —
+/// `set_read_timeout` on the underlying socket only bounds *individual*
+/// `read` calls, not the cumulative DNS + connect + write + body-read.
+fn run_bounded<F, T>(total_timeout: Duration, work: F) -> std::io::Result<T>
+where
+    F: FnOnce() -> std::io::Result<T> + Send + 'static,
+    T: Send + 'static,
+{
+    let (tx, rx) = mpsc::sync_channel::<std::io::Result<T>>(1);
+    thread::spawn(move || {
+        let _ = tx.send(work());
+    });
+    rx.recv_timeout(total_timeout).unwrap_or_else(|_| {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            format!(
+                "captive-portal detect timed out after {} ms",
+                total_timeout.as_millis()
+            ),
+        ))
+    })
 }
 
 /// Pure classifier — split out so tests don't need a network.
@@ -179,18 +211,56 @@ struct UrlParts {
     path: String,
 }
 
+/// Parse `http://[user[:pass]@]host[:port][/path]` into the pieces we need
+/// for the request line. Hand-rolled so we don't pull in the `url` crate
+/// for one URL per detect call. Supported forms (issues #138/#145):
+///
+/// * bare hostname — `http://example.com/`
+/// * `host:port` — `http://example.com:8080/foo`
+/// * IPv6 literal — `http://[::1]/check` or `http://[fe80::1]:8080/`
+/// * userinfo — `http://user:pass@host/` (we strip and discard it;
+///   the detector intentionally never sends Authorization)
+///
+/// `https://` and other schemes are rejected (we have no TLS).
 fn parse_http_url(url: &str) -> Option<UrlParts> {
+    use std::net::Ipv6Addr;
+    use std::str::FromStr;
+
     let rest = url.strip_prefix("http://")?;
-    let (hostport, path) = match rest.find('/') {
+    let (authority, path) = match rest.find('/') {
         Some(i) => (&rest[..i], &rest[i..]),
         None => (rest, "/"),
     };
-    let (host, port) = match hostport.rfind(':') {
-        Some(i) => {
-            let p = hostport[i + 1..].parse::<u16>().ok()?;
-            (hostport[..i].to_string(), p)
+
+    // Strip optional `user[:pass]@` userinfo. We don't use it — the
+    // detector is unauthenticated by construction — but URLs in the wild
+    // often carry it via copy-paste, and a bare `@` would otherwise
+    // corrupt the host.
+    let hostport = match authority.rfind('@') {
+        Some(at) => &authority[at + 1..],
+        None => authority,
+    };
+
+    // IPv6 literals are wrapped in brackets per RFC 3986 §3.2.2 so the
+    // colons inside the address don't collide with the port separator.
+    let (host, port) = if let Some(bracketed) = hostport.strip_prefix('[') {
+        let (raw_host, after) = bracketed.split_once(']')?;
+        if raw_host.is_empty() {
+            return None;
         }
-        None => (hostport.to_string(), 80),
+        // Validate it actually parses as an IPv6 address — anything else is
+        // malformed and we'd rather fail loudly than DNS-resolve garbage.
+        Ipv6Addr::from_str(raw_host).ok()?;
+        let port = parse_port_suffix(after)?;
+        (raw_host.to_string(), port)
+    } else {
+        match hostport.rfind(':') {
+            Some(i) => {
+                let p = hostport[i + 1..].parse::<u16>().ok()?;
+                (hostport[..i].to_string(), p)
+            }
+            None => (hostport.to_string(), 80),
+        }
     };
     if host.is_empty() {
         return None;
@@ -202,23 +272,39 @@ fn parse_http_url(url: &str) -> Option<UrlParts> {
     })
 }
 
+/// Helper for IPv6-literal port handling: `after` is the slice that comes
+/// after the closing `]`, which is either empty (no port; default 80) or
+/// `:NNN`.
+fn parse_port_suffix(after: &str) -> Option<u16> {
+    if after.is_empty() {
+        return Some(80);
+    }
+    let port_str = after.strip_prefix(':')?;
+    port_str.parse::<u16>().ok()
+}
+
 fn http_get(parts: &UrlParts, timeout: Duration) -> std::io::Result<HttpResponse> {
+    let started = Instant::now();
     let addr_iter = (parts.host.as_str(), parts.port).to_socket_addrs()?;
     let mut last_err: Option<std::io::Error> = None;
     for addr in addr_iter {
-        match TcpStream::connect_timeout(&addr, timeout) {
+        match TcpStream::connect_timeout(&addr, remaining_budget(started, timeout)?) {
             Ok(mut stream) => {
-                stream.set_read_timeout(Some(timeout))?;
-                stream.set_write_timeout(Some(timeout))?;
                 let req = format!(
                     "GET {} HTTP/1.0\r\nHost: {}\r\nUser-Agent: proteus-portal-detect/1.0\r\nAccept: */*\r\nConnection: close\r\n\r\n",
                     parts.path, parts.host
                 );
+                stream.set_write_timeout(Some(remaining_budget(started, timeout)?))?;
                 stream.write_all(req.as_bytes())?;
                 let mut buf = Vec::with_capacity(4096);
                 // Cap at 64 KiB — portals don't need megabytes of HTML to identify.
                 let mut tmp = [0u8; 1024];
                 while buf.len() < 65_536 {
+                    // Re-check the budget per chunk: a peer that dribbles
+                    // bytes just under the per-read timeout could otherwise
+                    // keep us reading past `timeout`. This is the body-read
+                    // half of issue #129.
+                    stream.set_read_timeout(Some(remaining_budget(started, timeout)?))?;
                     match stream.read(&mut tmp) {
                         Ok(0) => break,
                         Ok(n) => buf.extend_from_slice(&tmp[..n]),
@@ -236,6 +322,20 @@ fn http_get(parts: &UrlParts, timeout: Duration) -> std::io::Result<HttpResponse
             "no addresses resolved",
         )
     }))
+}
+
+/// How much of `total` is left given that `started` has already elapsed.
+/// Errors with `TimedOut` once the budget is gone — the caller bubbles that
+/// up instead of asking the kernel for a 0-duration timeout (which means
+/// "block forever" for `set_read_timeout`).
+fn remaining_budget(started: Instant, total: Duration) -> std::io::Result<Duration> {
+    match total.checked_sub(started.elapsed()) {
+        Some(d) if !d.is_zero() => Ok(d),
+        _ => Err(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            format!("budget exhausted after {} ms", total.as_millis()),
+        )),
+    }
 }
 
 fn parse_http_response(buf: &[u8]) -> std::io::Result<HttpResponse> {
@@ -371,10 +471,102 @@ mod tests {
     }
 
     #[test]
+    fn parses_ipv6_literal_with_default_port() {
+        let p = parse_http_url("http://[::1]/check").unwrap();
+        assert_eq!(p.host, "::1");
+        assert_eq!(p.port, 80);
+        assert_eq!(p.path, "/check");
+    }
+
+    #[test]
+    fn parses_ipv6_literal_with_explicit_port() {
+        let p = parse_http_url("http://[fe80::1]:8080/foo").unwrap();
+        assert_eq!(p.host, "fe80::1");
+        assert_eq!(p.port, 8080);
+        assert_eq!(p.path, "/foo");
+    }
+
+    #[test]
+    fn parses_ipv6_literal_without_path() {
+        let p = parse_http_url("http://[2001:db8::1]").unwrap();
+        assert_eq!(p.host, "2001:db8::1");
+        assert_eq!(p.port, 80);
+        assert_eq!(p.path, "/");
+    }
+
+    #[test]
+    fn rejects_malformed_ipv6_brackets() {
+        // Empty brackets, missing close bracket, non-IPv6 inside.
+        assert!(parse_http_url("http://[]/").is_none());
+        assert!(parse_http_url("http://[::1/").is_none());
+        assert!(parse_http_url("http://[notipv6]/").is_none());
+    }
+
+    #[test]
+    fn strips_userinfo_from_authority() {
+        let p = parse_http_url("http://user:pass@host.example/check").unwrap();
+        assert_eq!(p.host, "host.example");
+        assert_eq!(p.port, 80);
+        assert_eq!(p.path, "/check");
+    }
+
+    #[test]
+    fn strips_userinfo_with_port() {
+        let p = parse_http_url("http://user@host.example:8080/").unwrap();
+        assert_eq!(p.host, "host.example");
+        assert_eq!(p.port, 8080);
+    }
+
+    #[test]
+    fn strips_userinfo_with_ipv6_literal() {
+        let p = parse_http_url("http://user:pass@[::1]:8080/foo").unwrap();
+        assert_eq!(p.host, "::1");
+        assert_eq!(p.port, 8080);
+        assert_eq!(p.path, "/foo");
+    }
+
+    #[test]
     fn classification_as_str_matches_kebab_case() {
         assert_eq!(Classification::Clear.as_str(), "clear");
         assert_eq!(Classification::PortalRequired.as_str(), "portal-required");
         assert_eq!(Classification::PortalAuthed.as_str(), "portal-authed");
         assert_eq!(Classification::Unknown.as_str(), "unknown");
+    }
+
+    /// Slow body-read or stalled DNS must not exceed the configured timeout.
+    /// Regression cover for issue #129.
+    #[test]
+    fn run_bounded_surfaces_timeout_for_slow_work() {
+        let started = Instant::now();
+        let r: std::io::Result<()> = run_bounded(Duration::from_millis(50), || {
+            std::thread::sleep(Duration::from_secs(2));
+            Ok(())
+        });
+        let elapsed = started.elapsed();
+        assert_eq!(r.unwrap_err().kind(), std::io::ErrorKind::TimedOut);
+        assert!(
+            elapsed < Duration::from_millis(500),
+            "watchdog must release within the deadline, took {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn run_bounded_returns_fast_result() {
+        let r: std::io::Result<u32> = run_bounded(Duration::from_secs(1), || Ok(42));
+        assert_eq!(r.unwrap(), 42);
+    }
+
+    #[test]
+    fn remaining_budget_yields_timeout_when_exhausted() {
+        let t0 = Instant::now() - Duration::from_secs(10);
+        let r = remaining_budget(t0, Duration::from_secs(1));
+        assert_eq!(r.unwrap_err().kind(), std::io::ErrorKind::TimedOut);
+    }
+
+    #[test]
+    fn remaining_budget_returns_what_is_left() {
+        let r = remaining_budget(Instant::now(), Duration::from_secs(5)).unwrap();
+        assert!(r > Duration::from_millis(100), "got {r:?}");
+        assert!(r <= Duration::from_secs(5), "got {r:?}");
     }
 }

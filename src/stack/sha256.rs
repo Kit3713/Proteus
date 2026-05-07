@@ -42,9 +42,18 @@ fn digest(bytes: &[u8]) -> [u8; 32] {
     }
     buf.extend_from_slice(&bit_len.to_be_bytes());
 
-    for chunk in buf.chunks(64) {
+    // Padding guarantees `buf.len() % 64 == 0`. Use `chunks_exact` so the
+    // invariant is enforced — `chunks(64)` would silently feed a partial
+    // trailing block to `compress` (whose `debug_assert` is dropped in
+    // release builds) if the padding logic ever regressed.
+    let mut iter = buf.chunks_exact(64);
+    for chunk in &mut iter {
         compress(&mut h, chunk);
     }
+    debug_assert!(
+        iter.remainder().is_empty(),
+        "sha256 padding should leave no remainder"
+    );
 
     let mut out = [0u8; 32];
     for (i, w) in h.iter().enumerate() {
@@ -138,5 +147,17 @@ mod tests {
             hex(s),
             "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1"
         );
+    }
+
+    #[test]
+    fn handles_inputs_around_block_boundaries() {
+        // Lengths near 56 (where padding crosses a block) and 64 (exact
+        // block) exercise every branch of the padding logic. None of these
+        // should panic regardless of build mode — if they ever do,
+        // `chunks_exact` is feeding a malformed remainder to `compress`.
+        for n in [0usize, 1, 55, 56, 57, 63, 64, 65, 119, 120, 127, 128, 1023] {
+            let bytes = vec![0xa5u8; n];
+            let _ = hex(&bytes);
+        }
     }
 }

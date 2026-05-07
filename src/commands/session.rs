@@ -428,7 +428,13 @@ fn unit_enabled(unit: &str) -> bool {
 }
 
 fn systemctl_state(verb: &str, unit: &str) -> Option<String> {
-    let out = Command::new("systemctl").args([verb, unit]).output().ok()?;
+    // Pin the C locale so the output we parse stays in the canonical
+    // English form regardless of the operator's session.
+    let out = Command::new("systemctl")
+        .env("LC_ALL", "C")
+        .args([verb, unit])
+        .output()
+        .ok()?;
     Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
@@ -436,7 +442,12 @@ fn next_rotation_pair() -> (Option<String>, Option<String>) {
     if !Path::new(SYSTEMD_MARKER).is_dir() {
         return (None, None);
     }
+    // `list-timers` formats dates and the "left" duration via the process
+    // locale; `parse_next_rotation` below assumes the C-locale English
+    // layout ("Wed 2026-05-07 16:00:00 UTC 1h 46min …"). Force the locale
+    // so a French/German/Japanese installation produces parseable output.
     let out = match Command::new("systemctl")
+        .env("LC_ALL", "C")
         .args([
             "list-timers",
             "--all",
@@ -454,29 +465,42 @@ fn next_rotation_pair() -> (Option<String>, Option<String>) {
 }
 
 /// Parse the `NEXT  LEFT  ...` row from `systemctl list-timers --no-legend`.
-/// Returns `(absolute, "in 1h46m")`-shaped pair.
+/// Returns `(absolute, "1h 46min")`-shaped pair. Caller is expected to have
+/// invoked systemctl with `LC_ALL=C` so the column layout is the canonical
+/// English form documented here.
+///
+/// Layout (--no-legend, C locale):
+///   `Wed 2026-05-07 16:00:00 UTC  1h 46min  Wed 2026-05-07 14:00:00 UTC  14min ago  proteus-rotate.timer  …`
+///
+/// The NEXT column is four whitespace-separated fields (weekday, date,
+/// time, timezone). LEFT is everything between NEXT and the next
+/// weekday-or-date field that starts the LAST column.
 pub(crate) fn parse_next_rotation(text: &str) -> (Option<String>, Option<String>) {
+    const NEXT_FIELDS: usize = 4;
     for line in text.lines() {
         let line = line.trim();
         if line.is_empty() {
             continue;
         }
         let fields: Vec<&str> = line.split_whitespace().collect();
-        if fields.len() < 4 {
+        // Need NEXT (4 fields) + at least one LEFT field.
+        if fields.len() < NEXT_FIELDS + 1 {
             return (None, None);
         }
-        // First three fields are the absolute date; fields after that, until
-        // we hit the next absolute date (a weekday name or YYYY-MM-DD field),
-        // are the LEFT column.
-        let absolute = fields[0..3].join(" ");
+        let absolute = fields[0..NEXT_FIELDS].join(" ");
+        // LEFT runs until the next column marker (weekday abbrev, a
+        // `YYYY-MM-DD` field, or systemd's `n/a` placeholder for an
+        // unfired timer) — that's the start of the LAST column. Skip one
+        // field past NEXT so we don't immediately re-trigger on the
+        // weekday inside NEXT itself.
         let mut split_at = fields.len();
-        for (i, f) in fields.iter().enumerate().skip(4) {
-            if f.contains('-') || is_weekday_abbrev(f) {
+        for (i, f) in fields.iter().enumerate().skip(NEXT_FIELDS + 1) {
+            if is_weekday_abbrev(f) || looks_like_iso_date(f) || *f == "n/a" {
                 split_at = i;
                 break;
             }
         }
-        let left = fields[3..split_at].join(" ");
+        let left = fields[NEXT_FIELDS..split_at].join(" ");
         let absolute = if absolute.contains('-') {
             Some(absolute)
         } else {
@@ -486,6 +510,20 @@ pub(crate) fn parse_next_rotation(text: &str) -> (Option<String>, Option<String>
         return (absolute, left);
     }
     (None, None)
+}
+
+fn looks_like_iso_date(s: &str) -> bool {
+    // YYYY-MM-DD: dashes at positions 4 and 7, ASCII digits elsewhere.
+    // Distinguishes a date field from a duration token like "1h"/"46min".
+    let bytes = s.as_bytes();
+    bytes.len() == 10
+        && bytes.iter().enumerate().all(|(i, b)| {
+            if i == 4 || i == 7 {
+                *b == b'-'
+            } else {
+                b.is_ascii_digit()
+            }
+        })
 }
 
 fn is_weekday_abbrev(s: &str) -> bool {
@@ -753,10 +791,34 @@ mod tests {
 
     #[test]
     fn parse_next_rotation_pulls_left_column() {
+        // Real `systemctl list-timers --no-legend --all proteus-rotate.timer`
+        // output, C locale: NEXT (4 fields, includes timezone) then LEFT.
         let line = "Wed 2026-05-07 16:00:00 CDT 1h 46min Wed 2026-05-07 14:00:00 CDT 14min ago proteus-rotate.timer proteus-rotate.service";
         let (next, left) = parse_next_rotation(line);
-        assert_eq!(next.as_deref(), Some("Wed 2026-05-07 16:00:00"));
-        assert_eq!(left.as_deref(), Some("CDT 1h 46min"));
+        // NEXT must include the timezone — splitting it off was the bug
+        // behind issue #140.
+        assert_eq!(next.as_deref(), Some("Wed 2026-05-07 16:00:00 CDT"));
+        // LEFT is just the duration; the timezone abbrev belongs to NEXT.
+        assert_eq!(left.as_deref(), Some("1h 46min"));
+    }
+
+    #[test]
+    fn parse_next_rotation_handles_utc_format() {
+        let line = "Wed 2026-05-07 16:00:00 UTC 1h 46min n/a n/a proteus-rotate.timer proteus-rotate.service";
+        let (next, left) = parse_next_rotation(line);
+        assert_eq!(next.as_deref(), Some("Wed 2026-05-07 16:00:00 UTC"));
+        assert_eq!(left.as_deref(), Some("1h 46min"));
+    }
+
+    #[test]
+    fn parse_next_rotation_returns_none_on_short_lines() {
+        // Truncated output (NEXT only, no LEFT) shouldn't return half-baked
+        // data.
+        assert_eq!(
+            parse_next_rotation("Wed 2026-05-07 16:00:00 CDT"),
+            (None, None)
+        );
+        assert_eq!(parse_next_rotation(""), (None, None));
     }
 
     #[test]

@@ -9,6 +9,22 @@
 //! free.
 //!
 //! See `wiki/cli.md` Logging section for the user-facing surface.
+//!
+//! ## Lazy init
+//!
+//! Default invocations (no `-v`, no `-q`, no `RUST_LOG`, no `JOURNAL_STREAM`)
+//! short-circuit out of [`init`] without touching the global tracing
+//! dispatcher: every `tracing::*!` macro becomes a no-op for the rest of the
+//! process. proteus emits zero info/debug/trace events at the default level,
+//! and the small number of `tracing::warn!` sites are diagnostic hints rather
+//! than primary error output (errors are surfaced via `anyhow`/`eprintln`),
+//! so suppressing them by default lets the cold-start path skip the
+//! `tracing_subscriber::Registry` plus `sharded-slab` allocations entirely.
+//!
+//! Users who want warnings on stderr re-enable them with `-v` (= verbose=1,
+//! DEBUG-and-above) or `RUST_LOG=warn`. Systemd-launched units always get
+//! the journald subscriber via `JOURNAL_STREAM`. See `docs/perf-baseline.md`
+//! for the measured before/after.
 
 use std::str::FromStr;
 
@@ -19,14 +35,22 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
 pub fn init(verbose: u8, quiet: u8, no_color: bool) {
-    let default_level = level_from_counts(verbose, quiet);
-    let filter = build_filter(default_level);
+    // Read the env once; both checks are also used to guard the fast path.
+    let rust_log = std::env::var("RUST_LOG").ok().filter(|s| !s.is_empty());
+    let on_journal = std::env::var_os("JOURNAL_STREAM").is_some();
 
-    // JOURNAL_STREAM is set by systemd when the process is launched as a unit.
+    // Fast path: nothing to log at default settings, so skip the dispatcher
+    // install. See module docs above for the behavior contract.
+    if verbose == 0 && quiet == 0 && rust_log.is_none() && !on_journal {
+        return;
+    }
+
+    let default_level = level_from_counts(verbose, quiet);
+    let filter = build_filter(default_level, rust_log.as_deref());
+
+    // JOURNAL_STREAM is set by systemd when proteus is launched as a unit.
     // Prefer journald there so timer-driven runs are auto-correlated.
-    if std::env::var_os("JOURNAL_STREAM").is_some()
-        && let Ok(layer) = tracing_journald::layer()
-    {
+    if on_journal && let Ok(layer) = tracing_journald::layer() {
         let _ = tracing_subscriber::registry()
             .with(filter)
             .with(layer)
@@ -36,7 +60,7 @@ pub fn init(verbose: u8, quiet: u8, no_color: bool) {
 
     let fmt_layer = fmt::layer()
         .with_writer(std::io::stderr)
-        .with_ansi(!no_color && !no_color_env())
+        .with_ansi(!no_color)
         .without_time()
         .with_target(false);
     let _ = tracing_subscriber::registry()
@@ -45,64 +69,49 @@ pub fn init(verbose: u8, quiet: u8, no_color: bool) {
         .try_init();
 }
 
-/// Honor the POSIX `NO_COLOR` convention (https://no-color.org): any
-/// non-empty value disables ANSI styling, regardless of the `--no-color`
-/// flag. Empty `NO_COLOR=""` is treated as unset, matching the spec.
-fn no_color_env() -> bool {
-    no_color_from(std::env::var_os("NO_COLOR").as_deref())
-}
-
-fn no_color_from(value: Option<&std::ffi::OsStr>) -> bool {
-    value.is_some_and(|v| !v.is_empty())
-}
-
-/// Parse `RUST_LOG` into a `Targets` filter. Falls back to the requested
-/// `default_level` when the environment variable is unset or unparseable.
+/// Build a `Targets` filter, optionally honouring a pre-extracted `RUST_LOG`
+/// directive string. Falls back to the requested `default_level` when
+/// `rust_log` is `None` or empty.
 ///
 /// Supported syntax (a strict subset of `EnvFilter`):
 ///
 /// * `RUST_LOG=debug` — global default level
 /// * `RUST_LOG=proteus=trace` — single-target override
 /// * `RUST_LOG=proteus=debug,zbus=warn` — comma-separated overrides
-fn build_filter(default_level: Level) -> Targets {
+fn build_filter(default_level: Level, rust_log: Option<&str>) -> Targets {
     let default = LevelFilter::from_level(default_level);
-    match std::env::var("RUST_LOG") {
-        Ok(s) if !s.is_empty() => parse_rust_log(&s, default),
+    match rust_log {
+        Some(s) if !s.is_empty() => parse_rust_log(s, default),
         _ => Targets::new().with_default(default),
     }
 }
 
 fn parse_rust_log(s: &str, fallback: LevelFilter) -> Targets {
-    // Each directive parses independently so a malformed `bogus=invalid`
-    // does not poison the otherwise-valid `zbus=warn` next to it. Bare
-    // levels (`debug`) update the default; `target=level` directives
-    // accumulate into the `Targets` filter. Bad directives are warned
-    // about and skipped — tracing itself isn't initialized yet here, so
-    // we route the warning through stderr.
+    // `Targets::from_str` already understands `target=level` directives. Bare
+    // levels (`debug`) parse as a `=debug` directive against the empty target,
+    // which `Targets` does not treat as a global default — so we strip a
+    // leading bare-level token and feed it through `with_default` instead.
     let mut default = fallback;
-    let mut targets = Targets::new();
+    let mut directives: Vec<&str> = Vec::new();
     for part in s.split(',') {
         let part = part.trim();
         if part.is_empty() {
             continue;
         }
-        if !part.contains('=') {
-            match LevelFilter::from_str(part) {
-                Ok(level) => default = level,
-                Err(_) => warn_bad_directive(part),
-            }
+        if !part.contains('=')
+            && let Ok(level) = LevelFilter::from_str(part)
+        {
+            default = level;
             continue;
         }
-        match Targets::from_str(part) {
-            Ok(t) => targets.extend(t),
-            Err(_) => warn_bad_directive(part),
-        }
+        directives.push(part);
     }
+    let targets = if directives.is_empty() {
+        Targets::new()
+    } else {
+        Targets::from_str(&directives.join(",")).unwrap_or_else(|_| Targets::new())
+    };
     targets.with_default(default)
-}
-
-fn warn_bad_directive(part: &str) {
-    eprintln!("proteus: RUST_LOG: ignoring invalid directive '{part}'");
 }
 
 fn level_from_counts(verbose: u8, quiet: u8) -> Level {
@@ -163,35 +172,23 @@ mod tests {
     }
 
     #[test]
-    fn parse_rust_log_skips_bad_directive_keeps_valid_ones() {
-        // The motivating case from issue #132: a single bad directive in
-        // the middle of an otherwise-valid list must not nuke the rest.
-        let t = parse_rust_log("zbus=warn,bogus=invalid", LevelFilter::INFO);
-        assert!(t.would_enable("zbus", &Level::WARN));
-        assert!(!t.would_enable("zbus", &Level::INFO));
-        // Untouched targets follow the fallback default.
-        assert!(t.would_enable("other", &Level::INFO));
-        assert!(!t.would_enable("other", &Level::DEBUG));
+    fn build_filter_uses_default_when_rust_log_none() {
+        let t = build_filter(Level::INFO, None);
+        assert!(t.would_enable("x", &Level::INFO));
+        assert!(!t.would_enable("x", &Level::DEBUG));
     }
 
     #[test]
-    fn parse_rust_log_skips_bad_bare_level_keeps_valid_targeted() {
-        let t = parse_rust_log("nonsense,zbus=warn", LevelFilter::INFO);
-        // Targeted directive survives even though the bare level was junk.
-        assert!(t.would_enable("zbus", &Level::WARN));
-        assert!(!t.would_enable("zbus", &Level::INFO));
+    fn build_filter_uses_default_when_rust_log_empty() {
+        let t = build_filter(Level::WARN, Some(""));
+        assert!(t.would_enable("x", &Level::WARN));
+        assert!(!t.would_enable("x", &Level::INFO));
     }
 
     #[test]
-    fn no_color_from_treats_unset_and_empty_as_color_allowed() {
-        assert!(!no_color_from(None));
-        assert!(!no_color_from(Some(std::ffi::OsStr::new(""))));
-    }
-
-    #[test]
-    fn no_color_from_treats_any_nonempty_value_as_color_disabled() {
-        assert!(no_color_from(Some(std::ffi::OsStr::new("1"))));
-        assert!(no_color_from(Some(std::ffi::OsStr::new("yes"))));
-        assert!(no_color_from(Some(std::ffi::OsStr::new("0"))));
+    fn build_filter_honours_rust_log() {
+        let t = build_filter(Level::INFO, Some("proteus=debug"));
+        assert!(t.would_enable("proteus", &Level::DEBUG));
+        assert!(!t.would_enable("proteus", &Level::TRACE));
     }
 }

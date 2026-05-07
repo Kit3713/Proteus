@@ -15,6 +15,16 @@ pub struct ApplyOutcome {
     pub discoverable_after: Option<bool>,
     pub rpa_action: RpaAction,
     pub notes: Vec<String>,
+    /// True when the adapter was powered off and we deliberately skipped
+    /// the alias write — BlueZ rejects `Adapter1.Alias` writes on a
+    /// `Powered=false` adapter, which used to fail the whole `bluetooth
+    /// apply` run (issues #143/#152/#154).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub skipped_powered_off: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 #[derive(Debug, Serialize, Clone, Copy, PartialEq, Eq)]
@@ -48,6 +58,24 @@ pub async fn apply_one(
 
     let mut notes = Vec::new();
     let alias_before = proxy.alias().await.ok();
+
+    // BlueZ refuses property writes on a powered-off adapter, surfacing the
+    // failure as `org.bluez.Error.NotReady`. That used to abort the whole
+    // `bluetooth apply` run when one of N adapters happened to be off — an
+    // unsightly failure for what is supposed to be a best-effort sweep.
+    // Skip the writes (alias + discoverable + RPA poke) and surface a note.
+    if should_skip_powered_off(info) {
+        notes.push("adapter is powered off; skipping alias/discoverable writes".into());
+        return Ok(ApplyOutcome {
+            hci: info.hci.clone(),
+            alias_before: alias_before.clone(),
+            alias_after: alias_before,
+            discoverable_after: info.discoverable,
+            rpa_action: RpaAction::Skipped,
+            notes,
+            skipped_powered_off: true,
+        });
+    }
 
     if cfg.generic_alias {
         proxy
@@ -91,7 +119,15 @@ pub async fn apply_one(
         discoverable_after,
         rpa_action,
         notes,
+        skipped_powered_off: false,
     })
+}
+
+/// Pure helper: returns true when `apply_one` should skip mutating an
+/// adapter because BlueZ would reject the writes. Split out so tests can
+/// assert the policy without wiring a real DBus connection.
+pub(crate) fn should_skip_powered_off(info: &AdapterInfo) -> bool {
+    info.powered == Some(false)
 }
 
 pub async fn revert_one(
@@ -141,5 +177,41 @@ fn capture_original_alias(state: &mut State, hci: &str, alias: Option<&str>) {
             .originals
             .bluetooth_aliases
             .insert(hci.to_string(), a.to_string());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use zbus::zvariant::OwnedObjectPath;
+
+    fn info_with_powered(powered: Option<bool>) -> AdapterInfo {
+        AdapterInfo {
+            hci: "hci0".into(),
+            path: OwnedObjectPath::try_from("/org/bluez/hci0").unwrap(),
+            address: None,
+            address_type: None,
+            alias: None,
+            name: None,
+            discoverable: None,
+            pairable: None,
+            powered,
+            privacy_capable: false,
+            privacy_active: false,
+        }
+    }
+
+    #[test]
+    fn skip_when_explicitly_powered_off() {
+        assert!(should_skip_powered_off(&info_with_powered(Some(false))));
+    }
+
+    #[test]
+    fn proceed_when_powered_on_or_unknown() {
+        // BlueZ exposes Powered on every modern controller; if it ever
+        // doesn't (older daemon, weird adapter), default to attempting the
+        // write rather than silently skipping every adapter.
+        assert!(!should_skip_powered_off(&info_with_powered(Some(true))));
+        assert!(!should_skip_powered_off(&info_with_powered(None)));
     }
 }
