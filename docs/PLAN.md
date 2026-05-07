@@ -1,6 +1,6 @@
 # Proteus
 
-A Rust CLI for Linux that erases the network identifiers your laptop hands out every time it joins a network. MAC addresses, DHCP options, IPv6 derivations, hostname, mDNS chatter, TCP fingerprint quirks, Bluetooth name, captive-portal correlation. It rotates MACs on a schedule (default 2h) and on probe-driven connectivity loss (default every 5m). Single binary, embedded wiki, runs on Fedora 43+ with systemd + NetworkManager.
+A Rust CLI for Linux that reduces every fingerprint the local OS can control on join and transmit — L2 through L4 network identifiers, network-joining protocol chatter, and the OS-controllable parts of the L1 RF surface. MAC addresses, DHCP options, IPv6 derivations, hostname, mDNS chatter, TCP fingerprint quirks, Bluetooth name, captive-portal correlation, plus opt-in TX power reduction and probe-request privacy. It rotates MACs on a schedule (default 2h) and on probe-driven connectivity loss (default every 5m). Single binary, embedded wiki, runs on Fedora 43+ with systemd + NetworkManager.
 
 Named after the shapeshifter.
 

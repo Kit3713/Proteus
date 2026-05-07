@@ -101,7 +101,7 @@ Higher density of adversaries and analytics. The peer-snooping risk is real — 
 4. **Bluetooth.** Sponsor booths sometimes hand out swag in exchange for a Bluetooth scan. Treat this as adversarial — the swag is paid for by the BD_ADDR you donated. Keep `Discoverable=false`, BLE RPA enabled, and consider `rfkill block bluetooth` for the duration of the show floor.
 5. **Post-conference.** `sudo proteus revert --yes` clears session state and returns Proteus's view of the originals. Or keep going — there is no requirement to revert.
 
-What conferences do not care about: your hostname rotating mid-session. The vendor-supplied analytics platform is keying on MAC and behavior, not on whether your laptop says `fedora` or `seven-mauve-coyote.local`. The hostname work matters more for the LAN-side leak (mDNS, NetBIOS) than for the analytics platform.
+What conferences do not care about: your hostname rotating mid-session. The vendor-supplied analytics platform is keying on MAC and behavior, not on whether the host says `fedora` or `seven-mauve-coyote.local`. The hostname work matters more for the LAN-side leak (mDNS, NetBIOS) than for the analytics platform.
 
 Two patterns worth knowing. **Conference Wi-Fi often pre-installs a profile via QR code.** Read it before you scan — some profiles install a CA cert that lets the operator MITM your TLS for the duration. Decline anything that wants a root cert installed. **Sponsor talks sometimes "track engagement"** by handing out RFID badges that scan attendance at sessions. That is its own L7 identifier, unrelated to Proteus, but worth knowing it is happening and unrelated to the network-layer protections this tool offers.
 
@@ -115,7 +115,7 @@ Heavy passive collection environment. Multiple operators, multiple legal regimes
 4. **After landing.** `sudo proteus rotate --yes` before you leave the terminal. `sudo proteus revert --yes` after you are home if you want a clean slate.
 5. **Customs and border crossings.** A different problem. See the hostile-state-actor section below.
 
-Two specific airport gotchas worth flagging. **Saved-network history.** If you have ever joined the airport's free Wi-Fi at any airport in the chain (Boingo, Aircell, the global airport-Wi-Fi consortia), your laptop probes for that SSID at every airport. Either delete the saved network or `nmcli radio wifi off` until you actually need it. **Airline apps and gate kiosks.** Boarding-pass scanning, gate-display apps, in-flight Wi-Fi sign-on all want a stable account-level identity. Proteus does not help against any of those — those are application-layer correlation events, the airline already knows who you are from the ticket.
+Two specific airport gotchas worth flagging. **Saved-network history.** If you have ever joined the airport's free Wi-Fi at any airport in the chain (Boingo, Aircell, the global airport-Wi-Fi consortia), the host probes for that SSID at every airport. Either delete the saved network or `nmcli radio wifi off` until you actually need it. **Airline apps and gate kiosks.** Boarding-pass scanning, gate-display apps, in-flight Wi-Fi sign-on all want a stable account-level identity. Proteus does not help against any of those — those are application-layer correlation events, the airline already knows who you are from the ticket.
 
 ## Hotel playbook
 
@@ -193,7 +193,7 @@ Proteus does not silence probe requests in v1. The kernel-level randomization ha
 The patterns we see (and have made ourselves). None of these are bugs in Proteus — they are operational errors that make Proteus less effective than it could be.
 
 - **Joining a network before rotating.** NetworkManager remembers the previous network's MAC for a few seconds. If you connect immediately after the previous join, you can leak the old MAC into the new network's logs. Default NM behavior plus Proteus's join-time rotation handle this in most cases, but a manual `sudo proteus rotate --yes` first is cheap insurance.
-- **Leaving Bluetooth on without thinking.** Classic BD_ADDR is fixed in v1; an adversary scanning Bluetooth in a venue gets a stable identifier from your laptop even when Wi-Fi is rotating. The fix is `rfkill block bluetooth` when you do not need it. Cross-ref `proteus wiki bluetooth`.
+- **Leaving Bluetooth on without thinking.** Classic BD_ADDR is fixed in v1; an adversary scanning Bluetooth in a venue gets a stable identifier from the host even when Wi-Fi is rotating. The fix is `rfkill block bluetooth` when you do not need it. Cross-ref `proteus wiki bluetooth`.
 - **Reusing accounts across compartments.** Same Google account at the cafe and at home means the cafe knows you live wherever home is. Application-layer correlation cannot be undone by L2 rotation. Use separate profiles or separate accounts; treat the boundary as deliberate.
 - **Saved networks proliferating.** Every saved network adds an SSID your card probes for at every other network. Audit periodically: `nmcli connection show` and remove anything you do not actively use.
 - **Treating revert as a panacea.** `proteus revert` undoes Proteus's network-layer changes. It does not clear cookies, does not log out of accounts, does not reset Bluetooth pairings. Composition matters; revert is one step, not a magic eraser.
@@ -209,8 +209,8 @@ Trust but verify. Every command on this list is read-only and works without root
 - `proteus original` — the cached permanent MAC and original hostname. Should never have changed since the day you installed Proteus. If it has changed, that is a serious bug — file it.
 - `proteus probe` — runs one probe round on demand and prints the per-endpoint outcome plus the classification (`clear`, `down`, `portal-suspected`, `inconclusive`). Useful for sanity-checking the captive-portal classifier on a new network.
 - `proteus timer status` — confirms which timers are running and when each fires next.
-- A second machine on the same LAN running `avahi-browse -ar` — confirms your laptop is not announcing services. Run before and after `proteus apply` to see the difference.
-- A second machine running `nmap -O <your-ip>` — see what stack fingerprint your kernel still leaks. Compare with the same scan against an unprotected machine.
+- A second machine on the same LAN running `avahi-browse -ar` — confirms the host is not announcing services. Run before and after `proteus apply` to see the difference.
+- A second machine running `nmap -O <your-ip>` — see what stack fingerprint the kernel still leaks. Compare with the same scan against an unprotected machine.
 
 If any of these show a leak Proteus claims to suppress, that is a bug. File it from the trip — `journalctl -t proteus -n 200 --no-pager` is the log dump worth attaching.
 

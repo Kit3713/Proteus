@@ -47,7 +47,7 @@ What each marker means:
 
 Only `fail` causes a non-zero exit. Warns and skips do not. If any check fails, see `proteus wiki troubleshooting` for symptom-based recovery. For the per-check reference, see `proteus wiki doctor`.
 
-## See what your laptop currently exposes
+## See what the system currently exposes
 
 Look before you change anything.
 
@@ -57,7 +57,7 @@ proteus current --json | jq .
 proteus original
 ```
 
-`current` lists the live identifiers your machine is handing out right now — MAC per interface, hostname, Bluetooth alias once those phases land. `original` lists what Proteus snapshotted the first time it saw your system.
+`current` lists the live identifiers the system is handing out right now — MAC per interface, hostname, Bluetooth alias once those phases land. `original` lists what Proteus snapshotted the first time it saw the system.
 
 The first time you run this, `current` and `original` should match. Nothing has been rotated yet. The only difference will appear after the first `proteus rotate`.
 

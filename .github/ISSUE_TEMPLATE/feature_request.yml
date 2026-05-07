@@ -1,12 +1,12 @@
 name: Feature request
-description: A network-layer identifier or workflow that Proteus should handle
+description: A locally controllable identifier or workflow that Proteus should handle
 title: "[feature] "
 labels: ["enhancement", "triage"]
 body:
   - type: markdown
     attributes:
       value: |
-        Proteus is a network-layer fingerprint eraser. Before filing, please skim [`CONTRIBUTING.md`](https://github.com/Kit3713/Proteus/blob/main/CONTRIBUTING.md) for what fits the scope, and [`docs/PLAN.md`](https://github.com/Kit3713/Proteus/blob/main/docs/PLAN.md) for the phased roadmap. Confirm the scope checks below before describing the request.
+        Proteus reduces every fingerprint the local OS can control — L2 through L4 network identifiers, network-joining protocol chatter, and the OS-controllable parts of the L1 RF surface. Before filing, please skim [`CONTRIBUTING.md`](https://github.com/Kit3713/Proteus/blob/main/CONTRIBUTING.md) for what fits the scope, and [`docs/PLAN.md`](https://github.com/Kit3713/Proteus/blob/main/docs/PLAN.md) for the phased roadmap. Confirm the scope checks below before describing the request.
 
   - type: checkboxes
     id: scope
@@ -14,7 +14,7 @@ body:
       label: Scope confirmation
       description: All four must be checked. Out-of-scope requests will be closed with a pointer to the right tool.
       options:
-        - label: I have read CONTRIBUTING.md and this fits the network-layer fingerprint eraser scope.
+        - label: I have read CONTRIBUTING.md and this fits the local controllable fingerprint reduction scope.
           required: true
         - label: This is NOT a TLS, browser, or SSH client fingerprint feature (those belong in Tor Browser, librewolf, or ssh_config).
           required: true

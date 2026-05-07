@@ -1,4 +1,4 @@
-Proteus is a Rust CLI that erases the network-layer identifiers your Linux laptop hands out every time it joins a network. MAC addresses, DHCP options, IPv6 derivations, hostname, mDNS chatter, TCP fingerprint quirks, Bluetooth name. Single binary, embedded wiki, runs on Fedora 43+ with systemd and NetworkManager.
+Proteus is a Rust CLI that reduces every fingerprint the local OS can control on join and transmit — L2 through L4 network identifiers, network-joining protocol chatter, and the OS-controllable parts of the L1 RF surface. MAC addresses, DHCP options, IPv6 derivations, hostname, mDNS chatter, TCP fingerprint quirks, Bluetooth name, plus opt-in TX power reduction and probe-request privacy. Single binary, embedded wiki, runs on Fedora 43+ with systemd and NetworkManager.
 
 This page is the first five minutes. For installation and recipes, see `proteus wiki quickstart`. For the mental model, see `proteus wiki concepts`.
 
@@ -7,7 +7,7 @@ This page is the first five minutes. For installation and recipes, see `proteus 
 Three read-only commands work without root and tell you everything before you change anything:
 
 - `proteus status` — what is currently applied on this host, what was skipped, and what failed. Per-feature `applied / skipped (reason) / failed (reason)`.
-- `proteus current` — the live identifiers your machine is handing out right now: MAC per interface, hostname, DUID, Bluetooth alias.
+- `proteus current` — the live identifiers the system is handing out right now: MAC per interface, hostname, DUID, Bluetooth alias.
 - `proteus original` — the cached permanent MAC and original hostname Proteus snapshotted on first run. Sacred, never re-captured.
 
 When you are ready to apply, `sudo proteus apply` is idempotent: running it ten times converges to the same state as running it once. `sudo proteus revert` puts everything back. `sudo proteus rotate` forces a fresh MAC immediately on the active interfaces.
@@ -30,7 +30,7 @@ When you are ready to apply, `sudo proteus apply` is idempotent: running it ten 
 
 **DNS** — one narrow knob: strip EDNS Client Subnet on systemd-resolved. Defers to dnscrypt-proxy, Pi-hole, AdGuard Home, or a custom `/etc/resolv.conf` when present.
 
-**RF** — opt-in TX power reduction so the capture radius for passive listeners is smaller. Chipset reported in `proteus status` so you know what your hardware exposes.
+**RF** — opt-in TX power reduction so the capture radius for passive listeners is smaller. Chipset reported in `proteus status` so you know what the hardware exposes.
 
 ## What Proteus is not
 
@@ -42,7 +42,7 @@ Proteus's mission is *local controllable* fingerprint reduction — every identi
 - Not a traffic correlation defense. Use Tor or Mullvad VPN.
 - Not a hardening framework. Proteus refuses to weaken Fedora's `crypto-policies`, touch `/etc/ssh/ssh_config`, or rotate `/etc/machine-id`.
 
-The wiki page `threat-model` (planned for phase F) spells this out so you don't over-trust the tool.
+The wiki page `threat-model` spells this out so you don't over-trust the tool.
 
 ## Who it's for
 
@@ -76,6 +76,6 @@ Logging goes to journald via `tracing-journald`, with a stderr fallback when not
 
 - `proteus wiki quickstart` — install, first run, basic recipes.
 - `proteus wiki concepts` — mental model: identifiers, rotation, captive portals, managed files, revert.
-- `proteus wiki threat-model` — what Proteus does not do, and which tool to reach for instead. Planned for phase F.
+- `proteus wiki threat-model` — what Proteus does not do, and which tool to reach for instead.
 - `proteus help` — full CLI reference.
 - `proteus status` — what is currently applied on this host, and what was skipped or failed and why.

@@ -478,7 +478,7 @@ Detect "no cache" via `captured_at == null` or via `note` presence.
 
 ### `proteus show-config --json` and `show-defaults --json`
 
-The full `Config` struct serialized as JSON. Schema and every default cross-referenced in `proteus wiki config` (lands phase F alongside this page). Phase A shape:
+The full `Config` struct serialized as JSON. Schema and every default cross-referenced in `proteus wiki config`. Phase A shape:
 
 ```json
 {
@@ -582,8 +582,8 @@ $ echo $?
 
 ## Cross-refs
 
-- `proteus wiki internals` — `state.json` schema, JSON output schemas in detail (phase F).
-- `proteus wiki config` — full config schema, every flag with default and risks (phase F).
-- `proteus wiki troubleshooting` — common errors, what to check, where the logs live (phase F).
+- `proteus wiki internals` — `state.json` schema, JSON output schemas in detail.
+- `proteus wiki config` — full config schema, every flag with default and risks.
+- `proteus wiki troubleshooting` — common errors, what to check, where the logs live.
 - `proteus wiki concepts` — mental model: identifiers, rotation, captive portals, managed files, revert.
 - `proteus wiki quickstart` — install, first run, basic recipes.

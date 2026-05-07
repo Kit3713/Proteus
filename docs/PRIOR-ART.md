@@ -1,6 +1,6 @@
 # Prior art
 
-Tools that share scope with Proteus, in part or in whole. For each one: what it does, where it stops, where Proteus picks up. Proteus is a network-layer fingerprint eraser — wider than `macchanger`, narrower than Tails, complementary to the DNS and browser tools.
+Tools that share scope with Proteus, in part or in whole. For each one: what it does, where it stops, where Proteus picks up. Proteus reduces every fingerprint the local OS can control — L2 through L4 network identifiers, network-joining protocol chatter, and the OS-controllable parts of the L1 RF surface — wider than `macchanger`, narrower than Tails, complementary to the DNS and browser tools.
 
 The grouping is rough: standalone CLI tools, in-tree network-stack features, OS-level platform behavior, whole-system privacy distros, and adjacent tools Proteus deliberately defers to. Where existing tools already cover ground that Proteus also touches, that's called out — there is real overlap, especially with NetworkManager.
 

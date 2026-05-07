@@ -8,15 +8,16 @@ The project is pre-release. The v1 plan is in [`docs/PLAN.md`](docs/PLAN.md). Th
 
 - Read the plan and open an issue or discussion if a phase looks wrong-shaped, missing, or scope-creeping.
 - Suggest concrete improvements to the threat model — what's overlooked, what's overclaimed.
-- File a feature suggestion only if it fits the network-layer fingerprint eraser scope. The plan and [`docs/PRIOR-ART.md`](docs/PRIOR-ART.md) explain what's in and what's deliberately out (DNS resolution policy, TLS/browser fingerprints, tracker blocking, etc. — all delegated to dedicated tools).
+- File a feature suggestion only if it fits the local controllable fingerprint reduction scope. The plan and [`docs/PRIOR-ART.md`](docs/PRIOR-ART.md) explain what's in and what's deliberately out (DNS resolution policy, TLS/browser fingerprints, tracker blocking, etc. — all delegated to dedicated tools).
 
 Code contributions are welcome once Phase A (the skeleton) lands.
 
 ## Scope
 
-Proteus is a network-layer fingerprint eraser. Features that fit:
+Proteus reduces every fingerprint the local OS can control — L2 through L4 network identifiers, network-joining protocol chatter, and the OS-controllable parts of the L1 RF surface (TX power, probe behavior, scan policy, chipset inventory). Hardware-baked RF (oscillator drift, IQ imbalance) and identifiers owned by other tool layers (TLS, SSH, browser, DNS resolution policy) stay out. Features that fit:
 
 - Anything that rotates or scrubs an identifier broadcast at L1–L4 or in network-joining protocols (DHCP, mDNS, LLMNR, NetBIOS, SSDP, WSD, WPAD, NTP, captive-portal exchanges)
+- Anything in the OS-controllable RF surface (TX power, probe-request privacy, scan policy, chipset reporting)
 - Anything that improves observability, reversibility, or recoverability of the above
 - Anything that makes the CLI easier to wrap, the wiki easier to search, or the help text more honest
 

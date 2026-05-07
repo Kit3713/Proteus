@@ -103,7 +103,7 @@ No, deliberately. systemd-journal, dbus, and TPM-bound state all reference machi
 
 ## Will Proteus stop my ISP from seeing what I do?
 
-No. Your ISP sees IPs and SNI regardless of MAC. Use a VPN or Tor for that. Proteus changes what your laptop looks like to the local network and the DHCP server, not what the WAN sees.
+No. Your ISP sees IPs and SNI regardless of MAC. Use a VPN or Tor for that. Proteus changes what the system looks like to the local network and the DHCP server, not what the WAN sees.
 
 ## Can I script Proteus from my own tooling?
 

@@ -79,7 +79,7 @@ The 48-bit hardware address of an Ethernet, Wi-Fi, or Bluetooth interface (IEEE 
 Any file Proteus writes under `/etc/`. Carries a two-line header — `# managed by proteus — do not edit` and `# expected-sha256: <hex>` — so `proteus diff` can detect manual edits and either re-apply, accept the drift, or back out. See `proteus wiki concepts`.
 
 ## mDNS (Multicast DNS)
-RFC 6762 multicast name resolution on the `.local` TLD, paired with DNS-SD (RFC 6763) for service discovery. Broadcasts both your hostname and a list of services your machine offers. Proteus disables the local responder and resolver via systemd-resolved drop-in. See `proteus wiki discovery`.
+RFC 6762 multicast name resolution on the `.local` TLD, paired with DNS-SD (RFC 6763) for service discovery. Broadcasts both the hostname and a list of services the system offers. Proteus disables the local responder and resolver via systemd-resolved drop-in. See `proteus wiki discovery`.
 
 ## NetworkManager
 The dominant Linux network configuration daemon. Proteus drives it over D-Bus via zbus and never shells out to `nmcli`. All MAC, DHCP, IPv6, and 802.1X changes go through NM connection profiles. See `proteus wiki concepts`.

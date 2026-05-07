@@ -4,7 +4,7 @@ If you only read one wiki page, read this one. The rest assumes the mental model
 
 A "network identifier" is anything broadcast or derivable when joining a network. By layer:
 
-**L2.** MAC address — Wi-Fi, Ethernet, Bluetooth `BD_ADDR` (classic), BLE address. The most-fingerprinted thing on your laptop. Six bytes, the upper three are the OUI (manufacturer), the lower three identify the device. Burned-in by the vendor; software-overridable on every modern Linux NIC.
+**L2.** MAC address — Wi-Fi, Ethernet, Bluetooth `BD_ADDR` (classic), BLE address. The most-fingerprinted thing on a Linux system. Six bytes, the upper three are the OUI (manufacturer), the lower three identify the device. Burned-in by the vendor; software-overridable on every modern Linux NIC.
 
 **L3.** IPv6 IID — the lower 64 bits of an IPv6 address, the "interface identifier". Under EUI-64 derivation it leaks the MAC directly; under stable-privacy it derives deterministically from the MAC plus a network-scoped key. Rotate the MAC, rotate the IID. DUID — DHCPv6 client identifier, sticky across reboots by default. ICMPv6 / NDP quirks — hop limits, router solicitation behavior, fingerprintable per-stack.
 
@@ -127,8 +127,8 @@ Identifiers Proteus does not touch, and what to use instead. Full discussion in 
 - **DNS resolution policy beyond ECS-strip** — `dnscrypt-proxy`, NextDNS, AdGuard Home, Pi-hole, knot-resolver. DNS is its own world.
 - **Tracker IDs in app traffic** — Pi-hole, NextDNS, uBlock Origin.
 - **Traffic correlation** — Tor, Mullvad VPN.
-- **L1 RF (analog transmitter characteristics)** — software can't fix this. A swappable USB Wi-Fi adapter is the real answer; Proteus only narrows the capture radius via opt-in TX power reduction. See `proteus wiki rf-fingerprinting`.
+- **L1 RF (hardware-baked half)** — analog transmitter characteristics like oscillator drift and IQ imbalance. Software can't fix this. A swappable USB Wi-Fi adapter is the real answer. The OS-controllable half of L1 RF — TX power, probe-request behavior, scan policy, chipset inventory — is in scope and a focus area; see `proteus wiki rf-fingerprinting`.
 - **Bluetooth BR/EDR (classic) BD_ADDR rotation** — chipset-specific HCI, deferred until there's a known-good chipset matrix. BLE address rotation is supported where the controller exposes privacy mode.
 - **`/etc/machine-id`** — TPM, journald, dbus all reference it. Real breakage risk; not worth it.
 
-If your threat model needs any of the above, layer the right tool on top of Proteus. Proteus is the network-layer floor, not the whole stack.
+If your threat model needs any of the above, layer the right tool on top of Proteus. Proteus is the locally controllable fingerprint floor, not the whole stack.

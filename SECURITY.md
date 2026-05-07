@@ -52,7 +52,7 @@ Anything that causes Proteus to:
 - Break the captive-portal or probe logic in a way that loops MAC rotation behind a portal or against a transient outage.
 - Ship a vulnerable dependency. Supply-chain reports against the published `Cargo.lock` are in scope; please name the advisory or CVE.
 
-Reports of new attack classes against the network-layer fingerprint surface (DHCP, mDNS, LLMNR, NetBIOS, SSDP, WSD, NTP, IPv6 derivations, ICMP, captive-portal exchanges) are in scope even if Proteus does not yet defend against them — they inform the threat model.
+Reports of new attack classes against the locally controllable fingerprint surface — L2 through L4 network identifiers, network-joining protocols (DHCP, mDNS, LLMNR, NetBIOS, SSDP, WSD, NTP, IPv6 derivations, ICMP, captive-portal exchanges), and the OS-controllable RF surface (TX power, probe behavior, scan policy) — are in scope even if Proteus does not yet defend against them — they inform the threat model.
 
 ## Out of scope
 

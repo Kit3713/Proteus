@@ -4,7 +4,7 @@ For the underlying threat model, read `proteus wiki threat-model` first. For the
 
 ## The reference table
 
-Every leak Proteus knows about, what mitigates it, and the tool or command that does the work. "Planned" means the work is on the roadmap; "pending PR" means a branch exists and is being merged; "out of scope" means a different tool owns this layer and Proteus refuses to overstep.
+Every leak Proteus knows about, what mitigates it, and the tool or command that does the work. "Planned" means the work is on the roadmap; commands without a parenthetical are shipped; "out of scope" means a different tool owns this layer and Proteus refuses to overstep.
 
 | Layer       | What leaks                  | Mitigation             | Tool/command                          |
 |-------------|-----------------------------|------------------------|---------------------------------------|
@@ -14,11 +14,11 @@ Every leak Proteus knows about, what mitigates it, and the tool or command that 
 | L2 BT       | Bluetooth alias             | Generic alias          | `proteus bluetooth apply`             |
 | L2 BT       | BLE address                 | RPA mode               | `proteus bluetooth apply`             |
 | L2 BT       | Probe requests              | Per-scan random        | `proteus wifi-privacy` (planned)      |
-| L3 IPv4     | DHCP options                | Suppression            | `proteus dhcp apply` (pending PR)     |
+| L3 IPv4     | DHCP options                | Suppression            | `proteus dhcp apply`                  |
 | L3 IPv6     | EUI-64 IID                  | stable-privacy         | `proteus ipv6 apply`                  |
 | L3 IPv6     | Persistent DUID             | Link-layer DUID        | `proteus ipv6 apply`                  |
-| L3-L4       | TCP timestamps              | Disable                | `proteus stack apply` (pending PR)    |
-| L3-L4       | ICMP info-leaks             | nft drops              | `proteus nft apply` (pending PR)      |
+| L3-L4       | TCP timestamps              | Disable                | `proteus stack apply`                 |
+| L3-L4       | ICMP info-leaks             | nft drops              | `proteus nft apply`                   |
 | Discovery   | mDNS/LLMNR/NetBIOS          | Silence                | `proteus discovery apply` (planned)   |
 | App-net     | Hostname                    | Rotation               | `proteus hostname apply`              |
 | App         | DNS resolution              | Out of scope           | dnscrypt-proxy / Pi-hole              |
@@ -81,7 +81,7 @@ Modern kernels randomize the source MAC of pre-association probe frames; the SSI
 
 DHCP DISCOVER and REQUEST broadcasts carry option 12 (hostname), 60 (vendor class identifier — `dhcpcd-9.4.1` is a banner), 61 (client identifier, often the MAC), 81 (FQDN). Even with a fresh MAC every join, the option payload can correlate sessions back to the same device, OS, or human.
 
-`proteus dhcp apply` writes per-NM-connection settings to suppress 12/60/81 and couple 61 plus DHCPv6 DUID to the current MAC. Status is "pending PR" — the work is on `phase-d/dhcp-suppression` and merging soon.
+`proteus dhcp apply` writes per-NM-connection settings to suppress 12/60/81 and couple 61 plus DHCPv6 DUID to the current MAC. Shipped in phase D.
 
 The DUID coupling is the load-bearing piece. Without it, the v6 client ID is stable across MAC rotations and silently undoes most of the MAC-rotation point. Cross-ref `proteus wiki dhcp` for the option-by-option breakdown and the verification recipe.
 
@@ -105,7 +105,7 @@ Cross-ref `proteus wiki ipv6` and `proteus wiki dhcp`.
 
 RFC 7323 timestamps carry a 32-bit value derived from a per-boot monotonic clock. The clock origin leaks system uptime; the timestamp itself is unique per host on the segment. Survives MAC rotation, DHCP scrubbing, and most VPNs.
 
-`proteus stack apply` writes a sysctl drop-in setting `net.ipv4.tcp_timestamps = 0`. Status is "pending PR" on `phase-e/stack-sysctl`.
+`proteus stack apply` writes a sysctl drop-in setting `net.ipv4.tcp_timestamps = 0`. Shipped in phase E.
 
 PAWS edge case (long-lived high-bandwidth flows) is documented; if you are moving terabytes over one connection, keep them on. Cross-ref `proteus wiki stack-fingerprint`.
 
@@ -113,13 +113,13 @@ PAWS edge case (long-lived high-bandwidth flows) is documented; if you are movin
 
 ICMP type 13/14 (Timestamp Request/Reply) leaks the system clock. Type 15/16 (Information Request/Reply) is a pre-DHCP-era discovery vector. Reply 16 leaks the subnet mask. Nothing in modern userspace asks for these; many kernels still answer.
 
-`proteus nft apply` installs nft drop rules in the `proteus` table for ICMP types 13 and 15 inbound on managed interfaces. ICMPv6 Redirect drops via per-interface sysctl. Status is "pending PR" on `phase-e/nft-rules`.
+`proteus nft apply` installs nft drop rules in the `proteus` table for ICMP types 13 and 15 inbound on managed interfaces. ICMPv6 Redirect drops via per-interface sysctl. Shipped in phase E.
 
 Cross-ref `proteus wiki stack-fingerprint`.
 
 ## Discovery: mDNS, LLMNR, NetBIOS, SSDP, WSD
 
-When you join a network, your machine starts talking. mDNS announces `<host>.local`, LLMNR asks the LAN to resolve names, NetBIOS broadcasts on UDP 137, SSDP shouts UPnP capabilities, WSD advertises Web Services for Devices. Each one carries identifying info.
+When a Linux system joins a network, it starts talking. mDNS announces `<host>.local`, LLMNR asks the LAN to resolve names, NetBIOS broadcasts on UDP 137, SSDP shouts UPnP capabilities, WSD advertises Web Services for Devices. Each one carries identifying info.
 
 `proteus discovery apply` is the unified subcommand: systemd-resolved drop-in for `MulticastDNS=resolve` and `LLMNR=no`, nmbd disable, optional SSDP and WSD blocks via nft. Status is "planned" — much of the work exists in branches today.
 
@@ -127,7 +127,7 @@ SSDP and WSD blocks are opt-in because they break KDE Connect and WSD-only print
 
 ## App-net: hostname
 
-`hostname1` over DBus controls kernel hostname, pretty hostname, and transient hostname. Default is whatever you set during install (often your name, your machine's purpose, or your distro's default). Joins of public networks broadcast the hostname through DHCP option 12, mDNS, NetBIOS, and any application that includes the hostname in its outgoing identity (some HTTP user-agents do, some IRC clients do, some chat apps do).
+`hostname1` over DBus controls kernel hostname, pretty hostname, and transient hostname. Default is whatever was set during install (often a person's name, the system's purpose, or the distro default). Joins of public networks broadcast the hostname through DHCP option 12, mDNS, NetBIOS, and any application that includes the hostname in its outgoing identity (some HTTP user-agents do, some IRC clients do, some chat apps do).
 
 `proteus hostname apply` rotates kernel/pretty/transient names from a curated 534-entry router-flavored wordlist, or pins to a generic (`fedora`). The DHCP suppression work covers the wire-side leak independently; this rotates the underlying value so any leak that escapes suppression still produces something uncorrelated.
 

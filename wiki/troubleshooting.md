@@ -169,8 +169,8 @@ When in doubt, look at the journal.
 ## Cross-refs
 
 - `proteus wiki doctor` — what each `proteus doctor` check does and how to read the output.
-- `proteus wiki cli` — full CLI reference, exit codes, JSON schemas (phase F).
-- `proteus wiki config` — every config knob with default and risks (phase F).
+- `proteus wiki cli` — full CLI reference, exit codes, JSON schemas.
+- `proteus wiki config` — every config knob with default and risks.
 - `proteus wiki uninstall` — full removal procedure.
 - `proteus wiki discovery` — mDNS, LLMNR, NetBIOS, SSDP, WSD details.
 - `proteus wiki dns` — the one DNS knob and its hard guard.

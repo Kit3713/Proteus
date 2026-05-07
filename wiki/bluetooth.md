@@ -60,7 +60,7 @@ The controller rotates the RPA on a schedule. The interval is controller-control
 
 A passive observer (anything sniffing BLE without your IRK) sees a different random-looking address each interval and cannot link them. A paired device that holds your IRK runs a constant-time check against incoming addresses and resolves them back to your stable identity. Pairings keep working transparently.
 
-This is exactly how iPhones, AirPods, and modern fitness trackers have worked for years. Proteus opts your laptop into the same pattern.
+This is exactly how iPhones, AirPods, and modern fitness trackers have worked for years. Proteus opts a Linux system into the same pattern.
 
 ## Limits
 
@@ -106,11 +106,11 @@ Proteus respects all of the above. If the adapter is powered off or the service 
 
 Out of scope. iBeacon and Eddystone are application-layer protocols carried over BLE advertisements; the privacy concern is an app on your phone broadcasting your location to a beacon network, not the BLE radio itself. Proteus operates on the radio layer. For application-layer beacon defenses, the answer is "don't install the apps that scan for them", which is a phone-OS-level concern, not a Linux-network-fingerprint concern.
 
-For the broader "what Proteus is not" picture, see `proteus wiki threat-model` (planned for phase F).
+For the broader "what Proteus is not" picture, see `proteus wiki threat-model`.
 
 ## Where to go next
 
 - `proteus wiki concepts` — the mental model: identifiers, rotation, managed files, detect-and-defer.
 - `proteus wiki mac-recipes` — Wi-Fi and Ethernet MAC patterns. Same phase as this page.
-- `proteus wiki threat-model` — what Proteus does not do and which tool to reach for instead. Phase F.
+- `proteus wiki threat-model` — what Proteus does not do and which tool to reach for instead.
 - `proteus help bluetooth` — full CLI reference for the Bluetooth subcommands.

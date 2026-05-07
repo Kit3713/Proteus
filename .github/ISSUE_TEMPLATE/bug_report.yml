@@ -123,7 +123,7 @@ body:
     attributes:
       label: Confirmations
       options:
-        - label: I read CONTRIBUTING.md and this fits Proteus's network-layer fingerprint scope.
+        - label: I read CONTRIBUTING.md and this fits Proteus's local controllable fingerprint reduction scope.
           required: true
         - label: I checked this isn't a TLS, browser, or DNS-resolution-policy issue (out of scope — see README).
           required: true
