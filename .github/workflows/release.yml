@@ -369,9 +369,14 @@ jobs:
       - name: makepkg -s --noconfirm (using local source)
         run: |
           set -euo pipefail
-          # Override the source array to use the local tarball and skip
-          # checksums; the upstream PKGBUILD already uses SKIP. Use
-          # --skipchecksums for safety in case the recipe is updated later.
+          # Override the source array to use the local tarball. We do *not*
+          # pass --skipchecksums: the PKGBUILD itself uses sha256sums=('SKIP')
+          # because the source is a freshly-built local tarball, not a remote
+          # download — there is no network fetch to MITM. If the recipe is
+          # ever updated to point at a remote URL, removing the flag here
+          # forces the maintainer to populate a real sha256 alongside the
+          # change, rather than silently letting an unverified tarball ship.
+          # See issue #136.
           sudo -u builder bash -c '
             set -euo pipefail
             cd dist/arch
@@ -379,7 +384,7 @@ jobs:
             # Tell makepkg to source the tarball from the same directory by
             # rewriting the source array to a local file reference.
             sed -i "s|^source=.*|source=(\"proteus-${PKGVER}.tar.gz\")|" PKGBUILD
-            makepkg -s --noconfirm --skipchecksums
+            makepkg -s --noconfirm
           '
       - name: Stage Arch package artifacts
         run: |
