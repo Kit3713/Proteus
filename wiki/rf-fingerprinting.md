@@ -26,7 +26,7 @@ Nothing fixes the analog characteristics. They're physically baked into the sili
 
 **Bluetooth radio policy.** `discoverable=off` by default, BLE Resolvable Private Address (RPA) where the controller supports it, generic device alias. The classic BR/EDR BD_ADDR rotation is chipset-specific HCI territory and stays deferred — too easy to brick across vendors. See `proteus wiki bluetooth`.
 
-**Probe-request privacy is still planned.** Per-scan MAC randomization at the NetworkManager / wpa_supplicant layer, plus suppression of unnecessary active probes when passive scanning is enough, is on the roadmap and is *not* part of the current `[rf]` schema. A laptop searching for known SSIDs broadcasts a list of every network it remembers — that is an L2 leak future releases will address by tightening the supplicant's scan behavior, not the radio. Track this work in `docs/ROADMAP.md`.
+**Probe-request privacy.** Per-scan MAC randomization at the NetworkManager / wpa_supplicant layer is now in the schema as `[rf] scan_random_mac` (default `true`; off in `Off` and `Min` profiles). When enabled, `proteus apply` writes two NM keys onto every managed Wi-Fi connection: `wifi.scan-rand-mac-address = "random"` and `wifi.mac-address-randomization = 2`. Together they tell NM + wpa_supplicant to emit `mac_addr=2` (fresh random source MAC for every scan request) and to stop broadcasting the saved-SSID list as a byproduct of probing — the laptop's "list of every network it remembers" leak is closed at the L2 frame level. Cross-ref `proteus wiki wpa-supplicant-hardening` for the underlying supplicant keys; cross-ref `proteus rf scan` for a per-iface readout of whether the driver advertises the `randomize_mac` capability.
 
 What Proteus does *not* try to do, and won't:
 
@@ -59,9 +59,10 @@ Configurable in `/etc/proteus/config.toml`:
 [rf]
 tx_power_reduce = false           # opt-in; default off in min/low/med, on in high/agr
 tx_power_reduction_db = 6         # dB below regulatory max
+scan_random_mac = true            # Milestone 4b: per-scan random MAC + saved-SSID hygiene
 ```
 
-The `[rf]` schema has exactly two fields. `tx_power_reduce` is a boolean master switch. `tx_power_reduction_db` is a `u8` count of dB below the regulatory ceiling.
+The `[rf]` schema has three fields. `tx_power_reduce` is a boolean master switch. `tx_power_reduction_db` is a `u8` count of dB below the regulatory ceiling. `scan_random_mac` (Milestone 4b) is a boolean — when on, `proteus apply` writes `wifi.scan-rand-mac-address = "random"` and `wifi.mac-address-randomization = 2` onto every managed Wi-Fi connection so probe bursts use a fresh random source MAC and the saved-SSID broadcast leak closes. Default `true`; off in `Off` and `Min` profiles where every feature is panic-disabled.
 
 Profile defaults:
 
@@ -89,6 +90,18 @@ Tradeoff is real: reduced range may degrade reception in weak-signal environment
 # Works without root; --json is GUI-friendly.
 proteus rf status
 proteus rf status --json
+
+# Driver-side scan-policy report (Milestone 4b): per Wi-Fi iface, prints
+# the phy index, iface type (managed/monitor/...), and whether the
+# driver advertises `randomize_mac_addr` in `iw phy info`.
+proteus rf scan
+proteus rf scan --json
+
+# Firmware/driver inventory in a table (Milestone 4b). One line per
+# Wi-Fi iface (driver + vendor:device + phy + firmware) and one line
+# per BlueZ adapter. `--json` for tooling.
+proteus rf chipset
+proteus rf chipset --json
 
 # Apply the configured TX-power floor. Requires root + --yes. Idempotent;
 # captures the original TX power once on first apply.
