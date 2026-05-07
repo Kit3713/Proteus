@@ -1,0 +1,71 @@
+# Proteus integration-test container.
+#
+# Privileged Fedora 43 image with systemd as PID 1. The host driver
+# (tests/integration/run.sh) builds the proteus binary on the dev host,
+# bind-mounts or copies it into /usr/local/bin, then `podman exec`s test
+# scenarios inside.
+#
+# We deliberately run a real systemd + dbus + NetworkManager + BlueZ stack
+# (not stubs) so behavior tracks what users see on a Fedora dev host. The
+# daemons may not have hardware to bind to inside the container — that's
+# fine; Proteus is built to skip cleanly when a feature is not available
+# on the host, and the scenarios assert that skip-not-crash behavior.
+#
+# PLAN.md phase G: "Integration tests in a privileged Podman + systemd
+# container with stubbed NM and BlueZ."
+#
+# Required runtime flags on `podman run`:
+#   --privileged   — needed for systemd as PID 1 (cgroup, sysfs writes)
+#
+# Build: podman build -t proteus-it -f tests/integration/Containerfile .
+
+FROM quay.io/fedora/fedora:43
+
+# Core runtime: systemd, dbus, NetworkManager, BlueZ, nftables, iproute,
+# sudo. ca-certificates for HTTPS-aware tools (probe targets, etc.).
+# /sbin/init is the systemd entrypoint on Fedora.
+RUN dnf install -y --setopt=install_weak_deps=False \
+        systemd \
+        dbus-daemon \
+        dbus-broker \
+        NetworkManager \
+        bluez \
+        nftables \
+        iproute \
+        sudo \
+        ca-certificates \
+        procps-ng \
+        util-linux \
+        hostname \
+    && dnf clean all \
+    && rm -rf /var/cache/dnf
+
+# Stop services we don't need running by default. Tests can start them
+# explicitly if a scenario needs to. Leaving them disabled keeps the
+# container's boot fast and predictable.
+RUN systemctl mask \
+        systemd-firstboot.service \
+        systemd-tmpfiles-setup.service \
+        || true
+
+# A non-root user for scenarios that should run as a normal user.
+# Currently every scenario runs as root; this is here so future
+# read-only-as-user tests can flip in with `sudo -u tester`.
+RUN useradd -m -s /bin/bash tester \
+    && printf 'tester ALL=(ALL) NOPASSWD: ALL\n' > /etc/sudoers.d/tester \
+    && chmod 0440 /etc/sudoers.d/tester
+
+# Drop the proteus binary in. The driver script copies a freshly-built
+# `target/release/proteus` to `tests/integration/proteus.bin` before
+# `podman build`, so a rebuild on the host triggers a layer rebuild here.
+COPY tests/integration/proteus.bin /usr/local/bin/proteus
+RUN chmod 0755 /usr/local/bin/proteus
+
+# Drop in test scenarios so `podman exec proteus-it /opt/proteus-tests/run-scenario.sh ...`
+# works without re-mounting on every invocation.
+COPY tests/integration/scenarios/ /opt/proteus-tests/scenarios/
+RUN chmod 0755 /opt/proteus-tests/scenarios/*.sh
+
+# systemd needs to be PID 1 for `systemctl is-system-running` to work and
+# for daemon-presence checks (e.g. /run/systemd/system) to flip true.
+ENTRYPOINT ["/sbin/init"]
