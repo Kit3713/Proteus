@@ -64,9 +64,64 @@ pub struct Cli {
     pub command: Command,
 }
 
+/// Entry point for the `proteus` binary.
+///
+/// # Error contract
+///
+/// Subcommand handlers return `Result<u8>`:
+///
+/// - `Ok(code)` — the command produced an exit code (zero or non-zero).
+///   Commands that intend to surface a user-facing diagnostic do so themselves
+///   (typically via `eprintln!`) and return `Ok(non_zero_code)`. We pass that
+///   code through unchanged.
+/// - `Err(e)` — an unexpected failure bubbled up from a fallible operation
+///   (config parse error, DBus unavailable, IO error, …). The dispatcher itself
+///   has no diagnostic context to add, so we render the full `anyhow` source
+///   chain to stderr here and exit with [`exit::GENERIC_ERROR`].
+///
+/// The `:#` formatting on `anyhow::Error` walks the source chain so the user
+/// sees both the top-level message and the underlying cause(s).
 pub fn run() -> ExitCode {
     let cli = Cli::parse();
     logging::init(cli.verbose, cli.quiet, cli.no_color);
-    let code = dispatch::dispatch(cli);
-    ExitCode::from(code.unwrap_or(exit::GENERIC_ERROR))
+    let code = match dispatch::dispatch(cli) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("proteus: {e:#}");
+            exit::GENERIC_ERROR
+        }
+    };
+    ExitCode::from(code)
+}
+
+#[cfg(test)]
+mod tests {
+    use anyhow::{Context, anyhow};
+
+    /// Mirrors the `eprintln!("proteus: {e:#}")` path in `run()`:
+    /// `anyhow::Error` formatted with `:#` must include both the top-level
+    /// message and the entire source chain. If this ever stops being true the
+    /// CLI would silently drop diagnostic context (issue #112).
+    #[test]
+    fn anyhow_alternate_format_walks_source_chain() {
+        let err: anyhow::Error = Err::<(), _>(anyhow!("inner cause: file not found"))
+            .context("middle context: failed to read config")
+            .context("top: config load failed")
+            .unwrap_err();
+
+        let rendered = format!("{err:#}");
+
+        assert!(
+            rendered.contains("top: config load failed"),
+            "rendered error missing top context: {rendered}"
+        );
+        assert!(
+            rendered.contains("middle context: failed to read config"),
+            "rendered error missing middle context: {rendered}"
+        );
+        assert!(
+            rendered.contains("inner cause: file not found"),
+            "rendered error missing root cause: {rendered}"
+        );
+    }
 }
