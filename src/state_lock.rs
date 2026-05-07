@@ -19,15 +19,29 @@
 //! Reentrancy: a single Proteus process may legitimately call multiple
 //! mutating helpers in sequence — most obviously `apply::run` calling
 //! `rotate::run`, `bluetooth_cmd::apply`, ... directly. To stay safe under
-//! that pattern we keep a process-wide `AtomicBool`: the first call acquires
-//! the real flock, nested calls return a no-op guard, and the outermost
-//! `Drop` releases the lock and clears the flag. Different *processes* still
-//! contend on the kernel-level flock the way the design intends.
+//! that pattern we keep a process-wide `Mutex<Option<File>>`: the first
+//! call acquires the real flock and tucks the `File` inside the option,
+//! nested calls observe the option is already `Some` and return a no-op
+//! guard, and the outermost `Drop` releases the lock and clears the slot.
+//! Different *processes* still contend on the kernel-level flock the way
+//! the design intends.
+//!
+//! Issue #206-B: the previous shape used a process-wide `AtomicBool` plus
+//! a separate `OnceLock<File>` slot. With the Milestone 1 backend trait
+//! coming in, `acquire_for_state_path` will be called from async event
+//! loops (the connection-up watcher; Milestone 4c's event-driven
+//! framework) where multiple tasks can land on the call simultaneously.
+//! The atomic + once-lock combination interleaved badly under that
+//! pattern: Task A wins the CAS, releases on drop, then Task B observes
+//! the bool is `false` but the OnceLock still holds the (now-released)
+//! fd. Migrating to `Mutex<Option<File>>` keeps the external contract
+//! (RAII guard, nested-acquire-is-no-op) but makes the inner state safe
+//! to read and mutate atomically under any scheduling.
 
 use std::fs::{File, OpenOptions};
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 
 use anyhow::{Context, Result};
 use thiserror::Error;
@@ -71,11 +85,12 @@ pub enum LockError {
     Other(#[from] anyhow::Error),
 }
 
-/// Tracks whether the current process already owns the flock. This is *not*
-/// the lock — it's how we make in-process re-entry safe so the orchestrator
-/// can call the per-feature apply helpers directly without deadlocking on
-/// the per-fd flock semantics on Linux.
-static HELD: AtomicBool = AtomicBool::new(false);
+/// Process-wide owner of the kernel-level flock. `None` means no
+/// process scope holds the lock; `Some(file)` means the outermost
+/// scope holds it through `file`'s fd. Wrapped in a `Mutex` so the
+/// trait's async callers can race on `acquire_for_state_path` without
+/// the previous AtomicBool/OnceLock interleaving (issue #206-B).
+static HELD: Mutex<Option<File>> = Mutex::new(None);
 
 /// Test-only serialization mutex. Cross-module tests (e.g. in
 /// `commands::tests`) that touch `HELD` must acquire this so they don't
@@ -90,26 +105,29 @@ pub(crate) fn test_serial_guard() -> std::sync::MutexGuard<'static, ()> {
     TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// RAII guard. Holds the fd that owns the flock; `Drop` releases it.
-///
-/// `inner` is `Some` only on the *outermost* acquire in this process. Nested
-/// callers receive a guard with `inner = None` so dropping them is a no-op
-/// and the real lock survives until the outer scope exits.
+/// RAII guard. Carries an `outermost` flag set on the first acquire in
+/// this process; nested acquires receive `outermost = false` and `Drop`
+/// is a no-op for them. The real lock is owned by the static `HELD`
+/// slot — the outermost guard's `Drop` clears it.
 pub struct StateLockGuard {
-    inner: Option<File>,
+    outermost: bool,
 }
 
 impl Drop for StateLockGuard {
     fn drop(&mut self) {
-        if let Some(file) = self.inner.take() {
+        if !self.outermost {
+            return;
+        }
+        let mut held = HELD.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(file) = held.take() {
             // Best-effort explicit unlock so the lock is released even on
             // exotic platforms where close() takes its time. close() will
             // also drop the lock; we just hint to the kernel sooner.
             unsafe {
                 libc::flock(file.as_raw_fd(), libc::LOCK_UN);
             }
-            HELD.store(false, Ordering::SeqCst);
-            // `file` is dropped here, closing the fd.
+            // `file` drops here, closing the fd.
+            drop(file);
         }
     }
 }
@@ -121,22 +139,19 @@ impl Drop for StateLockGuard {
 /// Returns a no-op guard if this process already holds the lock — the
 /// orchestrator pattern relies on this.
 pub fn acquire_for_state_path(state_path: &Path) -> Result<StateLockGuard, LockError> {
-    if HELD
-        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-        .is_err()
-    {
+    let mut held = HELD.lock().unwrap_or_else(|e| e.into_inner());
+    if held.is_some() {
         // Already held by an outer scope in this same process; the kernel
         // flock would deadlock if we re-acquired, so hand back a no-op guard.
-        return Ok(StateLockGuard { inner: None });
+        return Ok(StateLockGuard { outermost: false });
     }
     let path = lock_path_for(state_path);
     match acquire_inner(&path) {
-        Ok(file) => Ok(StateLockGuard { inner: Some(file) }),
-        Err(e) => {
-            // Roll back the HELD flag so a later retry can try again.
-            HELD.store(false, Ordering::SeqCst);
-            Err(e)
+        Ok(file) => {
+            *held = Some(file);
+            Ok(StateLockGuard { outermost: true })
         }
+        Err(e) => Err(e),
     }
 }
 
@@ -180,11 +195,19 @@ fn acquire_inner(path: &Path) -> Result<File, LockError> {
     })
 }
 
+/// True iff this process currently holds the state lock at the
+/// outermost scope. Test-only so the guard's invariants stay visible
+/// to the test suite.
+#[cfg(test)]
+pub(crate) fn is_held_in_process() -> bool {
+    HELD.lock().unwrap_or_else(|e| e.into_inner()).is_some()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// All tests in this module mutate the process-wide `HELD` flag (or the
+    /// All tests in this module mutate the process-wide `HELD` slot (or the
     /// kernel-level lock at the same path). Cargo runs tests in parallel by
     /// default, so we serialize them with [`TEST_SERIAL`] to avoid one
     /// test's acquire stomping on another's assertions.
@@ -212,8 +235,10 @@ mod tests {
         let state = dir.join("state.json");
         {
             let _g = acquire_for_state_path(&state).expect("first acquire");
+            assert!(is_held_in_process());
         }
-        // After drop, HELD is clear and a fresh acquire works.
+        // After drop, the slot is clear and a fresh acquire works.
+        assert!(!is_held_in_process());
         let _g = acquire_for_state_path(&state).expect("second acquire after drop");
         drop(_g);
         let _ = std::fs::remove_dir_all(&dir);
@@ -231,17 +256,17 @@ mod tests {
         let state = dir.join("state.json");
 
         let outer = acquire_for_state_path(&state).expect("outer acquire");
-        assert!(HELD.load(Ordering::SeqCst));
+        assert!(is_held_in_process());
         {
             let inner = acquire_for_state_path(&state).expect("nested acquire");
             // Inner guard should be a no-op (no fd owned).
-            assert!(inner.inner.is_none());
+            assert!(!inner.outermost);
             drop(inner);
             // Outer lock must still be held.
-            assert!(HELD.load(Ordering::SeqCst));
+            assert!(is_held_in_process());
         }
         drop(outer);
-        assert!(!HELD.load(Ordering::SeqCst));
+        assert!(!is_held_in_process());
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -251,7 +276,7 @@ mod tests {
         let _serial = serial_guard();
         // Simulate the cross-process race: open the lock file in a separate
         // fd, take the flock, then try to acquire in this process. The
-        // in-process HELD flag is per-process, so we have to reach the
+        // in-process HELD slot is per-process, so we have to reach the
         // kernel flock to hit the contention path. We verify by manually
         // calling the inner helper, which bypasses the HELD shortcut.
         let dir = std::env::temp_dir().join(format!("proteus-lock-busy-{}", std::process::id()));
@@ -305,5 +330,51 @@ mod tests {
         // Garbage input falls back to default.
         let attempts = retry_attempts_from_env(|_| Some("not-a-number".to_string()));
         assert_eq!(attempts, 50);
+    }
+
+    /// Issue #206-B regression: a sequence of acquire-drop cycles must
+    /// never wedge the in-process slot. The previous AtomicBool +
+    /// OnceLock pair could leave the OnceLock populated with a
+    /// released fd; the new `Mutex<Option<File>>` must take/replace
+    /// the file together so this round-trip stays clean.
+    #[test]
+    fn round_trip_acquire_drop_repeats_cleanly() {
+        let _serial = serial_guard();
+        let dir = std::env::temp_dir().join(format!(
+            "proteus-lock-roundtrip-multi-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let state = dir.join("state.json");
+        for _ in 0..3 {
+            let g = acquire_for_state_path(&state).expect("acquire");
+            assert!(is_held_in_process());
+            drop(g);
+            assert!(!is_held_in_process());
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Inner-lock-then-outer-drop ordering: dropping the inner (no-op)
+    /// guard before the outer must keep the kernel flock held. The
+    /// AtomicBool design got this right; the new shape must too.
+    #[test]
+    fn dropping_inner_does_not_release_outer_lock() {
+        let _serial = serial_guard();
+        let dir = std::env::temp_dir().join(format!(
+            "proteus-lock-nested-drop-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let state = dir.join("state.json");
+        let outer = acquire_for_state_path(&state).expect("outer");
+        let inner = acquire_for_state_path(&state).expect("nested");
+        drop(inner);
+        assert!(is_held_in_process(), "outer lock must still hold");
+        drop(outer);
+        assert!(!is_held_in_process());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

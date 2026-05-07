@@ -1,0 +1,38 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Generic Canon network printer (PIXMA/MAXIFY series). Canon OUI ranges.
+# DHCP option 60 absent (Canon doesn't set vendor-class in factory firmware).
+# mDNS very chatty: _ipp, _ipps, _printer, _pdl-datastream, _http.
+
+id = "printer-generic-canon"
+display_name = "Canon Printer (Generic)"
+kind = "stealth"
+category = "printer"
+oui_pool = ["intel"]
+hostname_template = "Canon-{word}"
+mdns_advertise = true
+bt_name_template = ""
+notes = "Canon allocates from a handful of vendor blocks and several from Intel/Realtek-licensed Wi-Fi cards. We use the Intel pool here as a reasonable cover; a real Canon-only OUI table is a follow-up. mDNS announcements are how a printer is discovered on AirPrint / IPP — keeping that posture matches an actual printer."
+
+[dhcp_fingerprint]
+vendor_class_identifier = ""
+fqdn = ""
+parameter_request_list = [1, 3, 6, 12, 15, 28, 33, 51, 58, 59]
+host_name = ""
+
+[tcp_stack]
+window_scale = 6
+mss = 1460
+tcp_timestamps = true
+tcp_sack = true
+default_ttl = 64
+
+[ipv6_traits]
+use_temp_addresses = false
+addr_gen_mode = "eui64"
+send_rs = true
+
+[rf_traits]
+tx_power_dbm = 0
+scan_style = "passive"
+power_save = "off"

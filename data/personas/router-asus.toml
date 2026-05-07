@@ -1,0 +1,39 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Asus Wi-Fi router (RT-AX/RT-AC series, AsusWRT firmware). Asus OUI.
+# Routers don't normally appear as DHCP CLIENTS on a network — this
+# persona is intended for cover-as-a-router scenarios where the operator
+# wants to look like a stationary Asus AP rather than a laptop.
+
+id = "router-asus"
+display_name = "Asus Router (RT-AX series)"
+kind = "stealth"
+category = "router"
+oui_pool = ["asus"]
+hostname_template = "RT-AX{n}"
+mdns_advertise = false
+bt_name_template = ""
+notes = "Cover-as-a-router. The hostname matches the AsusWRT default broadcast (RT-AX88U, RT-AX86U, etc.). Routers typically only DHCP-out on their WAN; the persona's DHCP fingerprint reflects the WAN-side request shape."
+
+[dhcp_fingerprint]
+vendor_class_identifier = ""
+fqdn = ""
+parameter_request_list = [1, 3, 6, 15, 28, 33, 51, 58, 59, 119]
+host_name = ""
+
+[tcp_stack]
+window_scale = 7
+mss = 1460
+tcp_timestamps = true
+tcp_sack = true
+default_ttl = 64
+
+[ipv6_traits]
+use_temp_addresses = false
+addr_gen_mode = "eui64"
+send_rs = true
+
+[rf_traits]
+tx_power_dbm = 0
+scan_style = "active"
+power_save = "off"

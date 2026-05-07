@@ -1,0 +1,38 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Surface Pro 9 (1996, Windows 11 with Intel Evo or SQ3). Microsoft OUI
+# (Surface ships its own Wi-Fi MAC range, separate from Intel). MSFT 5.0
+# DHCP fingerprint, mDNS off, LLMNR-style discovery.
+
+id = "surface-pro-9"
+display_name = "Surface Pro 9 (Win 11)"
+kind = "stealth"
+category = "tablet"
+oui_pool = ["microsoft"]
+hostname_template = "Surface-{n}"
+mdns_advertise = false
+bt_name_template = "Surface Pro 9"
+notes = "Surface devices use Microsoft-branded OUIs. DHCP signature matches every Windows 11 client; Surface adds option 252 (private Microsoft) which Fingerbank uses to disambiguate from generic Win 11."
+
+[dhcp_fingerprint]
+vendor_class_identifier = "MSFT 5.0"
+fqdn = ""
+parameter_request_list = [1, 3, 6, 15, 31, 33, 43, 44, 46, 47, 121, 249, 252]
+host_name = ""
+
+[tcp_stack]
+window_scale = 8
+mss = 1460
+tcp_timestamps = false
+tcp_sack = true
+default_ttl = 128
+
+[ipv6_traits]
+use_temp_addresses = true
+addr_gen_mode = "stable-privacy"
+send_rs = true
+
+[rf_traits]
+tx_power_dbm = 0
+scan_style = "active"
+power_save = "auto"

@@ -1,0 +1,38 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Google Nest Mini (2nd gen, Cast-enabled smart speaker). Google OUI.
+# mDNS heavy (_googlecast, _googlerpc, _googlezone) — that's what the
+# device IS. DHCP option 60 absent.
+
+id = "nest-mini"
+display_name = "Google Nest Mini (Cast)"
+kind = "stealth"
+category = "iot"
+oui_pool = ["google"]
+hostname_template = "Nest-Mini-{n}"
+mdns_advertise = true
+bt_name_template = "Nest Mini"
+notes = "2nd-gen Nest Mini and the Nest Audio share the same DHCP/mDNS shape. _googlecast is the giveaway service; the rest of the wire profile is generic Cast-enabled hardware."
+
+[dhcp_fingerprint]
+vendor_class_identifier = ""
+fqdn = ""
+parameter_request_list = [1, 3, 6, 15, 26, 28, 51, 58, 59]
+host_name = ""
+
+[tcp_stack]
+window_scale = 5
+mss = 1460
+tcp_timestamps = true
+tcp_sack = true
+default_ttl = 64
+
+[ipv6_traits]
+use_temp_addresses = false
+addr_gen_mode = "eui64"
+send_rs = true
+
+[rf_traits]
+tx_power_dbm = 0
+scan_style = "passive"
+power_save = "off"

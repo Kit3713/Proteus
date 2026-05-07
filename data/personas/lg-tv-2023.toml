@@ -1,0 +1,37 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# LG OLED / NanoCell TV, webOS 23 (2023 model year). LG OUI. mDNS on
+# (LG advertises _lge-bridge, _googlecast, _airplay). DHCP option 60 absent.
+
+id = "lg-tv-2023"
+display_name = "LG Smart TV 2023 (webOS 23)"
+kind = "stealth"
+category = "tv"
+oui_pool = ["lg"]
+hostname_template = "[LG]_webOS_TV_{word}"
+mdns_advertise = true
+bt_name_template = "LG TV"
+notes = "C3/G3/B3 OLED panels and NanoCell sets. The hostname pattern matches what real LG firmware sends in DHCP option 12; webOS 23 advertises _lge-bridge for the magic-remote pairing service."
+
+[dhcp_fingerprint]
+vendor_class_identifier = ""
+fqdn = ""
+parameter_request_list = [1, 3, 6, 15, 28, 51, 58, 59]
+host_name = ""
+
+[tcp_stack]
+window_scale = 7
+mss = 1460
+tcp_timestamps = true
+tcp_sack = true
+default_ttl = 64
+
+[ipv6_traits]
+use_temp_addresses = false
+addr_gen_mode = "eui64"
+send_rs = true
+
+[rf_traits]
+tx_power_dbm = 0
+scan_style = "active"
+power_save = "off"

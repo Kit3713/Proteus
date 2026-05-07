@@ -1,14 +1,16 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! `MockBackend` — in-memory backend used by per-backend integration
-//! tests (Milestone 1 acceptance). Lets a test pre-populate devices,
-//! observe `set_cloned_mac` calls, and assert outcomes without
-//! standing up a DBus daemon or a containerised distro.
+//! `MockBackend` — in-memory backend used by the per-command unit
+//! tests and the per-backend integration tests (Milestone 1
+//! acceptance). Lets a test pre-populate devices, observe trait
+//! method calls, and assert outcomes without standing up a DBus
+//! daemon or a containerised distro.
 //!
-//! Gated behind `cfg(test)` so it never ships in the release
-//! binary. If out-of-tree integration tests need this later, lift
-//! the gate to a `test-mock` feature; the constraint today is "no
-//! new dependencies / features", so we keep it test-only.
+//! Lives in the production tree (not `cfg(test)`) so unit tests in
+//! `commands::*` can reach it through the same module path the trait
+//! consumers use; the binary is small enough that the dead-code
+//! impact is negligible. Out-of-tree integration tests pick it up via
+//! `crate::backend::mock::MockBackend`.
 
 use std::sync::Mutex;
 use std::time::Duration;
@@ -27,10 +29,44 @@ use crate::state::DhcpSettingsSnapshot;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MockCall {
     ListDevices,
-    SetClonedMac { iface: String, mac: Mac },
-    ReadClonedMac { iface: String },
-    ReadFactoryMac { iface: String },
-    RotateIfNeeded { iface: String, cooldown: Duration },
+    ListConnections {
+        iface: String,
+    },
+    SetClonedMac {
+        iface: String,
+        mac: Mac,
+    },
+    ReadClonedMac {
+        iface: String,
+    },
+    ReadFactoryMac {
+        iface: String,
+    },
+    RotateIfNeeded {
+        iface: String,
+        cooldown: Duration,
+    },
+    ReadConnectionId {
+        connection: String,
+    },
+    ReadConnectionUuid {
+        connection: String,
+    },
+    SetDhcpSettings {
+        connection: String,
+        snapshot: DhcpSettingsSnapshot,
+    },
+    SetIpv6Settings {
+        connection: String,
+        settings: Ipv6NmSettings,
+    },
+    RenewLease {
+        iface: String,
+    },
+    WriteAnonymousIdentity {
+        connection: String,
+        value: String,
+    },
 }
 
 /// Per-iface state the backend tracks. Tests seed the initial values
@@ -41,11 +77,25 @@ struct DeviceState {
     cloned_mac: Option<String>,
     factory_mac: Option<String>,
     rotate_outcome: RotateOutcome,
+    renew_outcome: RenewOutcome,
+}
+
+/// Per-connection state. Test code seeds the id/uuid pair via
+/// [`MockBackend::insert_connection`]; the trait writes accumulate
+/// here so assertions can verify the final shape.
+#[derive(Debug, Clone, Default)]
+struct ConnectionState {
+    id: Option<String>,
+    uuid: Option<String>,
+    dhcp: Option<DhcpSettingsSnapshot>,
+    ipv6: Option<Ipv6NmSettings>,
+    anonymous_identity: Option<String>,
 }
 
 #[derive(Default)]
 struct Inner {
     devices: Vec<DeviceState>,
+    connections: std::collections::HashMap<String, ConnectionState>,
     calls: Vec<MockCall>,
     available: bool,
 }
@@ -79,13 +129,43 @@ impl MockBackend {
             cloned_mac: None,
             factory_mac,
             rotate_outcome: RotateOutcome::BackendUnavailable,
+            renew_outcome: RenewOutcome::NoActiveConnection,
         });
+    }
+
+    /// Seed a connection with id/uuid metadata. Tests that exercise
+    /// the per-connection mutating helpers seed this so the
+    /// `read_connection_*` reads return real values.
+    pub fn insert_connection(
+        &self,
+        connection: &ConnectionRef,
+        id: Option<&str>,
+        uuid: Option<&str>,
+    ) {
+        let mut inner = self.inner.lock().unwrap();
+        let entry = inner
+            .connections
+            .entry(connection.as_str().to_string())
+            .or_default();
+        if let Some(v) = id {
+            entry.id = Some(v.to_string());
+        }
+        if let Some(v) = uuid {
+            entry.uuid = Some(v.to_string());
+        }
     }
 
     pub fn set_rotate_outcome(&self, iface: &str, outcome: RotateOutcome) {
         let mut inner = self.inner.lock().unwrap();
         if let Some(d) = inner.devices.iter_mut().find(|d| d.device.iface == iface) {
             d.rotate_outcome = outcome;
+        }
+    }
+
+    pub fn set_renew_outcome(&self, iface: &str, outcome: RenewOutcome) {
+        let mut inner = self.inner.lock().unwrap();
+        if let Some(d) = inner.devices.iter_mut().find(|d| d.device.iface == iface) {
+            d.renew_outcome = outcome;
         }
     }
 
@@ -106,6 +186,36 @@ impl MockBackend {
             .find(|d| d.device.iface == iface)
             .and_then(|d| d.cloned_mac.clone())
     }
+
+    /// Last DHCP snapshot the trait writer pushed to `connection`.
+    pub fn dhcp_for(&self, connection: &ConnectionRef) -> Option<DhcpSettingsSnapshot> {
+        self.inner
+            .lock()
+            .unwrap()
+            .connections
+            .get(connection.as_str())
+            .and_then(|c| c.dhcp.clone())
+    }
+
+    /// Last IPv6 settings the trait writer pushed to `connection`.
+    pub fn ipv6_for(&self, connection: &ConnectionRef) -> Option<Ipv6NmSettings> {
+        self.inner
+            .lock()
+            .unwrap()
+            .connections
+            .get(connection.as_str())
+            .and_then(|c| c.ipv6.clone())
+    }
+
+    /// Last anonymous-identity value the trait writer pushed.
+    pub fn anonymous_identity_for(&self, connection: &ConnectionRef) -> Option<String> {
+        self.inner
+            .lock()
+            .unwrap()
+            .connections
+            .get(connection.as_str())
+            .and_then(|c| c.anonymous_identity.clone())
+    }
 }
 
 impl NetworkBackend for MockBackend {
@@ -122,6 +232,18 @@ impl NetworkBackend for MockBackend {
         let mut inner = self.inner.lock().unwrap();
         inner.calls.push(MockCall::ListDevices);
         let out: Vec<BackendDevice> = inner.devices.iter().map(|d| d.device.clone()).collect();
+        Box::pin(async move { Ok(out) })
+    }
+
+    fn list_connections<'a>(
+        &'a self,
+        device: &'a BackendDevice,
+    ) -> BoxFuture<'a, Result<Vec<ConnectionRef>>> {
+        let mut inner = self.inner.lock().unwrap();
+        inner.calls.push(MockCall::ListConnections {
+            iface: device.iface.clone(),
+        });
+        let out = device.connections.clone();
         Box::pin(async move { Ok(out) })
     }
 
@@ -193,62 +315,110 @@ impl NetworkBackend for MockBackend {
         Box::pin(async move { Ok(out) })
     }
 
-    // The connection-level methods are stubs in MockBackend — Milestone 1's
-    // mock-driven tests focus on device-level rotation, not connection
-    // settings. Tests that need richer per-connection observation can
-    // extend MockCall + MockState in the same file when the integration
-    // tests around DHCP / IPv6 / 802.1X land.
-
-    fn list_connections<'a>(
-        &'a self,
-        _device: &'a BackendDevice,
-    ) -> BoxFuture<'a, Result<Vec<ConnectionRef>>> {
-        Box::pin(async { Ok(Vec::new()) })
-    }
-
     fn read_connection_id<'a>(
         &'a self,
-        _connection: &'a ConnectionRef,
+        connection: &'a ConnectionRef,
     ) -> BoxFuture<'a, Result<Option<String>>> {
-        Box::pin(async { Ok(None) })
+        let mut inner = self.inner.lock().unwrap();
+        inner.calls.push(MockCall::ReadConnectionId {
+            connection: connection.as_str().to_string(),
+        });
+        let out = inner
+            .connections
+            .get(connection.as_str())
+            .and_then(|c| c.id.clone());
+        Box::pin(async move { Ok(out) })
     }
 
     fn read_connection_uuid<'a>(
         &'a self,
-        _connection: &'a ConnectionRef,
+        connection: &'a ConnectionRef,
     ) -> BoxFuture<'a, Result<Option<String>>> {
-        Box::pin(async { Ok(None) })
+        let mut inner = self.inner.lock().unwrap();
+        inner.calls.push(MockCall::ReadConnectionUuid {
+            connection: connection.as_str().to_string(),
+        });
+        let out = inner
+            .connections
+            .get(connection.as_str())
+            .and_then(|c| c.uuid.clone());
+        Box::pin(async move { Ok(out) })
     }
 
     fn set_dhcp_settings<'a>(
         &'a self,
-        _connection: &'a ConnectionRef,
-        _snapshot: DhcpSettingsSnapshot,
+        connection: &'a ConnectionRef,
+        snapshot: DhcpSettingsSnapshot,
     ) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async { Ok(()) })
+        let mut inner = self.inner.lock().unwrap();
+        inner.calls.push(MockCall::SetDhcpSettings {
+            connection: connection.as_str().to_string(),
+            snapshot: snapshot.clone(),
+        });
+        inner
+            .connections
+            .entry(connection.as_str().to_string())
+            .or_default()
+            .dhcp = Some(snapshot);
+        Box::pin(async move { Ok(()) })
     }
 
     fn set_ipv6_settings<'a>(
         &'a self,
-        _connection: &'a ConnectionRef,
-        _settings: Ipv6NmSettings,
+        connection: &'a ConnectionRef,
+        settings: Ipv6NmSettings,
     ) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async { Ok(()) })
+        let mut inner = self.inner.lock().unwrap();
+        inner.calls.push(MockCall::SetIpv6Settings {
+            connection: connection.as_str().to_string(),
+            settings: settings.clone(),
+        });
+        inner
+            .connections
+            .entry(connection.as_str().to_string())
+            .or_default()
+            .ipv6 = Some(settings);
+        Box::pin(async move { Ok(()) })
     }
 
     fn renew_lease<'a>(
         &'a self,
-        _device: &'a BackendDevice,
+        device: &'a BackendDevice,
     ) -> BoxFuture<'a, Result<RenewOutcome>> {
-        Box::pin(async { Ok(RenewOutcome::NoActiveConnection) })
+        let mut inner = self.inner.lock().unwrap();
+        inner.calls.push(MockCall::RenewLease {
+            iface: device.iface.clone(),
+        });
+        let out = inner
+            .devices
+            .iter()
+            .find(|d| d.device.iface == device.iface)
+            .map(|d| d.renew_outcome.clone())
+            .unwrap_or(RenewOutcome::NoActiveConnection);
+        Box::pin(async move { Ok(out) })
     }
 
     fn write_anonymous_identity<'a>(
         &'a self,
-        _connection: &'a ConnectionRef,
-        _value: &'a str,
+        connection: &'a ConnectionRef,
+        value: &'a str,
     ) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async { Ok(()) })
+        let mut inner = self.inner.lock().unwrap();
+        inner.calls.push(MockCall::WriteAnonymousIdentity {
+            connection: connection.as_str().to_string(),
+            value: value.to_string(),
+        });
+        let entry = inner
+            .connections
+            .entry(connection.as_str().to_string())
+            .or_default();
+        // Mirror NM's contract: an empty string clears the field.
+        entry.anonymous_identity = if value.is_empty() {
+            None
+        } else {
+            Some(value.to_string())
+        };
+        Box::pin(async move { Ok(()) })
     }
 }
 
@@ -270,7 +440,7 @@ mod tests {
             kind: BackendKind::Wifi,
             hw_address: Some("aa:bb:cc:dd:ee:ff".into()),
             identifier: format!("mock://{iface}"),
-            connections: Vec::new(),
+            connections: vec![ConnectionRef::new(format!("mock://{iface}/0"))],
             managed: true,
         }
     }
@@ -341,5 +511,123 @@ mod tests {
             backend.set_available(false);
             assert!(!backend.available().await);
         });
+    }
+
+    #[test]
+    fn list_connections_returns_seeded_entries() {
+        let backend = MockBackend::new();
+        backend.insert_device(dev("wlan0"), None);
+        rt().block_on(async {
+            let devices = backend.list_devices().await.unwrap();
+            let conns = backend.list_connections(&devices[0]).await.unwrap();
+            assert_eq!(conns.len(), 1);
+            assert_eq!(conns[0].as_str(), "mock://wlan0/0");
+        });
+    }
+
+    #[test]
+    fn read_connection_id_uuid_returns_seeded_metadata() {
+        let backend = MockBackend::new();
+        let cref = ConnectionRef::new("mock://w/0");
+        backend.insert_connection(
+            &cref,
+            Some("Home Wi-Fi"),
+            Some("12345678-aaaa-bbbb-cccc-1234567890ab"),
+        );
+        rt().block_on(async {
+            let id = backend.read_connection_id(&cref).await.unwrap();
+            let uuid = backend.read_connection_uuid(&cref).await.unwrap();
+            assert_eq!(id.as_deref(), Some("Home Wi-Fi"));
+            assert_eq!(
+                uuid.as_deref(),
+                Some("12345678-aaaa-bbbb-cccc-1234567890ab")
+            );
+        });
+    }
+
+    #[test]
+    fn set_dhcp_settings_round_trips_snapshot() {
+        let backend = MockBackend::new();
+        let cref = ConnectionRef::new("mock://w/0");
+        let snap = DhcpSettingsSnapshot {
+            ipv4_dhcp_send_hostname: Some(false),
+            ipv4_dhcp_hostname: Some("".into()),
+            ipv4_dhcp_fqdn: None,
+            ipv4_dhcp_vendor_class_identifier: Some("".into()),
+            ipv4_dhcp_client_id: Some("mac".into()),
+            ipv6_dhcp_duid: Some("ll".into()),
+            ipv6_dhcp_iaid: Some("mac".into()),
+        };
+        rt().block_on(async {
+            backend
+                .set_dhcp_settings(&cref, snap.clone())
+                .await
+                .unwrap();
+        });
+        let got = backend.dhcp_for(&cref).expect("snapshot");
+        assert_eq!(got.ipv4_dhcp_client_id.as_deref(), Some("mac"));
+        assert_eq!(got.ipv6_dhcp_duid.as_deref(), Some("ll"));
+    }
+
+    #[test]
+    fn set_ipv6_settings_records_call_and_persists_value() {
+        let backend = MockBackend::new();
+        let cref = ConnectionRef::new("mock://w/0");
+        let s = Ipv6NmSettings::default();
+        rt().block_on(async {
+            backend.set_ipv6_settings(&cref, s.clone()).await.unwrap();
+        });
+        let got = backend.ipv6_for(&cref).expect("ipv6 written");
+        assert_eq!(got.addr_gen_mode, s.addr_gen_mode);
+    }
+
+    #[test]
+    fn renew_lease_uses_per_iface_outcome() {
+        let backend = MockBackend::new();
+        backend.insert_device(dev("wlan0"), None);
+        backend.set_renew_outcome("wlan0", RenewOutcome::Reapplied);
+        rt().block_on(async {
+            let devices = backend.list_devices().await.unwrap();
+            let outcome = backend.renew_lease(&devices[0]).await.unwrap();
+            assert_eq!(outcome, RenewOutcome::Reapplied);
+        });
+    }
+
+    #[test]
+    fn write_anonymous_identity_clears_on_empty_string() {
+        let backend = MockBackend::new();
+        let cref = ConnectionRef::new("mock://w/0");
+        rt().block_on(async {
+            backend
+                .write_anonymous_identity(&cref, "anonymous@example.edu")
+                .await
+                .unwrap();
+            assert_eq!(
+                backend.anonymous_identity_for(&cref).as_deref(),
+                Some("anonymous@example.edu")
+            );
+            backend
+                .write_anonymous_identity(&cref, "")
+                .await
+                .unwrap();
+            assert!(backend.anonymous_identity_for(&cref).is_none());
+        });
+    }
+
+    #[test]
+    fn call_log_records_every_method_in_order() {
+        let backend = MockBackend::new();
+        backend.insert_device(dev("wlan0"), Some("aa:bb:cc:dd:ee:ff".into()));
+        let cref = ConnectionRef::new("mock://wlan0/0");
+        backend.insert_connection(&cref, Some("Home"), Some("uuid-1"));
+        rt().block_on(async {
+            let _ = backend.list_devices().await.unwrap();
+            let _ = backend.read_connection_id(&cref).await.unwrap();
+            let _ = backend.read_connection_uuid(&cref).await.unwrap();
+        });
+        let log = backend.call_log();
+        assert!(matches!(log[0], MockCall::ListDevices));
+        assert!(matches!(log[1], MockCall::ReadConnectionId { .. }));
+        assert!(matches!(log[2], MockCall::ReadConnectionUuid { .. }));
     }
 }
