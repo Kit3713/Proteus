@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+pub mod apply;
 pub mod bluetooth_cmd;
 pub mod config_cmd;
 pub mod current;

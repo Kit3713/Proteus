@@ -344,8 +344,8 @@ pub fn run() -> ExitCode {
         Command::Original { json } => commands::original::run(json, cli.state.as_deref()),
         Command::ShowConfig { json } => commands::show_config::run(json, cli.config.as_deref()),
         Command::ShowDefaults { json } => commands::show_defaults::run(json),
-        Command::Apply { .. } => {
-            commands::stub::not_implemented("apply", 'B', "proteus wiki concepts")
+        Command::Apply { yes } => {
+            commands::apply::run(yes, cli.state.as_deref(), cli.config.as_deref())
         }
         Command::Revert { .. } => commands::stub::not_implemented(
             "revert",
