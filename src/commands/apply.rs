@@ -164,6 +164,7 @@ fn orchestrate(
         run_stack(state_path, config_path),
         run_rf(config, state_path, config_path),
         run_nft(config_path),
+        run_timers(config),
     ]
 }
 
@@ -291,6 +292,68 @@ fn run_nft(config_path: Option<&Path>) -> ComponentReport {
     classify("nft", res)
 }
 
+// Reconcile the [timers] block onto the on-disk drop-ins. Skipped if the
+// process is not running under systemd (e.g. CI containers, dev shells)
+// because the reconciler restarts units that won't exist there.
+fn run_timers(config: &Config) -> ComponentReport {
+    if !std::path::Path::new("/run/systemd/system").is_dir() {
+        return skipped("timers", "systemd not detected");
+    }
+    let report = crate::timer::reconcile_with_config(
+        &config.timers,
+        |unit| systemctl(&["restart", unit]),
+        || systemctl(&["daemon-reload"]),
+    );
+    if report.any_failed() {
+        let notes: Vec<String> = report
+            .timers
+            .iter()
+            .filter_map(|t| match &t.outcome {
+                crate::timer::ReconcileOutcome::Failed(msg) => Some(format!("{}: {msg}", t.name)),
+                _ => None,
+            })
+            .collect();
+        return ComponentReport {
+            name: "timers",
+            status: Status::Failed,
+            note: notes.join("; "),
+        };
+    }
+    let summary = summarize_timer_report(&report);
+    ComponentReport {
+        name: "timers",
+        status: Status::Applied,
+        note: summary,
+    }
+}
+
+fn summarize_timer_report(report: &crate::timer::ReconcileReport) -> String {
+    report
+        .timers
+        .iter()
+        .map(|t| format!("{}={}", t.name, t.outcome.label()))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn systemctl(args: &[&str]) -> anyhow::Result<()> {
+    use anyhow::{Context, anyhow};
+    let output = std::process::Command::new("systemctl")
+        .args(args)
+        .output()
+        .context("invoking systemctl")?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    Err(anyhow!(
+        "systemctl {} exited with {}: {}",
+        args.join(" "),
+        output.status,
+        stderr.trim()
+    ))
+}
+
 /// Map an exit-code-returning command result into a component report. Any
 /// non-success code is treated as a failure with the numeric code preserved
 /// for the summary; an `Err` becomes a failure with the diagnostic text.
@@ -402,13 +465,34 @@ mod tests {
             run_dhcp(&cfg, None, None),
             run_dns(&cfg, None),
             run_rf(&cfg, None, None),
+            run_timers(&cfg),
         ];
-        for name in ["mac", "hostname", "bluetooth", "ipv6", "dhcp", "dns", "rf"] {
+        for name in [
+            "mac",
+            "hostname",
+            "bluetooth",
+            "ipv6",
+            "dhcp",
+            "dns",
+            "rf",
+            "timers",
+        ] {
             assert!(
                 reports.iter().any(|r| r.name == name),
                 "orchestrator missing component '{name}'"
             );
         }
+    }
+
+    #[test]
+    fn orchestrator_includes_timers_for_default_config() {
+        // The default Med config carries [timers] cadences, so the
+        // orchestrator must include a "timers" entry. We don't assert the
+        // status because that depends on whether systemd is present in the
+        // test environment.
+        let cfg = Config::default();
+        let report = run_timers(&cfg);
+        assert_eq!(report.name, "timers");
     }
 
     #[test]

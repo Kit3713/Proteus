@@ -12,10 +12,13 @@
 //! `crate::commands::timer`. This module is pure logic + filesystem layout
 //! so it stays unit-testable.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Result, anyhow};
+use serde::Serialize;
 
+use crate::config::TimersConfig;
+use crate::profile::TIMER_NEVER;
 use crate::version;
 
 /// Canonical Proteus timer types.
@@ -209,6 +212,225 @@ pub fn dropin_file(spec: &TimerSpec) -> PathBuf {
     dropin_dir(spec).join("override.conf")
 }
 
+/// Per-timer reconciliation outcome surfaced by `reconcile_with_config`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ReconcileOutcome {
+    /// Drop-in already matches the desired interval; no work performed.
+    Unchanged,
+    /// Drop-in written or updated to the new interval.
+    Changed,
+    /// Drop-in removed because the configured interval is `"never"`.
+    Removed,
+    /// Configured interval is `"never"` and no drop-in existed; no work.
+    AlreadyDisabled,
+    /// Reconciliation failed for this timer.
+    Failed(String),
+}
+
+impl ReconcileOutcome {
+    /// Short label suitable for the `proteus apply` summary line.
+    pub fn label(&self) -> &'static str {
+        match self {
+            ReconcileOutcome::Changed => "changed",
+            ReconcileOutcome::Removed => "removed",
+            ReconcileOutcome::Unchanged => "unchanged",
+            ReconcileOutcome::AlreadyDisabled => "off",
+            ReconcileOutcome::Failed(_) => "failed",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ReconcileEntry {
+    pub name: &'static str,
+    pub unit: &'static str,
+    pub interval: String,
+    pub outcome: ReconcileOutcome,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct ReconcileReport {
+    pub timers: Vec<ReconcileEntry>,
+}
+
+impl ReconcileReport {
+    /// True iff at least one entry needed a write or remove.
+    pub fn any_changed(&self) -> bool {
+        self.timers.iter().any(|t| {
+            matches!(
+                t.outcome,
+                ReconcileOutcome::Changed | ReconcileOutcome::Removed
+            )
+        })
+    }
+
+    /// True iff any entry failed.
+    pub fn any_failed(&self) -> bool {
+        self.timers
+            .iter()
+            .any(|t| matches!(t.outcome, ReconcileOutcome::Failed(_)))
+    }
+}
+
+/// Plan a single timer's reconciliation given the configured interval and
+/// the current drop-in body (if any). Returns the action to take and, if
+/// applicable, the rendered new body. Pure: no I/O, exhaustively testable.
+#[derive(Debug)]
+pub enum PlannedAction {
+    /// Write `body` to the drop-in path; the timer needs to be restarted.
+    Write { body: String },
+    /// Remove the drop-in path; the timer needs to be restarted.
+    Remove,
+    /// No change needed.
+    Noop { already_disabled: bool },
+}
+
+/// Pure planner: given a desired interval and the on-disk drop-in body,
+/// pick the minimum action that brings the timer to the desired state.
+pub fn plan_action(desired: &str, current_body: Option<&str>) -> Result<PlannedAction> {
+    if is_never(desired) {
+        return Ok(match current_body {
+            Some(_) => PlannedAction::Remove,
+            None => PlannedAction::Noop {
+                already_disabled: true,
+            },
+        });
+    }
+    let interval = parse_interval(desired)?;
+    let new_body = render_dropin(&interval);
+    if let Some(existing) = current_body
+        && existing == new_body
+    {
+        return Ok(PlannedAction::Noop {
+            already_disabled: false,
+        });
+    }
+    Ok(PlannedAction::Write { body: new_body })
+}
+
+/// Whether `s` is the "do not run this timer" sentinel.
+pub fn is_never(s: &str) -> bool {
+    s.trim().eq_ignore_ascii_case(TIMER_NEVER)
+}
+
+/// Pair each `[timers.<name>]` field with the matching `TimerSpec`. The
+/// short names (`"rotate"`, `"check"`) are the bridge between the config
+/// schema and the systemd unit metadata in `TIMERS`.
+fn config_managed_intervals(cfg: &TimersConfig) -> Vec<(&'static TimerSpec, &str)> {
+    [
+        ("rotate", cfg.rotate.interval.as_str()),
+        ("check", cfg.check.interval.as_str()),
+    ]
+    .iter()
+    .filter_map(|(short, interval)| {
+        TIMERS
+            .iter()
+            .find(|t| t.short == *short)
+            .map(|spec| (spec, *interval))
+    })
+    .collect()
+}
+
+/// Reconcile every managed timer against the configured `[timers]` block.
+/// Writes or removes drop-ins as needed and returns a per-timer report.
+/// `restart` is invoked once per changed unit so the new cadence takes
+/// effect; pass `|_| Ok(())` from tests to skip the live restart.
+///
+/// `daemon_reload` is invoked once after the loop iff any timer changed.
+/// This mirrors the convention `proteus timer set` already uses.
+pub fn reconcile_with_config<F, R>(
+    cfg: &TimersConfig,
+    mut restart: R,
+    daemon_reload: F,
+) -> ReconcileReport
+where
+    F: FnOnce() -> Result<()>,
+    R: FnMut(&str) -> Result<()>,
+{
+    let mut entries = Vec::new();
+    let mut changed_units: Vec<&'static str> = Vec::new();
+
+    for (spec, interval) in config_managed_intervals(cfg) {
+        let path = dropin_file(spec);
+        let current = std::fs::read_to_string(&path).ok();
+        let outcome = match plan_action(interval, current.as_deref()) {
+            Ok(action) => execute_action(spec, &path, action),
+            Err(e) => ReconcileOutcome::Failed(format!("{e:#}")),
+        };
+        if matches!(
+            outcome,
+            ReconcileOutcome::Changed | ReconcileOutcome::Removed
+        ) {
+            changed_units.push(spec.unit);
+        }
+        entries.push(ReconcileEntry {
+            name: spec.short,
+            unit: spec.unit,
+            interval: interval.to_string(),
+            outcome,
+        });
+    }
+
+    let mut report = ReconcileReport { timers: entries };
+    if !changed_units.is_empty() {
+        if let Err(e) = daemon_reload() {
+            // Mark every changed entry as failed so the orchestrator can
+            // surface the daemon-reload error.
+            for t in report.timers.iter_mut() {
+                if matches!(
+                    t.outcome,
+                    ReconcileOutcome::Changed | ReconcileOutcome::Removed
+                ) {
+                    t.outcome = ReconcileOutcome::Failed(format!("daemon-reload: {e:#}"));
+                }
+            }
+            return report;
+        }
+        for unit in &changed_units {
+            if let Err(e) = restart(unit) {
+                if let Some(t) = report.timers.iter_mut().find(|t| t.unit == *unit) {
+                    t.outcome = ReconcileOutcome::Failed(format!("restart: {e:#}"));
+                }
+            }
+        }
+    }
+    report
+}
+
+fn execute_action(spec: &TimerSpec, path: &Path, action: PlannedAction) -> ReconcileOutcome {
+    match action {
+        PlannedAction::Write { body } => {
+            let dir = dropin_dir(spec);
+            if let Err(e) = std::fs::create_dir_all(&dir) {
+                return ReconcileOutcome::Failed(format!(
+                    "creating drop-in dir {}: {e}",
+                    dir.display()
+                ));
+            }
+            if let Err(e) = std::fs::write(path, &body) {
+                return ReconcileOutcome::Failed(format!("writing {}: {e}", path.display()));
+            }
+            ReconcileOutcome::Changed
+        }
+        PlannedAction::Remove => match std::fs::remove_file(path) {
+            Ok(()) => {
+                let _ = std::fs::remove_dir(dropin_dir(spec));
+                ReconcileOutcome::Removed
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => ReconcileOutcome::AlreadyDisabled,
+            Err(e) => ReconcileOutcome::Failed(format!("removing {}: {e}", path.display())),
+        },
+        PlannedAction::Noop { already_disabled } => {
+            if already_disabled {
+                ReconcileOutcome::AlreadyDisabled
+            } else {
+                ReconcileOutcome::Unchanged
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -296,5 +518,69 @@ mod tests {
         let interval = parse_interval("hourly").unwrap();
         let body = render_dropin(&interval);
         assert!(body.contains("OnCalendar=\nOnCalendar=hourly\n"));
+    }
+
+    #[test]
+    fn plan_never_with_no_dropin_is_noop() {
+        match plan_action("never", None).unwrap() {
+            PlannedAction::Noop {
+                already_disabled: true,
+            } => {}
+            other => panic!("expected already-disabled Noop, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn plan_never_with_dropin_removes() {
+        match plan_action("never", Some("# managed by proteus\n[Timer]\n")).unwrap() {
+            PlannedAction::Remove => {}
+            other => panic!("expected Remove, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn plan_writes_when_no_dropin() {
+        match plan_action("30m", None).unwrap() {
+            PlannedAction::Write { body } => {
+                assert!(body.contains("OnUnitActiveSec=1800"));
+            }
+            other => panic!("expected Write, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn plan_unchanged_when_body_matches() {
+        let body = render_dropin(&parse_interval("30m").unwrap());
+        match plan_action("30m", Some(&body)).unwrap() {
+            PlannedAction::Noop {
+                already_disabled: false,
+            } => {}
+            other => panic!("expected Unchanged Noop, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn plan_writes_when_existing_body_differs() {
+        let body = render_dropin(&parse_interval("1h").unwrap());
+        match plan_action("30m", Some(&body)).unwrap() {
+            PlannedAction::Write { body: new_body } => {
+                assert!(new_body.contains("OnUnitActiveSec=1800"));
+            }
+            other => panic!("expected Write, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn plan_propagates_parse_errors() {
+        assert!(plan_action("forever", None).is_err());
+    }
+
+    #[test]
+    fn is_never_handles_case_and_whitespace() {
+        assert!(is_never("never"));
+        assert!(is_never("NEVER"));
+        assert!(is_never("  Never  "));
+        assert!(!is_never("5m"));
+        assert!(!is_never(""));
     }
 }

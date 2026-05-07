@@ -267,6 +267,30 @@ Knobs:
 
 Lands in phase C. Cross-ref `proteus wiki rotation`.
 
+### `[timers]`
+
+```toml
+[timers.rotate]
+interval = "2h"                # systemd cadence for proteus-rotate.timer
+
+[timers.check]
+interval = "5m"                # systemd cadence for proteus-check.timer
+```
+
+Knobs:
+
+- `timers.rotate.interval` — systemd cadence for `proteus-rotate.timer`. Same syntax as `proteus timer set rotate --interval`: compact durations (`30m`, `1h`), named cadences (`hourly`, `daily`), raw calendar expressions (`*-*-* 06:00:00`), or the sentinel `never` which disables the timer.
+- `timers.check.interval` — systemd cadence for `proteus-check.timer`. Same syntax.
+
+Each profile carries a baseline cadence for both timers; `proteus apply` reconciles the configured value against the on-disk drop-in under `/etc/systemd/system/proteus-*.timer.d/`. User overrides win on a per-timer basis and survive profile changes — override-only-if-present, mirroring the bool toggles. The full per-profile table lives in `proteus wiki profiles`. Set from the CLI:
+
+```sh
+sudo proteus config set timers.rotate.interval 1h --yes
+sudo proteus config set timers.check.interval 30s --yes
+```
+
+Cross-ref `proteus wiki timer` for the drop-in mechanics and the full duration grammar.
+
 ## Risks at a glance
 
 | Knob | Risk if enabled |

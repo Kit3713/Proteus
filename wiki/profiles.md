@@ -13,6 +13,23 @@ The `profile` field at the top of `/etc/proteus/config.toml` selects a coherent 
 | `high` | hostile network | scheduled | mDNS, LLMNR | TX power reduction |
 | `agr` | conference / border | scheduled, fresh-MAC-per-portal | mDNS, LLMNR, SSDP, WSD | TX power reduction, anonymous outer 802.1X, gratuitous ARP suppression, per-visit MAC rotation |
 
+## Timer cadences per profile
+
+Each profile sets a baseline cadence for `proteus-rotate.timer` (scheduled MAC rotation) and `proteus-check.timer` (probe-driven rotation check). Switching profile via `sudo proteus config set-profile <name> --yes` then `sudo proteus apply --yes` reconciles the on-disk drop-ins under `/etc/systemd/system/proteus-*.timer.d/` so the new cadence takes effect on the next timer cycle.
+
+| Profile | `timers.rotate.interval` | `timers.check.interval` |
+|---|---|---|
+| `off` | `never` | `never` |
+| `min` | `never` | `never` |
+| `low` | `4h` | `5m` |
+| `med` | `2h` | `5m` |
+| `high` | `30m` | `2m` |
+| `agr` | `15m` | `1m` |
+
+The sentinel value `never` means "do not run this timer." When a profile resolves to `interval = "never"` for a timer, `proteus apply` removes the corresponding drop-in; the unit-file default (the cadence baked into the unit file under `/usr/lib/systemd/system/`) takes over only if the unit itself is enabled. `Off` and `Min` both resolve to `never` because neither profile schedules rotation in a trusted environment.
+
+User overrides win on a per-timer basis. `[timers.rotate].interval = "1h"` survives a switch from `med` to `high`; the `check` timer still follows the new profile's baseline. `Off` short-circuits this rule: while `off` is active the timer overrides on disk are ignored and both timers resolve to `never`.
+
 ## How resolution works
 
 Configuration loads in two passes. The first pass parses the file into the `RawConfig` shape where every field is `Option<T>`. The second pass overlays the user's per-knob overrides on top of the active profile's baseline.

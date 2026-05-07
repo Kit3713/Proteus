@@ -390,29 +390,45 @@ fn parse_config_text(s: &str) -> Result<Config> {
 
 // ---------- dotted-key plumbing ----------
 
-/// Split a dotted key into (section, field). We currently only support
-/// two-level keys ("section.field"), which covers the entire schema.
-fn split_key(key: &str) -> Result<(&str, &str)> {
-    let mut parts = key.splitn(2, '.');
-    let section = parts
-        .next()
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| anyhow!("empty key"))?;
-    let field = parts
-        .next()
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| anyhow!("key '{key}' must be of the form section.field"))?;
-    if field.contains('.') {
+/// Split a dotted key into (path, field). The path is the dotted run of
+/// section / subsection names; the field is the last segment.
+///
+/// `mac.enabled` -> (`["mac"]`, `"enabled"`).
+/// `timers.rotate.interval` -> (`["timers", "rotate"]`, `"interval"`).
+///
+/// Empty segments (leading or trailing dots, double dots) are rejected.
+fn split_key(key: &str) -> Result<(Vec<&str>, &str)> {
+    if key.is_empty() {
+        return Err(anyhow!("empty key"));
+    }
+    let parts: Vec<&str> = key.split('.').collect();
+    if parts.iter().any(|p| p.is_empty()) {
         return Err(anyhow!(
-            "nested keys deeper than 'section.field' not supported"
+            "key '{key}' must be of the form section.field or section.subsection.field"
         ));
     }
-    Ok((section, field))
+    if parts.len() < 2 {
+        return Err(anyhow!(
+            "key '{key}' must be of the form section.field or section.subsection.field"
+        ));
+    }
+    let (last, head) = parts.split_last().unwrap();
+    Ok((head.to_vec(), last))
+}
+
+/// Walk `doc` along `path`, returning the table at the end if it's a table.
+fn lookup_table<'a>(doc: &'a DocumentMut, path: &[&str]) -> Option<&'a toml_edit::Table> {
+    let (head, rest) = path.split_first()?;
+    let mut table = doc.get(head)?.as_table()?;
+    for seg in rest {
+        table = table.get(seg)?.as_table()?;
+    }
+    Some(table)
 }
 
 fn lookup<'a>(doc: &'a DocumentMut, key: &str) -> Option<&'a Item> {
-    let (section, field) = split_key(key).ok()?;
-    doc.get(section)?.as_table()?.get(field)
+    let (path, field) = split_key(key).ok()?;
+    lookup_table(doc, &path)?.get(field)
 }
 
 fn section_has_enabled(component: &str) -> bool {
@@ -426,13 +442,25 @@ fn section_has_enabled(component: &str) -> bool {
 }
 
 fn set_in_doc(doc: &mut DocumentMut, key: &str, value: Value) -> Result<()> {
-    let (section, field) = split_key(key)?;
-    if doc.get(section).is_none() {
-        doc[section] = Item::Table(toml_edit::Table::new());
+    let (path, field) = split_key(key)?;
+    let (head, rest) = path
+        .split_first()
+        .ok_or_else(|| anyhow!("key '{key}' has no section"))?;
+    if doc.get(head).is_none() {
+        doc[*head] = Item::Table(toml_edit::Table::new());
     }
-    let table = doc[section]
+    let mut table = doc[*head]
         .as_table_mut()
-        .ok_or_else(|| anyhow!("section [{section}] is not a table"))?;
+        .ok_or_else(|| anyhow!("section [{head}] is not a table"))?;
+    for seg in rest {
+        if !table.contains_key(seg) {
+            table.insert(seg, Item::Table(toml_edit::Table::new()));
+        }
+        table = table
+            .get_mut(seg)
+            .and_then(|i| i.as_table_mut())
+            .ok_or_else(|| anyhow!("section [{seg}] is not a table"))?;
+    }
     table[field] = Item::Value(value);
     Ok(())
 }
@@ -525,17 +553,34 @@ fn enumerate_keys() -> Result<Vec<KeyEntry>> {
         let Some(table) = item.as_table() else {
             continue;
         };
-        for (field, sub) in table.iter() {
-            let Some(v) = sub.as_value() else { continue };
-            out.push(KeyEntry {
-                key: format!("{section_name}.{field}"),
-                kind: type_name(v),
-                default: value_to_json(v),
-            });
-        }
+        walk_table(&[section_name], table, &mut out);
     }
     out.sort_by(|a, b| a.key.cmp(&b.key));
     Ok(out)
+}
+
+/// Recurse through a table, emitting one `KeyEntry` per scalar leaf.
+/// Nested subsections (e.g. `[timers.rotate]`) are flattened into dotted
+/// paths.
+fn walk_table(path: &[&str], table: &toml_edit::Table, out: &mut Vec<KeyEntry>) {
+    for (field, sub) in table.iter() {
+        if let Some(v) = sub.as_value() {
+            let key = if path.is_empty() {
+                field.to_string()
+            } else {
+                format!("{}.{field}", path.join("."))
+            };
+            out.push(KeyEntry {
+                key,
+                kind: type_name(v),
+                default: value_to_json(v),
+            });
+        } else if let Some(t) = sub.as_table() {
+            let mut nested: Vec<&str> = path.to_vec();
+            nested.push(field);
+            walk_table(&nested, t, out);
+        }
+    }
 }
 
 fn type_name(v: &Value) -> &'static str {
@@ -557,13 +602,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn dotted_key_parser_splits_into_section_and_field() {
-        let (s, f) = split_key("mac.enabled").unwrap();
-        assert_eq!(s, "mac");
+    fn dotted_key_parser_splits_into_path_and_field() {
+        let (path, f) = split_key("mac.enabled").unwrap();
+        assert_eq!(path, vec!["mac"]);
         assert_eq!(f, "enabled");
+        // Three-level keys carry the subsection in the path.
+        let (path, f) = split_key("timers.rotate.interval").unwrap();
+        assert_eq!(path, vec!["timers", "rotate"]);
+        assert_eq!(f, "interval");
         assert!(split_key("mac").is_err());
         assert!(split_key("").is_err());
-        assert!(split_key("a.b.c").is_err());
+        assert!(split_key(".x").is_err());
+        assert!(split_key("x.").is_err());
+        assert!(split_key("x..y").is_err());
     }
 
     #[test]
@@ -626,6 +677,18 @@ mod tests {
         assert!(names.contains(&"mac.enabled"));
         assert!(names.contains(&"probes.quorum_n"));
         assert!(names.contains(&"dns.strip_edns_client_subnet"));
+        // Three-level [timers.<name>] keys are included via the recursive walker.
+        assert!(names.contains(&"timers.rotate.interval"));
+        assert!(names.contains(&"timers.check.interval"));
+    }
+
+    #[test]
+    fn set_three_level_timer_key_round_trips() {
+        let mut doc = default_document().unwrap();
+        set_in_doc(&mut doc, "timers.rotate.interval", Value::from("1h")).unwrap();
+        let serialised = doc.to_string();
+        let cfg = parse_config_text(&serialised).unwrap();
+        assert_eq!(cfg.timers.rotate.interval, "1h");
     }
 
     #[test]
