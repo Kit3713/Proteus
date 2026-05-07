@@ -62,7 +62,9 @@ Not yet. Cargo project lands in phase A.
 ## Documentation
 
 - [`docs/PLAN.md`](docs/PLAN.md) — what's being built and in what order
+- [`docs/ROADMAP.md`](docs/ROADMAP.md) — operational status by phase
 - [`docs/PRIOR-ART.md`](docs/PRIOR-ART.md) — what already exists and where Proteus fits
+- [`CHANGELOG.md`](CHANGELOG.md) — release notes per version
 - [`SECURITY.md`](SECURITY.md) — how to report vulnerabilities
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — how to help
 
