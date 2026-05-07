@@ -358,8 +358,8 @@ pub fn run() -> ExitCode {
             commands::pin::run(&target, mac.as_deref(), yes, cli.state.as_deref())
         }
         Command::Unpin { target } => commands::unpin::run(&target, cli.state.as_deref()),
-        Command::Diff { .. } => {
-            commands::stub::not_implemented("diff", 'G', "proteus wiki concepts")
+        Command::Diff { json } => {
+            commands::diff::run(json, cli.state.as_deref(), cli.config.as_deref())
         }
         Command::DryRun { .. } => {
             commands::stub::not_implemented("dry-run", 'G', "proteus wiki concepts")
