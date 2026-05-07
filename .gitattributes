@@ -1,0 +1,23 @@
+# Default: auto-detect text vs binary, normalize to LF in the repo.
+* text=auto eol=lf
+
+# Rust: opt into the rust diff driver for nicer hunk headers.
+*.rs text eol=lf diff=rust
+
+*.toml text eol=lf
+*.md text eol=lf
+*.sh text eol=lf
+*.bash text eol=lf
+*.fish text eol=lf
+
+# Binary safeguards in case assets land here later.
+*.png binary
+*.jpg binary
+*.ico binary
+*.pdf binary
+
+# Linguist hints — keep GitHub's language stats honest.
+dist/systemd/* linguist-language=systemd
+dist/man/* linguist-language=Roff
+wiki/*.md linguist-documentation
+docs/*.md linguist-documentation
