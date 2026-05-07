@@ -6,17 +6,20 @@ Named after the shapeshifter.
 
 ## Status
 
-`v0.1.0-alpha` — pre-release. Not a stable release; the CLI surface, config schema, and on-disk formats may still change before `v0.1.0`.
+`v0.3.1-alpha` — pre-release. Not a stable release; the CLI surface, config schema, and on-disk formats may still change before `v1.0`. The v0.3 cycle is at ~92% complete on the roadmap (80✅ / 4🚧 / 4⏳ on bullet count).
 
 What has shipped on `main`:
 
-- Phase A (skeleton) — done. Cargo project, full clap CLI surface, read-only commands, embedded wiki with terminal renderer + full-text search, journald logging, stable exit codes
-- Phase B (L2 identity) — done. Wi-Fi and Ethernet MAC rotation via NetworkManager DBus, OUI pool, ARP collision check, pin/unpin per interface or NM connection, Bluetooth alias + `discoverable=off` + BLE RPA via BlueZ
-- Phase C (probes, timers, captive portals) — done. NetworkManager dispatcher hook and systemd sleep hook (event-driven rotation, no daemon), `proteus probe` manual quorum check, `proteus timer` user-controllable timers, captive-portal detection + `proteus portal` family with policy-aware rotation
-- Phase D (DHCP, IPv6, hostname, 802.1X, DNS) — done. Hostname rotation via `hostname1` DBus with 534-entry wordlist; IPv6 stable-privacy + temporary addresses + DUID rotation; DHCP option 12/60/61/81 + DUID/IAID suppression via NM DBus; 802.1X anonymous outer identity (opt-in); ECS-strip DNS drop-in with detect-and-defer hard guard
-- Phase E (discovery silencing, stack fingerprint) — done. Sysctl drop-in for TCP/ICMP/NDP hardening; nftables ruleset for ICMP info-drops + optional SSDP/WSD blocks
-- Phase F (cross-cutting wiki, search, packaging) — done. 38 wiki pages with curated TOC + full-text search, `install.sh` and `uninstall.sh`, systemd units, man page, shell completions (bash/zsh/fish), PolicyKit policy, distro packaging for Arch / Fedora / Debian / NixOS, reproducible-build infrastructure
-- Phase G (revert, diff, dry-run, reset, uninstall, kill switch, integration tests) — done. Every mutator has a `revert` path that restores cached originals; `proteus diff` flags drift; `proteus dry-run <cmd>` previews any mutation; `proteus kill` / `proteus resume` is the emergency hatch; podman+systemd integration test scaffold landed
+- **Phase A-G** (v0.1 cycle) — full skeleton + L2 identity + probes/timers/captive-portals + DHCP/IPv6/hostname/802.1X/DNS + discovery silencing + stack fingerprint + 38-page wiki + packaging + revert/diff/dry-run/reset/uninstall/kill-switch + podman+systemd integration tests. See `docs/ROADMAP-v0.1.md` for the archived detail.
+- **v0.2.x** — multi-profile NM rotation (#122), uuid-keyed state (#124), the May 2026 security audit, and a long tail of low-severity polish.
+- **v0.2.8-alpha hotfix batch** (rolled into v0.3.0-alpha) — six critical/high/medium issues from the v0.2.7-alpha review: secrets-merge across all four NM Update sites (#207), enterprise-wifi keyed by uuid (#209), factory-MAC fallback dropped (#208), release-test sysfs hermetic (#200), DNS canonicalize-failure defer (#210), `NO_COLOR` + isatty(stderr) (#201).
+- **v0.3 cycle "Reach + Persona"** — substantial completion in `v0.3.1-alpha`:
+  - **Milestone 1: `NetworkBackend` abstraction.** Trait + three impls (NM full, networkd / raw probes-then-degrades), `[backend] driver` config, doctor matrix. Every `commands/*.rs` call site routed through the trait. `proteus rotate-if-needed` typed entry point replaces the dispatcher's JSON sed-grep (#206-C). `state_lock` migrated to `Mutex<Option<File>>` (#206-B).
+  - **Milestone 2: Persona / Randomizer dual-mode stealth.** 25 stealth covers + 6 randomizer mirrors. Schema, loader, validator, full 11-subcommand CLI surface. Full integration with apply / rotate (MAC OUI shaping, hostname template, DHCP fingerprint write, Bluetooth alias). RFC 5227 ARP probe + IPv6 DAD with adaptive backoff. `wiki/personas.md` + threat-model addendum.
+  - **Milestone 3: Per-SSID profile policies.** `[per_ssid."<ssid>"]` config, `proteus ssid {list,show,set,clear}`, four-layer resolver with source trace, v1→v2 schema migration that mirrors legacy `known_portal_ssids` into per-SSID seed entries.
+  - **Milestone 4: Fingerprint hardening + RF + rotation triggers.** `proteus resolved` (mDNS+LLMNR off), `proteus ntp` (timesyncd normalization, detect-and-defer), nftables `extra_drops` chain (3 opt-in knobs). `proteus rf scan/chipset` + per-scan MAC randomization. `proteus dhcp renew`. Event-driven framework with four sources (NM connection-up / link-flap / regulatory-domain / portal-auth) and `proteus events run` daemon under a hardened systemd unit.
+  - **Milestone 5: Distro reach.** Init-system abstraction (`Systemd`/`Openrc`/`Runit`/`Sysvinit`), ARM + i686 cross-compile matrix, packaging recipes for Alpine APKBUILD + Void template + Gentoo ebuild + AUR `-bin`/`-git` + Copr spec polish + Debian submission-prep. `wiki/distro-support.md` + `wiki/backend.md`.
+  - **Milestone 6: Ergonomics + bug-fix queue.** Short aliases (`proteus s/r/a`), `--watch` mode, `proteus completions <bash|zsh|fish>`, `LOCK_BUSY` exit code (#211), `State::schema_version` migration ladder (#204), 13 bug-fix-queue items closed. `wiki/troubleshooting.md` symptom matrix. `docs/security/dbus-surface.md` audit artifact.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full list and [docs/ROADMAP.md](docs/ROADMAP.md) for the operational view.
 
@@ -26,29 +29,38 @@ Commands shipping today:
 
 - `proteus status`, `proteus current`, `proteus original`, `proteus session` — read-only views of what is applied, what is live, what the cached originals are, and a one-screen current-network snapshot
 - `proteus rotate` — fresh MAC on one or every interface (NetworkManager DBus, no `nmcli` shelling)
+- `proteus rotate-if-needed --cooldown <secs>` — typed-result entry the dispatcher script consumes
 - `proteus pin` / `proteus unpin` — pin a MAC per interface or per NM connection profile
+- `proteus persona list / show / use / random / current / clear / new / edit / validate / import / export` — device-persona management; 25 stealth covers (`iphone-15`, `pixel-8`, `macbook-pro-m3`, `samsung-tv-2024`, `nest-mini`, ...) + 6 randomizer mirrors
+- `proteus ssid list / show / set / clear` — per-SSID profile policies (persona / aggressiveness / pin / rotate-interval / portal-policy overrides)
 - `proteus bluetooth status / apply / revert` — generic alias, `discoverable=off`, BLE Resolvable Private Address mode where the controller supports it
-- `proteus hostname rotate / pin / status / revert` — rotate kernel/pretty/transient names from the 534-entry wordlist or pin a generic
+- `proteus hostname rotate / pin / status / revert` — rotate kernel/pretty/transient names from the 534-entry wordlist or render a persona's `hostname_template`
 - `proteus ipv6 status / apply / revert` — stable-privacy + temporary addresses + DUID rotation per NM connection
-- `proteus dhcp status / apply / revert` — option 12/60/61/81 + DUID/IAID suppression on managed NM connections
+- `proteus dhcp status / apply / revert / renew` — option 12/60/61/81 + DUID/IAID suppression or persona-shaped writes; lease release+renew without changing MAC
 - `proteus dns status / apply / revert` — EDNS-Client-Subnet strip drop-in for systemd-resolved with detect-and-defer hard guard
+- `proteus resolved status / apply / revert` — mDNS+LLMNR off via systemd-resolved drop-in
+- `proteus ntp status / apply / revert` — timesyncd NTP normalization (skips if chrony/ntpd present)
 - `proteus stack status / apply / revert` — TCP/ICMP/NDP sysctl hardening drop-in
-- `proteus nft status / apply / revert` — nftables table for ICMP info-drops and optional SSDP/WSD blocks
+- `proteus nft status / apply / revert` — nftables table for ICMP info-drops, optional SSDP/WSD blocks, and an opt-in `extra_drops` chain (ICMP timestamp / broadcast ping / IGMP query)
+- `proteus rf status / apply / revert / scan / chipset` — TX-power reduction, scan-style report, driver/chipset/firmware inventory
 - `proteus enterprise-wifi status / enable / disable` — 802.1X anonymous outer identity (opt-in, default off)
 - `proteus portal status / mark / unmark / list / open` — captive-portal detection and known-portal SSID list
+- `proteus events run` — long-running daemon that subscribes to NM connection-up / link-flap / regulatory-domain / portal-auth events and re-applies the right policy per SSID (opt-in via `[events] enabled = true`)
 - `proteus kill` / `proteus resume` — emergency network shutdown (interfaces down, radios off, BlueZ adapters powered down) and full restoration
 - `proteus apply [--yes]` — orchestrator across every enabled component, prints risk warnings before applying breaking knobs
-- `proteus revert [--yes]` — back out Proteus's network-layer side-effects (hostname, Bluetooth alias, DHCP/IPv6 NM settings, sysctl/timesyncd/resolved drop-ins, dispatcher hook, nft table)
+- `proteus revert [--yes]` — back out Proteus's network-layer side-effects
 - `proteus diff` — drift between config, defaults, and live state (with managed-file SHA verification)
 - `proteus dry-run <cmd>` — preview any mutator without applying
 - `proteus timer status / list / enable / disable / set / reset / logs` — manage the systemd timers without scripting
 - `proteus probe` — manual probe quorum check against the configured targets
-- `proteus config show / get / set / enable / disable / reset / edit / validate / keys` — edit `/etc/proteus/config.toml` without touching TOML by hand (round-trips through `toml_edit` so comments survive)
-- `proteus doctor` — read-only health check (`ok / warn / fail / skip` per check, only `fail` is non-zero)
+- `proteus config show / get / set / enable / disable / reset / edit / validate / keys` — edit `/etc/proteus/config.toml` without touching TOML by hand
+- `proteus doctor` — read-only health check (`ok / warn / fail / skip` per check); now reports the `Backend`, `Init` system, package-format, and quirky-setup matrix
 - `proteus reset` — restore config to defaults; cached originals are sacred and untouched
 - `proteus uninstall [--purge]` — full removal hatch
+- `proteus completions <bash|zsh|fish>` — print the bundled shell completions on stdout
 - `proteus wiki [page]` — curated TOC by default, or render any embedded wiki page to the terminal (markdown to ANSI on TTY, raw on pipe, `NO_COLOR` honored)
 - `proteus wiki search <query>` — full-text search across every embedded page
+- Aliases: `proteus s` → `status`, `proteus r` → `rotate`, `proteus a` → `apply`. `--watch [--interval]` on `status` / `current` / `session`.
 
 Full per-feature plan in [docs/PLAN.md](docs/PLAN.md). Comparison to existing tools in [docs/PRIOR-ART.md](docs/PRIOR-ART.md).
 
