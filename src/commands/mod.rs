@@ -227,11 +227,24 @@ pub(crate) fn write_atomic(path: &Path, contents: &[u8]) -> Result<()> {
 /// Build a per-call temp path with a random suffix. Random bytes come from
 /// `getrandom` (already a dep) so two concurrent writes against the same
 /// target cannot collide and a non-root attacker cannot guess the name.
+///
+/// Issue #206-H: a path without a file-name component is a programmer
+/// error — `write_atomic` only ever gets called with concrete leaf paths.
+/// Bail loudly rather than silently default to a generic `"file"` stem
+/// that would shadow whatever Proteus thought it was writing.
 fn tmp_path_for(path: &Path) -> Result<PathBuf> {
     let mut rand = [0u8; 8];
     getrandom::getrandom(&mut rand).map_err(|e| anyhow::anyhow!("getrandom: {e}"))?;
     let suffix: String = rand.iter().map(|b| format!("{b:02x}")).collect();
-    let base = path.file_name().and_then(|s| s.to_str()).unwrap_or("file");
+    let base = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "write_atomic target has no file-name component: {}",
+                path.display()
+            )
+        })?;
     Ok(path.with_file_name(format!("{base}.proteus-{suffix}.tmp")))
 }
 

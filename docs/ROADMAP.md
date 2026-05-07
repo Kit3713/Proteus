@@ -204,16 +204,16 @@ Cross-cutting polish; runs alongside the other milestones.
 The medium/low-severity issues from the v0.2.7-alpha review land here as the milestones progress. The critical/high cluster ships in v0.2.8-alpha before Milestone 1 starts.
 
 - ✅ 🟠 **#204** — `State` now carries `schema_version: u32` with a migration ladder in `migrate_state`. v0 → v1 step replays the existing uuid-keying migration; v2 reserved for the persona / per-SSID additions landing in Milestones 2/3.
-- ⏳ 🟠 **#203** — `state_lock` retry budget (1 s) too short for systemd-timer overlap with interactive `apply`. `PROTEUS_LOCK_TIMEOUT_MS` env var, default raised to 5 s, dispatcher/timer units set 10 s.
-- ⏳ 🟠 **#202** — `factory::EthtoolBin` shells out via `$PATH`; pin to `/usr/sbin/ethtool` (matching the #121 hardening). Goes with the security review pass.
+- ✅ 🟠 **#203** — `PROTEUS_LOCK_TIMEOUT_MS` env var introduced. Default budget raised from 1 s to 5 s; granularity stays at 100 ms; values clamp up so at least one attempt always runs. Dispatcher/timer drop-ins should set 10000 ms going forward.
+- ✅ 🟠 **#202** — `factory::EthtoolBin` now invokes `/usr/sbin/ethtool` when present; falls back to `$PATH` lookup on Nix/Alpine layouts that ship ethtool elsewhere. Matches the #121 hardening pattern.
 - ✅ 🟡 **#211** — Exit codes 64/65/75 cleanup. `LOCK_BUSY` (75) split out from `CONFIG_ERROR`/`CONFIRMATION_REQUIRED`; `acquire_state_lock_or_print` now exits 75 on contention so wrappers can do the retry-loop pattern.
 - ✅ 🟡 **#205** — `write_atomic` already lands at `0o600` via `OpenOptions::create_new(true).mode(0o600)` and is verified by the `write_atomic_writes_0600_mode` test. No change needed.
 - ✅ 🟡 **#206-A** — `actions/checkout@v6` pinned to `@v4` across `.github/workflows/ci.yml` and `.github/workflows/release.yml`.
-- ⏳ 🟡 **#206-D** — Unify `TempRoot` / `TestSysfs` naming. Trivial cleanup.
-- ⏳ 🟡 **#206-E** — `EthtoolBin::permanent` doesn't validate MAC shape. Pairs with #202.
-- ⏳ 🟡 **#206-F** — Perf doc reproducibility recipe is missing the rebuild step.
-- ⏳ 🟡 **#206-G** — Perf doc miscounts `tracing::warn!` sites (says ~12, actual 14).
-- ⏳ 🟡 **#206-H** — `tmp_path_for` fallback name "file" — bail instead of silently defaulting.
+- ⏳ 🟡 **#206-D** — Unify `TempRoot` / `TestSysfs` naming. Deferred — `TestSysfs` carries a sysfs-specific write API that doesn't naturally fit the generic `TempRoot` shape; needs a small refactor to lift the API onto a trait.
+- ✅ 🟡 **#206-E** — `EthtoolBin::permanent` now validates the value matches the canonical MAC shape (`xx:xx:xx:xx:xx:xx`, lowercase hex with colons) before returning it. Defends against quirky drivers that print translated text or a non-canonical layout after the canonical header.
+- ✅ 🟡 **#206-F** — Perf doc reproducibility recipe gained the missing `cargo build --release` between the baseline and optimised binary copies. Without the rebuild, the second `cp` shipped the same binary as the baseline.
+- ✅ 🟡 **#206-G** — Perf doc warn-count corrected to 16 (was "~12") with a `grep -rn` recount recipe so the next miscount is self-checking.
+- ✅ 🟡 **#206-H** — `tmp_path_for` now bails when the target has no file-name component instead of silently defaulting to `"file"`. Programmer-error guard for `write_atomic` callers.
 
 New issues from real-world testing land here too; high/critical findings cut a fast-follow `v0.3.x` patch release out-of-cycle.
 

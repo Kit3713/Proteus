@@ -131,8 +131,10 @@ if verbose == 0 && quiet == 0 && rust_log.is_none() && !on_journal {
 When the user runs proteus interactively without `-v`, without `-q`, without
 `RUST_LOG=…`, and not under systemd (no `JOURNAL_STREAM`), `init` returns
 without touching the global tracing dispatcher. Every `tracing::*!` macro
-becomes a no-op for the rest of the process — including the ~12 `tracing::warn!`
-sites scattered across `apply`/`revert` paths.
+becomes a no-op for the rest of the process — including the 16 `tracing::warn!`
+sites scattered across `apply`/`revert`/`backend`/`enterprise-wifi` paths.
+(Recount with `grep -rn 'tracing::warn!' src/ | wc -l`. Issue #206-G updated
+the count after Milestone 1 + 2 added a few more sites.)
 
 This is a deliberate behavior change: warnings emitted via `tracing::warn!`
 that previously printed to stderr at default verbosity now don't. They're
@@ -216,7 +218,11 @@ cargo build --release
 # Capture the baseline before changing anything.
 cp target/release/proteus /tmp/proteus-base
 
-# Apply the patch, rebuild, capture optimized.
+# Apply the patch, then rebuild before copying the optimized binary out.
+# Issue #206-F: the rebuild step was previously implicit; without it the
+# second `cp` shipped the same binary as the baseline and falsely reported
+# zero delta.
+cargo build --release
 cp target/release/proteus /tmp/proteus-opt
 
 # Instruction counts (deterministic).

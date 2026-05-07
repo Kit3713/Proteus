@@ -33,11 +33,31 @@ use anyhow::{Context, Result};
 use thiserror::Error;
 
 /// Number of attempts the foreground command makes before giving up on a
-/// busy lock. With [`RETRY_DELAY`] this caps total wait at ~1s, which keeps
-/// `proteus apply` responsive while still tolerating a same-second-double-tap
-/// from a timer or a doubled keystroke.
-const RETRY_ATTEMPTS: u32 = 10;
+/// busy lock. With [`RETRY_DELAY`] this caps total wait at the default
+/// 5s budget below — long enough for an interactive `proteus apply` to
+/// outlast a systemd-timer rotate that holds the lock for the full
+/// MAC + DBus + state-write cycle.
+///
+/// Issue #203: total budget is `RETRY_DELAY * RETRY_ATTEMPTS`. The
+/// `PROTEUS_LOCK_TIMEOUT_MS` env var overrides the budget; values below
+/// 100 ms (the retry granularity) are clamped up. systemd dispatcher /
+/// timer units set this to 10000 ms in their drop-in so a long
+/// orchestrator run doesn't lose a contention race to a quickly-retrying
+/// follow-up dispatcher invocation.
+const DEFAULT_LOCK_BUDGET_MS: u64 = 5_000;
 const RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// Resolve the retry budget from `PROTEUS_LOCK_TIMEOUT_MS` (falling back
+/// to [`DEFAULT_LOCK_BUDGET_MS`]) and convert it to a retry-attempt count.
+/// Pulled out so tests can exercise the parser without spawning a process.
+fn retry_attempts_from_env(get: impl Fn(&str) -> Option<String>) -> u32 {
+    let budget_ms = get("PROTEUS_LOCK_TIMEOUT_MS")
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(DEFAULT_LOCK_BUDGET_MS);
+    let granularity_ms = RETRY_DELAY.as_millis() as u64;
+    let attempts = (budget_ms.max(granularity_ms) + granularity_ms - 1) / granularity_ms;
+    attempts.min(u32::MAX as u64) as u32
+}
 
 const LOCK_FILE_NAME: &str = ".lock";
 
@@ -138,9 +158,10 @@ fn acquire_inner(path: &Path) -> Result<File, LockError> {
         .open(path)
         .with_context(|| format!("opening lock file {}", path.display()))?;
 
-    // Try LOCK_EX|LOCK_NB up to RETRY_ATTEMPTS times with a small sleep so a
+    let retry_attempts = retry_attempts_from_env(|k| std::env::var(k).ok());
+    // Try LOCK_EX|LOCK_NB up to retry_attempts times with a small sleep so a
     // contender that's about to release doesn't force an immediate failure.
-    for _ in 0..RETRY_ATTEMPTS {
+    for _ in 0..retry_attempts {
         let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
         if rc == 0 {
             return Ok(file);
@@ -262,5 +283,27 @@ mod tests {
         }
         drop(foreign);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Issue #203: `PROTEUS_LOCK_TIMEOUT_MS` overrides the default 5-second
+    /// retry budget. Below the 100 ms granularity, the parser clamps up so
+    /// at least one attempt always runs. Garbage input falls back to default.
+    #[test]
+    fn retry_attempts_from_env_honours_override() {
+        // Default budget = 5_000 ms / 100 ms granularity = 50 attempts.
+        let attempts = retry_attempts_from_env(|_| None);
+        assert_eq!(attempts, 50);
+
+        // 10s override → 100 attempts (matches what the systemd timer drop-in sets).
+        let attempts = retry_attempts_from_env(|_| Some("10000".to_string()));
+        assert_eq!(attempts, 100);
+
+        // Below 100 ms clamps up to 1 attempt.
+        let attempts = retry_attempts_from_env(|_| Some("50".to_string()));
+        assert_eq!(attempts, 1);
+
+        // Garbage input falls back to default.
+        let attempts = retry_attempts_from_env(|_| Some("not-a-number".to_string()));
+        assert_eq!(attempts, 50);
     }
 }

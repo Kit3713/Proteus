@@ -90,12 +90,26 @@ pub(crate) trait EthtoolRunner {
     fn permanent(&self, iface: &str) -> Option<String>;
 }
 
-/// Production implementation: shells out to `ethtool -P <iface>`.
+/// Production implementation: shells out to `/usr/sbin/ethtool -P <iface>`.
+///
+/// Issue #202: pinned to the absolute path so a `$PATH` override on a
+/// suid-helper or systemd-unit invocation can't redirect us to an
+/// attacker-controlled binary. Matches the #121 hardening pattern. If
+/// the absolute path doesn't resolve we fall back to the `$PATH` lookup
+/// — a Nix or Alpine layout that ships ethtool elsewhere keeps working,
+/// just without the absolute-path guarantee.
+const ETHTOOL_ABS_PATH: &str = "/usr/sbin/ethtool";
+
 pub(crate) struct EthtoolBin;
 
 impl EthtoolRunner for EthtoolBin {
     fn permanent(&self, iface: &str) -> Option<String> {
-        let out = Command::new("ethtool").args(["-P", iface]).output().ok()?;
+        let bin = if Path::new(ETHTOOL_ABS_PATH).exists() {
+            ETHTOOL_ABS_PATH
+        } else {
+            "ethtool"
+        };
+        let out = Command::new(bin).args(["-P", iface]).output().ok()?;
         if !out.status.success() {
             return None;
         }
@@ -103,15 +117,42 @@ impl EthtoolRunner for EthtoolBin {
     }
 }
 
+/// Issue #206-E: validate that a candidate string is a colon-formatted MAC
+/// (`xx:xx:xx:xx:xx:xx`, all lowercase hex, no surprises). Used by
+/// [`parse_ethtool_permanent`] to refuse malformed driver output rather
+/// than caching it as a factory address. The previous implementation only
+/// rejected the all-zero variant.
+fn is_well_formed_mac(s: &str) -> bool {
+    if s.len() != 17 {
+        return false;
+    }
+    let bytes = s.as_bytes();
+    for (i, b) in bytes.iter().enumerate() {
+        if i % 3 == 2 {
+            if *b != b':' {
+                return false;
+            }
+        } else if !b.is_ascii_hexdigit() {
+            return false;
+        }
+    }
+    true
+}
+
 /// Parse `Permanent address: xx:xx:xx:xx:xx:xx` (case-insensitive header).
-/// `00:00:00:00:00:00` is rejected — that's what the driver reports when it
-/// doesn't actually expose a permanent address.
+/// `00:00:00:00:00:00` and any non-MAC-shaped string are rejected — the
+/// former is what the driver reports when it doesn't actually expose a
+/// permanent address; the latter is defence against a quirk where ethtool
+/// prints translated text or a different layout. Issue #206-E.
 fn parse_ethtool_permanent(stdout: &str) -> Option<String> {
     for line in stdout.lines() {
         let lower = line.trim().to_ascii_lowercase();
         if let Some(rest) = lower.strip_prefix("permanent address:") {
             let mac = rest.trim();
             if mac.is_empty() || mac == "00:00:00:00:00:00" {
+                return None;
+            }
+            if !is_well_formed_mac(mac) {
                 return None;
             }
             return Some(mac.to_string());
@@ -300,5 +341,31 @@ mod tests {
     fn parse_ethtool_permanent_returns_none_on_unrelated_output() {
         let stdout = "Some other ethtool line\n";
         assert!(parse_ethtool_permanent(stdout).is_none());
+    }
+
+    /// Issue #206-E: malformed values after the header don't pass through
+    /// even if they're non-empty and non-zero. Defends against a quirky
+    /// driver that prints "Permanent address: <unsupported>" or a
+    /// translated string after the canonical header.
+    #[test]
+    fn parse_ethtool_permanent_rejects_non_mac_shaped_value() {
+        for stdout in [
+            "Permanent address: not-a-mac\n",
+            "Permanent address: aa:bb:cc:dd:ee\n", // too short
+            "Permanent address: aa:bb:cc:dd:ee:ff:00\n", // too long
+            "Permanent address: aa-bb-cc-dd-ee-ff\n", // dashes, not colons
+            "Permanent address: zz:bb:cc:dd:ee:ff\n", // non-hex
+        ] {
+            assert!(
+                parse_ethtool_permanent(stdout).is_none(),
+                "should reject: {stdout:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn is_well_formed_mac_accepts_canonical_form() {
+        assert!(is_well_formed_mac("aa:bb:cc:dd:ee:ff"));
+        assert!(is_well_formed_mac("00:11:22:33:44:55"));
     }
 }
