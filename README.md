@@ -1,6 +1,6 @@
 # Proteus
 
-A Rust CLI that reduces every identifier your Linux computer can locally control when joining or transmitting on a network. MAC addresses, DHCP options, IPv6 derivations, hostname, mDNS chatter, TCP fingerprint quirks, Bluetooth name, and the parts of the RF surface software can shape (TX power, probe-request behavior). Rotates MACs on a schedule and on connectivity loss. Single binary, embedded wiki, runs on Fedora 43+ with systemd and NetworkManager.
+A Rust CLI that reduces every identifier a Linux system locally controls when joining or transmitting on a network. MAC addresses, DHCP options, IPv6 derivations, hostname, mDNS chatter, TCP fingerprint quirks, Bluetooth name, and the parts of the RF surface software can shape (TX power, probe-request behavior). Rotates MACs on a schedule and on connectivity loss. Single binary, embedded wiki, runs on Fedora 43+ with systemd and NetworkManager.
 
 Named after the shapeshifter.
 
@@ -83,7 +83,7 @@ For the first-time tutorial, run `proteus wiki getting-started`.
 
 ## Why use this
 
-You join a coffee-shop, hotel, conference, or airport network and your laptop screams "I am Chris, I have been here before" — the MAC, the hostname in the DHCP request, the `_workstation._tcp` mDNS announcement, the IPv6 address derived from the MAC, and even the probe-request burst that names every saved SSID. Network-side analytics platforms key on those. Proteus shuts them up.
+When a Linux system joins a coffee-shop, hotel, conference, or airport network it announces itself loudly — MAC, hostname in the DHCP request, `_workstation._tcp` mDNS broadcast, IPv6 address derived from the MAC, and a probe-request burst naming every saved SSID. Network-side analytics platforms key on those. Proteus shuts them up.
 
 Proteus is one layer in a defense-in-depth stack. It pairs naturally with:
 
