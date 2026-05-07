@@ -68,6 +68,7 @@ pub struct ProbesConfig {
     pub quorum_total: u8,
     pub interval: String,
     pub cooldown: String,
+    pub endpoints: Vec<String>,
 }
 
 impl Default for MacConfig {
@@ -135,6 +136,12 @@ impl Default for ProbesConfig {
             quorum_total: 4,
             interval: "5m".into(),
             cooldown: "60s".into(),
+            endpoints: vec![
+                "1.1.1.1:443".into(),
+                "8.8.8.8:443".into(),
+                "9.9.9.9:443".into(),
+                "142.250.190.78:443".into(),
+            ],
         }
     }
 }

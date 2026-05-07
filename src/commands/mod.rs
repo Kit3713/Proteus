@@ -7,6 +7,7 @@ pub mod doctor;
 pub mod original;
 pub mod pin;
 pub mod reset;
+pub mod probe;
 pub mod rotate;
 pub mod show_config;
 pub mod show_defaults;
