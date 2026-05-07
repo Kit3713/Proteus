@@ -20,10 +20,11 @@ Recommends:     bluez
 Recommends:     nftables
 Recommends:     polkit
 
-# x86_64 covers laptops; aarch64 covers ARM SBCs and Apple Silicon Linux VMs.
-# Other arches aren't tested and the project is laptop-focused, so don't
-# silently produce broken packages on i686/ppc64le/s390x.
-ExclusiveArch:  x86_64 aarch64
+# Roadmap Milestone 5: arch-neutral. The CI cross-compile matrix covers
+# x86_64 / aarch64 / armv7 today (laptops, ARM SBCs, Apple Silicon Linux
+# VMs, Pi 2/3, ARM Chromebooks); other arches are best-effort but no
+# longer gated out at the spec level — packagers can rebuild on whatever
+# Fedora/Copr targets.
 
 %description
 A Rust CLI that rotates and scrubs network-layer identifiers (MAC addresses,

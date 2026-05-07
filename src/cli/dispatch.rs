@@ -109,12 +109,27 @@ pub(super) fn dispatch(cli: Cli) -> Result<u8> {
             DnsAction::Apply { .. } => commands::dns::apply(cli.config.as_deref()),
             DnsAction::Revert { .. } => commands::dns::revert(),
         },
+        Command::Resolved { action } => match action {
+            ResolvedAction::Status { json } => {
+                commands::resolved::status(json, cli.config.as_deref())
+            }
+            ResolvedAction::Apply { .. } => commands::resolved::apply(cli.config.as_deref()),
+            ResolvedAction::Revert { .. } => commands::resolved::revert(),
+        },
+        Command::Ntp { action } => match action {
+            NtpAction::Status { json } => commands::ntp::status(json, cli.config.as_deref()),
+            NtpAction::Apply { .. } => commands::ntp::apply(cli.config.as_deref()),
+            NtpAction::Revert { .. } => commands::ntp::revert(),
+        },
         Command::Dhcp { action } => match action {
             DhcpAction::Status { json } => commands::dhcp::status(json),
             DhcpAction::Apply { .. } => {
                 commands::dhcp::apply(cli.state.as_deref(), cli.config.as_deref())
             }
             DhcpAction::Revert { .. } => commands::dhcp::revert(cli.state.as_deref()),
+            DhcpAction::Renew { iface, yes } => {
+                commands::dhcp::renew(iface.as_deref(), yes, cli.state.as_deref())
+            }
         },
         Command::Timer { action } => match action {
             TimerAction::Status { json } => commands::timer::run_status(json),
@@ -180,6 +195,8 @@ pub(super) fn dispatch(cli: Cli) -> Result<u8> {
         // integration is the follow-up; this dispatch only flips
         // `[persona] active` and runs the read-side commands.
         Command::Persona { action } => commands::persona::run(action, cli.config.as_deref()),
+        // Roadmap Milestone 6: print bundled shell completions.
+        Command::Completions { shell } => commands::completions::run(&shell),
     }
 }
 

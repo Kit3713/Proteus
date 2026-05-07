@@ -10,9 +10,9 @@
 use std::collections::HashMap;
 
 use anyhow::{Context, Result};
-use zbus::zvariant::{OwnedObjectPath, OwnedValue, Value};
+use zbus::zvariant::{ObjectPath, OwnedObjectPath, OwnedValue, Value};
 
-use super::{ConnectionProxy, ConnectionSettings};
+use super::{ConnectionProxy, ConnectionSettings, DeviceProxy, NetworkManagerProxy};
 use crate::state::DhcpSettingsSnapshot;
 
 pub const SECTION_IPV4: &str = "ipv4";
@@ -374,6 +374,127 @@ fn write_user_data(
             .context("converting user-data dict")?,
     );
     Ok(())
+}
+
+/// Outcome of a single per-device DHCP lease renew. The IP/lease number
+/// is reported as a placeholder string since NM doesn't surface a
+/// monotonic lease counter — the visible signal is "the device picked
+/// up a fresh lease without losing the L2 association". Roadmap
+/// Milestone 4c.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RenewOutcome {
+    /// `Device.Reapply` succeeded — NM kept the link up and re-ran
+    /// DHCP against the existing settings. This is the cheap path.
+    Reapplied,
+    /// `Device.Reapply` was rejected (typically `NotSupported` on NM
+    /// ≤1.0, or `InvalidArguments` if the connection has unsynced
+    /// changes) and we fell back to `Disconnect` +
+    /// `NetworkManager.ActivateConnection`.
+    DisconnectActivated,
+    /// No active connection on the device — the renew is a no-op,
+    /// not an error.
+    NoActiveConnection,
+}
+
+/// Release + renew the DHCP lease on `device_path` without touching the
+/// cloned MAC. Tries the cheap NM `Device.Reapply` path first
+/// (link stays up, DHCP client just re-DISCOVERs), and falls back to
+/// `Disconnect` + `ActivateConnection` for older NM that doesn't
+/// support `Reapply` or for connections where `Reapply` is rejected.
+///
+/// The fallback is more disruptive: the link drops momentarily, the
+/// supplicant re-associates, and 802.1X (if any) re-authenticates.
+/// That's still cheaper than a full rotation because the cloned MAC
+/// is left alone — no `Settings.Connection.Update` round trip, no
+/// state.json mutation. From the upstream DHCP server's perspective
+/// it's a fresh client showing the same MAC, which yields a fresh
+/// lease (or, on a sticky pool, the same one).
+pub async fn renew_lease(
+    conn: &zbus::Connection,
+    device_path: &OwnedObjectPath,
+) -> Result<RenewOutcome> {
+    let dev = DeviceProxy::builder(conn)
+        .path(device_path.clone())?
+        .build()
+        .await?;
+
+    // The "/" object path is NM's signal for "no active connection."
+    // Don't try to renew an idle device — surface that to the caller
+    // so the report can render "no active connection" rather than a
+    // confusing DBus error.
+    let active_path: OwnedObjectPath = match dev.active_connection().await {
+        Ok(p) if p.as_str() == "/" => return Ok(RenewOutcome::NoActiveConnection),
+        Ok(p) => p,
+        Err(_) => return Ok(RenewOutcome::NoActiveConnection),
+    };
+
+    // Empty settings dict + version=0 + flags=0 tells NM to use the
+    // currently-stored connection settings as-is. NM's documented
+    // contract for that combination is "kick DHCP without changing
+    // anything" — no settings round trip, no L2 disturb.
+    let empty: ConnectionSettings = HashMap::new();
+    match dev.reapply(empty, 0, 0).await {
+        Ok(()) => Ok(RenewOutcome::Reapplied),
+        Err(e) => {
+            tracing::debug!(
+                "Device.Reapply rejected ({e:#}); falling back to Disconnect+ActivateConnection"
+            );
+            renew_via_disconnect_activate(conn, device_path, &active_path).await
+        }
+    }
+}
+
+/// Fallback path: `Device.Disconnect` brings the link down, then
+/// `NetworkManager.ActivateConnection(Connection, Device, "/")` brings
+/// it back up against the same connection profile. We pull the
+/// connection-path-of-the-active-connection by reading the
+/// ActiveConnection object's `Connection` property.
+async fn renew_via_disconnect_activate(
+    conn: &zbus::Connection,
+    device_path: &OwnedObjectPath,
+    active_path: &OwnedObjectPath,
+) -> Result<RenewOutcome> {
+    // Resolve the `Connection` (Settings.Connection object path) that
+    // backs this ActiveConnection. We do a generic Properties.Get so
+    // we don't have to declare a whole NM.Connection.Active proxy
+    // just for this one read.
+    let connection_path = read_active_connection_path(conn, active_path)
+        .await
+        .context("reading ActiveConnection.Connection")?;
+
+    let dev = DeviceProxy::builder(conn)
+        .path(device_path.clone())?
+        .build()
+        .await?;
+    dev.disconnect().await.context("calling Device.Disconnect")?;
+
+    let nm = NetworkManagerProxy::new(conn).await?;
+    let conn_obj: ObjectPath<'_> = connection_path.as_ref();
+    let dev_obj: ObjectPath<'_> = device_path.as_ref();
+    let root = ObjectPath::try_from("/").context("constructing root object path")?;
+    nm.activate_connection(&conn_obj, &dev_obj, &root)
+        .await
+        .context("calling NetworkManager.ActivateConnection")?;
+    Ok(RenewOutcome::DisconnectActivated)
+}
+
+/// Read the `Connection` property off an ActiveConnection object via
+/// the generic `org.freedesktop.DBus.Properties` interface. Avoids
+/// declaring a one-shot NM.Connection.Active proxy.
+async fn read_active_connection_path(
+    conn: &zbus::Connection,
+    active_path: &OwnedObjectPath,
+) -> Result<OwnedObjectPath> {
+    use zbus::Proxy;
+    let proxy = Proxy::new(
+        conn,
+        "org.freedesktop.NetworkManager",
+        active_path.as_str(),
+        "org.freedesktop.NetworkManager.Connection.Active",
+    )
+    .await?;
+    let val: OwnedObjectPath = proxy.get_property("Connection").await?;
+    Ok(val)
 }
 
 #[cfg(test)]

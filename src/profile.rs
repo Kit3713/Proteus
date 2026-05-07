@@ -142,6 +142,13 @@ fn apply_bools(cfg: &mut Config, profile: Profile) {
     cfg.discovery.llmnr_silence = f.discovery_llmnr_silence;
     cfg.discovery.ssdp_block = f.discovery_ssdp_block;
     cfg.discovery.wsd_block = f.discovery_wsd_block;
+    // Resolved/NTP track the discovery silencing baseline: `Med` and above
+    // turn off the resolved mDNS/LLMNR responders, and timesyncd
+    // normalisation comes online with `Low`. `Off` / `Min` short-circuit
+    // both via the all-off baseline below.
+    cfg.resolved.mdns_off = f.discovery_mdns_silence;
+    cfg.resolved.llmnr_off = f.discovery_llmnr_silence;
+    cfg.ntp.enabled = f.ntp_enabled;
     cfg.ipv6.enabled = f.ipv6_enabled;
     cfg.ipv6.use_temp_addresses = f.ipv6_use_temp_addresses;
     cfg.ipv6.ndp_hardening = f.ipv6_ndp_hardening;
@@ -189,6 +196,7 @@ struct BoolBaseline {
     captive_portal_enabled: bool,
     captive_portal_fresh_mac_per_visit: bool,
     rf_tx_power_reduce: bool,
+    ntp_enabled: bool,
 }
 
 const ALL_OFF: BoolBaseline = BoolBaseline {
@@ -219,6 +227,7 @@ const ALL_OFF: BoolBaseline = BoolBaseline {
     captive_portal_enabled: false,
     captive_portal_fresh_mac_per_visit: false,
     rf_tx_power_reduce: false,
+    ntp_enabled: false,
 };
 
 const LOW: BoolBaseline = BoolBaseline {
@@ -249,6 +258,7 @@ const LOW: BoolBaseline = BoolBaseline {
     captive_portal_enabled: true,
     captive_portal_fresh_mac_per_visit: false,
     rf_tx_power_reduce: false,
+    ntp_enabled: true,
 };
 
 const MED: BoolBaseline = BoolBaseline {

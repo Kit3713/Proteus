@@ -32,6 +32,9 @@ pub struct Config {
     pub bluetooth: BluetoothConfig,
     pub hostname: HostnameConfig,
     pub dns: DnsConfig,
+    pub resolved: ResolvedConfig,
+    pub ntp: NtpConfig,
+    pub nft: NftConfig,
     pub discovery: DiscoveryConfig,
     pub probes: ProbesConfig,
     pub ipv6: Ipv6Config,
@@ -86,6 +89,9 @@ impl Config {
             bluetooth: BluetoothConfig::default(),
             hostname: HostnameConfig::default(),
             dns: DnsConfig::default(),
+            resolved: ResolvedConfig::default(),
+            ntp: NtpConfig::default(),
+            nft: NftConfig::default(),
             discovery: DiscoveryConfig::default(),
             probes: ProbesConfig::default(),
             ipv6: Ipv6Config::default(),
@@ -129,6 +135,20 @@ impl Config {
             dns: Some(RawDnsConfig {
                 strip_edns_client_subnet: Some(self.dns.strip_edns_client_subnet),
             }),
+            resolved: Some(RawResolvedConfig {
+                mdns_off: Some(self.resolved.mdns_off),
+                llmnr_off: Some(self.resolved.llmnr_off),
+            }),
+            ntp: Some(RawNtpConfig {
+                enabled: Some(self.ntp.enabled),
+                ntp_servers: Some(self.ntp.ntp_servers.clone()),
+                fallback_servers: Some(self.ntp.fallback_servers.clone()),
+            }),
+            nft: Some(RawNftConfig {
+                icmpv4_timestamp_drop: Some(self.nft.icmpv4_timestamp_drop),
+                broadcast_ping_drop: Some(self.nft.broadcast_ping_drop),
+                igmp_query_drop: Some(self.nft.igmp_query_drop),
+            }),
             discovery: Some(RawDiscoveryConfig {
                 mdns_silence: Some(self.discovery.mdns_silence),
                 llmnr_silence: Some(self.discovery.llmnr_silence),
@@ -164,6 +184,7 @@ impl Config {
                 suppress_hostname: Some(self.dhcp.suppress_hostname),
                 suppress_vendor_class: Some(self.dhcp.suppress_vendor_class),
                 rotate_client_id: Some(self.dhcp.rotate_client_id),
+                renew_on_apply: Some(self.dhcp.renew_on_apply),
             }),
             captive_portal: Some(RawCaptivePortalConfig {
                 enabled: Some(self.captive_portal.enabled),
@@ -209,6 +230,9 @@ pub struct RawConfig {
     pub bluetooth: Option<RawBluetoothConfig>,
     pub hostname: Option<RawHostnameConfig>,
     pub dns: Option<RawDnsConfig>,
+    pub resolved: Option<RawResolvedConfig>,
+    pub ntp: Option<RawNtpConfig>,
+    pub nft: Option<RawNftConfig>,
     pub discovery: Option<RawDiscoveryConfig>,
     pub probes: Option<RawProbesConfig>,
     pub ipv6: Option<RawIpv6Config>,
@@ -281,6 +305,36 @@ impl RawConfig {
             && let Some(v) = d.strip_edns_client_subnet
         {
             cfg.dns.strip_edns_client_subnet = v;
+        }
+        if let Some(r) = self.resolved {
+            if let Some(v) = r.mdns_off {
+                cfg.resolved.mdns_off = v;
+            }
+            if let Some(v) = r.llmnr_off {
+                cfg.resolved.llmnr_off = v;
+            }
+        }
+        if let Some(n) = self.ntp {
+            if let Some(v) = n.enabled {
+                cfg.ntp.enabled = v;
+            }
+            if let Some(v) = n.ntp_servers {
+                cfg.ntp.ntp_servers = v;
+            }
+            if let Some(v) = n.fallback_servers {
+                cfg.ntp.fallback_servers = v;
+            }
+        }
+        if let Some(n) = self.nft {
+            if let Some(v) = n.icmpv4_timestamp_drop {
+                cfg.nft.icmpv4_timestamp_drop = v;
+            }
+            if let Some(v) = n.broadcast_ping_drop {
+                cfg.nft.broadcast_ping_drop = v;
+            }
+            if let Some(v) = n.igmp_query_drop {
+                cfg.nft.igmp_query_drop = v;
+            }
         }
         if let Some(d) = self.discovery {
             if let Some(v) = d.mdns_silence {
@@ -364,6 +418,9 @@ impl RawConfig {
             }
             if let Some(v) = d.rotate_client_id {
                 cfg.dhcp.rotate_client_id = v;
+            }
+            if let Some(v) = d.renew_on_apply {
+                cfg.dhcp.renew_on_apply = v;
             }
         }
         if let Some(c) = self.captive_portal {
@@ -458,6 +515,12 @@ impl RawConfig {
             [enabled, mode, pinned_value, rotate_with_mac]
         );
         any_some!(&self.dns, [strip_edns_client_subnet]);
+        any_some!(&self.resolved, [mdns_off, llmnr_off]);
+        any_some!(&self.ntp, [enabled, ntp_servers, fallback_servers]);
+        any_some!(
+            &self.nft,
+            [icmpv4_timestamp_drop, broadcast_ping_drop, igmp_query_drop]
+        );
         any_some!(
             &self.discovery,
             [mdns_silence, llmnr_silence, ssdp_block, wsd_block]
@@ -493,7 +556,8 @@ impl RawConfig {
                 enabled,
                 suppress_hostname,
                 suppress_vendor_class,
-                rotate_client_id
+                rotate_client_id,
+                renew_on_apply
             ]
         );
         any_some!(
@@ -566,6 +630,29 @@ pub struct RawDnsConfig {
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(default)]
+pub struct RawResolvedConfig {
+    pub mdns_off: Option<bool>,
+    pub llmnr_off: Option<bool>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct RawNtpConfig {
+    pub enabled: Option<bool>,
+    pub ntp_servers: Option<Vec<String>>,
+    pub fallback_servers: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct RawNftConfig {
+    pub icmpv4_timestamp_drop: Option<bool>,
+    pub broadcast_ping_drop: Option<bool>,
+    pub igmp_query_drop: Option<bool>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(default)]
 pub struct RawDiscoveryConfig {
     pub mdns_silence: Option<bool>,
     pub llmnr_silence: Option<bool>,
@@ -616,6 +703,12 @@ pub struct RawDhcpConfig {
     pub suppress_hostname: Option<bool>,
     pub suppress_vendor_class: Option<bool>,
     pub rotate_client_id: Option<bool>,
+    /// Roadmap Milestone 4c: when true, the orchestrator runs `dhcp
+    /// renew` after `apply` so the upstream DHCP server hands out a
+    /// fresh lease against the new client identity. Default false —
+    /// integration-wired in the follow-up; the knob ships now so the
+    /// schema is stable.
+    pub renew_on_apply: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -698,6 +791,54 @@ pub struct DnsConfig {
     pub strip_edns_client_subnet: bool,
 }
 
+/// Drop-in for `systemd-resolved` (`/etc/systemd/resolved.conf.d/10-proteus-mdns-llmnr.conf`).
+/// Hard-guards on a foreign drop-in or non-resolved `/etc/resolv.conf`; in
+/// either case Proteus defers to whatever is already in charge.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ResolvedConfig {
+    /// Disable the resolved mDNS responder + resolver. The Avahi-driven path
+    /// the user may already use is unaffected — this knob only shapes
+    /// resolved's own behaviour.
+    pub mdns_off: bool,
+    /// Disable LLMNR responder + resolver in resolved.
+    pub llmnr_off: bool,
+}
+
+/// Drop-in for `systemd-timesyncd` (`/etc/systemd/timesyncd.conf.d/10-proteus.conf`).
+/// Skipped when `chronyd` or `ntpd` is on the system — both manage their own
+/// configs and Proteus does not fight them.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct NtpConfig {
+    /// Master switch for writing the timesyncd drop-in. When off, apply
+    /// removes any prior Proteus-managed file.
+    pub enabled: bool,
+    /// Privacy-preserving NTP pool. Persona-aware customization is a
+    /// follow-up in roadmap Milestone 4a.
+    pub ntp_servers: Vec<String>,
+    /// Fallback servers if the primary list is unreachable.
+    pub fallback_servers: Vec<String>,
+}
+
+/// nftables-side opt-in rules. Mirrors the `[discovery]` `ssdp_block` style
+/// — every flag defaults to `false` so the table stays minimal until the
+/// operator enables a specific drop. Persona-aware variants (e.g. iOS
+/// blocks 5353 inbound; Android allows it) are tracked separately.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct NftConfig {
+    /// `icmp type timestamp-request drop`. ICMP timestamps are an
+    /// underused fingerprint vector; the existing `icmp_drops` chain
+    /// already covers timestamp-request via the same mechanism, but this
+    /// flag lets the operator narrow the picture in `nft status`.
+    pub icmpv4_timestamp_drop: bool,
+    /// Drop ICMPv4 echo-request to broadcast addresses (smurf-style probes).
+    pub broadcast_ping_drop: bool,
+    /// Suppress IGMP membership-query replies on input.
+    pub igmp_query_drop: bool,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DiscoveryConfig {
@@ -756,6 +897,10 @@ pub struct DhcpConfig {
     pub suppress_hostname: bool,
     pub suppress_vendor_class: bool,
     pub rotate_client_id: bool,
+    /// Roadmap Milestone 4c: when true, the orchestrator runs `dhcp
+    /// renew` after `apply` so the upstream DHCP server hands out a
+    /// fresh lease against the new client identity. Default false.
+    pub renew_on_apply: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -896,6 +1041,29 @@ impl Default for DnsConfig {
     }
 }
 
+impl Default for ResolvedConfig {
+    fn default() -> Self {
+        Self {
+            mdns_off: true,
+            llmnr_off: true,
+        }
+    }
+}
+
+impl Default for NtpConfig {
+    fn default() -> Self {
+        // Privacy-preserving defaults: the Fedora pool covers most users by
+        // default (already trusted on Fedora hosts) and Cloudflare time is
+        // a well-known privacy-respecting fallback that doesn't require an
+        // RPM-supplied root anchor.
+        Self {
+            enabled: true,
+            ntp_servers: vec!["2.fedora.pool.ntp.org".into()],
+            fallback_servers: vec!["time.cloudflare.com".into()],
+        }
+    }
+}
+
 impl Default for ProbesConfig {
     fn default() -> Self {
         Self {
@@ -952,6 +1120,7 @@ impl Default for DhcpConfig {
             suppress_hostname: true,
             suppress_vendor_class: true,
             rotate_client_id: true,
+            renew_on_apply: false,
         }
     }
 }

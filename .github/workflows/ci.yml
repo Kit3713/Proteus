@@ -141,45 +141,67 @@ jobs:
             echo "OK: stripped proteus binary is ${SIZE} bytes (under 4 MB target)"
           fi
 
-  # aarch64 cross-compile sanity. Catches dependency churn that breaks ARM
+  # ARM cross-compile sanity. Catches dependency churn that breaks ARM
   # before a release tag tries to build the artifact for real. Runs on plain
   # ubuntu-latest because cross-compile toolchains are easier to install via
   # apt than dnf, and this job only needs to prove that the tree still builds
-  # and strips under the 4 MB cap on the secondary architecture.
+  # and strips under the 4 MB cap on the secondary architectures.
+  #
+  # Roadmap Milestone 5: matrix expanded to cover armv7 (Pi 2/3, ARM
+  # Chromebooks) alongside the original aarch64 (Pi 4/5, Apple Silicon
+  # Linux VMs).
   #
   # We do not run the produced binary (no ARM runner) and we do not gate
   # other jobs on this one — it's a parallel signal, not a blocker for x86_64.
-  cross-build-aarch64:
-    name: cross-build aarch64
+  cross-build-arm:
+    name: cross-build ${{ matrix.target }}
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
-    env:
-      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-unknown-linux-gnu
+            apt-pkg: gcc-aarch64-linux-gnu
+            cc: aarch64-linux-gnu-gcc
+            strip: aarch64-linux-gnu-strip
+            cache-key: aarch64
+          - target: armv7-unknown-linux-gnueabihf
+            apt-pkg: gcc-arm-linux-gnueabihf
+            cc: arm-linux-gnueabihf-gcc
+            strip: arm-linux-gnueabihf-strip
+            cache-key: armv7
     steps:
       - uses: actions/checkout@v4
-      - name: Install aarch64 cross-compile toolchain
+      - name: Install ${{ matrix.target }} cross-compile toolchain
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu
+          sudo apt-get install -y ${{ matrix.apt-pkg }}
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          target: aarch64-unknown-linux-gnu
+          target: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
         with:
-          key: aarch64
-      - name: cargo build --release --locked --target aarch64-unknown-linux-gnu
-        run: cargo build --release --locked --target aarch64-unknown-linux-gnu
-      - name: Strip and log size (aarch64)
+          key: ${{ matrix.cache-key }}
+      - name: cargo build --release --locked --target ${{ matrix.target }}
+        env:
+          # `cargo` reads CARGO_TARGET_<TARGET>_LINKER from the
+          # environment; the underscored uppercase form is the one
+          # cargo expects, regardless of the matrix entry's spelling.
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+          CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER: arm-linux-gnueabihf-gcc
+        run: cargo build --release --locked --target ${{ matrix.target }}
+      - name: Strip and log size (${{ matrix.target }})
         run: |
           set -euo pipefail
-          BIN=target/aarch64-unknown-linux-gnu/release/proteus
-          aarch64-linux-gnu-strip "$BIN"
+          BIN=target/${{ matrix.target }}/release/proteus
+          ${{ matrix.strip }} "$BIN"
           SIZE=$(wc -c < "$BIN")
           echo "PROTEUS_BINARY_SIZE_BYTES=${SIZE}"
           echo "PROTEUS_BINARY_SIZE_TARGET_BYTES=4000000"
           if [ "$SIZE" -gt 4000000 ]; then
-            echo "WARN: stripped aarch64 proteus binary is ${SIZE} bytes, exceeds 4 MB target" >&2
+            echo "WARN: stripped ${{ matrix.target }} proteus binary is ${SIZE} bytes, exceeds 4 MB target" >&2
           else
-            echo "OK: stripped aarch64 proteus binary is ${SIZE} bytes (under 4 MB target)"
+            echo "OK: stripped ${{ matrix.target }} proteus binary is ${SIZE} bytes (under 4 MB target)"
           fi

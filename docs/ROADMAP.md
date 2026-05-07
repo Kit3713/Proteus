@@ -133,9 +133,9 @@ Three tightly related tracks; can land in parallel once Milestone 1 is done.
 
 ### 4a — Fingerprint hardening completion
 
-- ⏳ `systemd-resolved` drop-in: mDNS responder + resolver off, LLMNR off (the ⏳ Phase E item) — `src/dns/resolved.rs` new module producing `/etc/systemd/resolved.conf.d/10-proteus.conf` with detect-and-defer if user has custom drop-ins, mirroring existing DNS drop-in logic.
-- ⏳ `timesyncd` NTP normalization — `src/ntp/` new module producing `/etc/systemd/timesyncd.conf.d/10-proteus.conf` with persona-aware NTP server lists; skip if chrony or ntpd present.
-- ⏳ `nftables` expansion — extend `src/nft/` with persona-aware rules (e.g. iOS personas drop port 5353 inbound by default, Android personas allow it), plus the long-standing optional rules: ICMPv4 timestamp drops, broadcast-ping drops, IGMP query suppression.
+- ✅ `systemd-resolved` drop-in: mDNS responder + resolver off, LLMNR off — `src/dns/resolved.rs` produces `/etc/systemd/resolved.conf.d/10-proteus-mdns-llmnr.conf` with the same detect-and-defer guard as the ECS-strip drop-in. Surfaced via `proteus resolved {status,apply,revert}`.
+- 🚧 `timesyncd` NTP normalization — `src/ntp/` produces `/etc/systemd/timesyncd.conf.d/10-proteus.conf` with a privacy-respecting default pool (`2.fedora.pool.ntp.org` + `time.cloudflare.com`); skipped if `chronyd` or `ntpd` is present. Surfaced via `proteus ntp {status,apply,revert}`. Persona-aware NTP-server selection is the follow-up.
+- 🚧 `nftables` expansion — `src/nft/` now ships an opt-in `extra_drops` chain with three knobs (`nft.icmpv4_timestamp_drop`, `nft.broadcast_ping_drop`, `nft.igmp_query_drop`), all default-off mirroring `discovery.ssdp_block`'s style. ⏳ Persona-aware variants (e.g. iOS personas drop port 5353 inbound, Android personas allow it) still pending.
 
 ### 4b — RF surface controls finish
 
@@ -146,14 +146,14 @@ Three tightly related tracks; can land in parallel once Milestone 1 is done.
 
 ### 4c — Rotation triggers
 
-- ⏳ DHCP lease release+renew without MAC change (rescue `phase-d/ip-rotation`) — new `proteus dhcp renew` subcommand and config knob.
-- ⏳ Event-driven framework (rescue `phase-c/event-driven-triggers` and `phase-c/auto-triggers`): triggers on connection-up, link-flap, regulatory-domain change, captive-portal auth completion. Routed through the backend's event stream.
+- ✅ DHCP lease release+renew without MAC change (rescue `phase-d/ip-rotation`) — new `proteus dhcp renew` subcommand wraps `Device.Reapply` (with `Disconnect`+`ActivateConnection` fallback for older NM); `[dhcp] renew_on_apply` config knob added (default `false`, orchestrator integration is the follow-up).
+- 🚧 Event-driven framework (rescue `phase-c/event-driven-triggers` and `phase-c/auto-triggers`): triggers on connection-up, link-flap, regulatory-domain change, captive-portal auth completion. Scaffolding landed in `src/events/` — `RotationTrigger` enum, `EventHandler` trait, `EventRegistry`, four stub `EventSource` impls. The actual subscription to NM `StateChanged`, netlink RTM_NEWLINK, nl80211 regulatory group, and the portal poller is the wiring follow-up.
 
 ## Milestone 5 — Distro reach (any-distro, any-arch)
 
 The backend abstraction (Milestone 1) unblocks NM-less distros; this milestone closes the rest of the gap.
 
-- ⏳ Init-system abstraction `src/init/` with `Systemd`, `Openrc`, `Runit`, `Sysvinit` impls covering: schedule a periodic check, hook resume-from-suspend, hook boot. Used by `dist/install.sh` and `proteus timer`.
+- ✅ Init-system abstraction `src/init/` with `Systemd`, `Openrc`, `Runit`, `Sysvinit` impls covering: schedule a periodic check, hook resume-from-suspend, hook boot. Used by `dist/install.sh` (follow-up) and `proteus timer`.
 - ⏳ Packaging:
   - Alpine APKBUILD (`dist/alpine/`) with musl + OpenRC service.
   - Void (`dist/void/`) with runit.
@@ -161,12 +161,13 @@ The backend abstraction (Milestone 1) unblocks NM-less distros; this milestone c
   - AUR submission (binary + -git) using existing PKGBUILD.
   - Copr submission for RPM.
   - Debian unstable submission.
-- ⏳ Architectures: drop the `ExclusiveArch: x86_64 aarch64` gate from `dist/rpm/proteus.spec`, add **armv7** to the CI cross-compile matrix in `.github/workflows/`. Run the test suite at least under qemu for non-native arches. (Targeted matrix: x86_64 + aarch64 + armv7 covers laptops, Apple Silicon VMs, Raspberry Pi 2/3/4/5, ARM Chromebooks.)
-- ⏳ `proteus doctor`:
-  - Reports init system, libc, distro, backend, package format.
-  - Suggests next step on misconfigured systems (e.g. "no NM and no networkd; install one or use `--backend=raw`").
-  - Distro-compat warnings for known-quirky setups (Pi-hole, dnscrypt-proxy, openresolv, NetworkManager-l2tp).
-- ⏳ Documentation: `wiki/distro-support.md` matrix.
+- ✅ Architectures: dropped the `ExclusiveArch: x86_64 aarch64` gate from `dist/rpm/proteus.spec`, added **armv7** to the CI cross-compile matrix in `.github/workflows/ci.yml`. Run the test suite at least under qemu for non-native arches (qemu run still pending). (Targeted matrix: x86_64 + aarch64 + armv7 covers laptops, Apple Silicon VMs, Raspberry Pi 2/3/4/5, ARM Chromebooks.)
+- 🚧 `proteus doctor`:
+  - ✅ Reports init system (Milestone 5), libc, distro, backend.
+  - ⏳ Reports package format.
+  - ⏳ Suggests next step on misconfigured systems (e.g. "no NM and no networkd; install one or use `--backend=raw`").
+  - ⏳ Distro-compat warnings for known-quirky setups (Pi-hole, dnscrypt-proxy, openresolv, NetworkManager-l2tp).
+- ✅ Documentation: `wiki/distro-support.md` matrix.
 
 ## Milestone 6 — CLI ergonomics, security review, docs, integration tests, ongoing bug-fix queue
 

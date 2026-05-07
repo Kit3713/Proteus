@@ -40,6 +40,7 @@ entry below, or `proteus wiki search <term>` for full-text search.
 - `probes` — connectivity probe rounds
 - `troubleshooting` — when things don't go as expected
 - `real-world-testing` — verifying Proteus on a coffee shop, hotel, or conference network
+- `distro-support` — supported init systems, backends, architectures, and package layouts
 - `uninstall` — clean removal
 
 ## Reference

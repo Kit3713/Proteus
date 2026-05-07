@@ -89,6 +89,7 @@ fn build_report(opts: &Options<'_>) -> Report {
     push_files(&mut checks, opts.config_path, opts.state_path);
     push_detect_and_defer(&mut checks, &sys, opts.quick);
     push_backend(&mut checks, opts.config_path);
+    push_init(&mut checks);
     push_runtime(&mut checks);
     push_proteus_state(&mut checks, opts.state_path);
     let summary = aggregate(&checks);
@@ -701,6 +702,95 @@ fn check_backend_selected(driver: &str, available: &[&'static str]) -> Check {
     }
 }
 
+// --- Init system ----------------------------------------------------------
+//
+// Roadmap Milestone 5: same shape as the Backend section above. Lists
+// which init systems are detectable on this host, then which one
+// `crate::init::detect()` would pick, with a hint when the picked
+// init isn't the one actually running (rare, but possible on a
+// container or chroot where the probe paths are visible without the
+// init being usable).
+
+fn push_init(out: &mut Vec<Check>) {
+    let matrix = crate::init::available_systems();
+    let detected: Vec<&'static str> = matrix
+        .iter()
+        .filter_map(|(n, ok)| if *ok { Some(*n) } else { None })
+        .collect();
+
+    out.push(check_init_available(&matrix, &detected));
+    out.push(check_init_selected(&detected));
+}
+
+fn check_init_available(
+    matrix: &[(&'static str, bool)],
+    detected: &[&'static str],
+) -> Check {
+    let summary = matrix
+        .iter()
+        .map(|(n, ok)| format!("{n}={}", if *ok { "yes" } else { "no" }))
+        .collect::<Vec<_>>()
+        .join(", ");
+    if detected.is_empty() {
+        // Possible on exotic / sealed environments. The init module
+        // falls back to systemd in this case so install scripts still
+        // produce something — the warning here is so the user knows
+        // the artifact may not match their host.
+        Check {
+            category: "init",
+            name: "available",
+            status: Status::Warn,
+            message: format!("no init system detected ({summary}); will assume systemd"),
+            remediation: None,
+        }
+    } else {
+        Check {
+            category: "init",
+            name: "available",
+            status: Status::Ok,
+            message: summary,
+            remediation: None,
+        }
+    }
+}
+
+fn check_init_selected(detected: &[&'static str]) -> Check {
+    let chosen = crate::init::detect();
+    let name = chosen.name();
+    if detected.contains(&name) {
+        Check {
+            category: "init",
+            name: "selected",
+            status: Status::Ok,
+            message: format!("auto → {name}"),
+            remediation: None,
+        }
+    } else if detected.is_empty() {
+        Check {
+            category: "init",
+            name: "selected",
+            status: Status::Warn,
+            message: format!("auto → {name} (default fallback; nothing detected)"),
+            remediation: None,
+        }
+    } else {
+        // Doctor surfaces the mismatch the install script will see:
+        // the picked init isn't the one detected. This usually means
+        // a container or chroot — flag it so the user knows the
+        // generated artifacts may not match their actual host.
+        Check {
+            category: "init",
+            name: "selected",
+            status: Status::Warn,
+            message: format!(
+                "auto → {name}, but detected: {} — install scripts will use {name} layout",
+                detected.join(", ")
+            ),
+            remediation: None,
+        }
+    }
+}
+
 // --- Runtime --------------------------------------------------------------
 
 fn push_runtime(out: &mut Vec<Check>) {
@@ -938,6 +1028,7 @@ fn category_label(cat: &str) -> &'static str {
         "files" => "Files",
         "detect_and_defer" => "Detect-and-defer",
         "backend" => "Backend",
+        "init" => "Init",
         "runtime" => "Runtime",
         "proteus_state" => "Proteus state",
         _ => "Other",
@@ -957,6 +1048,7 @@ fn render_human(report: &Report, style: RenderStyle, verbose: bool) -> String {
         "files",
         "detect_and_defer",
         "backend",
+        "init",
         "runtime",
         "proteus_state",
     ];
@@ -1112,5 +1204,73 @@ mod tests {
     #[test]
     fn render_style_respects_no_color_flag() {
         assert_eq!(render_style(true), RenderStyle::Bracket);
+    }
+
+    // --- Init section (Roadmap Milestone 5) ----------------------------------
+
+    #[test]
+    fn push_init_emits_two_checks() {
+        // The init section must render without panic on whatever
+        // host the test runs on — same contract as the backend
+        // section. Two checks: `available` (matrix) and `selected`
+        // (the auto-pick).
+        let mut checks = Vec::new();
+        push_init(&mut checks);
+        assert_eq!(checks.len(), 2);
+        assert_eq!(checks[0].category, "init");
+        assert_eq!(checks[0].name, "available");
+        assert_eq!(checks[1].category, "init");
+        assert_eq!(checks[1].name, "selected");
+    }
+
+    #[test]
+    fn check_init_available_lists_every_init() {
+        let matrix = vec![
+            ("systemd", true),
+            ("openrc", false),
+            ("runit", false),
+            ("sysvinit", false),
+        ];
+        let detected = vec!["systemd"];
+        let c = check_init_available(&matrix, &detected);
+        assert_eq!(c.status, Status::Ok);
+        assert!(c.message.contains("systemd=yes"));
+        assert!(c.message.contains("openrc=no"));
+        assert!(c.message.contains("runit=no"));
+        assert!(c.message.contains("sysvinit=no"));
+    }
+
+    #[test]
+    fn check_init_available_warns_when_nothing_detected() {
+        let matrix = vec![
+            ("systemd", false),
+            ("openrc", false),
+            ("runit", false),
+            ("sysvinit", false),
+        ];
+        let detected: Vec<&'static str> = vec![];
+        let c = check_init_available(&matrix, &detected);
+        assert_eq!(c.status, Status::Warn);
+        assert!(c.message.contains("no init system detected"));
+        assert!(c.message.contains("will assume systemd"));
+    }
+
+    #[test]
+    fn doctor_init_section_renders_without_panic() {
+        // Equivalent of the backend section's smoke test: push a
+        // realistic Init section and run the human renderer. Catches
+        // any string formatting that would blow up on a malformed
+        // matrix.
+        let mut checks = Vec::new();
+        push_init(&mut checks);
+        let report = Report {
+            schema_version: SCHEMA_VERSION,
+            proteus_version: "9.9.9",
+            phase: 'Z',
+            checks,
+            summary: Summary::default(),
+        };
+        let rendered = render_human(&report, RenderStyle::Bracket, false);
+        assert!(rendered.contains("Init"));
     }
 }

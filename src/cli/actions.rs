@@ -197,6 +197,21 @@ pub enum DhcpAction {
         #[arg(long)]
         yes: bool,
     },
+    /// Release + renew the DHCP lease without changing the MAC.
+    ///
+    /// Roadmap Milestone 4c: rotates the IP from the upstream DHCP
+    /// server's perspective so the L3 identity changes while the L2
+    /// cover (persona MAC) stays stable. Useful when the operator
+    /// wants a fresh lease but doesn't want to disturb the rest of
+    /// the connection state (Wi-Fi association, 802.1X auth, etc.).
+    Renew {
+        /// Limit to a single interface; default is every managed
+        /// wifi/ethernet device.
+        #[arg(long)]
+        iface: Option<String>,
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -334,6 +349,49 @@ pub enum DnsAction {
         yes: bool,
     },
     /// Remove the ECS-strip drop-in.
+    Revert {
+        #[arg(long)]
+        yes: bool,
+    },
+}
+
+/// `proteus resolved ...` — Milestone 4a: mDNS+LLMNR off via systemd-resolved
+/// drop-in. Sibling to `proteus dns` so reverting one doesn't disturb the
+/// other.
+#[derive(Subcommand, Debug)]
+pub enum ResolvedAction {
+    /// Show what is applied or what we deferred to and why.
+    Status {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Apply the mDNS+LLMNR drop-in (no-op if hard guard trips).
+    Apply {
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Remove the mDNS+LLMNR drop-in.
+    Revert {
+        #[arg(long)]
+        yes: bool,
+    },
+}
+
+/// `proteus ntp ...` — Milestone 4a: timesyncd NTP normalisation. Skipped if
+/// `chronyd` or `ntpd` is on the system; both have their own config layers.
+#[derive(Subcommand, Debug)]
+pub enum NtpAction {
+    /// Show what is applied or what we deferred to and why.
+    Status {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Apply the timesyncd drop-in (no-op if hard guard trips).
+    Apply {
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Remove the timesyncd drop-in.
     Revert {
         #[arg(long)]
         yes: bool,

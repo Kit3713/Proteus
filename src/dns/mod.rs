@@ -11,6 +11,7 @@
 //! design rationale.
 
 pub mod apply;
+pub mod resolved;
 
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};

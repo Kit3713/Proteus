@@ -6,13 +6,14 @@ use clap::Subcommand;
 
 use super::actions::{
     BluetoothAction, ConfigAction, DhcpAction, DnsAction, EnterpriseWifiAction, HostnameAction,
-    Ipv6Action, KillAction, NftAction, PersonaAction, PortalAction, RfAction, StackAction,
-    TimerAction, WikiAction,
+    Ipv6Action, KillAction, NftAction, NtpAction, PersonaAction, PortalAction, ResolvedAction,
+    RfAction, StackAction, TimerAction, WikiAction,
 };
 
 #[derive(Subcommand, Debug)]
 pub enum Command {
     /// Show overall system + per-feature status.
+    #[command(alias = "s")]
     Status {
         #[arg(long)]
         json: bool,
@@ -46,6 +47,7 @@ pub enum Command {
         json: bool,
     },
     /// Apply Proteus config to the system.
+    #[command(alias = "a")]
     Apply {
         #[arg(long)]
         yes: bool,
@@ -56,6 +58,7 @@ pub enum Command {
         yes: bool,
     },
     /// Rotate MAC for one or all managed interfaces.
+    #[command(alias = "r")]
     Rotate {
         #[arg(long)]
         iface: Option<String>,
@@ -133,6 +136,16 @@ pub enum Command {
     Dns {
         #[command(subcommand)]
         action: DnsAction,
+    },
+    /// systemd-resolved mDNS + LLMNR off drop-in (Milestone 4a).
+    Resolved {
+        #[command(subcommand)]
+        action: ResolvedAction,
+    },
+    /// systemd-timesyncd NTP normalisation drop-in (Milestone 4a).
+    Ntp {
+        #[command(subcommand)]
+        action: NtpAction,
     },
     /// DHCP option suppression (12/60/61/81 + DHCPv6 DUID/IAID).
     Dhcp {
@@ -212,5 +225,20 @@ pub enum Command {
     Persona {
         #[command(subcommand)]
         action: PersonaAction,
+    },
+    /// Print the embedded shell-completion script for this binary's CLI.
+    ///
+    /// Roadmap Milestone 6: ergonomics. The completion files are hand-written
+    /// and live under `dist/completions/`; this subcommand prints them on
+    /// stdout so users can install without sudo:
+    ///
+    /// ```sh
+    /// proteus completions bash > ~/.local/share/bash-completion/completions/proteus
+    /// proteus completions zsh  > "$(brew --prefix)/share/zsh/site-functions/_proteus"
+    /// proteus completions fish > ~/.config/fish/completions/proteus.fish
+    /// ```
+    Completions {
+        /// Shell to print completions for: bash, zsh, or fish.
+        shell: String,
     },
 }

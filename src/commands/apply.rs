@@ -165,11 +165,35 @@ fn orchestrate(
         run_ipv6(config, state_path, config_path),
         run_dhcp(config, state_path, config_path),
         run_dns(config, config_path),
+        run_resolved(config, config_path),
+        run_ntp(config, config_path),
         run_stack(state_path, config_path),
         run_rf(config, state_path, config_path),
         run_nft(config_path),
         run_timers(config),
     ]
+}
+
+// resolved is gated on at least one knob being on. The submodule itself
+// removes any prior drop-in when both knobs are off, so the orchestrator
+// short-circuits only to keep the summary line legible.
+fn run_resolved(config: &Config, config_path: Option<&Path>) -> ComponentReport {
+    if !crate::dns::resolved::is_active(&config.resolved) {
+        return skipped(
+            "resolved",
+            "disabled in config (resolved.mdns_off and resolved.llmnr_off both false)",
+        );
+    }
+    classify("resolved", super::resolved::apply(config_path))
+}
+
+// ntp respects the `[ntp] enabled` master switch. The submodule's hard
+// guard takes over from there (chrony/ntpd present → defer).
+fn run_ntp(config: &Config, config_path: Option<&Path>) -> ComponentReport {
+    if !config.ntp.enabled {
+        return skipped("ntp", "disabled in config (ntp.enabled = false)");
+    }
+    classify("ntp", super::ntp::apply(config_path))
 }
 
 fn run_ipv6(
@@ -425,6 +449,9 @@ mod tests {
         cfg.dhcp.enabled = false;
         cfg.dns.strip_edns_client_subnet = false;
         cfg.rf.tx_power_reduce = false;
+        cfg.resolved.mdns_off = false;
+        cfg.resolved.llmnr_off = false;
+        cfg.ntp.enabled = false;
         cfg
     }
 
@@ -442,6 +469,8 @@ mod tests {
             run_ipv6(&cfg, None, None),
             run_dhcp(&cfg, None, None),
             run_dns(&cfg, None),
+            run_resolved(&cfg, None),
+            run_ntp(&cfg, None),
             run_rf(&cfg, None, None),
         ];
         assert!(
@@ -468,6 +497,8 @@ mod tests {
             run_ipv6(&cfg, None, None),
             run_dhcp(&cfg, None, None),
             run_dns(&cfg, None),
+            run_resolved(&cfg, None),
+            run_ntp(&cfg, None),
             run_rf(&cfg, None, None),
             run_timers(&cfg),
         ];
@@ -478,6 +509,8 @@ mod tests {
             "ipv6",
             "dhcp",
             "dns",
+            "resolved",
+            "ntp",
             "rf",
             "timers",
         ] {

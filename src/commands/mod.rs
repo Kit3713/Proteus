@@ -2,6 +2,7 @@
 
 pub mod apply;
 pub mod bluetooth_cmd;
+pub mod completions;
 pub mod config_cmd;
 pub mod current;
 pub mod dhcp;
@@ -14,12 +15,14 @@ pub mod hostname;
 pub mod ipv6;
 pub mod kill;
 pub mod nft;
+pub mod ntp;
 pub mod original;
 pub mod persona;
 pub mod pin;
 pub mod portal;
 pub mod probe;
 pub mod reset;
+pub mod resolved;
 pub mod revert;
 pub mod rf;
 pub mod rotate;

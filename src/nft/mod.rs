@@ -28,7 +28,7 @@ use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result, anyhow};
 
-use crate::config::DiscoveryConfig;
+use crate::config::{DiscoveryConfig, NftConfig};
 use crate::version;
 
 /// Canonical table name. Single source of truth.
@@ -36,11 +36,14 @@ pub const TABLE_NAME: &str = "proteus";
 /// Canonical address family.
 pub const TABLE_FAMILY: &str = "inet";
 
-/// Render the full ruleset for the given discovery config.
+/// Render the full ruleset for the given discovery + nft config.
 ///
 /// Always includes the `icmp_drops` chain. Adds `discovery_drops` when at
-/// least one of `ssdp_block` / `wsd_block` is on.
-pub fn render_ruleset(discovery: &DiscoveryConfig) -> String {
+/// least one of `ssdp_block` / `wsd_block` is on, and `extra_drops` when
+/// any of the new opt-in `[nft]` knobs (timestamp/broadcast-ping/IGMP) are
+/// set. Each chain has a distinct `(hook, priority)` so eval order between
+/// them is deterministic — see issue #148.
+pub fn render_ruleset(discovery: &DiscoveryConfig, nft: &NftConfig) -> String {
     let mut out = String::new();
     out.push_str(&render_header());
     out.push_str(&format!(
@@ -52,8 +55,17 @@ pub fn render_ruleset(discovery: &DiscoveryConfig) -> String {
     if discovery.ssdp_block || discovery.wsd_block {
         out.push_str(&render_discovery_chain(discovery));
     }
+    if extra_chain_active(nft) {
+        out.push_str(&render_extra_chain(nft));
+    }
     out.push_str("}\n");
     out
+}
+
+/// True iff at least one of the opt-in `[nft]` knobs is on. Keeps the
+/// "should we emit the chain at all" decision in one place.
+pub fn extra_chain_active(nft: &NftConfig) -> bool {
+    nft.icmpv4_timestamp_drop || nft.broadcast_ping_drop || nft.igmp_query_drop
 }
 
 fn render_header() -> String {
@@ -74,6 +86,10 @@ pub(crate) const ICMP_CHAIN_PRIORITY: i32 = -100;
 /// the eval order between equal-priority chains is undefined, which
 /// matters when one chain might accept a packet another would drop.
 pub(crate) const DISCOVERY_CHAIN_PRIORITY: i32 = -99;
+/// Priority for the new `extra_drops` chain (Milestone 4a). Same rationale
+/// as above: pick a distinct slot so eval order between the three chains is
+/// always deterministic.
+pub(crate) const EXTRA_CHAIN_PRIORITY: i32 = -98;
 
 fn render_icmp_chain() -> String {
     // policy accept means we don't disturb existing input rulesets — we
@@ -91,6 +107,39 @@ fn render_icmp_chain() -> String {
         "        # ICMPv6 small trim — node-info-query is rarely used in modern userspace\n",
     );
     out.push_str("        icmpv6 type { nd-redirect, mld-listener-query } drop\n");
+    out.push_str("    }\n");
+    out
+}
+
+fn render_extra_chain(nft: &NftConfig) -> String {
+    let mut out = String::new();
+    out.push_str("    chain extra_drops {\n");
+    out.push_str(&format!(
+        "        type filter hook input priority {EXTRA_CHAIN_PRIORITY}; policy accept;\n"
+    ));
+    if nft.icmpv4_timestamp_drop {
+        out.push_str(
+            "        # ICMPv4 timestamp-request — narrow fingerprint vector kept opt-in\n",
+        );
+        out.push_str("        icmp type timestamp-request drop\n");
+    }
+    if nft.broadcast_ping_drop {
+        // 255.255.255.255 covers the limited broadcast; subnet-broadcast
+        // probes resolve via routing so the simplest portable rule is to
+        // drop ICMPv4 echo-request to the limited-broadcast destination.
+        out.push_str(
+            "        # ICMPv4 echo-request to the limited broadcast (smurf-style probes)\n",
+        );
+        out.push_str("        ip daddr 255.255.255.255 icmp type echo-request drop\n");
+    }
+    if nft.igmp_query_drop {
+        // IGMP membership queries advertise the host as a multicast
+        // listener and leak per-router-pair fingerprints. Default off
+        // because dropping queries breaks multicast-aware applications
+        // (mDNS already handled separately).
+        out.push_str("        # IGMP membership-query suppression — leaks listener state\n");
+        out.push_str("        ip protocol igmp drop\n");
+    }
     out.push_str("    }\n");
     out
 }
@@ -197,9 +246,9 @@ pub fn list_our_table() -> Result<TableProbe> {
 /// Idempotent in one transaction: `add table` is a no-op when the table
 /// already exists, the following `delete table` then clears prior chains,
 /// and the final ruleset re-installs them.
-pub fn apply_ruleset(discovery: &DiscoveryConfig) -> Result<()> {
+pub fn apply_ruleset(discovery: &DiscoveryConfig, nft: &NftConfig) -> Result<()> {
     let mut script = render_delete_script();
-    script.push_str(&render_ruleset(discovery));
+    script.push_str(&render_ruleset(discovery, nft));
     run_nft_script(&script).context("applying proteus nft ruleset")
 }
 
@@ -257,9 +306,17 @@ mod tests {
         }
     }
 
+    fn nft_cfg(timestamp: bool, broadcast: bool, igmp: bool) -> NftConfig {
+        NftConfig {
+            icmpv4_timestamp_drop: timestamp,
+            broadcast_ping_drop: broadcast,
+            igmp_query_drop: igmp,
+        }
+    }
+
     #[test]
     fn ruleset_always_includes_table_and_icmp_chain() {
-        let body = render_ruleset(&cfg(false, false));
+        let body = render_ruleset(&cfg(false, false), &NftConfig::default());
         assert!(body.contains("table inet proteus"), "missing table: {body}");
         assert!(
             body.contains("chain icmp_drops"),
@@ -273,7 +330,7 @@ mod tests {
 
     #[test]
     fn ruleset_includes_managed_header() {
-        let body = render_ruleset(&cfg(false, false));
+        let body = render_ruleset(&cfg(false, false), &NftConfig::default());
         assert!(
             body.contains("# managed by proteus"),
             "missing managed-file header: {body}"
@@ -282,7 +339,7 @@ mod tests {
 
     #[test]
     fn ruleset_omits_discovery_chain_by_default() {
-        let body = render_ruleset(&cfg(false, false));
+        let body = render_ruleset(&cfg(false, false), &NftConfig::default());
         assert!(
             !body.contains("chain discovery_drops"),
             "discovery chain should not appear when neither block is set: {body}"
@@ -294,7 +351,7 @@ mod tests {
 
     #[test]
     fn ssdp_block_adds_only_ssdp_rules() {
-        let body = render_ruleset(&cfg(true, false));
+        let body = render_ruleset(&cfg(true, false), &NftConfig::default());
         assert!(
             body.contains("chain discovery_drops"),
             "missing chain: {body}"
@@ -312,7 +369,7 @@ mod tests {
 
     #[test]
     fn wsd_block_adds_only_wsd_rules() {
-        let body = render_ruleset(&cfg(false, true));
+        let body = render_ruleset(&cfg(false, true), &NftConfig::default());
         assert!(body.contains("chain discovery_drops"));
         assert!(body.contains("udp dport 3702 drop"));
         assert!(body.contains("tcp dport 5357 drop"));
@@ -324,10 +381,79 @@ mod tests {
 
     #[test]
     fn both_blocks_render_both() {
-        let body = render_ruleset(&cfg(true, true));
+        let body = render_ruleset(&cfg(true, true), &NftConfig::default());
         assert!(body.contains("udp dport 1900 drop"));
         assert!(body.contains("udp dport 3702 drop"));
         assert!(body.contains("tcp dport 5357 drop"));
+    }
+
+    #[test]
+    fn extra_chain_absent_when_all_knobs_off() {
+        let body = render_ruleset(&cfg(false, false), &nft_cfg(false, false, false));
+        assert!(
+            !body.contains("chain extra_drops"),
+            "extra_drops chain must not appear when every nft knob is off: {body}"
+        );
+        assert!(!body.contains("icmp type timestamp-request drop"));
+    }
+
+    #[test]
+    fn icmpv4_timestamp_drop_emits_only_timestamp_rule() {
+        let body = render_ruleset(&cfg(false, false), &nft_cfg(true, false, false));
+        assert!(body.contains("chain extra_drops"));
+        assert!(body.contains("icmp type timestamp-request drop"));
+        assert!(!body.contains("ip daddr 255.255.255.255"));
+        assert!(!body.contains("ip protocol igmp drop"));
+    }
+
+    #[test]
+    fn broadcast_ping_drop_emits_only_broadcast_rule() {
+        let body = render_ruleset(&cfg(false, false), &nft_cfg(false, true, false));
+        assert!(body.contains("chain extra_drops"));
+        assert!(body.contains("ip daddr 255.255.255.255 icmp type echo-request drop"));
+        assert!(!body.contains("icmp type timestamp-request drop"));
+        assert!(!body.contains("ip protocol igmp drop"));
+    }
+
+    #[test]
+    fn igmp_query_drop_emits_only_igmp_rule() {
+        let body = render_ruleset(&cfg(false, false), &nft_cfg(false, false, true));
+        assert!(body.contains("chain extra_drops"));
+        assert!(body.contains("ip protocol igmp drop"));
+        assert!(!body.contains("icmp type timestamp-request drop"));
+        assert!(!body.contains("ip daddr 255.255.255.255"));
+    }
+
+    #[test]
+    fn all_extra_knobs_render_all_rules() {
+        let body = render_ruleset(&cfg(false, false), &nft_cfg(true, true, true));
+        assert!(body.contains("chain extra_drops"));
+        assert!(body.contains("icmp type timestamp-request drop"));
+        assert!(body.contains("ip daddr 255.255.255.255 icmp type echo-request drop"));
+        assert!(body.contains("ip protocol igmp drop"));
+    }
+
+    #[test]
+    fn extra_chain_uses_distinct_priority() {
+        // Three chains, three distinct priorities. Pin the invariant so a
+        // future refactor can't recreate the issue-#148 ambiguity.
+        assert_ne!(EXTRA_CHAIN_PRIORITY, ICMP_CHAIN_PRIORITY);
+        assert_ne!(EXTRA_CHAIN_PRIORITY, DISCOVERY_CHAIN_PRIORITY);
+        let body = render_ruleset(&cfg(true, true), &nft_cfg(true, true, true));
+        let extra_marker =
+            format!("type filter hook input priority {EXTRA_CHAIN_PRIORITY}; policy accept;");
+        assert!(
+            body.contains(&extra_marker),
+            "missing extra priority {EXTRA_CHAIN_PRIORITY}: {body}"
+        );
+    }
+
+    #[test]
+    fn extra_chain_active_helper_matches_render_decision() {
+        assert!(!extra_chain_active(&nft_cfg(false, false, false)));
+        assert!(extra_chain_active(&nft_cfg(true, false, false)));
+        assert!(extra_chain_active(&nft_cfg(false, true, false)));
+        assert!(extra_chain_active(&nft_cfg(false, false, true)));
     }
 
     #[test]
@@ -350,7 +476,7 @@ mod tests {
 
     #[test]
     fn icmpv6_trim_present() {
-        let body = render_ruleset(&cfg(false, false));
+        let body = render_ruleset(&cfg(false, false), &NftConfig::default());
         assert!(body.contains("icmpv6 type"), "missing icmpv6 trim: {body}");
     }
 
@@ -361,7 +487,7 @@ mod tests {
         // separated.
         assert_ne!(ICMP_CHAIN_PRIORITY, DISCOVERY_CHAIN_PRIORITY);
 
-        let body = render_ruleset(&cfg(true, true));
+        let body = render_ruleset(&cfg(true, true), &NftConfig::default());
         let icmp_marker =
             format!("type filter hook input priority {ICMP_CHAIN_PRIORITY}; policy accept;");
         let disc_marker =

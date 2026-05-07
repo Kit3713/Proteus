@@ -26,6 +26,7 @@ struct StatusReport {
     table_name: &'static str,
     icmp_drops: bool,
     discovery_drops: ChainStatus,
+    extra_drops: ExtraStatus,
     rendered_ruleset: String,
     note: Option<String>,
 }
@@ -35,6 +36,14 @@ struct ChainStatus {
     enabled: bool,
     ssdp_block: bool,
     wsd_block: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct ExtraStatus {
+    enabled: bool,
+    icmpv4_timestamp_drop: bool,
+    broadcast_ping_drop: bool,
+    igmp_query_drop: bool,
 }
 
 pub fn status(json: bool, config_path: Option<&Path>) -> Result<u8> {
@@ -61,6 +70,13 @@ pub fn status(json: bool, config_path: Option<&Path>) -> Result<u8> {
         wsd_block: config.discovery.wsd_block,
     };
 
+    let extra = ExtraStatus {
+        enabled: nft::extra_chain_active(&config.nft),
+        icmpv4_timestamp_drop: config.nft.icmpv4_timestamp_drop,
+        broadcast_ping_drop: config.nft.broadcast_ping_drop,
+        igmp_query_drop: config.nft.igmp_query_drop,
+    };
+
     let report = StatusReport {
         nft_present,
         table_installed,
@@ -70,7 +86,8 @@ pub fn status(json: bool, config_path: Option<&Path>) -> Result<u8> {
         // function of `table_installed`, not a separately toggled feature.
         icmp_drops: table_installed,
         discovery_drops: discovery,
-        rendered_ruleset: nft::render_ruleset(&config.discovery),
+        extra_drops: extra,
+        rendered_ruleset: nft::render_ruleset(&config.discovery, &config.nft),
         note,
     };
 
@@ -100,21 +117,36 @@ pub fn apply(yes: bool, config_path: Option<&Path>) -> Result<u8> {
     };
     let config_path = super::config_path(config_path);
     let config = Config::default_or_loaded(&config_path)?;
-    if let Err(e) = nft::apply_ruleset(&config.discovery) {
+    if let Err(e) = nft::apply_ruleset(&config.discovery, &config.nft) {
         eprintln!("proteus: nft apply failed: {e:#}");
         return Ok(exit::GENERIC_ERROR);
     }
-    let extra = match (config.discovery.ssdp_block, config.discovery.wsd_block) {
-        (false, false) => String::new(),
-        (true, false) => " + SSDP block".into(),
-        (false, true) => " + WSD block".into(),
-        (true, true) => " + SSDP + WSD blocks".into(),
+    let mut extras: Vec<&str> = Vec::new();
+    if config.discovery.ssdp_block {
+        extras.push("SSDP block");
+    }
+    if config.discovery.wsd_block {
+        extras.push("WSD block");
+    }
+    if config.nft.icmpv4_timestamp_drop {
+        extras.push("ICMPv4 timestamp drop");
+    }
+    if config.nft.broadcast_ping_drop {
+        extras.push("broadcast-ping drop");
+    }
+    if config.nft.igmp_query_drop {
+        extras.push("IGMP query drop");
+    }
+    let extra_text = if extras.is_empty() {
+        String::new()
+    } else {
+        format!(" + {}", extras.join(" + "))
     };
     println!(
         "applied table {} {} (ICMP info-drops{})",
         nft::TABLE_FAMILY,
         nft::TABLE_NAME,
-        extra
+        extra_text
     );
     Ok(exit::SUCCESS)
 }
@@ -171,6 +203,26 @@ fn print_human(r: &StatusReport) {
     if r.discovery_drops.enabled {
         println!("    ssdp_block:    {}", yesno(r.discovery_drops.ssdp_block));
         println!("    wsd_block:     {}", yesno(r.discovery_drops.wsd_block));
+    }
+    let extra_state = if r.extra_drops.enabled {
+        "configured"
+    } else {
+        "disabled (default)"
+    };
+    println!("  extra_drops:     {extra_state}");
+    if r.extra_drops.enabled {
+        println!(
+            "    icmpv4_timestamp_drop: {}",
+            yesno(r.extra_drops.icmpv4_timestamp_drop)
+        );
+        println!(
+            "    broadcast_ping_drop:   {}",
+            yesno(r.extra_drops.broadcast_ping_drop)
+        );
+        println!(
+            "    igmp_query_drop:       {}",
+            yesno(r.extra_drops.igmp_query_drop)
+        );
     }
     if let Some(note) = &r.note {
         println!("note:              {note}");

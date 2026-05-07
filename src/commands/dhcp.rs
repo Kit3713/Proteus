@@ -14,7 +14,7 @@ use serde::Serialize;
 
 use crate::config::Config;
 use crate::exit;
-use crate::nm::{self, ConnectionSettings, dhcp as nmdhcp};
+use crate::nm::{self, ConnectionSettings, DeviceKind, DeviceInfo, dhcp as nmdhcp};
 use crate::state::{DhcpSettingsSnapshot, State};
 use crate::version;
 
@@ -139,6 +139,155 @@ pub fn revert(state_path: Option<&Path>) -> Result<u8> {
     state.save(&state_path)?;
     print_revert(&outcomes);
     Ok(exit::SUCCESS)
+}
+
+/// `proteus dhcp renew` — release + renew the DHCP lease without touching
+/// the cloned MAC. Roadmap Milestone 4c.
+///
+/// Mechanic per device:
+/// 1. Locate the NM device (by `iface`, or all managed wifi/ethernet).
+/// 2. Skip devices with no active connection (a renew is meaningless).
+/// 3. Try `Device.Reapply` (cheap, link-up). On failure, fall back to
+///    `Device.Disconnect` + `NetworkManager.ActivateConnection`.
+/// 4. Print one `renewed <iface>` line per device. Lease numbers aren't
+///    sourced from NM (no monotonic counter exposed), so the report
+///    uses a placeholder — the IP-on-the-wire is the verifiable signal.
+pub fn renew(iface: Option<&str>, yes: bool, state_path: Option<&Path>) -> Result<u8> {
+    if let Err(code) = super::require_yes(
+        yes,
+        "'dhcp renew' is mutating (cycles the active connection on each iface)",
+        "proteus help dhcp",
+    ) {
+        return Ok(code);
+    }
+    if let Err(e) = super::require_root() {
+        eprintln!("proteus: {e}");
+        return Ok(exit::PERMISSION_ERROR);
+    }
+    // Issue #126: serialize concurrent mutators on <state-dir>/.lock.
+    let _lock = match super::acquire_state_lock_or_print(state_path) {
+        Ok(g) => g,
+        Err(code) => return Ok(code),
+    };
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("starting tokio runtime")?;
+    let result: Result<Vec<RenewOutcome>> = rt.block_on(async { do_renew(iface).await });
+
+    let outcomes = match result {
+        Ok(o) => o,
+        Err(e) => {
+            eprintln!("proteus: dhcp renew failed: {e:#}");
+            return Ok(exit::GENERIC_ERROR);
+        }
+    };
+
+    if outcomes.is_empty() {
+        // Match the rotate.rs idiom: no matching iface is a hard error so
+        // wrappers can distinguish "nothing to do" from "all good".
+        match iface {
+            Some(name) => {
+                eprintln!(
+                    "proteus: no NetworkManager-managed device for interface '{name}'"
+                );
+            }
+            None => {
+                eprintln!(
+                    "proteus: no NetworkManager-managed wifi/ethernet interfaces found"
+                );
+            }
+        }
+        return Ok(exit::GENERIC_ERROR);
+    }
+
+    print_renew(&outcomes);
+    Ok(exit::SUCCESS)
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct RenewOutcome {
+    iface: String,
+    method: String,
+    note: Option<String>,
+}
+
+async fn do_renew(iface_filter: Option<&str>) -> Result<Vec<RenewOutcome>> {
+    let conn = zbus::Connection::system()
+        .await
+        .context("connecting to system DBus (NetworkManager required)")?;
+    let devices = nm::list_devices(&conn).await?;
+    let mut out = Vec::new();
+    for dev in devices {
+        if !device_matches(&dev, iface_filter) {
+            continue;
+        }
+        let entry = match nmdhcp::renew_lease(&conn, &dev.path).await {
+            Ok(nmdhcp::RenewOutcome::Reapplied) => RenewOutcome {
+                iface: dev.interface.clone(),
+                method: "reapply".into(),
+                note: None,
+            },
+            Ok(nmdhcp::RenewOutcome::DisconnectActivated) => RenewOutcome {
+                iface: dev.interface.clone(),
+                method: "disconnect+activate".into(),
+                note: Some("Reapply unsupported; cycled connection".into()),
+            },
+            Ok(nmdhcp::RenewOutcome::NoActiveConnection) => RenewOutcome {
+                iface: dev.interface.clone(),
+                method: "skipped".into(),
+                note: Some("no active connection".into()),
+            },
+            Err(e) => RenewOutcome {
+                iface: dev.interface.clone(),
+                method: "failed".into(),
+                note: Some(format!("{e:#}")),
+            },
+        };
+        out.push(entry);
+    }
+    out.sort_by(|a, b| a.iface.cmp(&b.iface));
+    Ok(out)
+}
+
+/// Filter rule: when `iface_filter` is set, only that exact interface
+/// (regardless of kind/managed state — gives the user a way to surface
+/// a "no such NM device" error). When unset, every managed wifi/ethernet
+/// device matches.
+fn device_matches(dev: &DeviceInfo, iface_filter: Option<&str>) -> bool {
+    if let Some(name) = iface_filter {
+        return dev.interface == name;
+    }
+    matches!(dev.kind, DeviceKind::Wifi | DeviceKind::Ethernet) && dev.managed
+}
+
+fn print_renew(outcomes: &[RenewOutcome]) {
+    for o in outcomes {
+        match (o.method.as_str(), &o.note) {
+            ("reapply", _) => {
+                // Lease number is a placeholder; NM doesn't expose a
+                // monotonic counter and the IP-on-the-wire is the
+                // observable signal.
+                println!("renewed {}: lease N -> lease N+1 (reapply)", o.iface);
+            }
+            ("disconnect+activate", Some(n)) => {
+                println!(
+                    "renewed {}: lease N -> lease N+1 (disconnect+activate; {n})",
+                    o.iface
+                );
+            }
+            ("skipped", Some(n)) => {
+                println!("skipped {}: {n}", o.iface);
+            }
+            ("failed", Some(n)) => {
+                println!("failed  {}: {n}", o.iface);
+            }
+            _ => {
+                println!("renewed {}", o.iface);
+            }
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -588,5 +737,84 @@ mod tests {
         );
         assert_eq!(snap.ipv4_dhcp_client_id.as_deref(), Some("mac"));
         assert!(loaded.captured_at.is_some());
+    }
+
+    /// Roadmap 4c — `dhcp renew` requires `--yes`. The exit code wired
+    /// through `require_yes` is `CONFIRMATION_REQUIRED` (== `CONFIG_ERROR`).
+    /// This test pins both the gate and the exit code so wrappers that
+    /// grep `65` keep working.
+    #[test]
+    fn renew_without_yes_returns_confirmation_required() {
+        // We rely on the fact that `require_yes` runs first — even without
+        // root, a missing --yes short-circuits before the root check.
+        let code = renew(None, false, None).expect("renew should not error out");
+        assert_eq!(code, exit::CONFIRMATION_REQUIRED);
+    }
+
+    /// Roadmap 4c — when invoked as a non-root user with `--yes`, the
+    /// command must surface `PERMISSION_ERROR` rather than panicking on
+    /// the DBus path it can't reach. This assertion hard-pins that
+    /// behaviour so the CI-style test environment (which is non-root)
+    /// keeps producing a deterministic exit code.
+    #[test]
+    fn renew_without_root_returns_permission_error() {
+        // Skip on the rare case CI runs as root — the behaviour we want to
+        // pin is the non-root branch.
+        if super::super::read_uid() == Some(0) {
+            return;
+        }
+        let code = renew(None, true, None).expect("renew should not error out");
+        assert_eq!(code, exit::PERMISSION_ERROR);
+    }
+
+    /// `device_matches`: with an iface filter, only the named iface
+    /// matches (regardless of kind/managed). Without one, only managed
+    /// wifi/ethernet devices match.
+    #[test]
+    fn device_matches_respects_iface_filter() {
+        let wifi_managed = DeviceInfo {
+            interface: "wlan0".into(),
+            kind: DeviceKind::Wifi,
+            hw_address: None,
+            path: zbus::zvariant::OwnedObjectPath::try_from("/org/freedesktop/NetworkManager/Devices/1").unwrap(),
+            managed: true,
+            connections: vec![],
+        };
+        let ethernet_unmanaged = DeviceInfo {
+            interface: "eth0".into(),
+            kind: DeviceKind::Ethernet,
+            hw_address: None,
+            path: zbus::zvariant::OwnedObjectPath::try_from("/org/freedesktop/NetworkManager/Devices/2").unwrap(),
+            managed: false,
+            connections: vec![],
+        };
+        let other = DeviceInfo {
+            interface: "tun0".into(),
+            kind: DeviceKind::Other(16),
+            hw_address: None,
+            path: zbus::zvariant::OwnedObjectPath::try_from("/org/freedesktop/NetworkManager/Devices/3").unwrap(),
+            managed: true,
+            connections: vec![],
+        };
+
+        // No filter: managed wifi/ethernet only.
+        assert!(device_matches(&wifi_managed, None));
+        assert!(!device_matches(&ethernet_unmanaged, None));
+        assert!(!device_matches(&other, None));
+
+        // Iface filter: exact match wins regardless of kind/managed.
+        assert!(device_matches(&wifi_managed, Some("wlan0")));
+        assert!(device_matches(&ethernet_unmanaged, Some("eth0")));
+        assert!(device_matches(&other, Some("tun0")));
+        assert!(!device_matches(&wifi_managed, Some("eth0")));
+    }
+
+    /// Roadmap 4c — the `[dhcp] renew_on_apply` knob defaults to false
+    /// so the orchestrator behaviour doesn't change until the
+    /// integration follow-up wires it.
+    #[test]
+    fn renew_on_apply_defaults_to_false() {
+        let cfg = crate::config::DhcpConfig::default();
+        assert!(!cfg.renew_on_apply);
     }
 }

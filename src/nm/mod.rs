@@ -17,6 +17,15 @@ use crate::mac::Mac;
 pub trait NetworkManager {
     fn get_devices(&self) -> zbus::Result<Vec<zbus::zvariant::OwnedObjectPath>>;
     fn get_device_by_ip_iface(&self, iface: &str) -> zbus::Result<zbus::zvariant::OwnedObjectPath>;
+    /// Activate a connection profile on a device. Used by `dhcp renew`
+    /// as the fallback after a forced `Disconnect` when the running NM
+    /// doesn't support `Device.Reapply`.
+    fn activate_connection(
+        &self,
+        connection: &zbus::zvariant::ObjectPath<'_>,
+        device: &zbus::zvariant::ObjectPath<'_>,
+        specific_object: &zbus::zvariant::ObjectPath<'_>,
+    ) -> zbus::Result<zbus::zvariant::OwnedObjectPath>;
 }
 
 #[proxy(
@@ -34,6 +43,27 @@ pub trait Device {
     fn managed(&self) -> zbus::Result<bool>;
     #[zbus(property, name = "AvailableConnections")]
     fn available_connections(&self) -> zbus::Result<Vec<zbus::zvariant::OwnedObjectPath>>;
+    /// Active connection on this device (NM ActiveConnection object path)
+    /// or `/` (root path) when no connection is active. Roadmap Milestone
+    /// 4c: `dhcp renew` consults this to decide between the cheap
+    /// `Reapply` path and the more disruptive Disconnect+ActivateConnection
+    /// fallback.
+    #[zbus(property, name = "ActiveConnection")]
+    fn active_connection(&self) -> zbus::Result<zbus::zvariant::OwnedObjectPath>;
+    /// Re-apply the connection's current settings to the running device
+    /// without bringing the link down. NM 1.2+. The empty-dict / version=0
+    /// / flags=0 form (the one Proteus uses for DHCP renew) tells NM "use
+    /// the stored settings as-is" which triggers a fresh DHCP exchange
+    /// without changing L2.
+    fn reapply(
+        &self,
+        connection: ConnectionSettings,
+        version_id: u64,
+        flags: u32,
+    ) -> zbus::Result<()>;
+    /// Disconnect the device. Used as the fallback when `Reapply` isn't
+    /// supported by the running NM (≤1.0) or returns `NotSupported`.
+    fn disconnect(&self) -> zbus::Result<()>;
 }
 
 #[proxy(
