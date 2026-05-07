@@ -23,9 +23,13 @@ use anyhow::{Context, Result, anyhow};
 use serde::Serialize;
 use zbus::zvariant::OwnedObjectPath;
 
+use crate::backend::{ConnectionRef, NetworkBackend};
 use crate::config::{Config, EnterpriseWifiConfig};
 use crate::enterprise_wifi::{self, nm as eap_nm};
 use crate::exit;
+// Roadmap Milestone 1: kept for the `802-1x` snapshot reader and the
+// id-based connection lookup. The high-level write
+// (`write_anonymous_identity`) routes through `crate::backend::*`.
 use crate::nm;
 use crate::state::{ConnectionOriginals, State};
 use crate::version;
@@ -105,7 +109,19 @@ pub fn enable(
         let conn = zbus::Connection::system()
             .await
             .context("connecting to system DBus (NetworkManager required)")?;
-        enable_one(&conn, connection, &config.enterprise_wifi, &mut state).await
+        // Roadmap M1: `enable_one` consults the backend trait for the
+        // mutating write (`write_anonymous_identity`); the introspection
+        // calls stay zbus-direct against NM since networkd / raw don't
+        // have an 802.1X surface today.
+        let backend = crate::backend::select::select(&config.backend.driver).await?;
+        enable_one(
+            &conn,
+            backend.as_ref(),
+            connection,
+            &config.enterprise_wifi,
+            &mut state,
+        )
+        .await
     });
 
     match outcome {
@@ -157,7 +173,9 @@ pub fn disable(connection: &str, yes: bool, state_path: Option<&Path>) -> Result
         let conn = zbus::Connection::system()
             .await
             .context("connecting to system DBus (NetworkManager required)")?;
-        disable_one(&conn, connection, &mut state).await
+        let cfg = Config::default_or_loaded(&super::config_path(None)).unwrap_or_default();
+        let backend = crate::backend::select::select(&cfg.backend.driver).await?;
+        disable_one(&conn, backend.as_ref(), connection, &mut state).await
     });
 
     match outcome {
@@ -208,6 +226,7 @@ enum DisableOutcome {
 
 async fn enable_one(
     conn: &zbus::Connection,
+    backend: &dyn NetworkBackend,
     connection: &str,
     cfg: &EnterpriseWifiConfig,
     state: &mut State,
@@ -258,7 +277,11 @@ async fn enable_one(
             dhcp_settings: None,
         });
 
-    eap_nm::write_anonymous_identity(conn, &path, &new_value).await?;
+    // Roadmap M1: write goes through the backend trait. NM impl
+    // delegates back into `eap_nm::write_anonymous_identity` so
+    // behaviour is byte-identical to the pre-trait path.
+    let cref = ConnectionRef::new(path.as_str().to_string());
+    backend.write_anonymous_identity(&cref, &new_value).await?;
 
     Ok(EnableOutcome::Applied {
         connection: connection.to_string(),
@@ -269,6 +292,7 @@ async fn enable_one(
 
 async fn disable_one(
     conn: &zbus::Connection,
+    backend: &dyn NetworkBackend,
     connection: &str,
     state: &mut State,
 ) -> Result<DisableOutcome> {
@@ -282,7 +306,8 @@ async fn disable_one(
         });
     }
 
-    eap_nm::write_anonymous_identity(conn, &path, "").await?;
+    let cref = ConnectionRef::new(path.as_str().to_string());
+    backend.write_anonymous_identity(&cref, "").await?;
 
     // Issue #209: untag by uuid (the canonical state key), with a fallback
     // pass that strips any legacy id-keyed entry we still find. The legacy
@@ -442,6 +467,63 @@ mod tests {
         let realm = enterprise_wifi::resolve_realm("auto", "", Some("alice@example.edu")).unwrap();
         let written = enterprise_wifi::anonymous_identity_for(realm);
         assert_eq!(written, "anonymous@example.edu");
+    }
+
+    // === Roadmap Milestone 1 — write_anonymous_identity routes via trait ===
+
+    use crate::backend::mock::{MockBackend, MockCall};
+
+    fn rt() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+    }
+
+    /// `MockBackend` records the `WriteAnonymousIdentity` call when a
+    /// command path drives the trait. We can't run the full
+    /// `enable_one` (it needs the NM Settings proxy), but we can
+    /// exercise the same trait method the production code now reaches
+    /// through and assert the same shape as the production write.
+    #[test]
+    fn write_anonymous_identity_through_trait_records_call() {
+        let backend = MockBackend::new();
+        let cref = crate::backend::ConnectionRef::new("/org/freedesktop/NetworkManager/Settings/3");
+        rt().block_on(async {
+            backend
+                .write_anonymous_identity(&cref, "anonymous@example.edu")
+                .await
+                .unwrap();
+        });
+        let log = backend.call_log();
+        assert!(
+            log.iter().any(|c| matches!(
+                c,
+                MockCall::WriteAnonymousIdentity { value, .. } if value == "anonymous@example.edu"
+            )),
+            "trait write must surface in MockBackend log; log = {log:?}"
+        );
+        assert_eq!(
+            backend.anonymous_identity_for(&cref).as_deref(),
+            Some("anonymous@example.edu")
+        );
+    }
+
+    /// Empty string clears the field (NM contract for "unset on
+    /// save"). Pin the trait surface mirrors that contract so the
+    /// disable path stays consistent across backends.
+    #[test]
+    fn write_anonymous_identity_empty_clears_via_trait() {
+        let backend = MockBackend::new();
+        let cref = crate::backend::ConnectionRef::new("/org/freedesktop/NetworkManager/Settings/3");
+        rt().block_on(async {
+            backend
+                .write_anonymous_identity(&cref, "anonymous@x.y")
+                .await
+                .unwrap();
+            backend.write_anonymous_identity(&cref, "").await.unwrap();
+        });
+        assert!(backend.anonymous_identity_for(&cref).is_none());
     }
 
     #[test]

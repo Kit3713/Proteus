@@ -58,40 +58,31 @@ conn_state="${CONNECTIVITY_STATE:-}"
 
 case "$action" in
     up)
-        # Interface came up. Phase C will add `proteus rotate --if-needed`,
-        # which checks state.json + portal classification. Until that lands,
-        # fall back to a cooldown check via `proteus current --json`: skip
-        # rotation if last_rotated for this iface is within the configured
-        # cooldown window (default 60s; matches [probes] cooldown).
+        # Interface came up. Roadmap Milestone 1 (issue #206-C): the
+        # cooldown decision now lives behind the typed
+        # `proteus rotate-if-needed` subcommand, which returns a
+        # structured result as one stdout line plus a deterministic
+        # exit code:
+        #
+        #   rotated <iface>: <new-mac>          (success: rotation happened)
+        #   skipped <iface>: cooldown <secs>s   (success: cooldown not yet elapsed)
+        #   skipped <iface>: no factory MAC ... (success: operator action needed)
+        #   unavailable <iface>: ...            (rc=70: backend reports unavailable)
+        #
+        # The previous shell `sed`-grep on `proteus current --json` is
+        # gone — fragile against JSON-shape changes and any nested key
+        # named `last_rotated` would have shadowed the intended one.
         cooldown_secs=60
-        last_rotated=""
-        if current_json="$("$proteus_bin" current --json --iface "$iface" 2>/dev/null)"; then
-            # Pull last_rotated without requiring jq. Format is ISO-8601
-            # ("2026-05-06T12:34:56Z") inside a JSON string. If parsing
-            # fails we treat last_rotated as empty (no cooldown).
-            last_rotated="$(printf '%s' "$current_json" \
-                | sed -n 's/.*"last_rotated"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
-                | head -n1)"
-        fi
-
-        skip=0
-        if [ -n "$last_rotated" ]; then
-            # `date -d` parses ISO-8601 on GNU coreutils (Fedora baseline).
-            if last_epoch="$(date -d "$last_rotated" +%s 2>/dev/null)"; then
-                now_epoch="$(date +%s)"
-                age=$(( now_epoch - last_epoch ))
-                if [ "$age" -ge 0 ] && [ "$age" -lt "$cooldown_secs" ]; then
-                    skip=1
-                fi
-            fi
-        fi
-
-        if [ "$skip" -eq 1 ]; then
-            log "iface=$iface up: within ${cooldown_secs}s cooldown (last=$last_rotated); skip rotate"
+        out="$("$proteus_bin" rotate-if-needed --iface "$iface" --cooldown "$cooldown_secs" --yes 2>/dev/null)"
+        rc=$?
+        if [ "$rc" -eq 0 ]; then
+            log "iface=$iface up: $out"
+        elif [ "$rc" -eq 70 ]; then
+            # SYSTEM_NOT_SUPPORTED: backend reports unavailable. Log
+            # but don't fail — the dispatcher always exits 0.
+            log "iface=$iface up: backend unavailable (rc=70): $out"
         else
-            log "iface=$iface up: invoking rotate"
-            "$proteus_bin" rotate --iface "$iface" --yes >/dev/null 2>&1 \
-                || log "iface=$iface rotate exited nonzero"
+            log "iface=$iface up: rotate-if-needed exited rc=$rc: $out"
         fi
         ;;
 

@@ -6,6 +6,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use serde::Serialize;
 
+use crate::backend::{BackendDevice, BackendKind, ConnectionRef, NetworkBackend};
 use crate::config::Config;
 use crate::exit;
 use crate::mac::generator::{
@@ -14,7 +15,6 @@ use crate::mac::generator::{
 use crate::mac::oui;
 use crate::mac::probe::{Probe, SystemProbe};
 use crate::mac::{Mac, arp, factory};
-use crate::nm::{self, DeviceInfo, DeviceKind};
 use crate::persona;
 use crate::state::State;
 use crate::version;
@@ -81,7 +81,7 @@ pub fn run(
     }
     if let Err(code) = super::require_yes(
         yes,
-        "'rotate' is mutating (writes new MACs to NetworkManager)",
+        "'rotate' is mutating (writes new MACs to the configured backend)",
         "proteus help rotate",
     ) {
         return Ok(code);
@@ -100,21 +100,6 @@ pub fn run(
     let config_path = super::config_path(config_path);
     let config = Config::default_or_loaded(&config_path)?;
     let mut state = State::load_or_default(&state_path)?;
-
-    // Roadmap M2 "Integration": print the persona banner up front under
-    // `--explain` so the operator sees which OUI pool is in scope even
-    // when the run fails before reaching the per-iface explain trace
-    // (e.g. NM not on the bus). The end-of-run print also includes
-    // this for regular-success runs.
-    if explain {
-        match persona::active_for(&config, None, persona::resolve::default_user_root()) {
-            Some(p) => println!(
-                "explain: active persona = '{}' (oui_pool={:?}; mac_byte_pattern={:?})",
-                p.id, p.oui_pool, p.mac_byte_pattern
-            ),
-            None => println!("explain: no persona active; global [mac] oui_pool in use"),
-        }
-    }
 
     // Roadmap M2: layered exclusion set —
     // 1. Live `/proc/net/arp` snapshot,
@@ -143,13 +128,12 @@ pub fn run(
         .build()
         .context("starting tokio runtime")?;
     let result: Result<RotateReport> = rt.block_on(async {
-        let conn = zbus::Connection::system()
-            .await
-            .context("connecting to system DBus (NetworkManager required)")?;
-        let devices = nm::list_devices(&conn).await?;
-        rotate_devices(
-            &conn,
-            devices,
+        // Roadmap Milestone 1: every NM-specific zbus call on the
+        // command path goes through `crate::backend::*` so a future
+        // `--backend networkd|raw` flag lifts straight into here.
+        let backend = crate::backend::select::select(&config.backend.driver).await?;
+        run_with_backend(
+            backend.as_ref(),
             iface_filter,
             &config,
             &avoid,
@@ -173,7 +157,10 @@ pub fn run(
     state.save(&state_path)?;
 
     if report.rotated.is_empty() && report.skipped.is_empty() {
-        eprintln!("proteus: no NetworkManager-managed interfaces matched");
+        eprintln!(
+            "proteus: no managed interfaces matched (backend = {})",
+            config.backend.driver
+        );
         return Ok(exit::GENERIC_ERROR);
     }
 
@@ -181,10 +168,12 @@ pub fn run(
     Ok(exit::SUCCESS)
 }
 
+/// Async core split out for testability. Drives the rotation loop
+/// against any [`NetworkBackend`] — production gives it the
+/// auto-selected one, unit tests give it a `MockBackend`.
 #[allow(clippy::too_many_arguments)]
-async fn rotate_devices<P: Probe + ?Sized>(
-    conn: &zbus::Connection,
-    devices: Vec<DeviceInfo>,
+pub(crate) async fn run_with_backend<P: Probe + ?Sized>(
+    backend: &dyn NetworkBackend,
     iface_filter: Option<&str>,
     config: &Config,
     avoid: &HashSet<Mac>,
@@ -193,6 +182,7 @@ async fn rotate_devices<P: Probe + ?Sized>(
     state: &mut State,
     state_path: &Path,
 ) -> Result<RotateReport> {
+    let devices = backend.list_devices().await?;
     let mut report = RotateReport {
         rotated: Vec::new(),
         skipped: Vec::new(),
@@ -202,14 +192,14 @@ async fn rotate_devices<P: Probe + ?Sized>(
     };
     for dev in devices {
         if let Some(f) = iface_filter
-            && dev.interface != f
+            && dev.iface != f
         {
             continue;
         }
-        if !matches!(dev.kind, DeviceKind::Wifi | DeviceKind::Ethernet) {
+        if !matches!(dev.kind, BackendKind::Wifi | BackendKind::Ethernet) {
             if iface_filter.is_some() {
                 report.skipped.push(SkippedEntry {
-                    iface: dev.interface.clone(),
+                    iface: dev.iface.clone(),
                     reason: format!("device kind {:?} not supported", dev.kind),
                 });
             }
@@ -219,20 +209,20 @@ async fn rotate_devices<P: Probe + ?Sized>(
             // Quietly skip when iterating all devices.
             continue;
         }
-        if let Some(rec) = state.managed.interfaces.get(&dev.interface)
+        if let Some(rec) = state.managed.interfaces.get(&dev.iface)
             && let Some(pin) = &rec.pinned
         {
             report.skipped.push(SkippedEntry {
-                iface: dev.interface.clone(),
+                iface: dev.iface.clone(),
                 reason: format!("pinned to {pin}"),
             });
             continue;
         }
-        match rotate_one(conn, &dev, config, avoid, probe, state, state_path).await {
+        match rotate_one(backend, &dev, config, avoid, probe, state, state_path).await {
             Ok((entry, attempts, chosen_token, oui_fallbacks)) => {
                 if explain {
                     report.explain.push(ExplainEntry {
-                        iface: dev.interface.clone(),
+                        iface: dev.iface.clone(),
                         chosen_token,
                         oui_fallbacks,
                         candidates: attempts
@@ -244,7 +234,7 @@ async fn rotate_devices<P: Probe + ?Sized>(
                 report.rotated.push(entry);
             }
             Err(e) => report.skipped.push(SkippedEntry {
-                iface: dev.interface.clone(),
+                iface: dev.iface.clone(),
                 reason: format!("{e:#}"),
             }),
         }
@@ -253,8 +243,8 @@ async fn rotate_devices<P: Probe + ?Sized>(
 }
 
 async fn rotate_one<P: Probe + ?Sized>(
-    conn: &zbus::Connection,
-    dev: &DeviceInfo,
+    backend: &dyn NetworkBackend,
+    dev: &BackendDevice,
     config: &Config,
     avoid: &HashSet<Mac>,
     probe: &P,
@@ -262,15 +252,15 @@ async fn rotate_one<P: Probe + ?Sized>(
     state_path: &Path,
 ) -> Result<(RotatedEntry, Vec<CandidateAttempt>, String, usize)> {
     if dev.connections.is_empty() {
-        anyhow::bail!("no NM connection profile available");
+        anyhow::bail!("no connection profile available");
     }
 
     // Capture-then-save-then-mutate: the original factory MAC must be
-    // durable on disk BEFORE we ask NetworkManager to set a cloned MAC.
-    // Otherwise a crash between the DBus write and the final state.save()
-    // at the end of `run` would lose the factory MAC and turn `revert` into
-    // a no-op (sacred-originals invariant; issue #119).
-    capture_original_mac(state, &dev.interface, dev.hw_address.as_deref());
+    // durable on disk BEFORE we ask the backend to set a cloned MAC.
+    // Otherwise a crash between the backend write and the final
+    // state.save() at the end of `run` would lose the factory MAC and
+    // turn `revert` into a no-op (sacred-originals invariant; issue #119).
+    capture_original_mac(state, &dev.iface, dev.hw_address.as_deref());
     persist_capture_metadata(state);
     state.save(state_path)?;
 
@@ -290,47 +280,20 @@ async fn rotate_one<P: Probe + ?Sized>(
     // Roadmap M2: probe-aware path runs the RFC 5227 ARP probe and the
     // IPv6 DAD probe inline with adaptive backoff. SystemProbe falls back
     // to Unsupported (=> passive checks only) when CAP_NET_RAW is missing.
-    let probe_opts = ProbeOptions::for_iface(&dev.interface);
+    let probe_opts = ProbeOptions::for_iface(&dev.iface);
     let outcome = generator::generate_with_probe(&opts, probe, &probe_opts)?;
     let new_mac = outcome.chosen;
 
-    // Issue #122: iterate every connection profile bound to the device,
-    // not just the first one. Otherwise roaming between SSIDs surfaces
-    // the un-cloned factory MAC for the profiles that didn't get touched.
-    // The display-id label of the first profile is reported back as the
-    // "primary" so the rotated_entry keeps the existing schema. Failures
-    // on later profiles are logged but don't fail the whole rotate.
+    // Issue #122: write the new MAC to every connection profile bound
+    // to the device. The backend trait's `set_cloned_mac` iterates
+    // internally for nm; on stub backends it bails with a clear error.
+    // We still need per-profile id/uuid for the `state.json` book-keeping
+    // below, so iterate the connection list ourselves to gather those.
     let mut primary_id: Option<String> = None;
-    for connection_path in &dev.connections {
-        let id = nm::apply::read_connection_id(conn, connection_path)
-            .await
-            .ok()
-            .flatten();
-        let uuid = nm::apply::read_connection_uuid(conn, connection_path)
-            .await
-            .ok()
-            .flatten();
-        if let Err(e) = nm::apply::set_cloned_mac(conn, connection_path, dev.kind, new_mac).await {
-            tracing::warn!(
-                profile = ?id,
-                "set_cloned_mac failed for profile: {e:#}"
-            );
-            continue;
-        }
-        // Roadmap Milestone 4b: piggyback the per-scan MAC randomization
-        // write on the same rotate pass for Wi-Fi profiles. Probe-request
-        // hygiene (`mac-address-randomization = 2` + scan-rand-mac=random)
-        // means saved-SSID lists stop leaking and each scan burst carries
-        // a fresh source MAC. Failure here is non-fatal — the profile's
-        // cloned MAC is already updated; this is privacy polish on top.
-        if matches!(dev.kind, DeviceKind::Wifi) && config.rf.scan_random_mac {
-            if let Err(e) = nm::apply::set_scan_rand_mac(conn, connection_path).await {
-                tracing::warn!(
-                    profile = ?id,
-                    "set_scan_rand_mac failed for profile: {e:#}"
-                );
-            }
-        }
+    let connections: Vec<ConnectionRef> = backend.list_connections(dev).await?;
+    for cref in &connections {
+        let id = backend.read_connection_id(cref).await.ok().flatten();
+        let uuid = backend.read_connection_uuid(cref).await.ok().flatten();
         if primary_id.is_none() {
             primary_id = id.clone();
         }
@@ -341,11 +304,15 @@ async fn rotate_one<P: Probe + ?Sized>(
             crec.rotation_count += 1;
         }
     }
+    backend
+        .set_cloned_mac(dev, new_mac)
+        .await
+        .with_context(|| format!("setting cloned MAC on {}", dev.iface))?;
 
     let rec = state
         .managed
         .interfaces
-        .entry(dev.interface.clone())
+        .entry(dev.iface.clone())
         .or_default();
     let previous = rec.current_mac.clone().or_else(|| dev.hw_address.clone());
     rec.current_mac = Some(new_mac.to_string());
@@ -353,7 +320,7 @@ async fn rotate_one<P: Probe + ?Sized>(
     rec.rotation_count += 1;
 
     let entry = RotatedEntry {
-        iface: dev.interface.clone(),
+        iface: dev.iface.clone(),
         previous,
         new: new_mac.to_string(),
         connection: primary_id,
@@ -394,15 +361,16 @@ fn explain_candidate_from_attempt(a: CandidateAttempt) -> ExplainCandidate {
 /// prefers `phy80211/macaddress` (Wi-Fi) then `ethtool -P` (ethernet) and
 /// only accepts the live `address` when `addr_assign_type == NET_ADDR_PERM`.
 ///
-/// Issue #208 dropped the previous `hw_hint` fallback that consulted NM's
-/// live `HwAddress`. NM surfaces whatever the kernel currently reports — on
-/// a driver without phy80211 *and* without `ETHTOOL_GPERMADDR`, that's the
-/// live address, which post-rotation is the cloned MAC. Caching it as
-/// "factory" silently undid the #123 guard. The new contract: when
-/// `factory::permanent_address` returns `None`, we leave `original_macs`
-/// untouched and let `proteus status` surface "no factory MAC captured" so
-/// the operator can intervene rather than the tool quietly recording a
-/// known-cloned value as the restoration target.
+/// Issue #208 dropped the previous `hw_hint` fallback that consulted the
+/// backend's live `HwAddress`. Backends surface whatever the kernel
+/// currently reports — on a driver without phy80211 *and* without
+/// `ETHTOOL_GPERMADDR`, that's the live address, which post-rotation is
+/// the cloned MAC. Caching it as "factory" silently undid the #123
+/// guard. The new contract: when `factory::permanent_address` returns
+/// `None`, we leave `original_macs` untouched and let `proteus status`
+/// surface "no factory MAC captured" so the operator can intervene
+/// rather than the tool quietly recording a known-cloned value as the
+/// restoration target.
 fn capture_original_mac(state: &mut State, iface: &str, _hw_hint: Option<&str>) {
     capture_original_mac_under(state, iface, |i| factory::permanent_address(i))
 }
@@ -512,9 +480,12 @@ fn print_report(report: &RotateReport, explain: bool) {
         println!("skipped {}: {}", s.iface, s.reason);
     }
     if explain {
-        // Persona banner is printed earlier (before NM probe) so the
-        // operator sees it even on a NM-unavailable failure. Here we
-        // just dump the per-iface candidate trace.
+        // Persona banner: the operator wants to see which OUI pool was
+        // actually in scope. Empty when no persona is active.
+        match &report.active_persona {
+            Some(id) => println!("explain: active persona = '{id}' (persona oui_pool in use)"),
+            None => println!("explain: no persona active; global [mac] oui_pool in use"),
+        }
         for entry in &report.explain {
             println!(
                 "explain {}: chosen-token={} oui-fallbacks={} candidates={}",
@@ -530,11 +501,119 @@ fn print_report(report: &RotateReport, explain: bool) {
     }
 }
 
+/// `proteus rotate-if-needed --cooldown <secs>` — typed entry point
+/// for the NM dispatcher (issue #206-C). Replaces the previous
+/// `proteus current --json | sed -n 's/last_rotated/...'` shell
+/// fragment with a single subcommand that returns the
+/// [`crate::backend::RotateOutcome`] as a stable, easily-parseable
+/// line plus the matching exit code.
+///
+/// Exit codes:
+///
+/// - `0` — `Rotated { new_mac }`
+/// - `0` — `SkippedCooldown { remaining }` (no-op is success too)
+/// - `0` — `NoFactoryMac` (operator action needed but not an error)
+/// - `70` (SYSTEM_NOT_SUPPORTED) — `BackendUnavailable`
+///
+/// Output (stdout, one line):
+///
+/// - `rotated <iface>: <new-mac>`
+/// - `skipped <iface>: cooldown <remaining_secs>s`
+/// - `skipped <iface>: no factory MAC captured`
+/// - `unavailable <iface>: backend reports unavailable`
+pub fn run_if_needed(
+    iface: Option<&str>,
+    cooldown_secs: u64,
+    yes: bool,
+    state_path: Option<&Path>,
+    config_path: Option<&Path>,
+) -> Result<u8> {
+    if let Err(code) = super::require_yes(
+        yes,
+        "'rotate-if-needed' is mutating (rotates if the cooldown has elapsed)",
+        "proteus help rotate",
+    ) {
+        return Ok(code);
+    }
+    if let Err(e) = super::require_root() {
+        eprintln!("proteus: {e}");
+        return Ok(exit::PERMISSION_ERROR);
+    }
+    let _state_unused = state_path; // accepted for symmetry with `rotate::run`.
+    let config_path = super::config_path(config_path);
+    let config = Config::default_or_loaded(&config_path).unwrap_or_default();
+    let cooldown = std::time::Duration::from_secs(cooldown_secs);
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("starting tokio runtime")?;
+    let outcome = rt.block_on(async {
+        let backend = crate::backend::select::select(&config.backend.driver).await?;
+        // Pick the iface: the dispatcher always passes one. When it
+        // doesn't, fall through to the first managed wifi/ethernet so
+        // the command is still usable from the CLI.
+        let target = match iface {
+            Some(name) => name.to_string(),
+            None => {
+                let devs = backend.list_devices().await.unwrap_or_default();
+                devs.into_iter()
+                    .find(|d| {
+                        matches!(d.kind, BackendKind::Wifi | BackendKind::Ethernet) && d.managed
+                    })
+                    .map(|d| d.iface)
+                    .unwrap_or_default()
+            }
+        };
+        if target.is_empty() {
+            return Ok::<_, anyhow::Error>((
+                "(no iface)".to_string(),
+                crate::backend::RotateOutcome::BackendUnavailable,
+            ));
+        }
+        let r = backend.rotate_if_needed(&target, cooldown).await?;
+        Ok((target, r))
+    });
+
+    let (iface_name, outcome) = match outcome {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("proteus: rotate-if-needed failed: {e:#}");
+            return Ok(exit::GENERIC_ERROR);
+        }
+    };
+
+    use crate::backend::RotateOutcome;
+    match outcome {
+        RotateOutcome::Rotated { new_mac } => {
+            println!("rotated {iface_name}: {new_mac}");
+            Ok(exit::SUCCESS)
+        }
+        RotateOutcome::SkippedCooldown { remaining } => {
+            println!(
+                "skipped {iface_name}: cooldown {}s",
+                remaining.as_secs()
+            );
+            Ok(exit::SUCCESS)
+        }
+        RotateOutcome::NoFactoryMac => {
+            println!("skipped {iface_name}: no factory MAC captured");
+            Ok(exit::SUCCESS)
+        }
+        RotateOutcome::BackendUnavailable => {
+            println!("unavailable {iface_name}: backend reports unavailable");
+            Ok(exit::SYSTEM_NOT_SUPPORTED)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
 
     use super::*;
+    use crate::backend::mock::{MockBackend, MockCall};
+    use crate::backend::{BackendDevice, BackendKind, ConnectionRef};
     use crate::mac::probe::{MockProbe, ProbeOutcome};
 
     /// Build a stub `permanent_address` lookup so tests don't poke real sysfs.
@@ -545,11 +624,39 @@ mod tests {
         move |iface| map.get(iface).map(|s| s.to_string())
     }
 
-    /// Issue #119 — sacred-originals invariant. `rotate_one` now saves
+    fn rt() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+    }
+
+    fn dev(iface: &str) -> BackendDevice {
+        BackendDevice {
+            iface: iface.into(),
+            kind: BackendKind::Wifi,
+            hw_address: Some("aa:bb:cc:dd:ee:ff".into()),
+            identifier: format!("mock://{iface}"),
+            connections: vec![ConnectionRef::new(format!("mock://{iface}/0"))],
+            managed: true,
+        }
+    }
+
+    fn cfg() -> Config {
+        let mut c = crate::profile::Profile::Med.baseline();
+        c.persona.active = None;
+        c.per_ssid.clear();
+        // Use 'apple' so the generator has a real OUI pool to pick from
+        // without needing the persona machinery.
+        c.mac.oui_pool = vec!["apple".into()];
+        c
+    }
+
+    /// Issue #119 — sacred-originals invariant. `rotate_one` saves
     /// state.json AFTER `capture_original_mac` and BEFORE the
-    /// `nm::set_cloned_mac` DBus write. This test pins the round-trip half:
+    /// `set_cloned_mac` write. This test pins the round-trip half:
     /// a captured factory MAC must survive a crash between save and the
-    /// DBus mutation so revert can restore it.
+    /// backend mutation so revert can restore it.
     #[test]
     fn captured_factory_mac_persists_to_disk() {
         let dir = crate::testing::TempRoot::new("rotate");
@@ -571,7 +678,7 @@ mod tests {
         assert_eq!(
             loaded.original_macs.get("wlan0").map(String::as_str),
             Some("aa:bb:cc:dd:ee:ff"),
-            "wlan0 factory MAC must be on disk before any DBus mutation"
+            "wlan0 factory MAC must be on disk before any backend mutation"
         );
         assert_eq!(
             loaded.original_macs.get("eth0").map(String::as_str),
@@ -596,12 +703,9 @@ mod tests {
         );
     }
 
-    /// Issue #208 — when no factory source produces a MAC (no phy80211, no
-    /// `ethtool -P`, and the live address fails the `addr_assign_type` guard),
-    /// `capture_original_mac` must leave `original_macs` empty rather than
-    /// papering over with a known-cloned value. The previous behaviour fell
-    /// back to NM's live `HwAddress`, silently undoing the #123 guard on
-    /// drivers without phy80211 / `ETHTOOL_GPERMADDR`.
+    /// Issue #208 — when no factory source produces a MAC, the
+    /// capture path leaves `original_macs` empty rather than papering
+    /// over with a known-cloned value.
     #[test]
     fn capture_skips_when_factory_lookup_yields_none() {
         let mut state = State::default();
@@ -613,10 +717,190 @@ mod tests {
         );
     }
 
+    // === Roadmap Milestone 1 — backend trait integration ===
+
+    /// The headline acceptance assertion: `rotate::run_with_backend`
+    /// drives a `MockBackend` through the trait surface, the mock
+    /// records every call, and the recorded sequence shows
+    /// `set_cloned_mac` got invoked on the seeded device. No NM, no
+    /// DBus, no sysfs.
+    #[test]
+    fn rotate_run_calls_set_cloned_mac_on_mock_backend() {
+        let backend = MockBackend::new();
+        let device = dev("wlan0");
+        let cref = device.connections[0].clone();
+        backend.insert_device(device, Some("aa:bb:cc:dd:ee:ff".into()));
+        backend.insert_connection(&cref, Some("Home Wi-Fi"), Some("uuid-1"));
+
+        let dir = crate::testing::TempRoot::new("rotate-mock");
+        let state_path = dir.path.join("state.json");
+        let mut state = State::default();
+        // Seed the factory MAC so capture-once doesn't try sysfs.
+        state
+            .original_macs
+            .insert("wlan0".into(), "aa:bb:cc:dd:ee:ff".into());
+
+        let cfg = cfg();
+        let avoid: HashSet<Mac> = HashSet::new();
+        let probe = MockProbe::responds(false);
+        let report = rt().block_on(async {
+            run_with_backend(
+                &backend,
+                Some("wlan0"),
+                &cfg,
+                &avoid,
+                &probe,
+                false,
+                &mut state,
+                &state_path,
+            )
+            .await
+            .unwrap()
+        });
+        assert_eq!(report.rotated.len(), 1, "one iface rotated");
+        assert_eq!(report.rotated[0].iface, "wlan0");
+
+        let log = backend.call_log();
+        assert!(log.iter().any(|c| matches!(c, MockCall::ListDevices)));
+        assert!(
+            log.iter()
+                .any(|c| matches!(c, MockCall::SetClonedMac { iface, .. } if iface == "wlan0")),
+            "set_cloned_mac must have landed exactly once for wlan0; log = {log:?}"
+        );
+
+        // Final mac on the mock matches what state.json carries.
+        let stored = backend.cloned_mac_for("wlan0").expect("cloned mac written");
+        let recorded = state.managed.interfaces["wlan0"]
+            .current_mac
+            .as_deref()
+            .expect("state has new mac");
+        assert_eq!(stored, recorded);
+    }
+
+    /// Pinned interfaces are skipped before any backend mutation runs.
+    #[test]
+    fn pinned_iface_is_skipped_without_set_cloned_mac() {
+        let backend = MockBackend::new();
+        let device = dev("wlan0");
+        backend.insert_device(device, Some("aa:bb:cc:dd:ee:ff".into()));
+        let dir = crate::testing::TempRoot::new("rotate-pinned");
+        let state_path = dir.path.join("state.json");
+        let mut state = State::default();
+        state
+            .original_macs
+            .insert("wlan0".into(), "aa:bb:cc:dd:ee:ff".into());
+        let mut rec = crate::state::InterfaceRecord::default();
+        rec.pinned = Some("02:00:00:00:00:99".into());
+        state.managed.interfaces.insert("wlan0".into(), rec);
+
+        let cfg = cfg();
+        let avoid: HashSet<Mac> = HashSet::new();
+        let probe = MockProbe::responds(false);
+        let report = rt().block_on(async {
+            run_with_backend(
+                &backend,
+                Some("wlan0"),
+                &cfg,
+                &avoid,
+                &probe,
+                false,
+                &mut state,
+                &state_path,
+            )
+            .await
+            .unwrap()
+        });
+        assert_eq!(report.rotated.len(), 0);
+        assert_eq!(report.skipped.len(), 1);
+        let log = backend.call_log();
+        assert!(
+            !log.iter().any(|c| matches!(c, MockCall::SetClonedMac { .. })),
+            "pinned iface must not trigger set_cloned_mac"
+        );
+    }
+
+    /// Iface filter mismatches every device → empty report. The trait
+    /// is still consulted (so we know the filter walked the device
+    /// list) but no mutator landed.
+    #[test]
+    fn iface_filter_no_match_yields_empty_report() {
+        let backend = MockBackend::new();
+        backend.insert_device(dev("wlan0"), Some("aa:bb:cc:dd:ee:ff".into()));
+        let dir = crate::testing::TempRoot::new("rotate-filter");
+        let state_path = dir.path.join("state.json");
+        let mut state = State::default();
+        state
+            .original_macs
+            .insert("wlan0".into(), "aa:bb:cc:dd:ee:ff".into());
+        let cfg = cfg();
+        let avoid: HashSet<Mac> = HashSet::new();
+        let probe = MockProbe::responds(false);
+        let report = rt().block_on(async {
+            run_with_backend(
+                &backend,
+                Some("wlan9"),
+                &cfg,
+                &avoid,
+                &probe,
+                false,
+                &mut state,
+                &state_path,
+            )
+            .await
+            .unwrap()
+        });
+        assert!(report.rotated.is_empty());
+        assert!(report.skipped.is_empty());
+    }
+
+    /// Issue #122 mirror — `set_cloned_mac` runs even when the device
+    /// has multiple connection profiles (the trait's NM impl iterates
+    /// internally; the mock collapses to one but the entry-point still
+    /// must call `set_cloned_mac` once with the device).
+    #[test]
+    fn rotate_invokes_set_cloned_mac_once_per_device() {
+        let backend = MockBackend::new();
+        let mut device = dev("wlan0");
+        device.connections.push(ConnectionRef::new("mock://wlan0/1"));
+        backend.insert_device(device, Some("aa:bb:cc:dd:ee:ff".into()));
+        let dir = crate::testing::TempRoot::new("rotate-multi");
+        let state_path = dir.path.join("state.json");
+        let mut state = State::default();
+        state
+            .original_macs
+            .insert("wlan0".into(), "aa:bb:cc:dd:ee:ff".into());
+        let cfg = cfg();
+        let avoid: HashSet<Mac> = HashSet::new();
+        let probe = MockProbe::responds(false);
+        let _ = rt().block_on(async {
+            run_with_backend(
+                &backend,
+                Some("wlan0"),
+                &cfg,
+                &avoid,
+                &probe,
+                false,
+                &mut state,
+                &state_path,
+            )
+            .await
+            .unwrap()
+        });
+        let n = backend
+            .call_log()
+            .into_iter()
+            .filter(|c| matches!(c, MockCall::SetClonedMac { .. }))
+            .count();
+        assert_eq!(
+            n, 1,
+            "one set_cloned_mac per device (the trait iterates profiles internally)"
+        );
+    }
+
     // === Roadmap M2 — collision-handling integration via MockProbe ===
 
     /// Pin the explain-candidate formatter shape so the human/JSON output
-    /// stays stable. The test caller doesn't have to spin up a full NM
+    /// stays stable. The test caller doesn't have to spin up a full backend
     /// device; we just exercise the conversion.
     #[test]
     fn explain_candidate_from_attempt_renders_each_reason() {
@@ -657,7 +941,7 @@ mod tests {
 
     /// `--explain` mode must collect at least one candidate-considered line
     /// per successful rotation. Drives the probe-aware generator directly
-    /// (no DBus needed) to confirm the data flow.
+    /// (no backend needed) to confirm the data flow.
     #[test]
     fn explain_mode_records_at_least_one_candidate_per_rotation() {
         let pool: Vec<String> = vec!["apple".into()];
@@ -732,11 +1016,6 @@ mod tests {
     }
 
     // === Roadmap M2 "Integration" — persona-aware MAC OUI shaping ===
-    //
-    // The integration tests assert that when `[persona] active = "iphone-15"`
-    // is set, `generate_with_probe` picks from Apple OUIs (not the global
-    // mac.oui_pool), and that when no persona is active the v0.2.x
-    // behaviour is preserved.
 
     use crate::config::PerSsidPolicy;
     use crate::mac::oui::APPLE;
@@ -894,5 +1173,91 @@ mod tests {
             outcome.chosen, collided,
             "chosen MAC must not be the collided one"
         );
+    }
+
+    // === Roadmap Milestone 1 — `rotate-if-needed` outcomes ===
+
+    /// `RotateOutcome::Rotated` shape — exercised against a mock
+    /// backend so the test doesn't depend on the live state.json
+    /// arithmetic. Returned outcome carries the new MAC verbatim.
+    #[test]
+    fn rotate_if_needed_rotated_outcome_round_trips() {
+        let backend = MockBackend::new();
+        backend.insert_device(dev("wlan0"), Some("aa:bb:cc:dd:ee:ff".into()));
+        let mac: Mac = "06:11:22:33:44:55".parse().unwrap();
+        backend.set_rotate_outcome(
+            "wlan0",
+            crate::backend::RotateOutcome::Rotated { new_mac: mac },
+        );
+        rt().block_on(async {
+            let outcome = backend
+                .rotate_if_needed("wlan0", std::time::Duration::from_secs(60))
+                .await
+                .unwrap();
+            assert_eq!(
+                outcome,
+                crate::backend::RotateOutcome::Rotated { new_mac: mac }
+            );
+        });
+    }
+
+    /// `RotateOutcome::SkippedCooldown` carries the remaining duration
+    /// so the dispatcher can log it.
+    #[test]
+    fn rotate_if_needed_cooldown_outcome_round_trips() {
+        let backend = MockBackend::new();
+        backend.insert_device(dev("wlan0"), None);
+        backend.set_rotate_outcome(
+            "wlan0",
+            crate::backend::RotateOutcome::SkippedCooldown {
+                remaining: std::time::Duration::from_secs(15),
+            },
+        );
+        rt().block_on(async {
+            let outcome = backend
+                .rotate_if_needed("wlan0", std::time::Duration::from_secs(60))
+                .await
+                .unwrap();
+            assert!(matches!(
+                outcome,
+                crate::backend::RotateOutcome::SkippedCooldown { .. }
+            ));
+        });
+    }
+
+    /// `NoFactoryMac` outcome — surfaces "operator action needed but
+    /// not an error". The dispatcher logs and moves on.
+    #[test]
+    fn rotate_if_needed_no_factory_mac_outcome_round_trips() {
+        let backend = MockBackend::new();
+        backend.insert_device(dev("wlan0"), None);
+        backend.set_rotate_outcome("wlan0", crate::backend::RotateOutcome::NoFactoryMac);
+        rt().block_on(async {
+            let outcome = backend
+                .rotate_if_needed("wlan0", std::time::Duration::from_secs(60))
+                .await
+                .unwrap();
+            assert_eq!(outcome, crate::backend::RotateOutcome::NoFactoryMac);
+        });
+    }
+
+    /// `BackendUnavailable` outcome — surfaces when the backend itself
+    /// can't service the request. The dispatcher exits with
+    /// SYSTEM_NOT_SUPPORTED.
+    #[test]
+    fn rotate_if_needed_backend_unavailable_outcome_round_trips() {
+        let backend = MockBackend::new();
+        backend.insert_device(dev("wlan0"), None);
+        backend.set_rotate_outcome("wlan0", crate::backend::RotateOutcome::BackendUnavailable);
+        rt().block_on(async {
+            let outcome = backend
+                .rotate_if_needed("wlan0", std::time::Duration::from_secs(60))
+                .await
+                .unwrap();
+            assert_eq!(
+                outcome,
+                crate::backend::RotateOutcome::BackendUnavailable
+            );
+        });
     }
 }

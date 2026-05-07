@@ -6,12 +6,11 @@
 //! `src/commands/{rotate,dhcp,ipv6,enterprise_wifi}.rs` through this
 //! impl so non-NM backends can drop in.
 
-use std::collections::HashMap;
 use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
-use zbus::zvariant::{ObjectPath, OwnedObjectPath, OwnedValue, Value};
+use zbus::zvariant::{ObjectPath, OwnedObjectPath};
 
 use super::{
     BackendDevice, BackendKind, BoxFuture, ConnectionRef, NetworkBackend, RenewOutcome,
@@ -376,17 +375,6 @@ fn ymdhms_to_unix(y: u32, mo: u32, d: u32, h: u32, mi: u32, s: u32) -> u64 {
     let secs = days * 86_400 + h as i64 * 3600 + mi as i64 * 60 + s as i64;
     secs.max(0) as u64
 }
-
-// Re-export the dummy used by tests so the explicit-driver path in
-// `select::tests` keeps compiling without leaking the inner HashMap.
-#[allow(dead_code)]
-fn _force_link_owned_value() -> HashMap<String, OwnedValue> {
-    HashMap::new()
-}
-
-// Tag a never-used-but-referenced Value so rustc keeps the import.
-#[allow(dead_code)]
-fn _force_link_value(_: Value<'static>) {}
 
 #[cfg(test)]
 mod tests {

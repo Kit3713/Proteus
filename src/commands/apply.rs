@@ -16,7 +16,7 @@
 
 use std::path::Path;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde::Serialize;
 
 use crate::config::Config;
@@ -75,6 +75,18 @@ pub fn run(yes: bool, state_path: Option<&Path>, config_path: Option<&Path>) -> 
     let cfg_path = super::config_path(config_path);
     let config = Config::default_or_loaded(&cfg_path)?;
 
+    // Roadmap Milestone 1: resolve the backend once at the top of the
+    // apply cycle. Per-feature runners select again internally (each
+    // is callable as a standalone subcommand), but resolving here
+    // surfaces "no backend available" as a single, clear error before
+    // any component prints its own line — the whole cycle uses the
+    // same auto-pick because `select` is deterministic for a fixed
+    // driver string.
+    if let Err(e) = preflight_backend(&config) {
+        eprintln!("proteus apply: backend preflight failed: {e:#}");
+        return Ok(exit::SYSTEM_NOT_SUPPORTED);
+    }
+
     let warnings = risk_warnings(&config);
     print_risk_warnings(&warnings);
 
@@ -93,6 +105,25 @@ pub(crate) struct RiskWarning {
     pub knob: &'static str,
     pub breakage: &'static str,
     pub wiki: &'static str,
+}
+
+/// One-shot backend resolution. Roadmap M1 acceptance:
+/// `proteus apply` must surface a clear "backend unavailable" line when
+/// none of nm / networkd / raw is present, rather than letting every
+/// component fail with its own DBus error. The trait object is
+/// dropped at the end of this function — per-feature runners select
+/// again internally, but they get the same answer (the resolver is
+/// deterministic).
+pub(crate) fn preflight_backend(config: &Config) -> anyhow::Result<&'static str> {
+    let driver = config.backend.driver.clone();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("starting tokio runtime")?;
+    let backend = rt.block_on(async { crate::backend::select::select(&driver).await })?;
+    let name = backend.name();
+    tracing::info!(driver = %driver, resolved = %name, "apply: backend preflight ok");
+    Ok(name)
 }
 
 /// Knobs the user can opt into that are known to break specific things on

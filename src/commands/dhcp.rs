@@ -12,8 +12,16 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use serde::Serialize;
 
+use crate::backend::{BackendDevice, BackendKind, NetworkBackend, RenewOutcome as BackendRenewOutcome};
 use crate::config::Config;
 use crate::exit;
+// Roadmap Milestone 1: keep `crate::nm::*` reachable for the deep
+// settings-dict helpers (snapshot_dhcp, apply_dhcp_settings, ...) —
+// these operate on NM's ConnectionSettings dict and have no DBus
+// surface area. The networkd / raw backends will grow native
+// equivalents as they land. The high-level apply/revert/renew flows
+// route through `crate::backend::*` so the orchestrator can share a
+// single backend selection (Roadmap M1).
 use crate::nm::{self, ConnectionSettings, DeviceKind, DeviceInfo, dhcp as nmdhcp};
 use crate::state::{DhcpSettingsSnapshot, State};
 use crate::version;
@@ -170,11 +178,19 @@ pub fn renew(iface: Option<&str>, yes: bool, state_path: Option<&Path>) -> Resul
         Err(code) => return Ok(code),
     };
 
+    let config_path = super::config_path(None);
+    let config = Config::default_or_loaded(&config_path).unwrap_or_default();
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .context("starting tokio runtime")?;
-    let result: Result<Vec<RenewOutcome>> = rt.block_on(async { do_renew(iface).await });
+    let result: Result<Vec<RenewOutcome>> = rt.block_on(async {
+        // Roadmap M1: the renew path goes through the backend trait so
+        // the same code drives nm / networkd / raw once the latter two
+        // grow real implementations.
+        let backend = crate::backend::select::select(&config.backend.driver).await?;
+        do_renew_with_backend(backend.as_ref(), iface).await
+    });
 
     let outcomes = match result {
         Ok(o) => o,
@@ -213,34 +229,39 @@ struct RenewOutcome {
     note: Option<String>,
 }
 
-async fn do_renew(iface_filter: Option<&str>) -> Result<Vec<RenewOutcome>> {
-    let conn = zbus::Connection::system()
-        .await
-        .context("connecting to system DBus (NetworkManager required)")?;
-    let devices = nm::list_devices(&conn).await?;
+/// Backend-trait-routed renew loop. Roadmap M1: replaces the previous
+/// `do_renew` which talked to `crate::nm::*` directly. The trait's
+/// `RenewOutcome` mirrors NM's three-variant enum and the
+/// stub backends return `bail` when the user explicitly picks them
+/// (`--backend networkd|raw` is a follow-up flag).
+pub(crate) async fn do_renew_with_backend(
+    backend: &dyn NetworkBackend,
+    iface_filter: Option<&str>,
+) -> Result<Vec<RenewOutcome>> {
+    let devices = backend.list_devices().await?;
     let mut out = Vec::new();
     for dev in devices {
-        if !device_matches(&dev, iface_filter) {
+        if !backend_device_matches(&dev, iface_filter) {
             continue;
         }
-        let entry = match nmdhcp::renew_lease(&conn, &dev.path).await {
-            Ok(nmdhcp::RenewOutcome::Reapplied) => RenewOutcome {
-                iface: dev.interface.clone(),
+        let entry = match backend.renew_lease(&dev).await {
+            Ok(BackendRenewOutcome::Reapplied) => RenewOutcome {
+                iface: dev.iface.clone(),
                 method: "reapply".into(),
                 note: None,
             },
-            Ok(nmdhcp::RenewOutcome::DisconnectActivated) => RenewOutcome {
-                iface: dev.interface.clone(),
+            Ok(BackendRenewOutcome::DisconnectActivated) => RenewOutcome {
+                iface: dev.iface.clone(),
                 method: "disconnect+activate".into(),
                 note: Some("Reapply unsupported; cycled connection".into()),
             },
-            Ok(nmdhcp::RenewOutcome::NoActiveConnection) => RenewOutcome {
-                iface: dev.interface.clone(),
+            Ok(BackendRenewOutcome::NoActiveConnection) => RenewOutcome {
+                iface: dev.iface.clone(),
                 method: "skipped".into(),
                 note: Some("no active connection".into()),
             },
             Err(e) => RenewOutcome {
-                iface: dev.interface.clone(),
+                iface: dev.iface.clone(),
                 method: "failed".into(),
                 note: Some(format!("{e:#}")),
             },
@@ -251,10 +272,26 @@ async fn do_renew(iface_filter: Option<&str>) -> Result<Vec<RenewOutcome>> {
     Ok(out)
 }
 
+/// Same filter rule as [`device_matches`] but for the trait's
+/// `BackendDevice`. Roadmap M1.
+fn backend_device_matches(dev: &BackendDevice, iface_filter: Option<&str>) -> bool {
+    if let Some(name) = iface_filter {
+        return dev.iface == name;
+    }
+    matches!(dev.kind, BackendKind::Wifi | BackendKind::Ethernet) && dev.managed
+}
+
 /// Filter rule: when `iface_filter` is set, only that exact interface
 /// (regardless of kind/managed state — gives the user a way to surface
 /// a "no such NM device" error). When unset, every managed wifi/ethernet
 /// device matches.
+///
+/// Roadmap M1: production now uses [`backend_device_matches`] which
+/// has the same semantics on the backend trait's `BackendDevice`.
+/// This NM-shaped form is kept for the existing unit test that
+/// pre-dated the trait migration, so the regression coverage stays
+/// pinned. New callers should reach for the trait-flavoured one.
+#[allow(dead_code)]
 fn device_matches(dev: &DeviceInfo, iface_filter: Option<&str>) -> bool {
     if let Some(name) = iface_filter {
         return dev.interface == name;
@@ -835,5 +872,113 @@ mod tests {
     fn renew_on_apply_defaults_to_false() {
         let cfg = crate::config::DhcpConfig::default();
         assert!(!cfg.renew_on_apply);
+    }
+
+    // === Roadmap Milestone 1 — renew path routes through backend trait ===
+
+    use crate::backend::mock::{MockBackend, MockCall};
+    use crate::backend::{BackendDevice, BackendKind, ConnectionRef};
+    use crate::backend::RenewOutcome as BackendRenewOutcome;
+
+    fn rt() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+    }
+
+    fn mock_dev(iface: &str) -> BackendDevice {
+        BackendDevice {
+            iface: iface.into(),
+            kind: BackendKind::Wifi,
+            hw_address: None,
+            identifier: format!("mock://{iface}"),
+            connections: vec![ConnectionRef::new(format!("mock://{iface}/0"))],
+            managed: true,
+        }
+    }
+
+    /// `do_renew_with_backend` + `MockBackend`: renew on a single
+    /// managed iface yields one `Reapplied` outcome. Pins the call
+    /// sequence (list_devices then renew_lease) so the trait route is
+    /// stable.
+    #[test]
+    fn renew_with_backend_records_renew_lease_call() {
+        let backend = MockBackend::new();
+        backend.insert_device(mock_dev("wlan0"), None);
+        backend.set_renew_outcome("wlan0", BackendRenewOutcome::Reapplied);
+
+        let outcomes = rt().block_on(async {
+            do_renew_with_backend(&backend, None).await.unwrap()
+        });
+        assert_eq!(outcomes.len(), 1);
+        assert_eq!(outcomes[0].iface, "wlan0");
+        assert_eq!(outcomes[0].method, "reapply");
+
+        let log = backend.call_log();
+        assert!(log.iter().any(|c| matches!(c, MockCall::ListDevices)));
+        assert!(
+            log.iter()
+                .any(|c| matches!(c, MockCall::RenewLease { iface } if iface == "wlan0"))
+        );
+    }
+
+    /// Iface filter mismatches every device → empty outcome list
+    /// (no `RenewLease` call landed on the mock).
+    #[test]
+    fn renew_with_backend_iface_filter_skips_non_matches() {
+        let backend = MockBackend::new();
+        backend.insert_device(mock_dev("wlan0"), None);
+        backend.set_renew_outcome("wlan0", BackendRenewOutcome::Reapplied);
+        let outcomes = rt().block_on(async {
+            do_renew_with_backend(&backend, Some("eth9")).await.unwrap()
+        });
+        assert!(outcomes.is_empty());
+        let log = backend.call_log();
+        assert!(!log.iter().any(|c| matches!(c, MockCall::RenewLease { .. })));
+    }
+
+    /// `NoActiveConnection` outcome surfaces with the matching method
+    /// label. Lets the human renderer print "skipped".
+    #[test]
+    fn renew_with_backend_no_active_connection_renders_skipped() {
+        let backend = MockBackend::new();
+        backend.insert_device(mock_dev("wlan0"), None);
+        backend.set_renew_outcome("wlan0", BackendRenewOutcome::NoActiveConnection);
+        let outcomes = rt().block_on(async {
+            do_renew_with_backend(&backend, None).await.unwrap()
+        });
+        assert_eq!(outcomes.len(), 1);
+        assert_eq!(outcomes[0].method, "skipped");
+    }
+
+    /// `DisconnectActivated` outcome maps to the more disruptive
+    /// fallback label. Pin the per-method label so log parsers stay
+    /// happy.
+    #[test]
+    fn renew_with_backend_disconnect_activated_label() {
+        let backend = MockBackend::new();
+        backend.insert_device(mock_dev("wlan0"), None);
+        backend.set_renew_outcome("wlan0", BackendRenewOutcome::DisconnectActivated);
+        let outcomes = rt().block_on(async {
+            do_renew_with_backend(&backend, None).await.unwrap()
+        });
+        assert_eq!(outcomes[0].method, "disconnect+activate");
+    }
+
+    /// Unmanaged ethernet iface is skipped without a filter. Verifies
+    /// the trait-side `backend_device_matches` mirrors the legacy
+    /// NM-side `device_matches`.
+    #[test]
+    fn renew_with_backend_skips_unmanaged_devices_without_filter() {
+        let backend = MockBackend::new();
+        let mut d = mock_dev("eth0");
+        d.kind = BackendKind::Ethernet;
+        d.managed = false;
+        backend.insert_device(d, None);
+        let outcomes = rt().block_on(async {
+            do_renew_with_backend(&backend, None).await.unwrap()
+        });
+        assert!(outcomes.is_empty());
     }
 }

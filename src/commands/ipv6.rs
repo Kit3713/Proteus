@@ -18,10 +18,16 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use serde::Serialize;
 
+use crate::backend::{BackendDevice, BackendKind, NetworkBackend};
 use crate::commands::status as status_cmd;
 use crate::config::Config;
 use crate::exit;
 use crate::ipv6::{self, InterfaceSnapshot};
+// Roadmap Milestone 1: kept for the read-side `Ipv6Snapshot` decoder
+// used by `proteus ipv6 status`. The NM-specific snapshot reader is
+// fine to keep as long as no zbus call site lives in this file —
+// migration of the snapshot reader to the trait is a follow-up that
+// pairs with networkd's native IPv6 surface.
 use crate::nm::{self, DeviceInfo, DeviceKind};
 use crate::state::{Ipv6Originals, State};
 use crate::version;
@@ -201,12 +207,14 @@ pub fn apply(yes: bool, state_path: Option<&Path>, config_path: Option<&Path>) -
         tracing::warn!("ipv6: sysctl --system failed: {e:#}");
     }
 
-    if let Some(results) = with_nm(|conn, devices| async move {
+    // Roadmap M1: backend trait drives the per-iface NM apply so a
+    // future `--backend networkd|raw` flag flows through here.
+    if let Some(results) = with_backend(&config, |backend, devices| async move {
         let mut out: Vec<(String, NmApplyOutcome)> = Vec::with_capacity(names.len());
         for iface in &names {
             out.push((
                 (*iface).to_string(),
-                apply_nm_one(&conn, &devices, iface).await,
+                apply_nm_one_via_backend(backend.as_ref(), &devices, iface).await,
             ));
         }
         out
@@ -358,6 +366,73 @@ async fn read_nm_iface(
     })
 }
 
+/// Backend-trait version of [`apply_nm_one`]. Roadmap M1: the per-
+/// iface IPv6 NM update goes through the trait so the same code path
+/// drives nm / networkd / raw once those grow real implementations.
+async fn apply_nm_one_via_backend(
+    backend: &dyn NetworkBackend,
+    devices: &[BackendDevice],
+    iface: &str,
+) -> NmApplyOutcome {
+    let Some(dev) = devices.iter().find(|d| d.iface == iface) else {
+        return NmApplyOutcome::Skipped("no managed device".into());
+    };
+    if !matches!(dev.kind, BackendKind::Wifi | BackendKind::Ethernet) {
+        return NmApplyOutcome::Skipped(format!("unsupported kind {:?}", dev.kind));
+    }
+    if dev.connections.is_empty() {
+        return NmApplyOutcome::Skipped("no connection profile".into());
+    }
+    // Issue #122: write to every profile bound to this device.
+    let mut primary: Option<String> = None;
+    let mut last_err: Option<String> = None;
+    let settings = crate::ipv6::nm::Ipv6NmSettings::default();
+    for cref in &dev.connections {
+        let connection = backend.read_connection_id(cref).await.ok().flatten();
+        match backend.set_ipv6_settings(cref, settings.clone()).await {
+            Ok(()) => {
+                if primary.is_none() {
+                    primary = connection;
+                }
+            }
+            Err(e) => {
+                last_err = Some(format!("update failed: {e:#}"));
+                continue;
+            }
+        }
+    }
+    if primary.is_some() {
+        NmApplyOutcome::Applied {
+            connection: primary,
+        }
+    } else {
+        NmApplyOutcome::Skipped(last_err.unwrap_or_else(|| "all profiles failed".into()))
+    }
+}
+
+/// Run `body` with a backend resolved off the user's `[backend] driver`
+/// and the trait-side device list pre-fetched. Mirrors [`with_nm`] but
+/// against the backend trait. Returns `None` on any backend / runtime
+/// failure so callers treat that as "skip this section" cleanly.
+fn with_backend<F, Fut, T>(config: &Config, body: F) -> Option<T>
+where
+    F: FnOnce(Box<dyn NetworkBackend>, Vec<BackendDevice>) -> Fut,
+    Fut: std::future::Future<Output = T>,
+{
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("starting tokio runtime")
+        .ok()?;
+    let driver = config.backend.driver.clone();
+    runtime.block_on(async move {
+        let backend = crate::backend::select::select(&driver).await.ok()?;
+        let devices = backend.list_devices().await.ok()?;
+        Some(body(backend, devices).await)
+    })
+}
+
+#[allow(dead_code)]
 async fn apply_nm_one(
     conn: &zbus::Connection,
     devices: &[DeviceInfo],
@@ -629,6 +704,86 @@ mod tests {
         assert!(keys.contains(&"temp_valid_lft"));
         assert!(keys.contains(&"temp_prefered_lft"));
         assert_eq!(keys.len(), 4);
+    }
+
+    // === Roadmap Milestone 1 — backend trait integration ===
+
+    use crate::backend::mock::{MockBackend, MockCall};
+    use crate::backend::{BackendDevice as BD, BackendKind as BK, ConnectionRef};
+
+    fn rt() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+    }
+
+    fn mock_dev(iface: &str) -> BD {
+        BD {
+            iface: iface.into(),
+            kind: BK::Wifi,
+            hw_address: None,
+            identifier: format!("mock://{iface}"),
+            connections: vec![ConnectionRef::new(format!("mock://{iface}/0"))],
+            managed: true,
+        }
+    }
+
+    /// `apply_nm_one_via_backend` calls `set_ipv6_settings` once per
+    /// profile bound to the device (issue #122 mirror).
+    #[test]
+    fn ipv6_apply_via_backend_sets_settings_and_records_call() {
+        let backend = MockBackend::new();
+        backend.insert_device(mock_dev("wlan0"), None);
+        let cref = ConnectionRef::new("mock://wlan0/0");
+        backend.insert_connection(&cref, Some("Home"), Some("uuid-1"));
+
+        let outcome = rt().block_on(async {
+            let devs = backend.list_devices().await.unwrap();
+            apply_nm_one_via_backend(&backend, &devs, "wlan0").await
+        });
+        assert!(matches!(outcome, NmApplyOutcome::Applied { .. }));
+
+        let log = backend.call_log();
+        assert!(
+            log.iter().any(|c| matches!(c, MockCall::SetIpv6Settings { connection, .. } if connection == "mock://wlan0/0")),
+            "set_ipv6_settings must have been called on the connection; log = {log:?}"
+        );
+        let written = backend.ipv6_for(&cref).expect("ipv6 settings written");
+        // Defaults are stable-privacy + ll DUID + mac IAID.
+        assert_eq!(written.addr_gen_mode, "stable-privacy");
+    }
+
+    /// `apply_nm_one_via_backend` returns `Skipped` when the device
+    /// has no connection profile bound. Pin so the renderer's
+    /// "no connection profile" line stays stable.
+    #[test]
+    fn ipv6_apply_via_backend_skips_when_no_connections() {
+        let backend = MockBackend::new();
+        let mut d = mock_dev("wlan0");
+        d.connections.clear();
+        backend.insert_device(d, None);
+        let outcome = rt().block_on(async {
+            let devs = backend.list_devices().await.unwrap();
+            apply_nm_one_via_backend(&backend, &devs, "wlan0").await
+        });
+        assert!(matches!(outcome, NmApplyOutcome::Skipped(_)));
+    }
+
+    /// Iface absent from the backend's device list → `Skipped("no
+    /// managed device")`.
+    #[test]
+    fn ipv6_apply_via_backend_unknown_iface_is_skipped() {
+        let backend = MockBackend::new();
+        backend.insert_device(mock_dev("wlan0"), None);
+        let outcome = rt().block_on(async {
+            let devs = backend.list_devices().await.unwrap();
+            apply_nm_one_via_backend(&backend, &devs, "wlan9").await
+        });
+        match outcome {
+            NmApplyOutcome::Skipped(s) => assert!(s.contains("no managed device")),
+            other => panic!("expected Skipped, got {other:?}"),
+        }
     }
 
     /// Issue #119 — sacred-originals invariant. The ipv6 apply path saves

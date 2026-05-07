@@ -87,6 +87,25 @@ pub enum Command {
         #[arg(long)]
         explain: bool,
     },
+    /// Rotate the MAC iff the cooldown window has elapsed
+    /// (Roadmap Milestone 1, issue #206-C). Designed to be called by
+    /// the NetworkManager dispatcher so it stops sed-parsing
+    /// `proteus current --json`. Returns a typed
+    /// [`crate::backend::RotateOutcome`] as a single stdout line plus
+    /// a deterministic exit code (`0` for rotated/skipped/no-factory,
+    /// `70` for backend-unavailable).
+    #[command(name = "rotate-if-needed")]
+    RotateIfNeeded {
+        /// Interface name. The NM dispatcher always passes one; the
+        /// CLI defaults to the first managed wifi/ethernet.
+        #[arg(long)]
+        iface: Option<String>,
+        /// Cooldown budget in seconds.
+        #[arg(long, default_value_t = 60)]
+        cooldown: u64,
+        #[arg(long)]
+        yes: bool,
+    },
     /// Pin an interface or NM connection to a specific MAC.
     Pin {
         /// Interface name or NM connection profile.

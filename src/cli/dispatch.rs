@@ -91,6 +91,17 @@ pub(super) fn dispatch(cli: Cli) -> Result<u8> {
             cli.state.as_deref(),
             cli.config.as_deref(),
         ),
+        Command::RotateIfNeeded {
+            iface,
+            cooldown,
+            yes,
+        } => commands::rotate::run_if_needed(
+            iface.as_deref(),
+            cooldown,
+            yes,
+            cli.state.as_deref(),
+            cli.config.as_deref(),
+        ),
         Command::Pin { target, mac, yes } => {
             commands::pin::run(&target, mac.as_deref(), yes, cli.state.as_deref())
         }
