@@ -18,32 +18,30 @@ struct MissingReport<'a> {
 pub fn run(json: bool, override_path: Option<&Path>) -> Result<u8> {
     let path = super::config_path(override_path);
 
-    let raw = match std::fs::read_to_string(&path) {
-        Ok(s) => s,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            if json {
-                super::print_json(&MissingReport {
-                    config_present: false,
-                    path: path.display().to_string(),
-                    note: "no config file; defaults are in effect — see `proteus show-defaults`",
-                })?;
-            } else {
-                println!(
-                    "no config file at {}; using built-in defaults — see `proteus show-defaults`",
-                    path.display()
-                );
-            }
-            return Ok(exit::SUCCESS);
+    if !path.exists() {
+        if json {
+            super::print_json(&MissingReport {
+                config_present: false,
+                path: path.display().to_string(),
+                note: "no config file; defaults are in effect — see `proteus show-defaults`",
+            })?;
+        } else {
+            println!(
+                "no config file at {}; using built-in defaults — see `proteus show-defaults`",
+                path.display()
+            );
         }
-        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+        return Ok(exit::SUCCESS);
+    }
+    if let Err(e) = std::fs::metadata(&path) {
+        if e.kind() == std::io::ErrorKind::PermissionDenied {
             tracing::warn!("skip {}: permission denied", path.display());
             return Ok(exit::PERMISSION_ERROR);
         }
-        Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
-    };
+        return Err(e).with_context(|| format!("stat {}", path.display()));
+    }
 
-    let cfg: Config =
-        toml::from_str(&raw).with_context(|| format!("parsing {}", path.display()))?;
+    let cfg = Config::default_or_loaded(&path)?;
     super::render_config(&cfg, json)?;
     Ok(exit::SUCCESS)
 }

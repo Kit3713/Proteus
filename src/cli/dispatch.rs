@@ -188,5 +188,6 @@ fn dispatch_config(action: ConfigAction, config: Option<&Path>) -> Result<u8> {
         ConfigAction::Validate { json } => c::validate(json, config),
         ConfigAction::Reset { section, yes } => c::reset(section.as_deref(), yes, config),
         ConfigAction::Keys { json } => c::keys(json),
+        ConfigAction::SetProfile { profile, yes } => c::set_profile(&profile, yes, config),
     }
 }

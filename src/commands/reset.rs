@@ -131,12 +131,15 @@ mod tests {
 
     #[test]
     fn defaults_round_trip_via_toml() {
-        // The `reset` operation writes Config::default() as TOML; we must be
-        // able to read it back into the same shape and key defaults must
-        // survive the trip.
+        // The `reset` operation writes the default profile baseline as
+        // TOML; we must be able to read it back through the RawConfig
+        // resolver and recover the same effective values.
         let cfg = Config::default();
-        let s = toml::to_string_pretty(&cfg).unwrap();
-        let back: Config = toml::from_str(&s).unwrap();
+        let raw = cfg.to_raw_explicit();
+        let s = toml::to_string_pretty(&raw).unwrap();
+        let parsed: crate::config::RawConfig = toml::from_str(&s).unwrap();
+        let back = parsed.resolve();
+        assert_eq!(back.profile, cfg.profile);
         assert_eq!(back.probes.quorum_n, cfg.probes.quorum_n);
         assert_eq!(back.probes.quorum_total, cfg.probes.quorum_total);
         assert_eq!(

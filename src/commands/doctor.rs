@@ -13,7 +13,6 @@ use anyhow::Result;
 use serde::Serialize;
 
 use crate::commands::status as status_cmd;
-use crate::config::Config;
 use crate::exit;
 use crate::state::State;
 use crate::version;
@@ -380,7 +379,7 @@ fn check_config_dir() -> Check {
 fn check_config_file(override_path: Option<&Path>) -> Check {
     let path = super::config_path(override_path);
     match std::fs::read_to_string(&path) {
-        Ok(s) => match toml::from_str::<Config>(&s) {
+        Ok(s) => match toml::from_str::<crate::config::RawConfig>(&s) {
             Ok(_) => Check {
                 category: "files",
                 name: "config_file",
