@@ -44,7 +44,7 @@ pub struct Originals {
     /// interface name.
     pub ipv6: BTreeMap<String, Ipv6Originals>,
     /// First-apply snapshot of per-NM-connection settings Proteus mutates
-    /// (currently `802-1x.anonymous-identity`). Keyed by connection id.
+    /// (802.1X anonymous-identity, DHCP settings). Keyed by connection id.
     pub connections: BTreeMap<String, ConnectionOriginals>,
     /// Cached sysctl values keyed by full sysctl name (e.g.
     /// `net.ipv4.tcp_timestamps`). Populated on `proteus stack apply` before
@@ -53,10 +53,9 @@ pub struct Originals {
     pub sysctls: BTreeMap<String, String>,
 }
 
-/// Cached pre-Proteus values for the per-connection 802.1X fields Proteus
-/// can rewrite. Captured on the first enable, never re-captured. `disable`
-/// reads from here to know whether the connection had a non-empty
-/// anonymous-identity before Proteus touched it.
+/// Cached pre-Proteus values for the per-connection settings Proteus can
+/// rewrite (802.1X anonymous-identity, DHCP options). Captured on first
+/// touch, never re-captured.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ConnectionOriginals {
@@ -64,6 +63,28 @@ pub struct ConnectionOriginals {
     /// was unset before Proteus's first enable on this connection.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub anonymous_identity: Option<String>,
+    /// Original DHCP settings before Proteus's first apply on this connection.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dhcp_settings: Option<DhcpSettingsSnapshot>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct DhcpSettingsSnapshot {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ipv4_dhcp_send_hostname: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ipv4_dhcp_hostname: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ipv4_dhcp_fqdn: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ipv4_dhcp_vendor_class_identifier: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ipv4_dhcp_client_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ipv6_dhcp_duid: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ipv6_dhcp_iaid: Option<String>,
 }
 
 /// Cached pre-Proteus values for the IPv6 sysctls Proteus manages on a
