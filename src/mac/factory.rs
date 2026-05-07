@@ -179,24 +179,31 @@ mod tests {
         }
     }
 
+    /// Issue #206-D: this used to be a parallel `TestSysfs` struct that
+    /// duplicated `crate::testing::TempRoot`'s tempdir lifecycle. The two
+    /// had slightly different naming schemes (`-{pid}-{nanos}` vs
+    /// `-{label}-test-{rand-hex}`) and identical drop behaviour. The
+    /// unified shape: wrap `TempRoot` and add the sysfs-specific writers
+    /// as methods on the wrapper. Drop semantics, naming, and collision
+    /// resistance are now whatever `TempRoot` does.
     struct TestSysfs {
-        root: PathBuf,
+        inner: crate::testing::TempRoot,
     }
 
     impl TestSysfs {
         fn new(label: &str) -> Self {
-            let pid = std::process::id();
-            let nanos = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.subsec_nanos())
-                .unwrap_or(0);
-            let root = std::env::temp_dir().join(format!("proteus-{label}-{pid}-{nanos}"));
-            fs::create_dir_all(&root).expect("mkdir test root");
-            Self { root }
+            Self {
+                inner: crate::testing::TempRoot::new(label),
+            }
+        }
+
+        /// Path to the simulated `/sys/class/net` root.
+        fn root(&self) -> &std::path::Path {
+            &self.inner.path
         }
 
         fn write(&self, iface: &str, name: &str, value: &str) {
-            let p = self.root.join(iface).join(name);
+            let p = self.root().join(iface).join(name);
             if let Some(parent) = p.parent() {
                 fs::create_dir_all(parent).expect("mkdir parent");
             }
@@ -210,12 +217,6 @@ mod tests {
         fn write_address(&self, iface: &str, mac: &str, assign_type: &str) {
             self.write(iface, "address", &format!("{mac}\n"));
             self.write(iface, "addr_assign_type", &format!("{assign_type}\n"));
-        }
-    }
-
-    impl Drop for TestSysfs {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.root);
         }
     }
 
@@ -237,7 +238,7 @@ mod tests {
         m.insert("wlan0".to_string(), "99:88:77:66:55:44".to_string());
         let stub = StubEthtool { map: m };
 
-        let got = permanent_address_under(&s.root, "wlan0", &stub);
+        let got = permanent_address_under(s.root(), "wlan0", &stub);
         assert_eq!(got.as_deref(), Some("aa:bb:cc:dd:ee:ff"));
     }
 
@@ -252,7 +253,7 @@ mod tests {
         m.insert("eth0".to_string(), "AA:BB:CC:DD:EE:FF".to_string());
         let stub = StubEthtool { map: m };
 
-        let got = permanent_address_under(&s.root, "eth0", &stub);
+        let got = permanent_address_under(s.root(), "eth0", &stub);
         assert_eq!(got.as_deref(), Some("aa:bb:cc:dd:ee:ff"));
     }
 
@@ -263,7 +264,7 @@ mod tests {
         let s = TestSysfs::new("factory-fallback-perm");
         s.write_address("eth0", "AA:BB:CC:DD:EE:FF", "0");
 
-        let got = permanent_address_under(&s.root, "eth0", &no_ethtool());
+        let got = permanent_address_under(s.root(), "eth0", &no_ethtool());
         assert_eq!(got.as_deref(), Some("aa:bb:cc:dd:ee:ff"));
     }
 
@@ -275,7 +276,7 @@ mod tests {
         let s = TestSysfs::new("factory-fallback-refused");
         s.write_address("eth0", "11:22:33:44:55:66", "3");
 
-        let got = permanent_address_under(&s.root, "eth0", &no_ethtool());
+        let got = permanent_address_under(s.root(), "eth0", &no_ethtool());
         assert!(got.is_none(), "expected None, got {got:?}");
     }
 
@@ -288,7 +289,7 @@ mod tests {
         s.write_phy("wlan0", "AA:BB:CC:DD:EE:FF");
         s.write_address("wlan0", "11:22:33:44:55:66", "0");
 
-        let got = permanent_address_under(&s.root, "wlan0", &no_ethtool());
+        let got = permanent_address_under(s.root(), "wlan0", &no_ethtool());
         assert_eq!(
             got.as_deref(),
             Some("aa:bb:cc:dd:ee:ff"),
@@ -299,7 +300,7 @@ mod tests {
     #[test]
     fn returns_none_when_iface_unknown() {
         let s = TestSysfs::new("factory-unknown");
-        assert!(permanent_address_under(&s.root, "ghost0", &no_ethtool()).is_none());
+        assert!(permanent_address_under(s.root(), "ghost0", &no_ethtool()).is_none());
     }
 
     #[test]
@@ -307,7 +308,7 @@ mod tests {
         let s = TestSysfs::new("factory-allzero");
         s.write_phy("wlan0", "00:00:00:00:00:00");
 
-        let got = permanent_address_under(&s.root, "wlan0", &no_ethtool());
+        let got = permanent_address_under(s.root(), "wlan0", &no_ethtool());
         assert!(got.is_none());
     }
 

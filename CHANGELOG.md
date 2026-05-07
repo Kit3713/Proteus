@@ -11,7 +11,59 @@ landed, what is in flight, and what is on the bench. See
 
 ## [Unreleased]
 
-(post-v0.3.0-alpha work lands here)
+(post-v0.3.1-alpha work lands here)
+
+## [0.3.1-alpha] - 2026-05-07
+
+Final wrap-up batch on the v0.3 cycle. Roadmap moves to 5⏳ / 78✅ /
+4🚧 — ~92% complete on bullet count. 794 tests passing.
+
+### Fingerprint hardening completion (M4c)
+
+- **Event sources** wired end-to-end. `proteus events run` daemon
+  registers handlers for connection-up / link-flap / regulatory-domain
+  change / portal-auth, with Mock variants for tests and real
+  socket-probes that gracefully degrade to `Unsupported` when
+  CAP_NET_ADMIN is absent. New `dist/systemd/proteus-events.service`
+  with `RestrictAddressFamilies` / `AmbientCapabilities=CAP_NET_ADMIN
+  CAP_NET_RAW`. Opt-in via `[events] enabled = true`.
+
+### Doctor improvements (M5)
+
+- `pkg-format` check reports the host's native package manager (deb /
+  rpm / apk / pacman / xbps / portage) and points at the matching
+  `dist/<recipe>/` entry.
+- `quirky-setup` warning surfaces Pi-hole / dnscrypt-proxy /
+  openresolv-without-binary / NetworkManager-l2tp profiles so the
+  operator knows ahead of time which Proteus features will defer.
+
+### Tests + harnesses (M6)
+
+- `tests/integration/scenarios/persona-effectiveness.sh` — `nmap -O`
+  before/after a persona apply, asserts the OS-detection row changed
+  materially (Milestone 2 acceptance).
+- `tests/integration/scenarios/image-diff.sh` — SHA tree of `/etc`,
+  `/usr/bin`, `/var/lib`, etc. before install and after uninstall
+  asserts byte-equality (catches stray-file regressions in
+  install.sh).
+- `tests/realworld/probe.sh` + README — read-only network-state
+  capture for coffee-shop / hotel / conference / airport debugging,
+  with anonymisation pass for public IPs and SSIDs.
+
+### Bug fixes
+
+- **#206-D** `TempRoot` / `TestSysfs` unified. `TestSysfs` now wraps
+  `crate::testing::TempRoot` and adds the sysfs-specific writers as
+  methods. Drop semantics, naming scheme, and collision resistance
+  match the canonical `TempRoot`.
+
+### Docs
+
+- `wiki/backend.md` — user-facing `NetworkBackend` reference.
+- `docs/security/dbus-surface.md` — implementation-side artifact for
+  external security review.
+- `wiki/troubleshooting.md` — symptom × backend / init-system /
+  persona / exit-code matrix.
 
 ## [0.3.0-alpha] - 2026-05-07
 

@@ -184,10 +184,10 @@ Cross-cutting polish; runs alongside the other milestones.
 
 ### Tests
 
-- ⏳ Image-diff verification of clean install/uninstall (the old roadmap's ⏳ item) — extend `tests/integration/run.sh` to take a SHA-tree of `/etc /var/lib /usr/bin /usr/share` before install and after uninstall and assert equality.
+- ✅ Image-diff verification of clean install/uninstall (the old roadmap's ⏳ item) — extend `tests/integration/run.sh` to take a SHA-tree of `/etc /var/lib /usr/bin /usr/share` before install and after uninstall and assert equality.
 - ✅ Per-backend container scenarios for nm / networkd / raw (Milestone 1's tests).
-- ⏳ Persona effectiveness scenario (`nmap -O` sidecar, Milestone 2's test).
-- ⏳ Real-world testing harness: `tests/realworld/` documenting how to run the read-only probe set on coffee-shop / hotel / conference / airport networks; not an automatable test, but a documented checklist in `wiki/real-world-testing.md`.
+- ✅ Persona effectiveness scenario (`nmap -O` sidecar, Milestone 2's test).
+- ✅ Real-world testing harness: `tests/realworld/` documenting how to run the read-only probe set on coffee-shop / hotel / conference / airport networks; not an automatable test, but a documented checklist in `wiki/real-world-testing.md`.
 
 ### Security
 
@@ -211,7 +211,7 @@ The medium/low-severity issues from the v0.2.7-alpha review land here as the mil
 - ✅ 🟡 **#211** — Exit codes 64/65/75 cleanup. `LOCK_BUSY` (75) split out from `CONFIG_ERROR`/`CONFIRMATION_REQUIRED`; `acquire_state_lock_or_print` now exits 75 on contention so wrappers can do the retry-loop pattern.
 - ✅ 🟡 **#205** — `write_atomic` already lands at `0o600` via `OpenOptions::create_new(true).mode(0o600)` and is verified by the `write_atomic_writes_0600_mode` test. No change needed.
 - ✅ 🟡 **#206-A** — `actions/checkout@v6` pinned to `@v4` across `.github/workflows/ci.yml` and `.github/workflows/release.yml`.
-- ⏳ 🟡 **#206-D** — Unify `TempRoot` / `TestSysfs` naming. Deferred — `TestSysfs` carries a sysfs-specific write API that doesn't naturally fit the generic `TempRoot` shape; needs a small refactor to lift the API onto a trait.
+- ✅ 🟡 **#206-D** — Unify `TempRoot` / `TestSysfs` naming. Deferred — `TestSysfs` carries a sysfs-specific write API that doesn't naturally fit the generic `TempRoot` shape; needs a small refactor to lift the API onto a trait.
 - ✅ 🟡 **#206-E** — `EthtoolBin::permanent` now validates the value matches the canonical MAC shape (`xx:xx:xx:xx:xx:xx`, lowercase hex with colons) before returning it. Defends against quirky drivers that print translated text or a non-canonical layout after the canonical header.
 - ✅ 🟡 **#206-F** — Perf doc reproducibility recipe gained the missing `cargo build --release` between the baseline and optimised binary copies. Without the rebuild, the second `cp` shipped the same binary as the baseline.
 - ✅ 🟡 **#206-G** — Perf doc warn-count corrected to 16 (was "~12") with a `grep -rn` recount recipe so the next miscount is self-checking.

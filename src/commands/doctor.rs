@@ -110,6 +110,94 @@ fn push_system(out: &mut Vec<Check>, sys: &status_cmd::SystemInfo) {
     out.push(check_root());
     out.push(check_libc());
     out.push(check_distro());
+    out.push(check_pkg_format());
+    if let Some(check) = check_known_quirky_setups() {
+        out.push(check);
+    }
+}
+
+/// Roadmap Milestone 5: report the distro's native package format so an
+/// operator can pick the right `dist/<recipe>/` entry without guessing.
+/// Detection is filesystem-based — `which` shellouts would be cheaper but
+/// match the existing zero-shellout pattern in `check_init_available`.
+fn check_pkg_format() -> Check {
+    let format = if Path::new("/usr/bin/dpkg").exists() || Path::new("/var/lib/dpkg").exists() {
+        Some(("deb", "dist/debian/"))
+    } else if Path::new("/usr/bin/rpm").exists() || Path::new("/var/lib/rpm").exists() {
+        Some(("rpm", "dist/rpm/ (or dist/gentoo/ on Gentoo)"))
+    } else if Path::new("/sbin/apk").exists() || Path::new("/etc/apk").exists() {
+        Some(("apk", "dist/alpine/"))
+    } else if Path::new("/usr/bin/pacman").exists() {
+        Some(("pacman", "dist/arch/"))
+    } else if Path::new("/usr/bin/xbps-install").exists() {
+        Some(("xbps", "dist/void/"))
+    } else if Path::new("/usr/bin/emerge").exists() || Path::new("/var/db/pkg").exists() {
+        Some(("portage", "dist/gentoo/"))
+    } else {
+        None
+    };
+    match format {
+        Some((label, recipe)) => Check {
+            category: "system",
+            name: "pkg-format",
+            status: Status::Ok,
+            message: format!("{label} (see {recipe})"),
+            remediation: None,
+        },
+        None => Check {
+            category: "system",
+            name: "pkg-format",
+            status: Status::Skip,
+            message: "no recognised package manager (Nix / source build / unusual distro)".into(),
+            remediation: None,
+        },
+    }
+}
+
+/// Distro-compat warnings for known-quirky setups Proteus interacts with.
+/// Returns `Some(Check)` only when something quirky is present so the doctor
+/// output stays tight on clean systems. Roadmap Milestone 5.
+fn check_known_quirky_setups() -> Option<Check> {
+    let mut hits: Vec<&'static str> = Vec::new();
+    if Path::new("/etc/pihole").exists() || Path::new("/etc/pi-hole").exists() {
+        hits.push("Pi-hole");
+    }
+    if Path::new("/etc/dnscrypt-proxy").exists()
+        || Path::new("/usr/bin/dnscrypt-proxy").exists()
+        || Path::new("/usr/sbin/dnscrypt-proxy").exists()
+    {
+        hits.push("dnscrypt-proxy");
+    }
+    if Path::new("/etc/resolvconf.conf").exists() && !Path::new("/usr/bin/openresolv").exists() {
+        // openresolv is the resolvconf successor; flag only when the config
+        // exists but the binary doesn't (broken/transition state).
+        hits.push("openresolv (config without binary)");
+    }
+    if Path::new("/etc/NetworkManager/system-connections").is_dir() {
+        // Glob for *-l2tp.nmconnection — l2tp profiles need extra config
+        // Proteus does not yet manage; surface as informational.
+        if let Ok(entries) = std::fs::read_dir("/etc/NetworkManager/system-connections") {
+            if entries
+                .flatten()
+                .any(|e| e.file_name().to_string_lossy().contains("l2tp"))
+            {
+                hits.push("NetworkManager-l2tp profile");
+            }
+        }
+    }
+    if hits.is_empty() {
+        return None;
+    }
+    Some(Check {
+        category: "system",
+        name: "quirky-setup",
+        status: Status::Warn,
+        message: format!(
+            "detected: {} — Proteus may defer or skip features (see wiki/troubleshooting)",
+            hits.join(", ")
+        ),
+        remediation: Some("proteus wiki troubleshooting".into()),
+    })
 }
 
 fn check_linux_kernel() -> Check {
