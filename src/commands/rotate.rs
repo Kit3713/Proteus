@@ -8,7 +8,10 @@ use serde::Serialize;
 
 use crate::config::Config;
 use crate::exit;
-use crate::mac::generator::{self, GenerateOptions};
+use crate::mac::generator::{
+    self, CandidateAttempt, GenerateOptions, ProbeOptions, RejectionReason,
+};
+use crate::mac::probe::{Probe, SystemProbe};
 use crate::mac::{Mac, arp, factory};
 use crate::nm::{self, DeviceInfo, DeviceKind};
 use crate::state::State;
@@ -18,6 +21,12 @@ use crate::version;
 struct RotateReport {
     rotated: Vec<RotatedEntry>,
     skipped: Vec<SkippedEntry>,
+    /// Roadmap M2: per-iface explain trace, populated only when `--explain`
+    /// is set. `serde(skip_serializing_if)` keeps the wire format stable
+    /// for callers that don't use `--explain` (the JSON shape doesn't
+    /// change for them).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    explain: Vec<ExplainEntry>,
 }
 
 #[derive(Debug, Serialize)]
@@ -34,12 +43,34 @@ struct SkippedEntry {
     reason: String,
 }
 
+/// Per-interface explain trace. Surfaces every candidate the generator
+/// considered + the reason it was rejected, so the operator can see why
+/// the final MAC was picked.
+#[derive(Debug, Serialize)]
+struct ExplainEntry {
+    iface: String,
+    chosen_token: String,
+    oui_fallbacks: usize,
+    candidates: Vec<ExplainCandidate>,
+}
+
+#[derive(Debug, Serialize)]
+struct ExplainCandidate {
+    mac: String,
+    token: String,
+    reason: String,
+}
+
 pub fn run(
     iface_filter: Option<&str>,
     yes: bool,
+    explain: bool,
     state_path: Option<&Path>,
     config_path: Option<&Path>,
 ) -> Result<u8> {
+    if explain {
+        tracing::debug!("rotate --explain enabled (verbose candidate trace)");
+    }
     if let Err(code) = super::require_yes(
         yes,
         "'rotate' is mutating (writes new MACs to NetworkManager)",
@@ -62,12 +93,27 @@ pub fn run(
     let config = Config::default_or_loaded(&config_path)?;
     let mut state = State::load_or_default(&state_path)?;
 
+    // Roadmap M2: layered exclusion set —
+    // 1. Live `/proc/net/arp` snapshot,
+    // 2. Default-gateway MAC,
+    // 3. Recent-neighbour ledger (keyed by MAC, default 5-minute window).
+    // The ledger is reseeded each rotation from the kernel snapshot so it
+    // stays useful even though `proteus rotate` isn't a long-lived daemon.
     let arp_macs = arp::read_arp_macs();
+    let recent = arp::RecentNeighbourTable::new();
+    recent.record_all(arp_macs.iter().copied());
     let gateway_mac = arp::read_default_gateway_mac();
     let mut avoid: HashSet<Mac> = arp_macs;
     if let Some(gw) = gateway_mac {
         avoid.insert(gw);
     }
+    for m in recent.current_macs() {
+        avoid.insert(m);
+    }
+
+    // Production probe — falls back to Unsupported when CAP_NET_RAW is
+    // missing, which the generator handles transparently.
+    let probe = SystemProbe::new();
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -84,6 +130,8 @@ pub fn run(
             iface_filter,
             &config,
             &avoid,
+            &probe,
+            explain,
             &mut state,
             &state_path,
         )
@@ -106,22 +154,26 @@ pub fn run(
         return Ok(exit::GENERIC_ERROR);
     }
 
-    print_report(&report);
+    print_report(&report, explain);
     Ok(exit::SUCCESS)
 }
 
-async fn rotate_devices(
+#[allow(clippy::too_many_arguments)]
+async fn rotate_devices<P: Probe + ?Sized>(
     conn: &zbus::Connection,
     devices: Vec<DeviceInfo>,
     iface_filter: Option<&str>,
     config: &Config,
     avoid: &HashSet<Mac>,
+    probe: &P,
+    explain: bool,
     state: &mut State,
     state_path: &Path,
 ) -> Result<RotateReport> {
     let mut report = RotateReport {
         rotated: Vec::new(),
         skipped: Vec::new(),
+        explain: Vec::new(),
     };
     for dev in devices {
         if let Some(f) = iface_filter
@@ -151,8 +203,21 @@ async fn rotate_devices(
             });
             continue;
         }
-        match rotate_one(conn, &dev, config, avoid, state, state_path).await {
-            Ok(entry) => report.rotated.push(entry),
+        match rotate_one(conn, &dev, config, avoid, probe, state, state_path).await {
+            Ok((entry, attempts, chosen_token, oui_fallbacks)) => {
+                if explain {
+                    report.explain.push(ExplainEntry {
+                        iface: dev.interface.clone(),
+                        chosen_token,
+                        oui_fallbacks,
+                        candidates: attempts
+                            .into_iter()
+                            .map(explain_candidate_from_attempt)
+                            .collect(),
+                    });
+                }
+                report.rotated.push(entry);
+            }
             Err(e) => report.skipped.push(SkippedEntry {
                 iface: dev.interface.clone(),
                 reason: format!("{e:#}"),
@@ -162,14 +227,15 @@ async fn rotate_devices(
     Ok(report)
 }
 
-async fn rotate_one(
+async fn rotate_one<P: Probe + ?Sized>(
     conn: &zbus::Connection,
     dev: &DeviceInfo,
     config: &Config,
     avoid: &HashSet<Mac>,
+    probe: &P,
     state: &mut State,
     state_path: &Path,
-) -> Result<RotatedEntry> {
+) -> Result<(RotatedEntry, Vec<CandidateAttempt>, String, usize)> {
     if dev.connections.is_empty() {
         anyhow::bail!("no NM connection profile available");
     }
@@ -189,7 +255,12 @@ async fn rotate_one(
         forbidden: &forbidden,
         avoid,
     };
-    let new_mac = generator::generate(&opts)?;
+    // Roadmap M2: probe-aware path runs the RFC 5227 ARP probe and the
+    // IPv6 DAD probe inline with adaptive backoff. SystemProbe falls back
+    // to Unsupported (=> passive checks only) when CAP_NET_RAW is missing.
+    let probe_opts = ProbeOptions::for_iface(&dev.interface);
+    let outcome = generator::generate_with_probe(&opts, probe, &probe_opts)?;
+    let new_mac = outcome.chosen;
 
     // Issue #122: iterate every connection profile bound to the device,
     // not just the first one. Otherwise roaming between SSIDs surfaces
@@ -214,6 +285,20 @@ async fn rotate_one(
             );
             continue;
         }
+        // Roadmap Milestone 4b: piggyback the per-scan MAC randomization
+        // write on the same rotate pass for Wi-Fi profiles. Probe-request
+        // hygiene (`mac-address-randomization = 2` + scan-rand-mac=random)
+        // means saved-SSID lists stop leaking and each scan burst carries
+        // a fresh source MAC. Failure here is non-fatal — the profile's
+        // cloned MAC is already updated; this is privacy polish on top.
+        if matches!(dev.kind, DeviceKind::Wifi) && config.rf.scan_random_mac {
+            if let Err(e) = nm::apply::set_scan_rand_mac(conn, connection_path).await {
+                tracing::warn!(
+                    profile = ?id,
+                    "set_scan_rand_mac failed for profile: {e:#}"
+                );
+            }
+        }
         if primary_id.is_none() {
             primary_id = id.clone();
         }
@@ -235,12 +320,36 @@ async fn rotate_one(
     rec.last_rotated = Some(super::now_iso8601());
     rec.rotation_count += 1;
 
-    Ok(RotatedEntry {
+    let entry = RotatedEntry {
         iface: dev.interface.clone(),
         previous,
         new: new_mac.to_string(),
         connection: primary_id,
-    })
+    };
+    Ok((entry, outcome.attempts, outcome.chosen_token, outcome.oui_fallbacks))
+}
+
+fn explain_candidate_from_attempt(a: CandidateAttempt) -> ExplainCandidate {
+    let reason = match &a.reason {
+        RejectionReason::Accepted => "accepted".to_string(),
+        RejectionReason::Forbidden => "forbidden (sacred original or state-cached)".to_string(),
+        RejectionReason::AvoidList => {
+            "avoid-list (live ARP/ND neighbour or gateway)".to_string()
+        }
+        RejectionReason::NotAssignable(e) => format!("not-assignable: {e}"),
+        RejectionReason::ActiveCollision { peer_ip } => {
+            format!(
+                "active-collision (peer={})",
+                peer_ip.as_deref().unwrap_or("?")
+            )
+        }
+        RejectionReason::ProbeUnsupported(s) => format!("probe-unsupported: {s}"),
+    };
+    ExplainCandidate {
+        mac: a.mac.to_string(),
+        token: a.token,
+        reason,
+    }
 }
 
 /// Issue #123 / #208: cache the BURNED-IN factory MAC, never a live (possibly
@@ -311,7 +420,7 @@ fn build_forbidden(state: &State, hw: Option<&str>) -> HashSet<Mac> {
     set
 }
 
-fn print_report(report: &RotateReport) {
+fn print_report(report: &RotateReport, explain: bool) {
     for r in &report.rotated {
         let prev = r.previous.as_deref().unwrap_or("?");
         match &r.connection {
@@ -322,6 +431,20 @@ fn print_report(report: &RotateReport) {
     for s in &report.skipped {
         println!("skipped {}: {}", s.iface, s.reason);
     }
+    if explain {
+        for entry in &report.explain {
+            println!(
+                "explain {}: chosen-token={} oui-fallbacks={} candidates={}",
+                entry.iface,
+                entry.chosen_token,
+                entry.oui_fallbacks,
+                entry.candidates.len()
+            );
+            for c in &entry.candidates {
+                println!("  - {} [{}] {}", c.mac, c.token, c.reason);
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -329,6 +452,7 @@ mod tests {
     use std::collections::HashMap;
 
     use super::*;
+    use crate::mac::probe::{MockProbe, ProbeOutcome};
 
     /// Build a stub `permanent_address` lookup so tests don't poke real sysfs.
     /// Issue #200: the previous test read `/sys/class/net/eth0` directly which
@@ -403,6 +527,154 @@ mod tests {
         assert!(
             state.original_macs.get("eth0").is_none(),
             "no factory source — must not cache the live (cloned) address"
+        );
+    }
+
+    // === Roadmap M2 — collision-handling integration via MockProbe ===
+
+    /// Pin the explain-candidate formatter shape so the human/JSON output
+    /// stays stable. The test caller doesn't have to spin up a full NM
+    /// device; we just exercise the conversion.
+    #[test]
+    fn explain_candidate_from_attempt_renders_each_reason() {
+        let mac: Mac = "aa:bb:cc:dd:ee:ff".parse().unwrap();
+        let cases = [
+            (RejectionReason::Accepted, "accepted"),
+            (RejectionReason::Forbidden, "forbidden"),
+            (RejectionReason::AvoidList, "avoid-list"),
+            (
+                RejectionReason::NotAssignable("oops".into()),
+                "not-assignable",
+            ),
+            (
+                RejectionReason::ActiveCollision {
+                    peer_ip: Some("10.0.0.1".into()),
+                },
+                "active-collision",
+            ),
+            (
+                RejectionReason::ProbeUnsupported("no cap"),
+                "probe-unsupported",
+            ),
+        ];
+        for (reason, needle) in cases {
+            let attempt = CandidateAttempt {
+                mac,
+                token: "apple".into(),
+                reason,
+            };
+            let rendered = explain_candidate_from_attempt(attempt);
+            assert!(
+                rendered.reason.contains(needle),
+                "expected reason to contain {needle}, got {:?}",
+                rendered.reason
+            );
+        }
+    }
+
+    /// `--explain` mode must collect at least one candidate-considered line
+    /// per successful rotation. Drives the probe-aware generator directly
+    /// (no DBus needed) to confirm the data flow.
+    #[test]
+    fn explain_mode_records_at_least_one_candidate_per_rotation() {
+        let pool: Vec<String> = vec!["apple".into()];
+        let forbidden = HashSet::new();
+        let avoid = HashSet::new();
+        let probe = MockProbe::responds(false);
+        let opts = GenerateOptions {
+            pool: &pool,
+            forbidden: &forbidden,
+            avoid: &avoid,
+        };
+        let probe_opts = {
+            let mut p = ProbeOptions::for_iface("wlan0");
+            p.run_nd_probe = false;
+            p
+        };
+        let outcome = generator::generate_with_probe(&opts, &probe, &probe_opts).expect("ok");
+        let candidates: Vec<ExplainCandidate> = outcome
+            .attempts
+            .into_iter()
+            .map(explain_candidate_from_attempt)
+            .collect();
+        assert!(!candidates.is_empty(), "--explain must surface candidates");
+        assert!(
+            candidates.last().unwrap().reason.contains("accepted"),
+            "last attempt must be the accepted one, got {:?}",
+            candidates.last().unwrap().reason
+        );
+    }
+
+    /// Gateway-MAC exclusion: pin that the avoid set's gateway MAC is
+    /// never selected even with many trials.
+    #[test]
+    fn gateway_mac_in_avoid_set_is_never_picked() {
+        let pool: Vec<String> = vec!["apple".into()];
+        let forbidden = HashSet::new();
+        let gw: Mac = "aa:bb:cc:dd:ee:ff".parse().unwrap();
+        let mut avoid = HashSet::new();
+        avoid.insert(gw);
+        let probe = MockProbe::responds(false);
+        let opts = GenerateOptions {
+            pool: &pool,
+            forbidden: &forbidden,
+            avoid: &avoid,
+        };
+        let mut probe_opts = ProbeOptions::for_iface("wlan0");
+        probe_opts.run_nd_probe = false;
+        for _ in 0..100 {
+            let outcome =
+                generator::generate_with_probe(&opts, &probe, &probe_opts).expect("ok");
+            assert_ne!(outcome.chosen, gw, "gateway MAC must not be chosen");
+        }
+    }
+
+    /// Recent-neighbour table feeds `avoid` so a neighbour that briefly
+    /// dropped off `/proc/net/arp` is still excluded.
+    #[test]
+    fn recent_table_member_lands_in_avoid_set() {
+        let table = arp::RecentNeighbourTable::with_window(std::time::Duration::from_secs(300));
+        let m: Mac = "aa:bb:cc:dd:ee:ff".parse().unwrap();
+        table.record_at(m, 1_000_000);
+        let mut avoid = HashSet::new();
+        for v in table.current_macs_at(1_000_001) {
+            avoid.insert(v);
+        }
+        assert!(
+            avoid.contains(&m),
+            "recent-neighbour table must contribute to avoid set"
+        );
+    }
+
+    /// Active probe collision -> retry; eventual acceptance. End-to-end
+    /// shape: collide once, then succeed, and confirm the rotated MAC is
+    /// not the one that collided.
+    #[test]
+    fn collision_then_success_chooses_a_different_candidate() {
+        let pool: Vec<String> = vec!["apple".into()];
+        let forbidden = HashSet::new();
+        let avoid = HashSet::new();
+        let probe = MockProbe::new();
+        probe.queue_arp(ProbeOutcome::Collision {
+            peer_ip: Some("192.168.1.5".into()),
+        });
+        let opts = GenerateOptions {
+            pool: &pool,
+            forbidden: &forbidden,
+            avoid: &avoid,
+        };
+        let mut probe_opts = ProbeOptions::for_iface("wlan0");
+        probe_opts.run_nd_probe = false;
+        let outcome = generator::generate_with_probe(&opts, &probe, &probe_opts).expect("ok");
+        let collided = outcome
+            .attempts
+            .iter()
+            .find(|a| matches!(a.reason, RejectionReason::ActiveCollision { .. }))
+            .expect("a collision was recorded")
+            .mac;
+        assert_ne!(
+            outcome.chosen, collided,
+            "chosen MAC must not be the collided one"
         );
     }
 }

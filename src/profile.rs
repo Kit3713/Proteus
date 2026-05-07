@@ -164,6 +164,7 @@ fn apply_bools(cfg: &mut Config, profile: Profile) {
     cfg.captive_portal.enabled = f.captive_portal_enabled;
     cfg.captive_portal.fresh_mac_per_visit = f.captive_portal_fresh_mac_per_visit;
     cfg.rf.tx_power_reduce = f.rf_tx_power_reduce;
+    cfg.rf.scan_random_mac = f.rf_scan_random_mac;
 }
 
 /// Flat record of every profile-affected boolean. Each profile defines
@@ -196,6 +197,10 @@ struct BoolBaseline {
     captive_portal_enabled: bool,
     captive_portal_fresh_mac_per_visit: bool,
     rf_tx_power_reduce: bool,
+    /// Roadmap Milestone 4b: scan-time MAC randomization at the NM layer.
+    /// On for Low and above; Off/Min keep it off so a panic-disable
+    /// configuration leaves no Proteus-written keys on user connections.
+    rf_scan_random_mac: bool,
     ntp_enabled: bool,
 }
 
@@ -227,6 +232,7 @@ const ALL_OFF: BoolBaseline = BoolBaseline {
     captive_portal_enabled: false,
     captive_portal_fresh_mac_per_visit: false,
     rf_tx_power_reduce: false,
+    rf_scan_random_mac: false,
     ntp_enabled: false,
 };
 
@@ -258,6 +264,7 @@ const LOW: BoolBaseline = BoolBaseline {
     captive_portal_enabled: true,
     captive_portal_fresh_mac_per_visit: false,
     rf_tx_power_reduce: false,
+    rf_scan_random_mac: true,
     ntp_enabled: true,
 };
 

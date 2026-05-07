@@ -33,6 +33,22 @@ pub struct Iface {
     pub mac: Option<String>,
     pub kind: String,
     pub wireless: bool,
+    /// Roadmap Milestone 4b: surface driver/chip/firmware in one line.
+    /// `None` for non-wifi or when sysfs doesn't expose the data — the
+    /// renderer skips the field rather than printing "(unknown)/(unknown)".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub chipset: Option<IfaceChipset>,
+}
+
+/// Compact chipset summary for the `proteus status` interfaces table.
+/// Mirrors the JSON fields from `rf::ChipInfoExtended` but trimmed to
+/// what's worth showing inline — operators wanting the full inventory
+/// run `proteus rf chipset`.
+#[derive(Debug, Serialize)]
+pub struct IfaceChipset {
+    pub driver: Option<String>,
+    pub chip: Option<String>,
+    pub firmware: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -107,11 +123,31 @@ pub fn enumerate_interfaces() -> Vec<Iface> {
         if kind == "virtual" {
             continue;
         }
+        // Roadmap Milestone 4b: best-effort chipset inline. We only
+        // populate it for wifi (chipset for ethernet is a follow-up;
+        // the data is in sysfs but `iw`-driven `chip_info_extended`
+        // is wifi-only by design). Keep the read read-only and
+        // never let it block the rest of the status pass.
+        let chipset = if wireless {
+            let info = crate::rf::chip_info_extended(&name);
+            let chip = match (info.vendor_id.as_deref(), info.device_id.as_deref()) {
+                (Some(v), Some(d)) => Some(format!("{v}:{d}")),
+                _ => None,
+            };
+            Some(IfaceChipset {
+                driver: info.driver,
+                chip,
+                firmware: info.firmware,
+            })
+        } else {
+            None
+        };
         out.push(Iface {
             name,
             mac,
             kind,
             wireless,
+            chipset,
         });
     }
     out.sort_by(|a, b| a.name.cmp(&b.name));
@@ -496,6 +532,17 @@ fn print_human(r: &StatusReport) {
         for i in &r.interfaces {
             let mac = i.mac.as_deref().unwrap_or("?");
             println!("  {:<12} {:<8} {}", i.name, i.kind, mac);
+            // Roadmap Milestone 4b: per-iface chipset line. Skip if no
+            // info — we don't want a "(unknown)/(unknown)/(unknown)"
+            // row cluttering the table on systems without iw-tools.
+            if let Some(c) = &i.chipset
+                && (c.driver.is_some() || c.chip.is_some() || c.firmware.is_some())
+            {
+                let driver = c.driver.as_deref().unwrap_or("?");
+                let chip = c.chip.as_deref().unwrap_or("?");
+                let fw = c.firmware.as_deref().unwrap_or("?");
+                println!("    chipset: driver={driver} chip={chip} firmware={fw}");
+            }
         }
     }
     println!();

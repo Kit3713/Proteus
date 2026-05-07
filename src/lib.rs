@@ -20,6 +20,7 @@ pub mod mac;
 pub mod nft;
 pub mod nm;
 pub mod ntp;
+pub mod per_ssid;
 pub mod persona;
 pub mod probe;
 pub mod profile;

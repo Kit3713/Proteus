@@ -5,6 +5,7 @@ pub mod factory;
 pub mod generator;
 pub mod oui;
 pub mod plan;
+pub mod probe;
 
 use std::fmt;
 use std::str::FromStr;

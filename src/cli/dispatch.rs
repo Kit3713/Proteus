@@ -33,9 +33,14 @@ pub(super) fn dispatch(cli: Cli) -> Result<u8> {
             commands::apply::run(yes, cli.state.as_deref(), cli.config.as_deref())
         }
         Command::Revert { yes } => commands::revert::run(yes),
-        Command::Rotate { iface, yes } => commands::rotate::run(
+        Command::Rotate {
+            iface,
+            yes,
+            explain,
+        } => commands::rotate::run(
             iface.as_deref(),
             yes,
+            explain,
             cli.state.as_deref(),
             cli.config.as_deref(),
         ),
@@ -190,11 +195,18 @@ pub(super) fn dispatch(cli: Cli) -> Result<u8> {
                 commands::rf::apply(yes, cli.state.as_deref(), cli.config.as_deref())
             }
             RfAction::Revert { yes } => commands::rf::revert(yes, cli.state.as_deref()),
+            // Roadmap Milestone 4b: scan-policy + chipset reports.
+            RfAction::Scan { json } => commands::rf::scan(json),
+            RfAction::Chipset { json } => commands::rf::chipset(json),
         },
         // Roadmap Milestone 2: persona schema + CLI. Apply/rotate
         // integration is the follow-up; this dispatch only flips
         // `[persona] active` and runs the read-side commands.
         Command::Persona { action } => commands::persona::run(action, cli.config.as_deref()),
+        // Roadmap Milestone 3: per-SSID profile policies. Resolver +
+        // CLI surface land here; the NM-connection-up dispatcher
+        // integration is the follow-up.
+        Command::Ssid { action } => commands::ssid::run(action, cli.config.as_deref()),
         // Roadmap Milestone 6: print bundled shell completions.
         Command::Completions { shell } => commands::completions::run(&shell),
     }

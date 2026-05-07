@@ -7,7 +7,7 @@ use clap::Subcommand;
 use super::actions::{
     BluetoothAction, ConfigAction, DhcpAction, DnsAction, EnterpriseWifiAction, HostnameAction,
     Ipv6Action, KillAction, NftAction, NtpAction, PersonaAction, PortalAction, ResolvedAction,
-    RfAction, StackAction, TimerAction, WikiAction,
+    RfAction, SsidAction, StackAction, TimerAction, WikiAction,
 };
 
 #[derive(Subcommand, Debug)]
@@ -64,6 +64,10 @@ pub enum Command {
         iface: Option<String>,
         #[arg(long)]
         yes: bool,
+        /// Print every candidate considered + the reason it was rejected
+        /// (collision, forbidden, gateway, avoid). Roadmap M2.
+        #[arg(long)]
+        explain: bool,
     },
     /// Pin an interface or NM connection to a specific MAC.
     Pin {
@@ -225,6 +229,11 @@ pub enum Command {
     Persona {
         #[command(subcommand)]
         action: PersonaAction,
+    },
+    /// Per-SSID profile policies (roadmap Milestone 3).
+    Ssid {
+        #[command(subcommand)]
+        action: SsidAction,
     },
     /// Print the embedded shell-completion script for this binary's CLI.
     ///

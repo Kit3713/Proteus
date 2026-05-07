@@ -219,7 +219,7 @@ fn run_mac(
     }
     classify(
         "mac",
-        super::rotate::run(None, true, state_path, config_path),
+        super::rotate::run(None, true, false, state_path, config_path),
     )
 }
 

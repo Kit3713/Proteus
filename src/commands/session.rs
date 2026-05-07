@@ -887,6 +887,7 @@ mod tests {
             mac: Some("aa:bb:cc:dd:ee:ff".into()),
             kind: "wifi".into(),
             wireless: true,
+            chipset: None,
         };
         let now = parse_iso8601("2026-05-07T14:44:00Z").unwrap();
         let block = build_mac_block(&state, &iface, now);

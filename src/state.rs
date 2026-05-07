@@ -21,10 +21,14 @@ use crate::kill_switch::KillSwitchState;
 ///       by NM `connection.uuid` instead of display id (issue #124).
 ///       Migration drops legacy entries (already implemented in
 ///       `migrate_connection_keys_to_uuid`).
-///
-/// Reserved upcoming versions:
-///   2 — persona / per-SSID state additions (Milestones 2 / 3).
-pub const CURRENT_SCHEMA_VERSION: u32 = 1;
+///   2 — Roadmap Milestone 3: `state.known_portal_ssids` is mirrored into
+///       a new `state.per_ssid_seed` map (each entry stamped with
+///       `portal_policy = "fresh-mac-per-visit"`) so the orchestrator can
+///       pick up SSID-scoped policy without re-reading the legacy field.
+///       The legacy `known_portal_ssids` array is **kept** for one cycle
+///       so older `proteus portal list / mark / unmark` paths keep
+///       working; deprecation lands in a follow-up.
+pub const CURRENT_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -60,6 +64,35 @@ pub struct State {
     // Phase C: captive portal state.
     pub known_portal_ssids: Vec<String>,
     pub last_portal_check: Option<PortalCheckRecord>,
+    /// Roadmap Milestone 3: state-side mirror of per-SSID policies the
+    /// orchestrator carried over from earlier releases. Today this is
+    /// only populated by the v1 → v2 migration (every legacy
+    /// `known_portal_ssids` entry lands here with `portal_policy =
+    /// "fresh-mac-per-visit"`). The runtime authority for per-SSID
+    /// policy is `Config::per_ssid` in `/etc/proteus/config.toml`; this
+    /// state map exists only as a migration breadcrumb so a fresh
+    /// install never grows it.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub per_ssid_seed: BTreeMap<String, PerSsidStateSeed>,
+}
+
+/// One entry in `state.per_ssid_seed`. Mirrors the public
+/// `PerSsidPolicy` shape so the migration step stays a straight copy:
+/// every field is `Option<String>` and missing values stay missing on
+/// disk via `skip_serializing_if`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct PerSsidStateSeed {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub persona: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub aggressiveness_profile: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pin_mac: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rotate_interval: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub portal_policy: Option<String>,
 }
 
 fn kill_switch_inactive(k: &KillSwitchState) -> bool {
@@ -263,7 +296,35 @@ fn migrate_state(state: &mut State) {
         migrate_connection_keys_to_uuid(state);
         state.schema_version = 1;
     }
-    // v1 → v2 reserved for persona / per-SSID additions (Milestones 2 / 3).
+    if state.schema_version < 2 {
+        // v1 → v2 (roadmap Milestone 3): mirror `known_portal_ssids` into
+        // `per_ssid_seed` so the new orchestrator path can pick up SSID-
+        // scoped policy without consulting the legacy array. The legacy
+        // field is kept untouched for one cycle so older portal commands
+        // keep working.
+        migrate_known_portals_to_per_ssid(state);
+        state.schema_version = 2;
+    }
+}
+
+/// Roadmap Milestone 3: each entry in `state.known_portal_ssids` becomes
+/// a `state.per_ssid_seed[<ssid>]` with `portal_policy =
+/// "fresh-mac-per-visit"`. Idempotent: existing per_ssid_seed entries
+/// are left untouched (only fields that are still `None` get filled in)
+/// so running the ladder twice converges instead of stomping the
+/// operator's later edits. The legacy `known_portal_ssids` array is
+/// **not** drained — see `CURRENT_SCHEMA_VERSION` doc for the
+/// deprecation plan.
+fn migrate_known_portals_to_per_ssid(state: &mut State) {
+    for ssid in &state.known_portal_ssids {
+        let entry = state
+            .per_ssid_seed
+            .entry(ssid.clone())
+            .or_insert_with(PerSsidStateSeed::default);
+        if entry.portal_policy.is_none() {
+            entry.portal_policy = Some("fresh-mac-per-visit".to_string());
+        }
+    }
 }
 
 /// Issue #124: `state.originals.connections` and `state.managed.connections`
@@ -418,6 +479,94 @@ mod tests {
         let _ = fs::remove_file(&path);
         let result = State::load(&path).expect("missing path is Ok(None)");
         assert!(result.is_none());
+    }
+
+    /// Roadmap Milestone 3: a v1 state file with `known_portal_ssids`
+    /// migrates the entries into `per_ssid_seed` with the fresh-MAC
+    /// policy stamped in. The legacy array is kept (cycle's grace
+    /// period).
+    #[test]
+    fn migration_v1_to_v2_seeds_per_ssid_from_known_portals() {
+        let json = r#"{
+            "schema_version": 1,
+            "known_portal_ssids": ["foo", "bar"]
+        }"#;
+        let mut s: State = serde_json::from_str(json).unwrap();
+        migrate_state(&mut s);
+        assert_eq!(s.schema_version, CURRENT_SCHEMA_VERSION);
+        assert!(
+            s.known_portal_ssids.iter().any(|x| x == "foo"),
+            "legacy array must not be drained on migration"
+        );
+        let foo = s.per_ssid_seed.get("foo").expect("foo seeded");
+        assert_eq!(foo.portal_policy.as_deref(), Some("fresh-mac-per-visit"));
+        let bar = s.per_ssid_seed.get("bar").expect("bar seeded");
+        assert_eq!(bar.portal_policy.as_deref(), Some("fresh-mac-per-visit"));
+    }
+
+    /// Migration is idempotent: a second run is a no-op (schema stays at
+    /// `CURRENT_SCHEMA_VERSION` and existing seeds are not stomped).
+    #[test]
+    fn migration_v1_to_v2_is_idempotent() {
+        let json = r#"{
+            "schema_version": 1,
+            "known_portal_ssids": ["foo"]
+        }"#;
+        let mut s: State = serde_json::from_str(json).unwrap();
+        migrate_state(&mut s);
+        let after_first = s.clone();
+        migrate_state(&mut s);
+        assert_eq!(s.schema_version, after_first.schema_version);
+        assert_eq!(s.per_ssid_seed, after_first.per_ssid_seed);
+    }
+
+    /// Migration must not stomp an existing per_ssid_seed entry the
+    /// operator may have authored manually with a non-default
+    /// portal_policy. The migration only fills in fields that are still
+    /// `None`.
+    #[test]
+    fn migration_preserves_existing_per_ssid_seed_entries() {
+        let json = r#"{
+            "schema_version": 1,
+            "known_portal_ssids": ["foo"],
+            "per_ssid_seed": {
+                "foo": { "portal_policy": "rotate-before-auth" }
+            }
+        }"#;
+        let mut s: State = serde_json::from_str(json).unwrap();
+        migrate_state(&mut s);
+        let foo = s.per_ssid_seed.get("foo").unwrap();
+        assert_eq!(
+            foo.portal_policy.as_deref(),
+            Some("rotate-before-auth"),
+            "existing entry must not be overwritten"
+        );
+    }
+
+    /// State file written by the test in the task description loads
+    /// cleanly through `State::load` and surfaces `foo` / `bar` in
+    /// `per_ssid_seed`.
+    #[test]
+    fn load_runs_v1_to_v2_migration_end_to_end() {
+        let dir = std::env::temp_dir().join(format!(
+            "proteus-state-v1v2-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("state.json");
+        fs::write(
+            &path,
+            br#"{"schema_version": 1, "known_portal_ssids": ["foo", "bar"]}"#,
+        )
+        .unwrap();
+
+        let s = State::load(&path).expect("load ok").expect("present");
+        assert_eq!(s.schema_version, CURRENT_SCHEMA_VERSION);
+        assert!(s.per_ssid_seed.contains_key("foo"));
+        assert!(s.per_ssid_seed.contains_key("bar"));
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

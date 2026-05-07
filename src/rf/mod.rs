@@ -18,6 +18,26 @@ use std::process::Command;
 use anyhow::{Context, Result, bail};
 use serde::Serialize;
 
+/// Absolute paths preferred for `iw` (issue #202): a `$PATH` override on a
+/// suid-helper or systemd-unit invocation must not redirect us to an
+/// attacker-controlled binary. We try `/usr/bin/iw` then `/sbin/iw` (the
+/// two locations real distros ship) before falling back to `$PATH` for
+/// Nix/Alpine layouts that put `iw` elsewhere — same shape as `ETHTOOL_ABS_PATH`.
+const IW_ABS_PATHS: &[&str] = &["/usr/bin/iw", "/sbin/iw"];
+
+/// Resolve the `iw` binary path. Returns the first absolute path that
+/// exists on disk, falling back to the bare `iw` name (which `Command`
+/// resolves via `$PATH`). Callers should still tolerate the binary
+/// being missing — `iw_present` is the right gate.
+fn iw_bin() -> &'static str {
+    for p in IW_ABS_PATHS {
+        if Path::new(p).exists() {
+            return p;
+        }
+    }
+    "iw"
+}
+
 /// Driver-reported metadata for one Wi-Fi interface. All fields are
 /// best-effort: a missing sysfs node is `None` rather than a hard error so
 /// `proteus rf status` keeps producing a usable inventory across odd
@@ -104,7 +124,7 @@ pub fn current_tx_power_mbm(iface: &str) -> Option<i32> {
     if !is_safe_iface(iface) {
         return None;
     }
-    let output = Command::new("iw")
+    let output = Command::new(iw_bin())
         .args(["dev", iface, "info"])
         .output()
         .ok()?;
@@ -121,7 +141,7 @@ pub fn set_tx_power_mbm(iface: &str, mbm: i32) -> Result<()> {
         bail!("refusing to invoke iw with iface {iface:?}: contains unsafe characters");
     }
     let mbm_str = mbm.to_string();
-    let output = Command::new("iw")
+    let output = Command::new(iw_bin())
         .args(["dev", iface, "set", "txpower", "fixed", &mbm_str])
         .output()
         .with_context(|| format!("invoking `iw dev {iface} set txpower fixed {mbm}`"))?;
@@ -139,7 +159,7 @@ pub fn set_tx_power_mbm(iface: &str, mbm: i32) -> Result<()> {
 /// `iw reg get`. Returns `None` if `iw` is missing or the output has no
 /// per-channel `(<dB> dBm)` clause we can extract a maximum from.
 pub fn regulatory_max_mbm() -> Option<i32> {
-    let output = Command::new("iw").args(["reg", "get"]).output().ok()?;
+    let output = Command::new(iw_bin()).args(["reg", "get"]).output().ok()?;
     if !output.status.success() {
         return None;
     }
@@ -158,11 +178,12 @@ pub fn regulatory_max_mbm_or_fallback() -> i32 {
     regulatory_max_mbm().unwrap_or(FALLBACK_REGULATORY_MAX_MBM)
 }
 
-/// Run a synchronous `iw` to confirm the binary is on `$PATH`. Used by the
-/// command layer to skip with `SYSTEM_NOT_SUPPORTED` rather than fail when
-/// the operator hasn't installed iw-tools.
+/// Run a synchronous `iw` to confirm the binary resolves. Used by the
+/// command layer to skip with `SYSTEM_NOT_SUPPORTED` rather than fail
+/// when the operator hasn't installed iw-tools. Walks the absolute-path
+/// preference list first (issue #202) before consulting `$PATH`.
 pub fn iw_present() -> bool {
-    Command::new("iw")
+    Command::new(iw_bin())
         .arg("--version")
         .output()
         .map(|o| o.status.success())
@@ -336,6 +357,250 @@ fn parse_iw_reg_get_max_mbm(text: &str) -> Option<i32> {
     max_dbm.map(|d| (d * 100.0).round() as i32)
 }
 
+// ---- Scan-policy reporting (Milestone 4b) -------------------------------
+
+/// Scan-policy report for one Wi-Fi interface. Both fields come from
+/// shelling `iw` (`iw dev <iface> info` for the live netdev type, `iw phy
+/// <phy> info` for the driver capability set). When `iw` is missing or
+/// the parse misses the relevant line, the field is `None` rather than
+/// a hard error so a host with one Wi-Fi iface and one out-of-tree
+/// driver still produces a usable inventory.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct ScanPolicy {
+    pub iface: String,
+    /// `phy0`, `phy1`, … as resolved from `/sys/class/net/<iface>/phy80211/name`
+    /// or the `wiphy` line in `iw dev <iface> info`. Required to interpret
+    /// `iw phy` output even when `iw dev` works.
+    pub phy: Option<String>,
+    /// `managed`, `monitor`, etc. — the `type` line in `iw dev info`.
+    pub iface_type: Option<String>,
+    /// True iff the driver advertises `randomize_mac_addr` or
+    /// `randomize_mac_oui` in `iw phy info`. Without this, scans are
+    /// driver-baked and Proteus's NM keys cannot lift them to per-scan
+    /// random.
+    pub supports_randomize_mac: bool,
+    /// True iff `iw phy info` exposes the active-scan capability. Every
+    /// modern driver does; the field exists so the report can flag the
+    /// rare exception (some Realtek/Mediatek out-of-tree drivers).
+    pub supports_active_scan: bool,
+    /// Best-effort: the literal SCAN line from `iw phy info` if the
+    /// driver prints one, e.g. `Supported commands: ... new_scan ...`.
+    /// Useful for human inspection; not parsed further.
+    pub raw_scan_capabilities: Option<String>,
+}
+
+/// Resolve the phy name for `iface` via sysfs: `/sys/class/net/<iface>/phy80211/name`.
+/// Used by `scan_policy` and `chip_info_extended` to stitch `iw dev` and
+/// `iw phy` output together.
+pub fn phy_for_iface(iface: &str) -> Option<String> {
+    phy_for_iface_under(Path::new("/sys/class/net"), iface)
+}
+
+/// Test seam for `phy_for_iface`.
+pub fn phy_for_iface_under(root: &Path, iface: &str) -> Option<String> {
+    let p = root.join(iface).join("phy80211").join("name");
+    let s = std::fs::read_to_string(&p).ok()?;
+    let trimmed = s.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+/// Build a scan-policy report for `iface` by shelling out to `iw`. Returns
+/// a partially-populated struct on missing-iw / parse-miss rather than
+/// failing — the command layer wants to render "supports randomization:
+/// unknown" instead of refusing to print the iface row.
+pub fn scan_policy(iface: &str) -> ScanPolicy {
+    let mut out = ScanPolicy {
+        iface: iface.to_string(),
+        ..Default::default()
+    };
+    if !is_safe_iface(iface) {
+        return out;
+    }
+    out.phy = phy_for_iface(iface);
+    if let Some((phy, kind)) = run_iw_dev_info(iface) {
+        if out.phy.is_none() {
+            out.phy = Some(phy);
+        }
+        out.iface_type = kind;
+    }
+    if let Some(phy) = &out.phy
+        && let Some(text) = run_iw_phy_info(phy)
+    {
+        let caps = parse_iw_phy_capabilities(&text);
+        out.supports_randomize_mac = caps.randomize_mac;
+        out.supports_active_scan = caps.active_scan;
+        out.raw_scan_capabilities = caps.raw_scan_line;
+    }
+    out
+}
+
+fn run_iw_dev_info(iface: &str) -> Option<(String, Option<String>)> {
+    let output = Command::new(iw_bin())
+        .args(["dev", iface, "info"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    Some(parse_iw_dev_info_phy_and_type(&String::from_utf8_lossy(
+        &output.stdout,
+    )))
+}
+
+fn run_iw_phy_info(phy: &str) -> Option<String> {
+    if !is_safe_iface(phy) {
+        return None;
+    }
+    let output = Command::new(iw_bin())
+        .args(["phy", phy, "info"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// Parse `wiphy <n>` and `type <kind>` out of `iw dev <iface> info`. The
+/// phy name returned is `phyN` constructed from the wiphy index because
+/// that's what `iw phy <phy> info` accepts. Both fields are best-effort.
+fn parse_iw_dev_info_phy_and_type(text: &str) -> (String, Option<String>) {
+    let mut phy = String::new();
+    let mut kind: Option<String> = None;
+    for raw in text.lines() {
+        let line = raw.trim();
+        if let Some(rest) = line.strip_prefix("wiphy ")
+            && let Ok(n) = rest.trim().parse::<u32>()
+        {
+            phy = format!("phy{n}");
+        }
+        if let Some(rest) = line.strip_prefix("type ") {
+            kind = Some(rest.trim().to_string());
+        }
+    }
+    (phy, kind)
+}
+
+#[derive(Debug, Default)]
+struct PhyCapabilities {
+    randomize_mac: bool,
+    active_scan: bool,
+    raw_scan_line: Option<String>,
+}
+
+/// Parse the supported-commands / extended-capabilities block of
+/// `iw phy <phy> info`. We only care about three things:
+/// - any line containing `randomize_mac` (case-insensitive) — driver
+///   supports the per-scan random-MAC feature NM relies on.
+/// - any line mentioning `active scan` or `new_scan` — base scan
+///   capability is present.
+/// - the first `Supported commands` line as a raw string for human
+///   inspection.
+fn parse_iw_phy_capabilities(text: &str) -> PhyCapabilities {
+    let mut out = PhyCapabilities::default();
+    let lower = text.to_ascii_lowercase();
+    out.randomize_mac = lower.contains("randomize_mac")
+        || lower.contains("randomise_mac")
+        || lower.contains("scan_random_mac");
+    out.active_scan = lower.contains("active scan")
+        || lower.contains("new_scan")
+        || lower.contains("trigger_scan");
+    for raw in text.lines() {
+        let line = raw.trim();
+        if line.starts_with("Supported commands:") {
+            out.raw_scan_line = Some(line.to_string());
+            break;
+        }
+    }
+    out
+}
+
+// ---- Chipset / firmware extended report (Milestone 4b) -----------------
+
+/// Extended chipset inventory: everything `chip_info` reports plus the
+/// resolved phy index, the driver-reported regulatory domain (best-effort
+/// via `iw phy <phy> reg get`), and a raw firmware line cribbed from
+/// `dmesg | grep firmware` when sysfs doesn't expose `firmware_version`.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct ChipInfoExtended {
+    pub iface: String,
+    pub phy: Option<String>,
+    pub driver: Option<String>,
+    pub vendor_id: Option<String>,
+    pub device_id: Option<String>,
+    pub firmware: Option<String>,
+    pub regulatory_domain: Option<String>,
+}
+
+/// Read the extended chipset inventory for `iface`. All fields are
+/// best-effort — a missing sysfs node, a missing `iw`, or a quiet
+/// dmesg ring buffer all degrade to `None` rather than failing.
+pub fn chip_info_extended(iface: &str) -> ChipInfoExtended {
+    let base = chip_info(iface).unwrap_or_default();
+    let phy = phy_for_iface(iface);
+    let firmware = base.firmware.or_else(|| dmesg_firmware_line(iface));
+    let regulatory_domain = phy.as_deref().and_then(iw_phy_reg_get);
+    ChipInfoExtended {
+        iface: iface.to_string(),
+        phy,
+        driver: base.driver,
+        vendor_id: base.vendor_id,
+        device_id: base.device_id,
+        firmware,
+        regulatory_domain,
+    }
+}
+
+/// Best-effort firmware fallback for drivers that don't expose
+/// `firmware_version` in sysfs. Reads `dmesg` (a one-shot, success-or-skip
+/// — the binary is missing on minimal containers) and looks for the first
+/// line that mentions `iface` and the word `firmware`.
+fn dmesg_firmware_line(iface: &str) -> Option<String> {
+    let output = Command::new("dmesg").output().ok()?;
+    if !output.status.success() {
+        tracing::debug!(iface, "dmesg returned non-zero; skipping firmware fallback");
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    for raw in text.lines().rev() {
+        let line = raw.trim();
+        let lower = line.to_ascii_lowercase();
+        if lower.contains("firmware") && lower.contains(&iface.to_ascii_lowercase()) {
+            return Some(line.to_string());
+        }
+    }
+    None
+}
+
+fn iw_phy_reg_get(phy: &str) -> Option<String> {
+    if !is_safe_iface(phy) {
+        return None;
+    }
+    let output = Command::new(iw_bin())
+        .args(["phy", phy, "reg", "get"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    for raw in text.lines() {
+        let line = raw.trim();
+        if let Some(rest) = line.strip_prefix("country ") {
+            // Example: "country US: DFS-FCC" — keep up to the colon.
+            let token = rest.split(':').next().unwrap_or(rest).trim();
+            if !token.is_empty() {
+                return Some(token.to_string());
+            }
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -470,6 +735,115 @@ mod tests {
         // We can't reliably stub `iw reg get` in the unit-test environment,
         // but the fallback constant must be the documented 20 dBm.
         assert_eq!(FALLBACK_REGULATORY_MAX_MBM, 2_000);
+    }
+
+    // ---- Milestone 4b: scan-policy + chipset parsers ----
+
+    #[test]
+    fn iw_bin_prefers_absolute_paths_when_present() {
+        // Issue #202: when an absolute path resolves, prefer it; otherwise
+        // fall back to a bare name (which `Command` resolves via PATH).
+        // The unit test can't stub the filesystem in-place, but we can
+        // assert the fallback path is the bare name and that the absolute
+        // candidates list contains the two distros' canonical layouts.
+        assert!(IW_ABS_PATHS.contains(&"/usr/bin/iw"));
+        assert!(IW_ABS_PATHS.contains(&"/sbin/iw"));
+    }
+
+    #[test]
+    fn parse_iw_dev_info_extracts_wiphy_and_type() {
+        let sample = "Interface wlan0\n\tifindex 3\n\twdev 0x1\n\taddr aa:bb:cc:dd:ee:ff\n\tssid coffee\n\ttype managed\n\twiphy 0\n\tchannel 36\n";
+        let (phy, kind) = parse_iw_dev_info_phy_and_type(sample);
+        assert_eq!(phy, "phy0");
+        assert_eq!(kind.as_deref(), Some("managed"));
+    }
+
+    #[test]
+    fn parse_iw_dev_info_returns_blank_when_no_wiphy() {
+        let sample = "Interface wlan0\n\ttype managed\n";
+        let (phy, kind) = parse_iw_dev_info_phy_and_type(sample);
+        assert_eq!(phy, "");
+        assert_eq!(kind.as_deref(), Some("managed"));
+    }
+
+    #[test]
+    fn parse_iw_phy_capabilities_detects_randomize_mac() {
+        let sample = "Wiphy phy0\n\tSupported commands:\n\t\t * new_interface\n\t\t * trigger_scan\n\t\t * scan_random_mac_addr\n";
+        let caps = parse_iw_phy_capabilities(sample);
+        assert!(caps.randomize_mac);
+        assert!(caps.active_scan);
+        assert!(
+            caps.raw_scan_line
+                .as_deref()
+                .unwrap()
+                .starts_with("Supported commands:")
+        );
+    }
+
+    #[test]
+    fn parse_iw_phy_capabilities_handles_missing_randomize_mac() {
+        let sample = "Wiphy phy0\n\tSupported commands:\n\t\t * trigger_scan\n";
+        let caps = parse_iw_phy_capabilities(sample);
+        assert!(!caps.randomize_mac);
+        assert!(caps.active_scan);
+    }
+
+    #[test]
+    fn parse_iw_phy_capabilities_returns_defaults_for_empty_input() {
+        let caps = parse_iw_phy_capabilities("");
+        assert!(!caps.randomize_mac);
+        assert!(!caps.active_scan);
+        assert!(caps.raw_scan_line.is_none());
+    }
+
+    #[test]
+    fn phy_for_iface_under_reads_phy80211_name() {
+        let tmp = tempdir();
+        let iface = tmp.path().join("wlan0").join("phy80211");
+        std::fs::create_dir_all(&iface).unwrap();
+        std::fs::write(iface.join("name"), "phy0\n").unwrap();
+        assert_eq!(
+            phy_for_iface_under(tmp.path(), "wlan0").as_deref(),
+            Some("phy0")
+        );
+    }
+
+    #[test]
+    fn phy_for_iface_under_returns_none_for_unknown_iface() {
+        let tmp = tempdir();
+        // No phy80211 entry → None, not an error. Same shape as the
+        // existing chip_info_under tests.
+        assert!(phy_for_iface_under(tmp.path(), "ghost0").is_none());
+    }
+
+    #[test]
+    fn scan_policy_returns_default_for_unsafe_iface_name() {
+        // Defense-in-depth: an iface with a `/` should never trigger an
+        // `iw` shell-out. The struct returned is the all-default form.
+        let p = scan_policy("/etc/passwd");
+        assert_eq!(p.iface, "/etc/passwd");
+        assert!(p.phy.is_none());
+        assert!(!p.supports_randomize_mac);
+    }
+
+    /// Sysfs-based driver lookup gracefully returns `None` for nonexistent
+    /// iface — uses `crate::testing::TempRoot` per the milestone brief.
+    #[test]
+    fn chip_info_under_temp_root_returns_err_for_unknown_iface() {
+        let dir = crate::testing::TempRoot::new("rf-chip");
+        let err = chip_info_under(&dir.path, "ghost0").unwrap_err();
+        assert!(err.to_string().contains("ghost0"));
+    }
+
+    #[test]
+    fn chip_info_extended_iface_field_is_set_even_when_sysfs_misses() {
+        // A non-existent iface still produces a struct (no panic, no
+        // error) so the command-layer table renderer can keep going.
+        let info = chip_info_extended("nope-iface-not-real-12345");
+        assert_eq!(info.iface, "nope-iface-not-real-12345");
+        // No assertion on driver/vendor — the test environment may have
+        // an iface with this name (unlikely) or the dmesg fallback may
+        // turn up something. The contract here is "doesn't panic".
     }
 
     /// Throwaway tempdir that wipes itself on Drop. Mirrors the helper in

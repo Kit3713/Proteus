@@ -1,13 +1,24 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::Path;
+use std::sync::Mutex;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 
 use super::Mac;
 
 const DEFAULT_ARP_PATH: &str = "/proc/net/arp";
+
+/// Roadmap M2: default sliding window for the recent-neighbour exclusion.
+/// The active probe catches *now*; the recent-table catches "this neighbour
+/// was here a minute ago and is plausibly still around the corner". 5
+/// minutes mirrors the kernel's stale-neighbour timeout (300s for
+/// `gc_stale_time`) without leaning on it directly. Configurable via
+/// `RecentNeighbourTable::with_window`.
+pub const DEFAULT_RECENT_WINDOW: Duration = Duration::from_secs(300);
 
 /// Bit values for the `Flags` column in `/proc/net/route` (see
 /// `<linux/route.h>`). RTF_UP marks the route as live, RTF_GATEWAY says the
@@ -158,6 +169,98 @@ fn hex_le_to_ipv4(hex: &str) -> Option<String> {
     Some(format!("{b1}.{b2}.{b3}.{b4}"))
 }
 
+/// Roadmap M2: in-memory MAC last-seen ledger. Layered ON TOP of the
+/// one-shot `/proc/net/arp` parse so a neighbour that came online, dropped
+/// off the kernel's neighbour cache, then briefly came back doesn't get
+/// re-collided with on the next rotation.
+///
+/// The `Instant`-equivalent here is a Unix-epoch second: makes the
+/// last-seen field cheap to serialize/log later if we ever need to persist
+/// it. Pruning runs lazily on `current_macs` so tests can drive time
+/// without a separate clean-up call.
+#[derive(Debug, Default)]
+pub struct RecentNeighbourTable {
+    entries: Mutex<HashMap<Mac, u64>>,
+    window: Duration,
+}
+
+impl RecentNeighbourTable {
+    pub fn new() -> Self {
+        Self {
+            entries: Mutex::new(HashMap::new()),
+            window: DEFAULT_RECENT_WINDOW,
+        }
+    }
+
+    pub fn with_window(window: Duration) -> Self {
+        Self {
+            entries: Mutex::new(HashMap::new()),
+            window,
+        }
+    }
+
+    /// Record a sighting of `mac` at the current wall-clock time.
+    pub fn record(&self, mac: Mac) {
+        self.record_at(mac, now_unix_secs());
+    }
+
+    /// Test/integration entry point — records a sighting at a specific
+    /// epoch second. Production code uses [`record`].
+    pub fn record_at(&self, mac: Mac, when_unix_secs: u64) {
+        let mut g = self.entries.lock().unwrap();
+        // Late entries don't move the timestamp backwards; only forwards.
+        let slot = g.entry(mac).or_insert(when_unix_secs);
+        if when_unix_secs > *slot {
+            *slot = when_unix_secs;
+        }
+    }
+
+    /// Bulk-insert every MAC in the kernel's current neighbour table.
+    /// Surfaces a "we already know about everyone the kernel knows about"
+    /// baseline before the per-rotation passive snapshot runs.
+    pub fn record_all(&self, macs: impl IntoIterator<Item = Mac>) {
+        let now = now_unix_secs();
+        for mac in macs {
+            self.record_at(mac, now);
+        }
+    }
+
+    /// Drop entries whose last-seen is older than the window. Idempotent.
+    pub fn prune(&self) {
+        self.prune_at(now_unix_secs());
+    }
+
+    pub fn prune_at(&self, now_unix_secs: u64) {
+        let cutoff = now_unix_secs.saturating_sub(self.window.as_secs());
+        let mut g = self.entries.lock().unwrap();
+        g.retain(|_, ts| *ts >= cutoff);
+    }
+
+    /// MACs currently inside the window. Prunes lazily so callers can
+    /// always trust the result is current without a manual `prune` call.
+    pub fn current_macs(&self) -> HashSet<Mac> {
+        self.current_macs_at(now_unix_secs())
+    }
+
+    pub fn current_macs_at(&self, now_unix_secs: u64) -> HashSet<Mac> {
+        self.prune_at(now_unix_secs);
+        self.entries.lock().unwrap().keys().copied().collect()
+    }
+
+    /// Window currently in effect. Surfaced for `--explain` so the operator
+    /// can see "we're excluding everyone we saw in the last 300s".
+    pub fn window(&self) -> Duration {
+        self.window
+    }
+}
+
+fn now_unix_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -253,6 +356,62 @@ IP address       HW type     Flags       HW address            Mask     Device
             errors.iter().any(|e| e.contains("zz:zz:zz:zz:zz:zz")),
             "expected error for invalid hex MAC, got {errors:?}"
         );
+    }
+
+    #[test]
+    fn recent_neighbour_table_records_and_returns_within_window() {
+        let table = RecentNeighbourTable::with_window(Duration::from_secs(300));
+        let m1: Mac = "aa:bb:cc:dd:ee:ff".parse().unwrap();
+        let m2: Mac = "12:34:56:78:9a:bc".parse().unwrap();
+        let t0 = 1_000_000u64;
+        table.record_at(m1, t0);
+        table.record_at(m2, t0 + 50);
+        let seen = table.current_macs_at(t0 + 100);
+        assert_eq!(seen.len(), 2);
+        assert!(seen.contains(&m1));
+        assert!(seen.contains(&m2));
+    }
+
+    #[test]
+    fn recent_neighbour_table_prunes_outside_window() {
+        let table = RecentNeighbourTable::with_window(Duration::from_secs(60));
+        let stale: Mac = "aa:bb:cc:dd:ee:ff".parse().unwrap();
+        let fresh: Mac = "12:34:56:78:9a:bc".parse().unwrap();
+        table.record_at(stale, 1_000_000);
+        table.record_at(fresh, 1_000_120);
+        // Now is 121 seconds after `stale` was last seen — outside the
+        // 60s window — and 1 second after `fresh`.
+        let seen = table.current_macs_at(1_000_121);
+        assert!(!seen.contains(&stale), "stale entry must have been pruned");
+        assert!(seen.contains(&fresh), "fresh entry must remain");
+    }
+
+    #[test]
+    fn recent_neighbour_table_record_all_baselines_kernel_set() {
+        // Bulk-record from a current `read_arp_macs` snapshot.
+        let table = RecentNeighbourTable::new();
+        let kernel = parse_arp(ARP_SAMPLE);
+        table.record_all(kernel.iter().copied());
+        let seen = table.current_macs();
+        for m in &kernel {
+            assert!(seen.contains(m), "expected {m} to be in recent table");
+        }
+    }
+
+    #[test]
+    fn recent_neighbour_table_record_does_not_move_ts_backwards() {
+        // Late-arriving observations from a slow probe must not extend the
+        // window backwards — otherwise an old sighting could "revive" a
+        // pruned MAC. Going forward, however, IS the whole point.
+        let table = RecentNeighbourTable::with_window(Duration::from_secs(60));
+        let m: Mac = "aa:bb:cc:dd:ee:ff".parse().unwrap();
+        table.record_at(m, 1_000_100);
+        table.record_at(m, 1_000_050); // older
+        table.record_at(m, 1_000_200); // newer
+        // After the window from t=1_000_200 is 60s, t=1_000_140 is the
+        // cutoff. The forward update must have stuck.
+        let seen = table.current_macs_at(1_000_259);
+        assert!(seen.contains(&m), "newest record_at should win");
     }
 
     #[test]

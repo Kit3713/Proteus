@@ -35,6 +35,7 @@ entry below, or `proteus wiki search <term>` for full-text search.
 - `cli` — full command reference
 - `config` — config file shape and defaults
 - `profiles` — the six functional profiles (`off`, `min`, `low`, `med`, `high`, `agr`)
+- `per-ssid` — per-SSID profile policies (override persona / profile / pin per network)
 - `timer` — systemd timer management
 - `doctor` — self-diagnostic checks
 - `probes` — connectivity probe rounds

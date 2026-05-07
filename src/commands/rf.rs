@@ -22,7 +22,7 @@ use serde::Serialize;
 
 use crate::config::Config;
 use crate::exit;
-use crate::rf::{self, BluetoothChipInfo, ChipInfo};
+use crate::rf::{self, BluetoothChipInfo, ChipInfo, ChipInfoExtended, ScanPolicy};
 use crate::state::{RfOriginals, State};
 
 #[derive(Debug, Serialize)]
@@ -321,6 +321,175 @@ fn yesno(b: bool) -> &'static str {
     if b { "yes" } else { "no" }
 }
 
+// ---- Milestone 4b: scan-policy + chipset reports -----------------------
+
+/// `proteus rf scan` report. Read-only; works as any user. Iterates every
+/// Wi-Fi iface and renders the driver-side scan capabilities (whether
+/// per-scan random MAC is supported, whether active scan is supported)
+/// plus the live netdev type from `iw dev <iface> info`. The "toggle to
+/// passive where the driver supports it" half of the milestone brief is
+/// handled at apply time via the NM `scan-rand-mac-address` write —
+/// `rf scan` itself is read-only so it stays usable as a non-root probe.
+#[derive(Debug, Serialize)]
+struct ScanReport {
+    iw_present: bool,
+    interfaces: Vec<ScanPolicy>,
+    note: Option<String>,
+}
+
+pub fn scan(json: bool) -> Result<u8> {
+    let interfaces = rf::wifi_interfaces();
+    let iw_present = rf::iw_present();
+    let policies: Vec<ScanPolicy> = interfaces.iter().map(|i| rf::scan_policy(i)).collect();
+    let mut note = None;
+    if interfaces.is_empty() {
+        note = Some("no Wi-Fi interfaces detected".to_string());
+    } else if !iw_present {
+        note = Some("`iw` binary not found on PATH; install iw-tools for full scan-policy data".into());
+    }
+    let report = ScanReport {
+        iw_present,
+        interfaces: policies,
+        note,
+    };
+    if json {
+        super::print_json(&report)?;
+    } else {
+        print_scan_human(&report);
+    }
+    Ok(exit::SUCCESS)
+}
+
+fn print_scan_human(r: &ScanReport) {
+    println!("rf scan policy:");
+    println!("  iw on PATH:             {}", yesno(r.iw_present));
+    println!("interfaces:");
+    if r.interfaces.is_empty() {
+        println!("  (none — no Wi-Fi hardware detected)");
+    } else {
+        for p in &r.interfaces {
+            println!("  {}", p.iface);
+            println!(
+                "    phy:                  {}",
+                p.phy.as_deref().unwrap_or("(unknown)")
+            );
+            println!(
+                "    iface type:           {}",
+                p.iface_type.as_deref().unwrap_or("(unknown)")
+            );
+            println!(
+                "    randomize_mac scans:  {}",
+                yesno(p.supports_randomize_mac)
+            );
+            println!(
+                "    active scan:          {}",
+                yesno(p.supports_active_scan)
+            );
+            if let Some(line) = &p.raw_scan_capabilities {
+                println!("    iw phy line:          {line}");
+            }
+        }
+    }
+    if let Some(n) = &r.note {
+        println!();
+        println!("note: {n}");
+    }
+}
+
+/// `proteus rf chipset` report. Same shape as `rf status` but trimmed to
+/// the inventory half — driver / vendor / device / firmware / phy /
+/// regulatory domain per Wi-Fi iface, plus the BlueZ adapter inventory.
+/// Default output is a table; `--json` emits the raw struct.
+#[derive(Debug, Serialize)]
+struct ChipsetReport {
+    iw_present: bool,
+    interfaces: Vec<ChipInfoExtended>,
+    bluetooth: Vec<BluetoothChipInfo>,
+    note: Option<String>,
+}
+
+pub fn chipset(json: bool) -> Result<u8> {
+    let interfaces = rf::wifi_interfaces();
+    let iw_present = rf::iw_present();
+    let chips: Vec<ChipInfoExtended> = interfaces
+        .iter()
+        .map(|i| rf::chip_info_extended(i))
+        .collect();
+    let bluetooth = rf::bluetooth_chip_info();
+    let mut note = None;
+    if interfaces.is_empty() && bluetooth.is_empty() {
+        note = Some("no Wi-Fi interfaces or Bluetooth adapters detected".to_string());
+    }
+    let report = ChipsetReport {
+        iw_present,
+        interfaces: chips,
+        bluetooth,
+        note,
+    };
+    if json {
+        super::print_json(&report)?;
+    } else {
+        print_chipset_human(&report);
+    }
+    Ok(exit::SUCCESS)
+}
+
+fn print_chipset_human(r: &ChipsetReport) {
+    println!("rf chipset:");
+    println!("  iw on PATH:             {}", yesno(r.iw_present));
+    println!("wifi:");
+    if r.interfaces.is_empty() {
+        println!("  (none)");
+    } else {
+        // Single-line-per-iface table form: iface / driver / vendor:device /
+        // firmware. Wider than `rf status` but tighter — the brief asked
+        // for a table, not the multi-line indented view.
+        println!(
+            "  {:<10} {:<10} {:<14} {:<10} {}",
+            "iface", "driver", "vendor:device", "phy", "firmware"
+        );
+        for c in &r.interfaces {
+            let vd = match (c.vendor_id.as_deref(), c.device_id.as_deref()) {
+                (Some(v), Some(d)) => format!("{v}:{d}"),
+                _ => "?".into(),
+            };
+            println!(
+                "  {:<10} {:<10} {:<14} {:<10} {}",
+                c.iface,
+                c.driver.as_deref().unwrap_or("?"),
+                vd,
+                c.phy.as_deref().unwrap_or("?"),
+                c.firmware.as_deref().unwrap_or("(not exposed)"),
+            );
+            if let Some(reg) = &c.regulatory_domain {
+                println!("    regdomain: {reg}");
+            }
+        }
+    }
+    println!("bluetooth:");
+    if r.bluetooth.is_empty() {
+        println!("  (none)");
+    } else {
+        println!(
+            "  {:<6} {:<19} {:<10} {}",
+            "hci", "address", "addr-type", "name"
+        );
+        for b in &r.bluetooth {
+            println!(
+                "  {:<6} {:<19} {:<10} {}",
+                b.hci,
+                b.address.as_deref().unwrap_or("?"),
+                b.address_type.as_deref().unwrap_or("?"),
+                b.name.as_deref().unwrap_or("(unset)"),
+            );
+        }
+    }
+    if let Some(n) = &r.note {
+        println!();
+        println!("note: {n}");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -429,5 +598,57 @@ mod tests {
                 .and_then(|r| r.tx_power_mbm),
             None
         );
+    }
+
+    // ---- Milestone 4b: scan/chipset commands round-trip ----
+
+    /// `proteus rf scan --json` parses cleanly even on a host with no
+    /// Wi-Fi hardware. Contract: exits 0, prints valid JSON, no panic.
+    #[test]
+    fn rf_scan_returns_success_with_no_wifi() {
+        let code = scan(true).expect("scan(json) should not error");
+        assert_eq!(code, exit::SUCCESS);
+    }
+
+    /// Same check for the human-readable path. The renderer must
+    /// tolerate empty interface lists without indexing into a missing
+    /// note slot.
+    #[test]
+    fn rf_scan_human_table_works_with_no_wifi() {
+        let code = scan(false).expect("scan(table) should not error");
+        assert_eq!(code, exit::SUCCESS);
+    }
+
+    #[test]
+    fn rf_chipset_returns_success_with_no_wifi() {
+        let code = chipset(true).expect("chipset(json) should not error");
+        assert_eq!(code, exit::SUCCESS);
+    }
+
+    #[test]
+    fn rf_chipset_human_table_works_with_no_wifi() {
+        let code = chipset(false).expect("chipset(table) should not error");
+        assert_eq!(code, exit::SUCCESS);
+    }
+
+    /// The new `RfConfig::scan_random_mac` defaults to `true` per the
+    /// milestone brief — opt-out is "user passes false explicitly".
+    #[test]
+    fn rf_config_scan_random_mac_defaults_to_true() {
+        assert!(crate::config::RfConfig::default().scan_random_mac);
+    }
+
+    /// Profile baselines: Off/Min disable scan_random_mac; Low/Med/High/
+    /// Agr enable it. Mirrors the `tx_power_reduce` pattern but at a
+    /// lower aggressiveness threshold (privacy polish, no breakage).
+    #[test]
+    fn rf_scan_random_mac_baseline_per_profile() {
+        use crate::profile::Profile;
+        assert!(!Profile::Off.baseline().rf.scan_random_mac);
+        assert!(!Profile::Min.baseline().rf.scan_random_mac);
+        assert!(Profile::Low.baseline().rf.scan_random_mac);
+        assert!(Profile::Med.baseline().rf.scan_random_mac);
+        assert!(Profile::High.baseline().rf.scan_random_mac);
+        assert!(Profile::Agr.baseline().rf.scan_random_mac);
     }
 }

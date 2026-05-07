@@ -109,11 +109,11 @@ The next cycle's headline. Stealth becomes two modes that coexist in one binary;
 
 The existing `src/mac/arp.rs` does a one-shot ARP-table check before assignment. For persona mode that's not strong enough — a persona-shaped MAC must not collide with anything live on the segment, and the failure mode should be visible to the user, not silent.
 
-- ⏳ Pre-commit ARP probe: send an ARP request for the candidate (RFC 5227 ARP Probe). If a reply arrives, the MAC is taken — re-roll within the same OUI pool.
-- ⏳ IPv6 parity: equivalent ND probe for the candidate's link-local address (DAD via Neighbor Solicitation).
-- ⏳ Adaptive backoff: on three consecutive collisions, surface a warning and fall back to the next vendor in the persona's `oui_pool` (or, in randomizer mode, pure entropy). Log every collision with the conflicting neighbour's IP for forensic clarity.
-- ⏳ Gateway / live-neighbour exclusion: extend the existing exclusion list (default-route gateway only) with all `arp -a` neighbours seen in the last N minutes (configurable, default 5).
-- ⏳ Surfaced via `proteus rotate --explain` showing every candidate considered + reason for rejection.
+- ✅ Pre-commit ARP probe: `src/mac/probe.rs` defines the `Probe` trait with `arp_probe(iface, candidate, timeout) -> ProbeOutcome` (RFC 5227 ARP Probe semantics: sender_hw = candidate, sender_proto = 0.0.0.0, target_proto = link-local target). The production `SystemProbe` returns `Unsupported` when `CAP_NET_RAW` is unavailable so the dev-laptop build falls back to the existing passive `/proc/net/arp` exclusion; the libc raw-socket emit path is the integration-test follow-up. Tests drive collision retries via `MockProbe` and never open a real raw socket.
+- ✅ IPv6 parity: `nd_probe(iface, candidate, timeout)` on the same `Probe` trait, plus `link_local_from_mac` (modified-EUI-64 derivation per RFC 4291 Appendix A). Listens up to 1 s per RFC 4862 `RetransTimer` default. Same `Unsupported` fallback as the ARP probe.
+- ✅ Adaptive backoff: `generator::generate_with_probe` walks the persona's `oui_pool` deterministically once a streak begins; after `COLLISIONS_BEFORE_OUI_FALLBACK = 3` consecutive ARP/ND collisions on the same token, the cursor advances to the next OUI. Every collision logs at `tracing::warn` with the conflicting neighbour's IP (`peer_ip` field, `?` when unknown) for forensic clarity.
+- ✅ Gateway / live-neighbour exclusion: `arp::RecentNeighbourTable` keeps an in-memory MAC ledger keyed by last-seen Unix-epoch second, with a configurable window (default 300 s, `DEFAULT_RECENT_WINDOW`). `commands::rotate::run` reseeds it from the kernel's `/proc/net/arp` snapshot each rotation and unions it into the existing gateway-MAC exclusion.
+- ✅ Surfaced via `proteus rotate --explain`: new `#[arg(long)] explain` flag on `Command::Rotate`. When set, the per-iface `ExplainEntry` records every candidate the generator considered with its rejection reason (`forbidden`, `avoid-list`, `not-assignable`, `active-collision (peer=...)`, `probe-unsupported`, `accepted`) plus the chosen OUI token and number of OUI fallbacks. Default output (no flag) keeps the existing single-line `rotated wlan0 (...)` format.
 
 **Acceptance:** `nmap -O` against the host before/after `proteus persona use iphone-15` produces materially different / matching-target detections. Integration test container has a side-car `nmap` runner that asserts persona effectiveness for a representative subset.
 
@@ -121,11 +121,11 @@ The existing `src/mac/arp.rs` does a one-shot ARP-table check before assignment.
 
 Builds on Milestone 1 (needs the backend trait to expose connection-keyed state) and Milestone 2 (each SSID can pin a different persona).
 
-- ⏳ New `[per_ssid."<ssid>"]` config sections — fields: `persona`, `aggressiveness_profile` override, `pin_mac`, `rotate_interval` override, `portal_policy` override.
-- ⏳ Match precedence at runtime: `per_ssid["X"]` (highest) → `[persona]` → `[profile]` baseline → `Config` defaults.
-- ⏳ CLI: `proteus ssid list` / `ssid show <ssid>` / `ssid set <ssid> <key> <value>` / `ssid clear <ssid>`.
-- ⏳ Integrates with the NM connection-up dispatcher and the new backend abstraction so changing networks re-applies the right SSID rules.
-- ⏳ State migration: existing `known_portal_ssids` array merges into per-SSID with `portal_policy = "fresh-mac-per-visit"`.
+- ✅ New `[per_ssid."<ssid>"]` config sections — fields: `persona`, `aggressiveness_profile` override, `pin_mac`, `rotate_interval` override, `portal_policy` override. `PerSsidPolicy` lives in `src/config.rs`; round-trips through TOML.
+- ✅ Match precedence at runtime: `per_ssid["X"]` (highest) → `[persona]` → `[profile]` baseline → `Config` defaults. Implemented in `src/per_ssid.rs::resolve_for_ssid`; surfaces the source trace via `EffectivePolicy::source`.
+- ✅ CLI: `proteus ssid list` / `ssid show <ssid>` / `ssid set <ssid> <key> <value>` / `ssid clear <ssid>`. Read commands work for any user; mutating commands require root + `--yes`.
+- 🚧 Integrates with the NM connection-up dispatcher and the new backend abstraction so changing networks re-applies the right SSID rules. The resolver and CLI ship now; the connection-up wiring is the follow-up.
+- ✅ State migration: existing `known_portal_ssids` array merges into per-SSID with `portal_policy = "fresh-mac-per-visit"`. v1 → v2 ladder step landed in `src/state.rs::migrate_known_portals_to_per_ssid`; legacy array kept for one cycle for backwards compatibility.
 
 ## Milestone 4 — Finish fingerprint hardening + RF + rotation triggers
 

@@ -17,6 +17,7 @@
 //! baseline regardless of any per-knob overrides. The overrides remain
 //! on disk, so switching back to a non-`Off` profile restores them.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use anyhow::{Context, Result};
@@ -54,6 +55,16 @@ pub struct Config {
     /// NM → networkd → raw at runtime; only the NM impl is fully
     /// wired in this PR.
     pub backend: BackendConfig,
+    /// Per-SSID policy overrides (roadmap Milestone 3). Each entry under
+    /// `[per_ssid."<ssid>"]` may override one or more knobs that the
+    /// orchestrator looks up at NM `connection-up` time. Precedence is
+    /// `per_ssid["X"]` > `[persona]` > `[profile]` baseline > config
+    /// defaults — see `crate::per_ssid::resolve_for_ssid`. The keys are
+    /// the literal SSID strings (case-sensitive); the values follow
+    /// `PerSsidPolicy`. Integration with the NM connection-up dispatcher
+    /// is the follow-up tracked in roadmap Milestone 3.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub per_ssid: BTreeMap<String, PerSsidPolicy>,
 }
 
 impl Default for Config {
@@ -103,6 +114,7 @@ impl Config {
             timers: TimersConfig::default(),
             persona: PersonaConfig::default(),
             backend: BackendConfig::default(),
+            per_ssid: BTreeMap::new(),
         }
     }
 
@@ -197,6 +209,7 @@ impl Config {
             rf: Some(RawRfConfig {
                 tx_power_reduce: Some(self.rf.tx_power_reduce),
                 tx_power_reduction_db: Some(self.rf.tx_power_reduction_db),
+                scan_random_mac: Some(self.rf.scan_random_mac),
             }),
             timers: Some(RawTimersConfig {
                 rotate: Some(RawTimerConfig {
@@ -212,6 +225,7 @@ impl Config {
             backend: Some(RawBackendConfig {
                 driver: Some(self.backend.driver.clone()),
             }),
+            per_ssid: self.per_ssid.clone(),
         }
     }
 }
@@ -244,6 +258,14 @@ pub struct RawConfig {
     pub timers: Option<RawTimersConfig>,
     pub persona: Option<RawPersonaConfig>,
     pub backend: Option<RawBackendConfig>,
+    /// Per-SSID policies (roadmap Milestone 3). Stored as a flat map so
+    /// `[per_ssid."<ssid>"]` round-trips through TOML without losing
+    /// fields the resolver would otherwise discard. The map is always
+    /// carried through `resolve()` verbatim — the precedence merge with
+    /// persona / profile / defaults happens at NM connection-up time
+    /// via `crate::per_ssid::resolve_for_ssid`, not at config load.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub per_ssid: BTreeMap<String, PerSsidPolicy>,
 }
 
 impl RawConfig {
@@ -450,6 +472,9 @@ impl RawConfig {
             if let Some(v) = r.tx_power_reduction_db {
                 cfg.rf.tx_power_reduction_db = v;
             }
+            if let Some(v) = r.scan_random_mac {
+                cfg.rf.scan_random_mac = v;
+            }
         }
         if let Some(t) = self.timers {
             if let Some(r) = t.rotate
@@ -484,6 +509,7 @@ impl RawConfig {
                 );
             }
         }
+        cfg.per_ssid = self.per_ssid;
         cfg
     }
 
@@ -571,7 +597,10 @@ impl RawConfig {
                 timeout_secs
             ]
         );
-        any_some!(&self.rf, [tx_power_reduce, tx_power_reduction_db]);
+        any_some!(
+            &self.rf,
+            [tx_power_reduce, tx_power_reduction_db, scan_random_mac]
+        );
         if let Some(t) = &self.timers {
             if let Some(r) = &t.rotate
                 && r.interval.is_some()
@@ -590,6 +619,9 @@ impl RawConfig {
             return true;
         }
         any_some!(&self.backend, [driver]);
+        if !self.per_ssid.is_empty() {
+            return true;
+        }
         false
     }
 }
@@ -727,6 +759,8 @@ pub struct RawCaptivePortalConfig {
 pub struct RawRfConfig {
     pub tx_power_reduce: Option<bool>,
     pub tx_power_reduction_db: Option<u8>,
+    /// Roadmap Milestone 4b — see `RfConfig::scan_random_mac`.
+    pub scan_random_mac: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -925,6 +959,14 @@ pub struct RfConfig {
     pub tx_power_reduce: bool,
     /// dB below the regulatory maximum. Hardware-clamped on actual write.
     pub tx_power_reduction_db: u8,
+    /// Roadmap Milestone 4b: scan-time MAC randomization at the NM layer.
+    /// When true, `proteus apply` writes
+    /// `wifi.scan-rand-mac-address = "random"` and
+    /// `wifi.mac-address-randomization = 2` on every managed Wi-Fi
+    /// connection — supplicant scans use a per-scan random source MAC,
+    /// and saved-SSID probe lists stop being broadcast in the clear.
+    /// Default `true` (high-value, low-risk; see `wiki/wpa-supplicant-hardening.md`).
+    pub scan_random_mac: bool,
 }
 
 /// Per-timer cadence baselines. Each entry maps to a `proteus-<name>.timer`
@@ -960,6 +1002,43 @@ pub struct TimerConfig {
 #[serde(default)]
 pub struct PersonaConfig {
     pub active: Option<String>,
+}
+
+/// One `[per_ssid."<ssid>"]` block. Every field is `Option<...>` so the
+/// operator can override exactly the knobs they care about and let the
+/// rest fall through the precedence chain (persona → profile → defaults).
+///
+/// Roadmap Milestone 3. The struct is shared by `RawConfig` and the
+/// resolved `Config` because it is pass-through: the per-SSID resolve
+/// happens at NM `connection-up` time via
+/// `crate::per_ssid::resolve_for_ssid`, not at config-load time. Storing
+/// it on both sides keeps the round-trip clean and lets read commands
+/// (`proteus ssid list / show`) inspect it without re-parsing the file.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct PerSsidPolicy {
+    /// Persona id to use on this SSID (e.g. `"iphone-15"`). When set this
+    /// beats the global `[persona] active`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub persona: Option<String>,
+    /// `Profile` slider override: one of `off|min|low|med|high|agr`.
+    /// Lets a single hostile SSID lift to `agr` without flipping the
+    /// global profile.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub aggressiveness_profile: Option<String>,
+    /// Pin a literal MAC for this SSID (e.g. `"aa:bb:cc:dd:ee:ff"`).
+    /// Useful for home networks where the operator wants a stable lease.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pin_mac: Option<String>,
+    /// Rotation interval override (e.g. `"30m"`, `"4h"`). Same syntax as
+    /// `[timers.rotate].interval` and `proteus timer set --interval`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rotate_interval: Option<String>,
+    /// Captive-portal-style policy override. Currently the only known
+    /// value is `"fresh-mac-per-visit"`; the resolver passes the string
+    /// through verbatim so future policies can land without a schema bump.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub portal_policy: Option<String>,
 }
 
 /// `NetworkBackend` driver selector. Roadmap Milestone 1.
@@ -1143,6 +1222,10 @@ impl Default for RfConfig {
         Self {
             tx_power_reduce: false,
             tx_power_reduction_db: 6,
+            // Milestone 4b: opt-out, not opt-in. The NM keys this writes
+            // are inert on hardware that doesn't support them, so leaving
+            // it on by default costs nothing and the privacy win is real.
+            scan_random_mac: true,
         }
     }
 }
@@ -1407,6 +1490,83 @@ driver = "garbage"
         assert_eq!(
             cfg.backend.driver, "auto",
             "invalid driver must not bleed into resolved config"
+        );
+    }
+
+    /// Roadmap Milestone 3: a `[per_ssid."<ssid>"]` block must round-trip
+    /// through TOML losslessly so the on-disk shape is the authoritative
+    /// representation.
+    #[test]
+    fn per_ssid_block_round_trips_through_toml() {
+        let toml_str = r#"
+profile = "med"
+
+[per_ssid."coffee-shop"]
+persona = "iphone-15"
+aggressiveness_profile = "high"
+pin_mac = "aa:bb:cc:dd:ee:ff"
+rotate_interval = "30m"
+portal_policy = "fresh-mac-per-visit"
+"#;
+        let raw: RawConfig = toml::from_str(toml_str).unwrap();
+        assert!(raw.has_overrides());
+        let cfg = raw.resolve();
+        let entry = cfg
+            .per_ssid
+            .get("coffee-shop")
+            .expect("coffee-shop entry should be present");
+        assert_eq!(entry.persona.as_deref(), Some("iphone-15"));
+        assert_eq!(entry.aggressiveness_profile.as_deref(), Some("high"));
+        assert_eq!(entry.pin_mac.as_deref(), Some("aa:bb:cc:dd:ee:ff"));
+        assert_eq!(entry.rotate_interval.as_deref(), Some("30m"));
+        assert_eq!(entry.portal_policy.as_deref(), Some("fresh-mac-per-visit"));
+
+        let raw2 = cfg.to_raw_explicit();
+        let s = toml::to_string(&raw2).unwrap();
+        let parsed: RawConfig = toml::from_str(&s).unwrap();
+        let back = parsed.resolve();
+        let entry_back = back.per_ssid.get("coffee-shop").unwrap();
+        assert_eq!(entry_back.persona.as_deref(), Some("iphone-15"));
+        assert_eq!(entry_back.portal_policy.as_deref(), Some("fresh-mac-per-visit"));
+    }
+
+    #[test]
+    fn per_ssid_partial_block_keeps_other_fields_none() {
+        let toml_str = r#"
+profile = "med"
+
+[per_ssid."home-lan"]
+pin_mac = "12:34:56:78:9a:bc"
+"#;
+        let raw: RawConfig = toml::from_str(toml_str).unwrap();
+        let cfg = raw.resolve();
+        let entry = cfg.per_ssid.get("home-lan").unwrap();
+        assert_eq!(entry.pin_mac.as_deref(), Some("12:34:56:78:9a:bc"));
+        assert!(entry.persona.is_none());
+        assert!(entry.aggressiveness_profile.is_none());
+        assert!(entry.rotate_interval.is_none());
+        assert!(entry.portal_policy.is_none());
+    }
+
+    #[test]
+    fn per_ssid_section_alone_triggers_has_overrides() {
+        let toml_str = r#"
+[per_ssid."conference-wifi"]
+aggressiveness_profile = "agr"
+"#;
+        let raw: RawConfig = toml::from_str(toml_str).unwrap();
+        assert!(raw.has_overrides());
+    }
+
+    #[test]
+    fn empty_per_ssid_map_does_not_serialize_a_section() {
+        let cfg = Config::default();
+        assert!(cfg.per_ssid.is_empty());
+        let raw = cfg.to_raw_explicit();
+        let s = toml::to_string(&raw).unwrap();
+        assert!(
+            !s.contains("[per_ssid"),
+            "default config must not emit a [per_ssid] section: {s}"
         );
     }
 }

@@ -481,6 +481,49 @@ pub enum PersonaAction {
     },
 }
 
+/// `proteus ssid ...` — roadmap Milestone 3.
+///
+/// Read commands (`list`, `show`) work for any user. Mutating commands
+/// (`set`, `clear`) require root because they write under
+/// `/etc/proteus/`.
+#[derive(Subcommand, Debug)]
+pub enum SsidAction {
+    /// List every per-SSID entry. With `--json`, emit the raw `[per_ssid]`
+    /// table; without it, one line per SSID with the fields that are set.
+    List {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show the resolved policy for one SSID, including the source trace
+    /// (`per_ssid > persona > profile > defaults`).
+    Show {
+        /// SSID to resolve. Case-sensitive, matches `Config::per_ssid` keys.
+        ssid: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Set one field on a per-SSID block. Creates the block if absent.
+    /// Keys: `persona`, `aggressiveness_profile`, `pin_mac`,
+    /// `rotate_interval`, `portal_policy`.
+    Set {
+        ssid: String,
+        /// Field name (one of the five known keys).
+        key: String,
+        /// New value. Validation happens in the resolver, not the writer
+        /// — invalid values surface in `proteus ssid show` with a
+        /// fall-through trace.
+        value: String,
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Drop the entire `[per_ssid."<ssid>"]` block.
+    Clear {
+        ssid: String,
+        #[arg(long)]
+        yes: bool,
+    },
+}
+
 #[derive(Subcommand, Debug)]
 pub enum RfAction {
     /// Show Wi-Fi/Bluetooth chipset inventory + current TX-power per iface.
@@ -497,5 +540,17 @@ pub enum RfAction {
     Revert {
         #[arg(long)]
         yes: bool,
+    },
+    /// Report scan policy (active vs passive) and randomization capability
+    /// per Wi-Fi iface — roadmap Milestone 4b.
+    Scan {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Firmware/driver inventory per Wi-Fi iface and Bluetooth adapter
+    /// — roadmap Milestone 4b.
+    Chipset {
+        #[arg(long)]
+        json: bool,
     },
 }
