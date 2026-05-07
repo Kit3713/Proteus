@@ -98,6 +98,50 @@ If a dependency ever fails to cross-compile, the immediate options are:
 The 3 MB binary cap and the no-network-egress invariant mean we rarely add
 heavyweight deps anyway, so this is unlikely to bite often.
 
+## Distro packages produced on tag
+
+Tagging `v*` triggers `.github/workflows/release.yml`, which builds both raw
+binaries above plus installable packages from the recipes under `dist/`:
+
+| Format          | Recipe                  | Container             | Artifact pattern             |
+| --------------- | ----------------------- | --------------------- | ---------------------------- |
+| Fedora/RHEL RPM | `dist/rpm/proteus.spec` | `fedora:43`           | `proteus-*.rpm`              |
+| Debian/Ubuntu   | `dist/debian/`          | `ubuntu:24.04`        | `proteus_*.deb`              |
+| Arch Linux      | `dist/arch/PKGBUILD`    | `archlinux:base-devel`| `proteus-*.pkg.tar.zst`      |
+
+Each artifact ships alongside a `.sha256` companion. The package jobs are
+non-blocking (`continue-on-error: true`): if a single recipe drifts, the
+release still ships every other format and the raw binaries.
+
+### Install commands
+
+```sh
+# Fedora / RHEL / openSUSE
+sudo dnf install ./proteus-*.rpm
+
+# Debian / Ubuntu
+sudo dpkg -i ./proteus_*.deb
+sudo apt-get install -f   # pull any missing runtime deps
+
+# Arch Linux
+sudo pacman -U ./proteus-*.pkg.tar.zst
+```
+
+### Nix
+
+Nix users do not get a release tarball: install directly from the flake
+under `dist/nix/`:
+
+```sh
+nix profile install github:Kit3713/Proteus?dir=dist/nix
+# or, for a one-off invocation:
+nix run github:Kit3713/Proteus?dir=dist/nix
+```
+
+This way every `nix build` follows whatever commit the user pins, instead
+of a separately published artifact. See `dist/nix/README.md` for the
+NixOS module.
+
 ## How a release is cut
 
 1. Land all changes on `main` and confirm CI is green, including the
@@ -105,11 +149,13 @@ heavyweight deps anyway, so this is unlikely to bite often.
 2. Tag the commit: `git tag -s v0.1.0 -m "Proteus 0.1.0"` (signed tags
    preferred; unsigned tags also trigger the workflow).
 3. Push the tag: `git push origin v0.1.0`.
-4. The `Release` workflow builds both architectures, computes SHA256 sums,
-   and creates a draft GitHub Release with all four files attached
-   (binary + .sha256 for each arch).
-5. Review the draft release notes, edit if needed, and publish.
+4. The `Release` workflow builds both architectures, builds RPM + .deb +
+   Arch packages, computes SHA256 sums, and creates a draft GitHub Release
+   with everything attached.
+5. Review the draft release notes, confirm each expected artifact is
+   present (raw binaries are required; package artifacts are best-effort
+   and may be missing if a recipe drifted), edit if needed, and publish.
 
 The workflow leaves the release as a draft on purpose so a human can
-double-check the binary sizes and the auto-generated changelog before the
-artifact is announced.
+double-check the binary sizes, the package contents, and the
+auto-generated changelog before the artifact is announced.

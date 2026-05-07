@@ -2,7 +2,8 @@
 #
 # Triggered by pushing a tag that matches `v*` (for example `v0.1.0`). Builds
 # stripped release binaries for x86_64 and aarch64, computes SHA256 sums, and
-# attaches everything to a GitHub Release.
+# attaches everything to a GitHub Release. Also builds installable packages
+# (RPM, .deb, Arch .pkg.tar.zst) using the recipes under `dist/`.
 #
 # Architecture matrix:
 #   - x86_64-unknown-linux-gnu: built inside the Fedora 43 container, the same
@@ -12,8 +13,27 @@
 #     gcc-aarch64-linux-gnu toolchain. There is no ARM runner; we trust the
 #     cross-compile and the size-cap check to catch regressions.
 #
+# Package matrix:
+#   - RPM (Fedora/RHEL/openSUSE): built in fedora:43 with rpmbuild and the
+#     spec under dist/rpm/proteus.spec. Tarball is staged from the tag's
+#     worktree so the workflow does not depend on GitHub source archives
+#     (which only exist after the tag is published).
+#   - .deb (Debian/Ubuntu): built in ubuntu:24.04 with dpkg-buildpackage and
+#     the recipe under dist/debian/. dpkg-buildpackage works in-place on the
+#     source tree and drops the .deb one directory up.
+#   - Arch .pkg.tar.zst: built in archlinux:base-devel with makepkg using the
+#     recipe under dist/arch/PKGBUILD. makepkg refuses to run as root, so we
+#     create an unprivileged builder user inside the container.
+#
+# Nix users do not get a release artifact: install via
+# `nix profile install github:Kit3713/Proteus?dir=dist/nix` instead. See
+# dist/release.md for the rationale.
+#
 # 32-bit ARM (armv7l) and other architectures are intentionally unsupported.
 # See dist/release.md for the rationale and the from-source path.
+#
+# Each packaging job uses `continue-on-error: true` so a single broken recipe
+# does not block the entire release. The raw binary jobs remain blocking.
 #
 # This workflow is scaffolding for a future v0.1.0 tag. It does not run on
 # branch pushes — only on tags — so it stays dormant until a release happens.
@@ -114,13 +134,191 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  # Collect both per-arch artifact bundles and publish a single GitHub Release.
-  # Runs only after both build jobs succeed; if either fails, no release is
-  # cut. softprops/action-gh-release@v2 is pinned to the major version per
-  # action best practice.
+  # Fedora/RHEL RPM built from dist/rpm/proteus.spec inside fedora:43.
+  #
+  # The spec's Source0 points at GitHub's archive URL; for a CI build the tag
+  # may not exist yet (or its archive may not be reachable from inside the
+  # container), so we stage a local tarball into `~/rpmbuild/SOURCES/`
+  # matching the `Proteus-<version>.tar.gz` layout the spec's
+  # `%autosetup -n Proteus-...` expects. rpmbuild then finds the tarball via
+  # the default `_sourcedir` and never reaches out to GitHub.
+  build-rpm:
+    name: build rpm
+    runs-on: ubuntu-latest
+    container: fedora:43
+    needs: [build-x86_64]
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install rpmbuild toolchain
+        run: dnf install -y rpm-build rpmdevtools tar gzip gcc pkg-config dbus-devel openssl-devel rust cargo systemd-rpm-macros
+      - name: Set up rpmbuild tree
+        run: rpmdev-setuptree
+      - name: Stage local source tarball
+        run: |
+          set -euo pipefail
+          VERSION=$(awk -F'[ \t]+' '/^Version:/ {print $2; exit}' dist/rpm/proteus.spec)
+          echo "Building proteus ${VERSION}"
+          STAGE=$(mktemp -d)
+          mkdir -p "$STAGE/Proteus-${VERSION}"
+          tar --exclude=.git --exclude=target --exclude=dist-out \
+              -cf - . | tar -xf - -C "$STAGE/Proteus-${VERSION}"
+          tar -czf ~/rpmbuild/SOURCES/proteus-${VERSION}.tar.gz \
+              -C "$STAGE" "Proteus-${VERSION}"
+          rm -rf "$STAGE"
+      - name: rpmbuild -ba dist/rpm/proteus.spec
+        run: rpmbuild -ba dist/rpm/proteus.spec
+      - name: Stage RPM artifacts
+        run: |
+          set -euo pipefail
+          mkdir -p dist-out
+          find ~/rpmbuild/RPMS -type f -name '*.rpm' -exec cp -v {} dist-out/ \;
+          find ~/rpmbuild/SRPMS -type f -name '*.rpm' -exec cp -v {} dist-out/ \;
+          ( cd dist-out && for f in *.rpm; do sha256sum "$f" > "$f.sha256"; done )
+          ls -la dist-out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: proteus-rpm
+          path: dist-out/*
+          if-no-files-found: error
+          retention-days: 7
+
+  # Debian/Ubuntu .deb built from dist/debian/ inside ubuntu:24.04.
+  #
+  # dpkg-buildpackage builds in-place from the source tree and drops the
+  # resulting .deb one directory up. We move the source into a parent
+  # directory so the artifacts can be collected without polluting the
+  # checkout.
+  build-deb:
+    name: build deb
+    runs-on: ubuntu-latest
+    container: ubuntu:24.04
+    continue-on-error: true
+    env:
+      DEBIAN_FRONTEND: noninteractive
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install Debian build tooling
+        run: |
+          set -euo pipefail
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            build-essential devscripts debhelper dh-make fakeroot \
+            rustc cargo pkg-config libdbus-1-dev ca-certificates
+      - name: dpkg-buildpackage -us -uc -b
+        env:
+          # Skip the cargo test invocation in debian/rules; the release
+          # workflow trusts CI for that. Speeds the build up considerably.
+          DEB_BUILD_OPTIONS: nocheck
+        run: |
+          set -euo pipefail
+          # dpkg-buildpackage drops .deb files in the parent directory; stage
+          # the checkout under a parent so we have somewhere to collect them.
+          WORK=$(mktemp -d)
+          cp -a . "$WORK/proteus"
+          cd "$WORK/proteus"
+          dpkg-buildpackage -us -uc -b
+          echo "DEB_PARENT=$WORK" >> "$GITHUB_ENV"
+      - name: Stage .deb artifacts
+        run: |
+          set -euo pipefail
+          mkdir -p dist-out
+          find "$DEB_PARENT" -maxdepth 1 -type f \
+            \( -name '*.deb' -o -name '*.ddeb' -o -name '*.buildinfo' -o -name '*.changes' \) \
+            -exec cp -v {} dist-out/ \;
+          ( cd dist-out && for f in *.deb; do [ -e "$f" ] && sha256sum "$f" > "$f.sha256" || true; done )
+          ls -la dist-out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: proteus-deb
+          path: dist-out/*
+          if-no-files-found: error
+          retention-days: 7
+
+  # Arch Linux .pkg.tar.zst built from dist/arch/PKGBUILD inside
+  # archlinux:base-devel.
+  #
+  # makepkg refuses to run as root, so we create an unprivileged builder
+  # user and chown the source tree to it. The PKGBUILD's `source=(...)`
+  # references a tarball; we stage one locally so makepkg does not need to
+  # reach out to GitHub for the tag archive.
+  build-arch-pkg:
+    name: build arch pkg
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v6
+      - name: Refresh pacman and install helpers
+        run: |
+          set -euo pipefail
+          # Full -Syu (not -Sy) — Arch is rolling, and a partial upgrade
+          # (refresh DB without upgrading) breaks `makepkg -s` when it later
+          # tries to install rust/cargo against the refreshed DB.
+          pacman -Syu --noconfirm --needed sudo tar gzip
+      - name: Create unprivileged builder user
+        run: |
+          set -euo pipefail
+          useradd -m builder
+          echo 'builder ALL=(ALL) NOPASSWD: ALL' >> /etc/sudoers
+          chown -R builder:builder "$GITHUB_WORKSPACE"
+      - name: Stage local source tarball for PKGBUILD
+        run: |
+          set -euo pipefail
+          PKGVER=$(awk -F'=' '/^pkgver=/ {gsub(/[" ]/, "", $2); print $2; exit}' dist/arch/PKGBUILD)
+          echo "Packaging proteus ${PKGVER}"
+          STAGE=$(mktemp -d)
+          mkdir -p "$STAGE/Proteus-${PKGVER}"
+          tar --exclude=.git --exclude=target --exclude=dist-out \
+              -cf - . | tar -xf - -C "$STAGE/Proteus-${PKGVER}"
+          tar -czf "dist/arch/proteus-${PKGVER}.tar.gz" \
+              -C "$STAGE" "Proteus-${PKGVER}"
+          rm -rf "$STAGE"
+          chown -R builder:builder dist/arch
+      - name: makepkg -s --noconfirm (using local source)
+        run: |
+          set -euo pipefail
+          # Override the source array to use the local tarball and skip
+          # checksums; the upstream PKGBUILD already uses SKIP. Use
+          # --skipchecksums for safety in case the recipe is updated later.
+          sudo -u builder bash -c '
+            set -euo pipefail
+            cd dist/arch
+            PKGVER=$(awk -F"=" "/^pkgver=/ {gsub(/[\" ]/, \"\", \$2); print \$2; exit}" PKGBUILD)
+            # Tell makepkg to source the tarball from the same directory by
+            # rewriting the source array to a local file reference.
+            sed -i "s|^source=.*|source=(\"proteus-${PKGVER}.tar.gz\")|" PKGBUILD
+            makepkg -s --noconfirm --skipchecksums
+          '
+      - name: Stage Arch package artifacts
+        run: |
+          set -euo pipefail
+          mkdir -p dist-out
+          find dist/arch -maxdepth 1 -type f -name '*.pkg.tar.zst' -exec cp -v {} dist-out/ \;
+          ( cd dist-out && for f in *.pkg.tar.zst; do sha256sum "$f" > "$f.sha256"; done )
+          ls -la dist-out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: proteus-arch
+          path: dist-out/*
+          if-no-files-found: error
+          retention-days: 7
+
+  # Collect every artifact bundle and publish a single GitHub Release.
+  #
+  # The raw-binary jobs are required (`needs: [build-x86_64, build-aarch64]`)
+  # so a release without binaries never ships. The package jobs are listed
+  # in `needs` too, but they run with `continue-on-error: true`, so a broken
+  # packaging recipe does not block the release; we just pull whichever
+  # artifacts succeeded via `if-no-files-found: warn` on the download steps.
+  #
+  # softprops/action-gh-release@v2 is pinned to the major version per action
+  # best practice. `fail_on_unmatched_files: false` is intentional: missing
+  # package artifacts (because their job failed) should not abort the
+  # release.
   publish:
     name: publish release
-    needs: [build-x86_64, build-aarch64]
+    needs: [build-x86_64, build-aarch64, build-rpm, build-deb, build-arch-pkg]
     runs-on: ubuntu-latest
     steps:
       # No checkout needed: softprops/action-gh-release reads the tag/SHA from
@@ -135,16 +333,43 @@ jobs:
         with:
           name: proteus-aarch64
           path: release-assets
+      - name: Download RPM artifact
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: proteus-rpm
+          path: release-assets
+      - name: Download .deb artifact
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: proteus-deb
+          path: release-assets
+      - name: Download Arch package artifact
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: proteus-arch
+          path: release-assets
       - name: List staged release assets
-        run: ls -la release-assets
+        run: ls -la release-assets || true
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          # Glob each artifact group so missing optional files (e.g. when a
+          # packaging job fails) do not abort the release. The raw binaries
+          # are pinned by exact name and remain required.
           files: |
             release-assets/proteus-x86_64-unknown-linux-gnu
             release-assets/proteus-x86_64-unknown-linux-gnu.sha256
             release-assets/proteus-aarch64-unknown-linux-gnu
             release-assets/proteus-aarch64-unknown-linux-gnu.sha256
+            release-assets/*.rpm
+            release-assets/*.rpm.sha256
+            release-assets/*.deb
+            release-assets/*.deb.sha256
+            release-assets/*.pkg.tar.zst
+            release-assets/*.pkg.tar.zst.sha256
           draft: true
           generate_release_notes: true
-          fail_on_unmatched_files: true
+          fail_on_unmatched_files: false
