@@ -98,6 +98,8 @@ Two places where Proteus looks at your existing setup before acting and bows out
 
 The rule: detect first, defer to the more-specialized tool, surface the decision in `proteus status` so you know exactly what was skipped and why.
 
+**Explicit override.** When automatic detection isn't confident enough, `proteus config disable <component> --reason "<text>"` is the user's hatch: it sets the section's `enabled = false` and writes the reason as a comment above the section. `proteus status` then surfaces "disabled by user: <reason>" in that feature's note, in the same shape as the auto-defer message. See `proteus wiki config` for the full CLI surface.
+
 ## Idempotency
 
 `proteus apply` is idempotent. Running it ten times converges to the same state as running it once. Implementations that aren't idempotent are bugs — file them.

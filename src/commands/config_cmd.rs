@@ -1,0 +1,591 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+//! `proteus config` subcommand family — first-class CLI for managing
+//! `/etc/proteus/config.toml` so users don't have to hand-edit it.
+//!
+//! Mutating commands require root + `--yes`. Read commands work as any user.
+//! Round-trips through `toml_edit` so user comments and formatting survive.
+
+use std::ffi::OsString;
+use std::fs;
+use std::path::Path;
+use std::process::Command;
+
+use anyhow::{Context, Result, anyhow};
+use serde::Serialize;
+use toml_edit::{DocumentMut, Item, Value};
+
+use crate::config::Config;
+use crate::exit;
+
+/// Default editor used when `$EDITOR` and `$VISUAL` are unset.
+const DEFAULT_EDITOR: &str = "vi";
+
+#[derive(Serialize)]
+struct GetReport<'a> {
+    key: &'a str,
+    value: serde_json::Value,
+}
+
+#[derive(Serialize)]
+struct ValidateReport {
+    ok: bool,
+    path: String,
+    errors: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct KeyEntry {
+    key: String,
+    #[serde(rename = "type")]
+    kind: &'static str,
+    default: serde_json::Value,
+}
+
+// ---------- Commands ----------
+
+pub fn show(json: bool, config: Option<&Path>) -> Result<u8> {
+    super::show_config::run(json, config)
+}
+
+pub fn get(key: &str, json: bool, config: Option<&Path>) -> Result<u8> {
+    let path = super::config_path(config);
+    let merged = load_merged_document(&path)?;
+    let item = match lookup(&merged, key) {
+        Some(it) => it,
+        None => {
+            eprintln!("proteus: unknown config key '{key}' (try `proteus config keys`)");
+            return Ok(exit::CONFIG_ERROR);
+        }
+    };
+    if json {
+        super::print_json(&GetReport {
+            key,
+            value: item_to_json(item),
+        })?;
+    } else {
+        println!("{}", item_to_display(item));
+    }
+    Ok(exit::SUCCESS)
+}
+
+pub fn set(key: &str, value: &str, yes: bool, config: Option<&Path>) -> Result<u8> {
+    if !yes {
+        eprintln!("proteus: refusing to write config without --yes (safety guard)");
+        return Ok(exit::CONFIG_ERROR);
+    }
+    if let Err(e) = super::require_root() {
+        eprintln!("proteus: {e}");
+        return Ok(exit::PERMISSION_ERROR);
+    }
+    let path = super::config_path(config);
+    let mut doc = load_or_empty_document(&path)?;
+    let typed = match parse_value_for_key(key, value) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("proteus: cannot set '{key}': {e:#}");
+            return Ok(exit::CONFIG_ERROR);
+        }
+    };
+    set_in_doc(&mut doc, key, typed)?;
+    let serialized = doc.to_string();
+    if let Err(e) = parse_config_text(&serialized) {
+        eprintln!("proteus: refusing to write — resulting config would not parse: {e:#}");
+        return Ok(exit::CONFIG_ERROR);
+    }
+    super::write_atomic(&path, serialized.as_bytes())?;
+    println!("set {key} = {value} in {}", path.display());
+    Ok(exit::SUCCESS)
+}
+
+pub fn enable(component: &str, yes: bool, config: Option<&Path>) -> Result<u8> {
+    set_enabled(component, true, None, yes, config)
+}
+
+pub fn disable(
+    component: &str,
+    reason: Option<&str>,
+    yes: bool,
+    config: Option<&Path>,
+) -> Result<u8> {
+    set_enabled(component, false, reason, yes, config)
+}
+
+pub fn edit(config: Option<&Path>) -> Result<u8> {
+    if let Err(e) = super::require_root() {
+        eprintln!("proteus: {e}");
+        return Ok(exit::PERMISSION_ERROR);
+    }
+    let path = super::config_path(config);
+    if !path.exists() {
+        super::write_atomic(&path, b"")?;
+    }
+    let editor = std::env::var_os("VISUAL")
+        .or_else(|| std::env::var_os("EDITOR"))
+        .unwrap_or_else(|| OsString::from(DEFAULT_EDITOR));
+    let status = Command::new(&editor)
+        .arg(&path)
+        .status()
+        .with_context(|| format!("spawning editor {editor:?}"))?;
+    if !status.success() {
+        eprintln!("proteus: editor exited with {status}");
+        return Ok(exit::GENERIC_ERROR);
+    }
+    let raw = fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+    match parse_config_text(&raw) {
+        Ok(_) => {
+            println!("validated {} OK", path.display());
+            Ok(exit::SUCCESS)
+        }
+        Err(e) => {
+            eprintln!("proteus: edited config has errors:");
+            eprintln!("  {e:#}");
+            eprintln!("(file saved as-is; re-run `proteus config edit` to fix)");
+            Ok(exit::CONFIG_ERROR)
+        }
+    }
+}
+
+pub fn validate(json: bool, config: Option<&Path>) -> Result<u8> {
+    let path = super::config_path(config);
+    let mut errors = Vec::new();
+    let raw = match fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+    };
+    if !raw.is_empty()
+        && let Err(e) = parse_config_text(&raw)
+    {
+        errors.push(format!("{e:#}"));
+    }
+    let ok = errors.is_empty();
+    if json {
+        super::print_json(&ValidateReport {
+            ok,
+            path: path.display().to_string(),
+            errors,
+        })?;
+    } else if ok {
+        if raw.is_empty() {
+            println!("(empty / missing config — defaults in effect)");
+        }
+        println!("ok: {}", path.display());
+    } else {
+        println!("errors in {}:", path.display());
+        for e in &errors {
+            println!("  {e}");
+        }
+    }
+    if ok {
+        Ok(exit::SUCCESS)
+    } else {
+        Ok(exit::CONFIG_ERROR)
+    }
+}
+
+pub fn reset(section: Option<&str>, yes: bool, config: Option<&Path>) -> Result<u8> {
+    if !yes {
+        eprintln!("proteus: refusing to reset config without --yes");
+        return Ok(exit::CONFIG_ERROR);
+    }
+    if let Err(e) = super::require_root() {
+        eprintln!("proteus: {e}");
+        return Ok(exit::PERMISSION_ERROR);
+    }
+    let path = super::config_path(config);
+    let defaults_doc = default_document()?;
+    match section {
+        None => {
+            super::write_atomic(&path, defaults_doc.to_string().as_bytes())?;
+            println!("reset entire config to defaults: {}", path.display());
+        }
+        Some(name) => {
+            let mut doc = load_or_empty_document(&path)?;
+            let default_section = match defaults_doc.get(name) {
+                Some(it) => it.clone(),
+                None => {
+                    eprintln!("proteus: unknown section '{name}' (try `proteus config keys`)");
+                    return Ok(exit::CONFIG_ERROR);
+                }
+            };
+            doc[name] = default_section;
+            super::write_atomic(&path, doc.to_string().as_bytes())?;
+            println!("reset section [{name}] to defaults: {}", path.display());
+        }
+    }
+    Ok(exit::SUCCESS)
+}
+
+pub fn keys(json: bool) -> Result<u8> {
+    let entries = enumerate_keys()?;
+    if json {
+        super::print_json(&entries)?;
+    } else {
+        for e in &entries {
+            println!("{} : {} = {}", e.key, e.kind, e.default);
+        }
+    }
+    Ok(exit::SUCCESS)
+}
+
+// ---------- shared helpers ----------
+
+fn set_enabled(
+    component: &str,
+    enabled: bool,
+    reason: Option<&str>,
+    yes: bool,
+    config: Option<&Path>,
+) -> Result<u8> {
+    if !yes {
+        eprintln!("proteus: refusing to write config without --yes");
+        return Ok(exit::CONFIG_ERROR);
+    }
+    if let Err(e) = super::require_root() {
+        eprintln!("proteus: {e}");
+        return Ok(exit::PERMISSION_ERROR);
+    }
+    if !section_has_enabled(component) {
+        eprintln!(
+            "proteus: component '{component}' has no `enabled` toggle (try `proteus config keys`)"
+        );
+        return Ok(exit::CONFIG_ERROR);
+    }
+    let path = super::config_path(config);
+    let mut doc = load_or_empty_document(&path)?;
+    set_in_doc(
+        &mut doc,
+        &format!("{component}.enabled"),
+        Value::from(enabled),
+    )?;
+    if !enabled && let Some(text) = reason {
+        annotate_disable_reason(&mut doc, component, text);
+    }
+    super::write_atomic(&path, doc.to_string().as_bytes())?;
+    let verb = if enabled { "enabled" } else { "disabled" };
+    match reason {
+        Some(r) if !enabled => println!("{verb} {component} (reason: {r})"),
+        _ => println!("{verb} {component}"),
+    }
+    Ok(exit::SUCCESS)
+}
+
+/// Add a `# Proteus: disabled at <date> — reason: <text>` comment above the
+/// `[<component>]` table header. Surfaced in `proteus status`.
+fn annotate_disable_reason(doc: &mut DocumentMut, component: &str, reason: &str) {
+    let date = super::now_iso8601();
+    let comment = format!("# Proteus: disabled at {date} - reason: {reason}\n");
+    let Some(item) = doc.get_mut(component) else {
+        return;
+    };
+    if let Some(table) = item.as_table_mut() {
+        let prefix = match table.decor().prefix().and_then(|p| p.as_str()) {
+            Some(existing) => filter_old_disabled_comments(existing),
+            None => String::new(),
+        };
+        let new_prefix = format!("{prefix}{comment}");
+        table.decor_mut().set_prefix(new_prefix);
+    }
+}
+
+fn filter_old_disabled_comments(prefix: &str) -> String {
+    prefix
+        .lines()
+        .filter(|l| !l.trim_start().starts_with("# Proteus: disabled"))
+        .map(|l| format!("{l}\n"))
+        .collect()
+}
+
+fn load_or_empty_document(path: &Path) -> Result<DocumentMut> {
+    let raw = match fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+    };
+    if raw.is_empty() {
+        return Ok(DocumentMut::new());
+    }
+    raw.parse::<DocumentMut>()
+        .with_context(|| format!("parsing {}", path.display()))
+}
+
+/// Load the user's config and overlay it onto the defaults so `get` returns
+/// a value for every supported key (defaults included).
+fn load_merged_document(path: &Path) -> Result<DocumentMut> {
+    let mut merged = default_document()?;
+    let raw = match fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(merged),
+        Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+    };
+    if raw.is_empty() {
+        return Ok(merged);
+    }
+    let user: DocumentMut = raw
+        .parse()
+        .with_context(|| format!("parsing {}", path.display()))?;
+    for (k, v) in user.iter() {
+        merged.insert(k, v.clone());
+    }
+    Ok(merged)
+}
+
+fn default_document() -> Result<DocumentMut> {
+    let s = toml::to_string_pretty(&Config::default()).context("serializing default config")?;
+    s.parse::<DocumentMut>()
+        .context("re-parsing default config as toml_edit document")
+}
+
+fn parse_config_text(s: &str) -> Result<Config> {
+    toml::from_str::<Config>(s).context("parsing config")
+}
+
+// ---------- dotted-key plumbing ----------
+
+/// Split a dotted key into (section, field). We currently only support
+/// two-level keys ("section.field"), which covers the entire schema.
+fn split_key(key: &str) -> Result<(&str, &str)> {
+    let mut parts = key.splitn(2, '.');
+    let section = parts
+        .next()
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| anyhow!("empty key"))?;
+    let field = parts
+        .next()
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| anyhow!("key '{key}' must be of the form section.field"))?;
+    if field.contains('.') {
+        return Err(anyhow!(
+            "nested keys deeper than 'section.field' not supported"
+        ));
+    }
+    Ok((section, field))
+}
+
+fn lookup<'a>(doc: &'a DocumentMut, key: &str) -> Option<&'a Item> {
+    let (section, field) = split_key(key).ok()?;
+    doc.get(section)?.as_table()?.get(field)
+}
+
+fn section_has_enabled(component: &str) -> bool {
+    let Ok(doc) = default_document() else {
+        return false;
+    };
+    doc.get(component)
+        .and_then(|t| t.as_table())
+        .map(|t| t.contains_key("enabled"))
+        .unwrap_or(false)
+}
+
+fn set_in_doc(doc: &mut DocumentMut, key: &str, value: Value) -> Result<()> {
+    let (section, field) = split_key(key)?;
+    if doc.get(section).is_none() {
+        doc[section] = Item::Table(toml_edit::Table::new());
+    }
+    let table = doc[section]
+        .as_table_mut()
+        .ok_or_else(|| anyhow!("section [{section}] is not a table"))?;
+    table[field] = Item::Value(value);
+    Ok(())
+}
+
+/// Coerce a CLI string into the right TOML value for `key` by consulting the
+/// default's existing type. Bools accept true/false/yes/no/on/off (case-insensitive).
+fn parse_value_for_key(key: &str, raw: &str) -> Result<Value> {
+    let defaults = default_document()?;
+    let item = lookup(&defaults, key)
+        .ok_or_else(|| anyhow!("unknown config key (try `proteus config keys`)"))?;
+    let val = item
+        .as_value()
+        .ok_or_else(|| anyhow!("'{key}' is not a scalar value"))?;
+    match val {
+        Value::Boolean(_) => parse_bool(raw).map(Value::from),
+        Value::Integer(_) => raw
+            .parse::<i64>()
+            .map(Value::from)
+            .map_err(|e| anyhow!("expected integer: {e}")),
+        Value::Float(_) => raw
+            .parse::<f64>()
+            .map(Value::from)
+            .map_err(|e| anyhow!("expected float: {e}")),
+        Value::String(_) => Ok(Value::from(raw)),
+        Value::Array(_) => {
+            // Comma-separated list of strings.
+            let mut arr = toml_edit::Array::new();
+            for part in raw.split(',') {
+                let trimmed = part.trim();
+                if !trimmed.is_empty() {
+                    arr.push(trimmed);
+                }
+            }
+            Ok(Value::Array(arr))
+        }
+        Value::InlineTable(_) | Value::Datetime(_) => {
+            Err(anyhow!("setting this key from the CLI is not supported"))
+        }
+    }
+}
+
+fn parse_bool(s: &str) -> Result<bool> {
+    match s.to_ascii_lowercase().as_str() {
+        "true" | "yes" | "on" | "1" => Ok(true),
+        "false" | "no" | "off" | "0" => Ok(false),
+        other => Err(anyhow!(
+            "expected boolean (true/false/yes/no/on/off), got '{other}'"
+        )),
+    }
+}
+
+fn item_to_display(item: &Item) -> String {
+    match item.as_value() {
+        Some(Value::String(s)) => s.value().to_string(),
+        Some(other) => other.to_string().trim().to_string(),
+        None => item.to_string().trim().to_string(),
+    }
+}
+
+fn item_to_json(item: &Item) -> serde_json::Value {
+    let Some(val) = item.as_value() else {
+        return serde_json::Value::Null;
+    };
+    value_to_json(val)
+}
+
+fn value_to_json(val: &Value) -> serde_json::Value {
+    use serde_json::Value as J;
+    match val {
+        Value::String(s) => J::String(s.value().clone()),
+        Value::Integer(i) => J::Number((*i.value()).into()),
+        Value::Boolean(b) => J::Bool(*b.value()),
+        Value::Float(f) => serde_json::Number::from_f64(*f.value())
+            .map(J::Number)
+            .unwrap_or(J::Null),
+        Value::Datetime(dt) => J::String(dt.value().to_string()),
+        Value::Array(arr) => J::Array(arr.iter().map(value_to_json).collect()),
+        Value::InlineTable(tbl) => J::Object(
+            tbl.iter()
+                .map(|(k, v)| (k.to_string(), value_to_json(v)))
+                .collect(),
+        ),
+    }
+}
+
+fn enumerate_keys() -> Result<Vec<KeyEntry>> {
+    let doc = default_document()?;
+    let mut out = Vec::new();
+    for (section_name, item) in doc.iter() {
+        let Some(table) = item.as_table() else {
+            continue;
+        };
+        for (field, sub) in table.iter() {
+            let Some(v) = sub.as_value() else { continue };
+            out.push(KeyEntry {
+                key: format!("{section_name}.{field}"),
+                kind: type_name(v),
+                default: value_to_json(v),
+            });
+        }
+    }
+    out.sort_by(|a, b| a.key.cmp(&b.key));
+    Ok(out)
+}
+
+fn type_name(v: &Value) -> &'static str {
+    match v {
+        Value::String(_) => "string",
+        Value::Integer(_) => "integer",
+        Value::Float(_) => "float",
+        Value::Boolean(_) => "bool",
+        Value::Datetime(_) => "datetime",
+        Value::Array(_) => "array",
+        Value::InlineTable(_) => "table",
+    }
+}
+
+// ---------- tests ----------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dotted_key_parser_splits_into_section_and_field() {
+        let (s, f) = split_key("mac.enabled").unwrap();
+        assert_eq!(s, "mac");
+        assert_eq!(f, "enabled");
+        assert!(split_key("mac").is_err());
+        assert!(split_key("").is_err());
+        assert!(split_key("a.b.c").is_err());
+    }
+
+    #[test]
+    fn set_value_round_trips_through_doc() {
+        let mut doc = default_document().unwrap();
+        set_in_doc(&mut doc, "mac.enabled", Value::from(true)).unwrap();
+        set_in_doc(&mut doc, "mac.rotation_interval", Value::from("30m")).unwrap();
+        let serialised = doc.to_string();
+        let cfg = parse_config_text(&serialised).unwrap();
+        assert!(cfg.mac.enabled);
+        assert_eq!(cfg.mac.rotation_interval, "30m");
+    }
+
+    #[test]
+    fn parse_value_for_key_coerces_by_default_type() {
+        let v = parse_value_for_key("mac.enabled", "yes").unwrap();
+        assert_eq!(v.as_bool(), Some(true));
+        let v = parse_value_for_key("mac.rotation_interval", "1h").unwrap();
+        assert_eq!(v.as_str(), Some("1h"));
+        let v = parse_value_for_key("probes.quorum_n", "5").unwrap();
+        assert_eq!(v.as_integer(), Some(5));
+        assert!(parse_value_for_key("mac.enabled", "maybe").is_err());
+    }
+
+    #[test]
+    fn validate_reports_errors_for_bad_toml() {
+        let r = parse_config_text("not = [valid");
+        assert!(r.is_err());
+        let r = parse_config_text(""); // empty parses fine
+        assert!(r.is_ok());
+    }
+
+    #[test]
+    fn disable_with_reason_writes_comment_above_section() {
+        let mut doc = default_document().unwrap();
+        set_in_doc(&mut doc, "dns.strip_edns_client_subnet", Value::from(false)).unwrap();
+        annotate_disable_reason(&mut doc, "dns", "using dnscrypt-proxy");
+        let s = doc.to_string();
+        assert!(
+            s.contains("# Proteus: disabled at"),
+            "expected disable comment in {s}"
+        );
+        assert!(
+            s.contains("using dnscrypt-proxy"),
+            "expected reason text in {s}"
+        );
+        // Re-disabling collapses the old comment instead of stacking.
+        annotate_disable_reason(&mut doc, "dns", "second reason");
+        let s2 = doc.to_string();
+        let count = s2.matches("# Proteus: disabled").count();
+        assert_eq!(count, 1, "expected exactly one disable comment, got\n{s2}");
+        assert!(s2.contains("second reason"));
+        assert!(!s2.contains("using dnscrypt-proxy"));
+    }
+
+    #[test]
+    fn enumerate_keys_includes_known_fields() {
+        let entries = enumerate_keys().unwrap();
+        let names: Vec<&str> = entries.iter().map(|e| e.key.as_str()).collect();
+        assert!(names.contains(&"mac.enabled"));
+        assert!(names.contains(&"probes.quorum_n"));
+        assert!(names.contains(&"dns.strip_edns_client_subnet"));
+    }
+
+    #[test]
+    fn section_has_enabled_recognises_mac_but_not_dns() {
+        assert!(section_has_enabled("mac"));
+        assert!(section_has_enabled("hostname"));
+        assert!(!section_has_enabled("dns"));
+        assert!(!section_has_enabled("nonexistent"));
+    }
+}
