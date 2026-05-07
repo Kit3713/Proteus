@@ -265,11 +265,26 @@ fn parse_http_url(url: &str) -> Option<UrlParts> {
     if host.is_empty() {
         return None;
     }
+    // Security audit M-3: refuse host or path that contains CR, LF, NUL,
+    // or any ASCII control byte. Without this an attacker who controls
+    // the configured `detect_url` (root-owned today, but config-distribution
+    // mechanisms may relax that in the future) could inject extra HTTP
+    // headers — `Host: target\r\nX-Smuggle: yes` — into the request line.
+    if !is_request_safe(&host) || !is_request_safe(path) {
+        return None;
+    }
     Some(UrlParts {
         host,
         port,
         path: path.to_string(),
     })
+}
+
+/// True iff `s` contains no characters that would terminate or extend an
+/// HTTP/1.0 request line beyond what the caller intended. Rejects CR, LF,
+/// NUL, and the entire C0 control range.
+fn is_request_safe(s: &str) -> bool {
+    s.bytes().all(|b| b >= 0x20 && b != 0x7F)
 }
 
 /// Helper for IPv6-literal port handling: `after` is the slice that comes

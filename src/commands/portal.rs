@@ -8,7 +8,6 @@
 //! grouped with them so wrappers don't have to special-case it.
 
 use std::path::Path;
-use std::process::Command as ProcCommand;
 use std::time::Duration;
 
 use anyhow::Result;
@@ -168,18 +167,27 @@ pub fn run_open(state_path: Option<&Path>, config_path: Option<&Path>) -> Result
 
     persist_check(&state_path, &super::now_iso8601(), &outcome);
 
-    match try_xdg_open(&url) {
-        Ok(()) => {
-            println!("opened {url} in default browser");
-            Ok(exit::SUCCESS)
-        }
-        Err(reason) => {
-            // Don't fail — print the URL so the user can paste it.
-            println!("portal URL: {url}");
-            eprintln!("proteus: could not launch browser ({reason}); paste the URL above");
-            Ok(exit::SUCCESS)
-        }
+    // Security audit H-1: never auto-open as root. Print the URL and let
+    // the user paste it into their own browser. Auto-launching xdg-open
+    // as root would dispatch by URL scheme to whatever desktop handler is
+    // registered (file://, ssh://, vnc://, custom in-house schemes), and
+    // every one of those handlers would inherit root. The previous
+    // fallback path (print the URL) is now the only path.
+    if !url_scheme_is_safe(&url) {
+        eprintln!("proteus: refusing to surface URL with non-http(s) scheme: {url}");
+        return Ok(exit::CONFIG_ERROR);
     }
+    println!("portal URL: {url}");
+    println!("(open this in your browser; proteus does not launch it as root)");
+    Ok(exit::SUCCESS)
+}
+
+/// Captive portals are by definition untrusted; their `Location` header is
+/// attacker-controlled. Reject anything whose scheme isn't `http` or
+/// `https` so the URL we print can't be confused with a `file:`, `ssh:`,
+/// or `javascript:` payload that the user might paste reflexively.
+fn url_scheme_is_safe(url: &str) -> bool {
+    url.starts_with("http://") || url.starts_with("https://")
 }
 
 fn run_detector(config: &Config) -> DetectionOutcome {
@@ -204,13 +212,8 @@ fn persist_check(state_path: &Path, timestamp: &str, outcome: &DetectionOutcome)
     let _ = state.save(state_path);
 }
 
-fn try_xdg_open(url: &str) -> std::result::Result<(), String> {
-    match ProcCommand::new("xdg-open").arg(url).status() {
-        Ok(s) if s.success() => Ok(()),
-        Ok(s) => Err(format!("xdg-open exited with {s}")),
-        Err(e) => Err(format!("xdg-open not available: {e}")),
-    }
-}
+// Removed: `try_xdg_open` — security audit H-1. We no longer auto-launch a
+// browser as root; the URL is printed and the user opens it themselves.
 
 fn render_status(report: &StatusReport, json: bool) -> Result<u8> {
     if json {
