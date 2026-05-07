@@ -309,7 +309,7 @@ jobs:
           ln -sf "$HOME/.cargo/bin/cargo" /usr/local/bin/cargo
           rustc --version
           cargo --version
-      - name: dpkg-buildpackage -us -uc -b
+      - name: dpkg-buildpackage -us -uc -b -d
         env:
           # Skip the cargo test invocation in debian/rules; the release
           # workflow trusts CI for that. Speeds the build up considerably.
@@ -325,7 +325,12 @@ jobs:
           # tidy. Materialize the expected layout in the staged copy.
           cp -a "$WORK/proteus/dist/debian" "$WORK/proteus/debian"
           cd "$WORK/proteus"
-          dpkg-buildpackage -us -uc -b
+          # `-d` skips dpkg-checkbuilddeps. We install rustc/cargo via
+          # rustup (issue #190); dpkg-checkbuilddeps queries the dpkg
+          # package DB, not PATH, and would reject the build because no
+          # apt rustc package is registered. The build itself uses the
+          # rustup-provided binaries via PATH and works.
+          dpkg-buildpackage -us -uc -b -d
           echo "DEB_PARENT=$WORK" >> "$GITHUB_ENV"
       - name: Stage .deb artifacts
         run: |
