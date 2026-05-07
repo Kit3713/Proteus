@@ -283,13 +283,13 @@ fn require_root_or_exit() -> Option<u8> {
 }
 
 fn write_dropin(spec: &TimerSpec, interval: &timer::Interval) -> Result<()> {
-    let dir = timer::dropin_dir(spec);
-    std::fs::create_dir_all(&dir)
-        .with_context(|| format!("creating drop-in dir {}", dir.display()))?;
     let path = timer::dropin_file(spec);
     let body = timer::render_dropin(interval);
-    std::fs::write(&path, body).with_context(|| format!("writing {}", path.display()))?;
-    // Mode 0644 is the default for std::fs::write; that's what systemd expects.
+    // Atomic write with a randomized temp name + parent fsync so a partial
+    // crash never leaves a half-written drop-in or a `.tmp` symlink target
+    // an attacker could pre-place.
+    super::write_atomic(&path, body.as_bytes())
+        .with_context(|| format!("writing {}", path.display()))?;
     Ok(())
 }
 
