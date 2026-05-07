@@ -129,6 +129,11 @@ pub enum Command {
         #[arg(long)]
         yes: bool,
     },
+    /// Bluetooth alias / discoverable / BLE RPA management.
+    Bluetooth {
+        #[command(subcommand)]
+        action: BluetoothAction,
+    },
     /// Browse the embedded wiki.
     Wiki {
         /// Page name (e.g. `intro`); omit to list pages.
@@ -138,6 +143,25 @@ pub enum Command {
     Help {
         /// Feature or wiki page name.
         feature: Option<String>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum BluetoothAction {
+    /// List adapters with current alias, discoverable state, and RPA status.
+    Status {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Apply alias / discoverable / BLE RPA policy to all adapters.
+    Apply {
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Restore original adapter aliases from cache.
+    Revert {
+        #[arg(long)]
+        yes: bool,
     },
 }
 
@@ -185,6 +209,13 @@ pub fn run() -> ExitCode {
         Command::Uninstall { .. } => {
             commands::stub::not_implemented("uninstall", 'G', "proteus wiki uninstall")
         }
+        Command::Bluetooth { action } => match action {
+            BluetoothAction::Status { json } => commands::bluetooth_cmd::status(json),
+            BluetoothAction::Apply { .. } => {
+                commands::bluetooth_cmd::apply(cli.state.as_deref(), cli.config.as_deref())
+            }
+            BluetoothAction::Revert { .. } => commands::bluetooth_cmd::revert(cli.state.as_deref()),
+        },
         Command::Wiki { page } => commands::wiki_cmd::run(page.as_deref(), cli.no_color),
         Command::Help { feature } => commands::wiki_cmd::run_help(feature.as_deref(), cli.no_color),
     };

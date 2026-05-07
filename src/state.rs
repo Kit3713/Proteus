@@ -17,6 +17,13 @@ pub struct State {
     pub captured_at: Option<String>,
     // Phase B+ fields. `#[serde(default)]` keeps older state.json files loading.
     pub managed: ManagedState,
+    pub originals: Originals,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Originals {
+    pub bluetooth_aliases: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
