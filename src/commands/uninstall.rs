@@ -19,8 +19,9 @@ const DEFAULT_STATE_DIR: &str = "/var/lib/proteus";
 const DEFAULT_SYSTEMD_DIR: &str = "/etc/systemd/system";
 
 /// Systemd units `install.sh` creates. Timers first so they stop firing
-/// before we tear down the services they trigger.
-const UNITS: &[&str] = &[
+/// before we tear down the services they trigger. `pub(crate)` so the
+/// dry-run preview can iterate the same list without drift.
+pub(crate) const UNITS: &[&str] = &[
     "proteus-rotate.timer",
     "proteus-check.timer",
     "proteus-resume.timer",
@@ -31,7 +32,7 @@ const UNITS: &[&str] = &[
 ];
 
 /// Drop-ins Proteus writes outside `/etc/proteus/`. Mirrors `wiki/uninstall.md`.
-const EXTERNAL_DROPINS: &[&str] = &[
+pub(crate) const EXTERNAL_DROPINS: &[&str] = &[
     "/etc/sysctl.d/95-proteus.conf",
     "/etc/systemd/timesyncd.conf.d/10-proteus.conf",
 ];

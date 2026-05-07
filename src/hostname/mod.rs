@@ -179,15 +179,47 @@ pub fn pick_from_wordlist<P: IndexPicker>(picker: &mut P) -> Result<String> {
     Ok(pool[idx].to_string())
 }
 
-/// Resolve the hostname Proteus should apply for a given config.
-///
-/// `wordlist` -> a fresh random pick from the embedded list.
-/// `generic`  -> the user's `pinned_value` if set, else `GENERIC_DEFAULT`.
-/// `pinned`   -> the user's `pinned_value` (required).
-pub fn resolve_hostname(cfg: &crate::config::HostnameConfig) -> Result<String> {
+/// Build a side-effect-free preview of `proteus hostname rotate` for
+/// `proteus dry-run`. We seed the wordlist picker so the preview reads
+/// concretely with a stable name; the real rotation uses `RandomPicker`.
+pub fn plan_rotate(config: &crate::config::Config) -> crate::dry_run::Plan {
+    use crate::dry_run::{Plan, PlanStep, StepKind};
+    let mut plan = Plan::new("hostname");
+    if !config.hostname.enabled {
+        plan.note("hostname: disabled in config (hostname.enabled = false)");
+        return plan;
+    }
+    let mode = config.hostname.mode.as_str();
+    let example = resolve_with(&config.hostname, &mut SeededPicker::new(0xCAFE_F00D))
+        .unwrap_or_else(|_| "linksys".to_string());
+    plan.push(PlanStep {
+        kind: StepKind::HostnameSet,
+        message: format!("would set hostname (mode={mode}, e.g. '{example}')"),
+        detail: Some("writes kernel/pretty/transient via systemd hostname1 DBus interface".into()),
+    });
+    plan.push(PlanStep {
+        kind: StepKind::DbusCall,
+        message: "would call org.freedesktop.hostname1.SetStaticHostname / SetPrettyHostname"
+            .into(),
+        detail: None,
+    });
+    plan.push(PlanStep {
+        kind: StepKind::StateUpdate,
+        message: "would update state.json: originals.hostname (first apply only)".into(),
+        detail: None,
+    });
+    plan
+}
+
+/// Resolve a hostname using the supplied picker. Shared by `resolve_hostname`
+/// (production: `RandomPicker`) and `plan_rotate` (preview: `SeededPicker`).
+fn resolve_with<P: IndexPicker>(
+    cfg: &crate::config::HostnameConfig,
+    picker: &mut P,
+) -> Result<String> {
     let mode = Mode::parse(&cfg.mode)?;
     let name = match mode {
-        Mode::Wordlist => pick_from_wordlist(&mut RandomPicker)?,
+        Mode::Wordlist => pick_from_wordlist(picker)?,
         Mode::Generic => cfg
             .pinned_value
             .clone()
@@ -198,6 +230,15 @@ pub fn resolve_hostname(cfg: &crate::config::HostnameConfig) -> Result<String> {
     };
     validate_hostname(&name)?;
     Ok(name)
+}
+
+/// Resolve the hostname Proteus should apply for a given config.
+///
+/// `wordlist` -> a fresh random pick from the embedded list.
+/// `generic`  -> the user's `pinned_value` if set, else `GENERIC_DEFAULT`.
+/// `pinned`   -> the user's `pinned_value` (required).
+pub fn resolve_hostname(cfg: &crate::config::HostnameConfig) -> Result<String> {
+    resolve_with(cfg, &mut RandomPicker)
 }
 
 #[cfg(test)]

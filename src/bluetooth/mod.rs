@@ -3,6 +3,50 @@
 pub mod alias;
 pub mod apply;
 
+/// Side-effect-free preview of `proteus bluetooth apply`. Used by
+/// `proteus dry-run apply` and `proteus dry-run bluetooth`.
+pub fn plan_apply(config: &crate::config::Config) -> crate::dry_run::Plan {
+    use crate::dry_run::{Plan, PlanStep, StepKind};
+    let mut plan = Plan::new("bluetooth");
+    if !config.bluetooth.enabled {
+        plan.note("bluetooth: disabled in config (bluetooth.enabled = false)");
+        return plan;
+    }
+    let alias_msg = match config.bluetooth.alias_source.as_str() {
+        "pinned" => match config.bluetooth.pinned_alias.as_deref() {
+            Some(name) => format!("would set adapter alias to '{name}' (pinned)"),
+            None => "would set adapter alias (alias_source=pinned, pinned_alias unset)".to_string(),
+        },
+        _ => "would set adapter alias to a random generic value (e.g. 'BT Device')".to_string(),
+    };
+    plan.push(PlanStep {
+        kind: StepKind::BluetoothAdjust,
+        message: alias_msg,
+        detail: Some("for every BlueZ adapter on the bus".into()),
+    });
+    plan.push(PlanStep {
+        kind: StepKind::BluetoothAdjust,
+        message: format!(
+            "would set Discoverable={} on each adapter",
+            config.bluetooth.discoverable
+        ),
+        detail: None,
+    });
+    if config.bluetooth.ble_rpa {
+        plan.push(PlanStep {
+            kind: StepKind::BluetoothAdjust,
+            message: "would enable BLE Resolvable Private Address mode where supported".into(),
+            detail: Some("via mgmt API; controller-dependent".into()),
+        });
+    }
+    plan.push(PlanStep {
+        kind: StepKind::StateUpdate,
+        message: "would update state.json: originals.bluetooth_aliases (first apply only)".into(),
+        detail: None,
+    });
+    plan
+}
+
 use std::collections::HashMap;
 use std::path::Path;
 
