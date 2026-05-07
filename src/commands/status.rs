@@ -152,6 +152,7 @@ fn feature_table(
     let bt_state = bluetooth_state(state, config, system);
     let host_state = hostname_state(state, config);
     let v6_state = ipv6_state(state, config);
+    let ew_state = enterprise_wifi_state(state, config);
     vec![
         FeatureStatus {
             name: "mac-rotation",
@@ -190,8 +191,8 @@ fn feature_table(
         },
         FeatureStatus {
             name: "enterprise-wifi",
-            state: "not implemented".into(),
-            note: "phase D".into(),
+            state: ew_state.0,
+            note: ew_state.1,
         },
         FeatureStatus {
             name: "dns-ecs-strip",
@@ -266,6 +267,26 @@ fn ipv6_state(state: Option<&State>, config: &Config) -> (String, String) {
     (
         "idle".to_string(),
         "configured; run `proteus ipv6 apply` to harden".to_string(),
+    )
+}
+
+fn enterprise_wifi_state(state: Option<&State>, config: &Config) -> (String, String) {
+    let managed = state.map(|s| s.originals.connections.len()).unwrap_or(0);
+    if managed > 0 {
+        return (
+            "applied".to_string(),
+            format!("{managed} connection(s) tagged; see `proteus enterprise-wifi status`"),
+        );
+    }
+    if config.enterprise_wifi.anonymous_outer_identity {
+        return (
+            "idle".to_string(),
+            "master switch on; run `proteus enterprise-wifi enable --connection <id>`".to_string(),
+        );
+    }
+    (
+        "idle".to_string(),
+        "opt-in; default off (some auth servers reject mismatched outer ids)".to_string(),
     )
 }
 
