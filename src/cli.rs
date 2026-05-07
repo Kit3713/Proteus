@@ -347,11 +347,7 @@ pub fn run() -> ExitCode {
         Command::Apply { yes } => {
             commands::apply::run(yes, cli.state.as_deref(), cli.config.as_deref())
         }
-        Command::Revert { .. } => commands::stub::not_implemented(
-            "revert",
-            'G',
-            "revert is critical and lands in phase G",
-        ),
+        Command::Revert { yes } => commands::revert::run(yes),
         Command::Rotate { iface, yes } => commands::rotate::run(
             iface.as_deref(),
             yes,
