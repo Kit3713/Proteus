@@ -20,11 +20,11 @@ struct StatusReport {
 }
 
 #[derive(Debug, Serialize)]
-struct SystemInfo {
-    systemd: bool,
-    network_manager: bool,
-    bluez: bool,
-    systemd_resolved: bool,
+pub struct SystemInfo {
+    pub systemd: bool,
+    pub network_manager: bool,
+    pub bluez: bool,
+    pub systemd_resolved: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -76,7 +76,7 @@ fn load_config(path: Option<&Path>) -> Config {
     crate::config::Config::default_or_loaded(&path).unwrap_or_default()
 }
 
-fn detect_system() -> SystemInfo {
+pub fn detect_system() -> SystemInfo {
     SystemInfo {
         systemd: Path::new("/run/systemd/system").is_dir(),
         network_manager: Path::new("/run/NetworkManager").exists()

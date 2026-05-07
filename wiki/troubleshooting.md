@@ -1,5 +1,18 @@
 Common failure modes and concrete recovery commands. Read top-to-bottom or jump to your symptom. Cross-refs at the bottom.
 
+## First step for any "something broke"
+
+Run `proteus doctor`. It runs a battery of read-only checks (kernel, systemd, daemons, files, detected DNS/NTP competitors, Proteus state) and prints `ok / warn / fail / skip` per check with remediation pointers. It works without root; some checks degrade to `skip` instead of `fail` when not root. JSON output is available for wrappers:
+
+```sh
+proteus doctor                # human-readable
+proteus doctor --json         # machine-readable
+proteus doctor --quick        # fast subset (skip filesystem walks)
+proteus -v doctor             # extra detail per check
+```
+
+`proteus doctor` exits `0` when no checks fail, `1` if any check fails. See `proteus wiki doctor` for the full list of checks and how to interpret each result.
+
 ## "I can't connect to my network anymore"
 
 You just rotated and the link is dead. Start gentle, escalate.
@@ -155,6 +168,7 @@ When in doubt, look at the journal.
 
 ## Cross-refs
 
+- `proteus wiki doctor` — what each `proteus doctor` check does and how to read the output.
 - `proteus wiki cli` — full CLI reference, exit codes, JSON schemas (phase F).
 - `proteus wiki config` — every config knob with default and risks (phase F).
 - `proteus wiki uninstall` — full removal procedure.
