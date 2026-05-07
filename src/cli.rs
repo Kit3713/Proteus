@@ -137,6 +137,11 @@ pub enum Command {
         #[command(subcommand)]
         action: BluetoothAction,
     },
+    /// Hostname (kernel/pretty/transient) management via systemd hostnamed.
+    Hostname {
+        #[command(subcommand)]
+        action: HostnameAction,
+    },
     /// Browse the embedded wiki.
     Wiki {
         /// Page name (e.g. `intro`); omit to list pages.
@@ -217,6 +222,32 @@ pub enum TimerAction {
 pub struct TimerNameArgs {
     /// Timer name (`rotate`, `check`, `resume`, `boot`).
     pub name: String,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum HostnameAction {
+    /// Show current kernel/pretty/transient + Proteus mode + cached originals.
+    Status {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Pick a new hostname per `[hostname] mode` and apply it.
+    Rotate {
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Pin to a specific hostname (validated against RFC 1123).
+    Pin {
+        /// Hostname to apply. Must be lowercase [a-z0-9-], no leading/trailing hyphen.
+        name: String,
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Restore the cached original hostname.
+    Revert {
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -349,6 +380,18 @@ pub fn run() -> ExitCode {
                 commands::bluetooth_cmd::apply(cli.state.as_deref(), cli.config.as_deref())
             }
             BluetoothAction::Revert { .. } => commands::bluetooth_cmd::revert(cli.state.as_deref()),
+        },
+        Command::Hostname { action } => match action {
+            HostnameAction::Status { json } => {
+                commands::hostname::status(json, cli.state.as_deref(), cli.config.as_deref())
+            }
+            HostnameAction::Rotate { .. } => {
+                commands::hostname::rotate(cli.state.as_deref(), cli.config.as_deref())
+            }
+            HostnameAction::Pin { name, .. } => {
+                commands::hostname::pin(&name, cli.state.as_deref(), cli.config.as_deref())
+            }
+            HostnameAction::Revert { .. } => commands::hostname::revert(cli.state.as_deref()),
         },
         Command::Timer { action } => match action {
             TimerAction::Status { json } => commands::timer::run_status(json),

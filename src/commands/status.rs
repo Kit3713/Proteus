@@ -150,6 +150,7 @@ fn feature_table(
 ) -> Vec<FeatureStatus> {
     let mac_state = mac_rotation_state(state, config);
     let bt_state = bluetooth_state(state, config, system);
+    let host_state = hostname_state(state, config);
     vec![
         FeatureStatus {
             name: "mac-rotation",
@@ -183,8 +184,8 @@ fn feature_table(
         },
         FeatureStatus {
             name: "hostname",
-            state: "not implemented".into(),
-            note: "phase D".into(),
+            state: host_state.0,
+            note: host_state.1,
         },
         FeatureStatus {
             name: "enterprise-wifi",
@@ -243,6 +244,32 @@ fn bluetooth_state(
     (
         "idle".to_string(),
         "BlueZ present; run `proteus bluetooth apply` to manage".to_string(),
+    )
+}
+
+fn hostname_state(state: Option<&State>, config: &Config) -> (String, String) {
+    if !config.hostname.enabled {
+        return (
+            "idle".to_string(),
+            "disabled in config (hostname.enabled = false)".to_string(),
+        );
+    }
+    let cached = state.and_then(|s| s.originals.hostname.as_ref()).is_some();
+    if cached {
+        return (
+            "applied".to_string(),
+            format!(
+                "mode={}; see `proteus hostname status`",
+                config.hostname.mode
+            ),
+        );
+    }
+    (
+        "idle".to_string(),
+        format!(
+            "mode={}; run `proteus hostname rotate` to apply",
+            config.hostname.mode
+        ),
     )
 }
 

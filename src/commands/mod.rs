@@ -4,6 +4,7 @@ pub mod bluetooth_cmd;
 pub mod config_cmd;
 pub mod current;
 pub mod doctor;
+pub mod hostname;
 pub mod original;
 pub mod pin;
 pub mod reset;

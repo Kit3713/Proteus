@@ -25,6 +25,18 @@ pub struct State {
 #[serde(default)]
 pub struct Originals {
     pub bluetooth_aliases: BTreeMap<String, String>,
+    /// First-apply snapshot of all three hostnamed-tracked fields. `None`
+    /// means hostname has never been applied on this system.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hostname: Option<HostnameOriginals>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HostnameOriginals {
+    pub kernel: Option<String>,
+    pub pretty: Option<String>,
+    pub transient: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
