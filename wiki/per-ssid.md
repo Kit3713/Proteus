@@ -122,6 +122,26 @@ To roll the change back, drop the block:
 sudo proteus ssid clear coffee-shop --yes
 ```
 
-## What's not yet wired
+## How the connection-up wiring works
 
-This release ships the schema, the resolver, the CLI surface, and the v1 → v2 state migration. The integration with the NM connection-up dispatcher — actually applying the resolved policy on every join — is the follow-up tracked in roadmap Milestone 3. Until that lands, `proteus ssid set / show / list / clear` operates on the config and state files; the orchestrator does not yet consult them on join. The schema is stable, so blocks you write now will take effect on the next release.
+As of `v0.3.2-alpha` this is fully wired. Two consumers respect the
+per-SSID policy on join:
+
+- The NM dispatcher hook (`dist/networkmanager/dispatcher.d/01-proteus`)
+  passes the connection's `CONNECTION_ID` through to `proteus
+  rotate-if-needed --ssid <name>`. The subcommand resolves the policy
+  via `crate::per_ssid::resolve_for_ssid`, then:
+  - When `pin_mac` is set, the subcommand prints `skipped <iface>:
+    pinned by per-SSID policy` and returns success without rotating.
+  - When `rotate_interval` is set, the subcommand lifts the cooldown
+    floor to `max(global_cooldown, rotate_interval)`, so a per-SSID
+    `2h` survives a global `15m` timer.
+- The `proteus events run` daemon's `RotateOnTriggerHandler` loads the
+  config (mtime-cached, so hand-edits land within one trigger), calls
+  `resolve_for_ssid`, and traces the resolved layers via
+  `tracing::info`. The orchestrator picks up `[per_ssid."<ssid>"]`
+  changes without a daemon restart.
+
+`proteus ssid set / show / list / clear` continue to operate on the
+config and state files; the schema and resolver have been stable
+since `v0.3.0-alpha`.

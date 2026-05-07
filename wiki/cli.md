@@ -15,6 +15,7 @@ These apply to every subcommand. They must precede the subcommand name.
 - `--config <PATH>` — override `/etc/proteus/config.toml`. Useful for testing. Errors with exit `65` if `<PATH>` does not exist (except for commands that exist to create the file: `reset`, `config edit`, `config set`, `config set-profile`, `config enable`, `config disable`, `config reset`).
 - `--state <PATH>` — override `/var/lib/proteus/state.json`. Useful for testing.
 - `--no-color` — disable ANSI colors on stderr log output. Honors `NO_COLOR` too.
+- `--format <table|json|yaml>` — output format for read commands (`v0.3.2-alpha`+). Equivalent of passing `--json` to every read subcommand. `table` (default) renders human-readable text; `json` matches the per-subcommand `--json` flag exactly; `yaml` runs the same JSON serializer through a zero-dep YAML emitter that walks `serde_json::Value` and emits block-style mappings, sequences, and scalars (with proper string-quoting for ambiguous scalars like `"true"`, `"42"`, `"~"`).
 - `-h`, `--help` — print help and exit 0.
 - `-V`, `--version` — print version and exit 0.
 

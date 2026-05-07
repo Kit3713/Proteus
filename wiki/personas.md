@@ -76,10 +76,10 @@ power_save = "auto"        # on|off|auto
 - **`display_name`** — what `proteus persona list` prints. Free-form, but try to keep it under 40 chars.
 - **`kind`** — `stealth` (cover-identity) or `randomizer` (anonymity). Randomizer personas must set `rotate_cadence`; the schema check rejects randomizers with no cadence.
 - **`category`** — informational filter; `proteus persona list --category phone` selects on this. Stealth personas pick a real category; randomizers usually set `generic`.
-- **`oui_pool`** — vendor tokens (`apple`, `intel`, `samsung`, `dell`, `random-locally-administered`) or literal six-hex-digit prefixes (`aa:bb:cc`). The MAC generator picks one prefix per rotation. The integration follow-up adds Google, Microsoft, LG, TPLink, Asus, Roku, Amazon, generic-IoT to the vendor token table.
-- **`mac_byte_pattern`** — optional shape for the trailing three bytes. Free-form for now; the apply path will define the wildcard syntax in the integration follow-up.
-- **`hostname_template`** — string with `{n}` (digit), `{owner}` (first-name pool), `{wordlist}` (the existing 534-word router-flavoured list), and any persona-specific tokens. Rendered against `data/hostname-wordlist.txt` plus persona-specific pools at apply time.
-- **`dhcp_fingerprint`** — DHCP option content. The integration follow-up routes these through the existing DHCP suppression path so the option path *sets* values from a persona instead of only suppressing.
+- **`oui_pool`** — vendor tokens or literal six-hex-digit prefixes (`aa:bb:cc`). The MAC generator picks one prefix per rotation. As of `v0.3.2-alpha` the recognised vendor tokens are: `apple`, `intel`, `samsung`, `dell`, `google`, `microsoft`, `lg`, `tplink`, `asus`, `roku`, `amazon`, `sony`, `nintendo`, `hp`, `iot-generic`, plus `random-locally-administered`.
+- **`mac_byte_pattern`** — optional shape for the trailing three bytes. Format: three colon-separated bytes where `xx` means "any byte" and a hex pair pins the value. Example: `01:23:xx` produces MACs whose third octet from the OUI side is `0x23` and the trailing two bytes are random. The empty string / unset field disables the pattern.
+- **`hostname_template`** — string with `{n}` (digit), `{owner}` (first-name pool), `{word}` (the existing 534-word router-flavoured list), and any persona-specific tokens. Rendered against `data/hostname-wordlist.txt` plus persona-specific pools at apply time.
+- **`dhcp_fingerprint`** — DHCP option content. As of `v0.3.2-alpha` `commands::dhcp::apply` writes `vendor_class_identifier` (option 60), `host_name` (option 12), `fqdn` (option 81) directly to the NM connection settings via `nmdhcp::apply_persona_fingerprint` when a persona is active. Per-knob suppression still wins.
 - **`tcp_stack`** — abstract TCP/IP knobs the apply path translates to concrete `/proc/sys/net/...` writes. Window scale, MSS, timestamps, SACK, default TTL.
 - **`ipv6_traits`** — SLAAC and ND. `addr_gen_mode` mirrors NM's `ipv6.addr-gen-mode` setting (`eui64` / `stable-privacy` / `random`).
 - **`mdns_advertise`** — whether the persona advertises mDNS at all. Stealth personas for chatty devices (Apple, printers, TVs) leave this on; quiet personas (laptops in stealth mode) turn it off.
@@ -112,7 +112,12 @@ Permission warnings: `import` runs schema validation before installing; `export`
 
 ## Built-in catalogue
 
-The current built-in set is 19 personas — 13 stealth covers and 6 randomizer mirrors of the existing aggressiveness slider. The roadmap targets 25 stealth covers at v0.3 launch; the remaining six land in the integration follow-up.
+As of `v0.3.2-alpha` the built-in set is **31 personas** — 25 stealth
+covers (the roadmap target) plus 6 randomizer mirrors of the existing
+aggressiveness slider. The catalogue parses once per process into a
+`OnceLock<HashMap>` (`src/persona/load.rs::builtin_cache`), so
+repeated `proteus persona list` / `active_for` calls hit a hash
+lookup rather than re-parsing every TOML.
 
 | id | kind | category | display name |
 |---|---|---|---|

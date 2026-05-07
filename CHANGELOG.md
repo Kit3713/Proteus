@@ -11,6 +11,28 @@ landed, what is in flight, and what is on the bench. See
 
 ## [Unreleased]
 
+(post-v0.3.2-alpha work lands here — moves toward the v0.4 beta cycle,
+which is bug + vulnerability hunt only; see `docs/BETA-INTAKE.md`)
+
+## [0.3.2-alpha] - 2026-05-07
+
+**Final alpha**. Closes the last code items the v0.3 cycle scoped:
+M3 connection-up wiring, M4a persona-aware NTP + nft, M4c
+`renew_on_apply`, M5 doctor next-steps, M6 `--format yaml`, M6
+bypass-hardening pass, M6 wiki-hint sweep. Debian unstable submission
+deferred (no sponsor in scope; re-open marker on the roadmap).
+Roadmap finishes the cycle at **83 ✅ / 1 💭** — every scoped item is
+either landed or explicitly deferred with a re-open trigger.
+
+After this release, the project moves into the **v0.4 beta cycle**,
+which is bug-and-vulnerability-hunting only. No new features land
+until beta closes; see `docs/BETA-INTAKE.md` for the intake/triage
+process and the explicit out-of-scope list.
+
+830 lib tests passing. `cargo clippy --all-targets` produces zero
+warnings. Bypass-hardening pass found and fixed two real bugs (one
+multi-byte panic, one silent overflow wrap) — see Fixes below.
+
 ### Roadmap follow-ups
 
 - **M3 connection-up wiring** — `rotate-if-needed` grows `--ssid`; the

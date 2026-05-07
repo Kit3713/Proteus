@@ -6,22 +6,41 @@ Named after the shapeshifter.
 
 ## Status
 
-`v0.3.1-alpha` — pre-release. Not a stable release; the CLI surface, config schema, and on-disk formats may still change before `v1.0`. The v0.3 cycle is at ~92% complete on the roadmap (80✅ / 4🚧 / 4⏳ on bullet count).
+`v0.3.2-alpha` — **final alpha** of the v0.3 cycle. The next cycle is
+**v0.4 beta**, which is a bug-and-vulnerability hunt only: no new
+features land until beta closes. See `docs/BETA-INTAKE.md` for the
+intake/triage process and explicit out-of-scope list.
+
+The v0.3 roadmap closes at **83 ✅ / 1 💭** — every scoped item is
+either landed or explicitly deferred with a re-open trigger (the only
+deferral is the Debian unstable submission, which needs a sponsor).
+Not a stable release; the CLI surface, config schema, and on-disk
+formats may still change before `v1.0`.
 
 What has shipped on `main`:
 
 - **Phase A-G** (v0.1 cycle) — full skeleton + L2 identity + probes/timers/captive-portals + DHCP/IPv6/hostname/802.1X/DNS + discovery silencing + stack fingerprint + 38-page wiki + packaging + revert/diff/dry-run/reset/uninstall/kill-switch + podman+systemd integration tests. See `docs/ROADMAP-v0.1.md` for the archived detail.
 - **v0.2.x** — multi-profile NM rotation (#122), uuid-keyed state (#124), the May 2026 security audit, and a long tail of low-severity polish.
 - **v0.2.8-alpha hotfix batch** (rolled into v0.3.0-alpha) — six critical/high/medium issues from the v0.2.7-alpha review: secrets-merge across all four NM Update sites (#207), enterprise-wifi keyed by uuid (#209), factory-MAC fallback dropped (#208), release-test sysfs hermetic (#200), DNS canonicalize-failure defer (#210), `NO_COLOR` + isatty(stderr) (#201).
-- **v0.3 cycle "Reach + Persona"** — substantial completion in `v0.3.1-alpha`:
+- **v0.3 cycle "Reach + Persona"** — closed in `v0.3.2-alpha`:
   - **Milestone 1: `NetworkBackend` abstraction.** Trait + three impls (NM full, networkd / raw probes-then-degrades), `[backend] driver` config, doctor matrix. Every `commands/*.rs` call site routed through the trait. `proteus rotate-if-needed` typed entry point replaces the dispatcher's JSON sed-grep (#206-C). `state_lock` migrated to `Mutex<Option<File>>` (#206-B).
   - **Milestone 2: Persona / Randomizer dual-mode stealth.** 25 stealth covers + 6 randomizer mirrors. Schema, loader, validator, full 11-subcommand CLI surface. Full integration with apply / rotate (MAC OUI shaping, hostname template, DHCP fingerprint write, Bluetooth alias). RFC 5227 ARP probe + IPv6 DAD with adaptive backoff. `wiki/personas.md` + threat-model addendum.
-  - **Milestone 3: Per-SSID profile policies.** `[per_ssid."<ssid>"]` config, `proteus ssid {list,show,set,clear}`, four-layer resolver with source trace, v1→v2 schema migration that mirrors legacy `known_portal_ssids` into per-SSID seed entries.
-  - **Milestone 4: Fingerprint hardening + RF + rotation triggers.** `proteus resolved` (mDNS+LLMNR off), `proteus ntp` (timesyncd normalization, detect-and-defer), nftables `extra_drops` chain (3 opt-in knobs). `proteus rf scan/chipset` + per-scan MAC randomization. `proteus dhcp renew`. Event-driven framework with four sources (NM connection-up / link-flap / regulatory-domain / portal-auth) and `proteus events run` daemon under a hardened systemd unit.
-  - **Milestone 5: Distro reach.** Init-system abstraction (`Systemd`/`Openrc`/`Runit`/`Sysvinit`), ARM + i686 cross-compile matrix, packaging recipes for Alpine APKBUILD + Void template + Gentoo ebuild + AUR `-bin`/`-git` + Copr spec polish + Debian submission-prep. `wiki/distro-support.md` + `wiki/backend.md`.
-  - **Milestone 6: Ergonomics + bug-fix queue.** Short aliases (`proteus s/r/a`), `--watch` mode, `proteus completions <bash|zsh|fish>`, `LOCK_BUSY` exit code (#211), `State::schema_version` migration ladder (#204), 13 bug-fix-queue items closed. `wiki/troubleshooting.md` symptom matrix. `docs/security/dbus-surface.md` audit artifact.
+  - **Milestone 3: Per-SSID profile policies.** `[per_ssid."<ssid>"]` config, `proteus ssid {list,show,set,clear}`, four-layer resolver with source trace, v1→v2 schema migration that mirrors legacy `known_portal_ssids` into per-SSID seed entries. NM dispatcher + events daemon now consume `--ssid` end-to-end so per-SSID `pin_mac` short-circuits the rotate and `rotate_interval` lifts the cooldown floor.
+  - **Milestone 4: Fingerprint hardening + RF + rotation triggers.** `proteus resolved` (mDNS+LLMNR off), `proteus ntp` (timesyncd normalization, detect-and-defer; persona-aware vendor-NTP overrides for Apple / Pixel / Galaxy / Surface ids), nftables `extra_drops` chain (3 opt-in knobs) + persona-aware `persona_drops` chain (drops UDP 5353 inbound when the persona's `mdns_advertise = false`). `proteus rf scan/chipset` + per-scan MAC randomization. `proteus dhcp renew` + `[dhcp] renew_on_apply` orchestrator wiring. Event-driven framework with four sources (NM connection-up / link-flap / regulatory-domain / portal-auth) and `proteus events run` daemon under a hardened systemd unit.
+  - **Milestone 5: Distro reach.** Init-system abstraction (`Systemd`/`Openrc`/`Runit`/`Sysvinit`), ARM + i686 cross-compile matrix, packaging recipes for Alpine APKBUILD + Void template + Gentoo ebuild + AUR `-bin`/`-git` + Copr spec polish (Debian unstable submission deferred — needs sponsor). `wiki/distro-support.md` + `wiki/backend.md`. `proteus doctor` reports init system, libc, distro, backend, package format, quirky-setup warnings, and a `next_steps` section that synthesises actionable hints from the existing checks.
+  - **Milestone 6: Ergonomics + security + bug-fix queue.** Short aliases (`proteus s/r/a`), `--watch` mode, global `--format json|yaml|table` (zero-dep YAML emitter on top of `serde_json::Value`), `proteus completions <bash|zsh|fish>`, `LOCK_BUSY` exit code (#211), `State::schema_version` migration ladder (#204). **Bypass-hardening pass**: every privileged shellout now resolves the binary to a canonical absolute path with PATH fallback (`crate::process` module); the parser audit caught and fixed two real bugs in `per_ssid::parse_duration` (multi-byte panic, silent overflow wrap). **Wiki-hint sweep**: every operator-facing `bail!` / `anyhow!` callsite in user-actionable paths now carries a `proteus wiki <page>` hint. `wiki/troubleshooting.md` symptom matrix. `docs/security/dbus-surface.md` + `docs/security/bypass-hardening-pass.md` audit artifacts.
+  - **Runtime perf**: process-level mtime-keyed Config cache (apply orchestrator's 12 reads + 12 parses → 1 + 1 + 11 stat lookups), built-in persona cache (parse-once `OnceLock`), events daemon mtime-config cache, doctor PATH cache, hostname wordlist cache.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full list and [docs/ROADMAP.md](docs/ROADMAP.md) for the operational view.
+
+## What's next: v0.4 beta
+
+The cycle entering now is bug + vulnerability hunting only. **No new
+features land until beta closes.** Hunt scope, intake form, severity
+rubric, triage cadence, and out-of-scope list are documented in
+[docs/BETA-INTAKE.md](docs/BETA-INTAKE.md). Expected exits: a clean
+`v0.4-beta` tag with no open critical/high findings and a published
+findings doc.
 
 ## What it does
 

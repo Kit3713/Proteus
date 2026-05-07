@@ -1,16 +1,37 @@
 # Contributing to Proteus
 
-Thanks for considering. Proteus is a small, focused project — see status in the [README](README.md) — so the most useful contributions vary by phase.
+Thanks for considering. Proteus is a small, focused project — see
+status in the [README](README.md) — so the most useful contributions
+vary by cycle.
 
-## What helps right now
+## What helps right now (v0.4 beta cycle)
 
-The project is pre-release. The v1 plan is in [`docs/PLAN.md`](docs/PLAN.md). The most useful contributions today:
+The v0.3 alpha cycle closed at `v0.3.2-alpha` (83 ✅ / 1 💭). The
+active cycle is **v0.4 beta — bug + vulnerability hunting only**. **No
+new feature work lands until beta closes.** Feature proposals queue
+under the `proposal` label for v0.5.
 
-- Read the plan and open an issue or discussion if a phase looks wrong-shaped, missing, or scope-creeping.
-- Suggest concrete improvements to the threat model — what's overlooked, what's overclaimed.
-- File a feature suggestion only if it fits the local controllable fingerprint reduction scope. The plan and [`docs/PRIOR-ART.md`](docs/PRIOR-ART.md) explain what's in and what's deliberately out (DNS resolution policy, TLS/browser fingerprints, tracker blocking, etc. — all delegated to dedicated tools).
+The two highest-leverage contributions today:
 
-Code contributions are welcome once Phase A (the skeleton) lands.
+1. **Real-world testing.** Run `proteus doctor` + `proteus apply` on
+   coffee shop / hotel / conference / airport networks. The `tests/realworld/`
+   probe set captures everything triage needs; attach the output dump
+   to a bug filed against the [`v0.4-beta-intake`](docs/BETA-INTAKE.md)
+   process.
+2. **Vulnerability hunting.** The bypass-hardening pass
+   ([`docs/security/bypass-hardening-pass.md`](docs/security/bypass-hardening-pass.md))
+   audited every shellout and every recent parser. Higher-leverage hunt
+   areas the pass *did not* cover are listed in the "Hunt suggestions"
+   section of [`docs/BETA-INTAKE.md`](docs/BETA-INTAKE.md): CLI parser
+   fuzzing, state-migration replay, DBus argument validation, race
+   conditions, unicode handling, FD-leak verification.
+
+Read [`docs/BETA-INTAKE.md`](docs/BETA-INTAKE.md) for the intake form,
+severity rubric, triage cadence, and explicit out-of-scope list before
+filing.
+
+Bug fix PRs are welcome — please pair them with a regression test that
+locks the fix in place.
 
 ## Scope
 

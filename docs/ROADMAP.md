@@ -1,11 +1,25 @@
-# Roadmap — v0.3 "Reach + Persona"
+# Roadmap — v0.3 "Reach + Persona" (closed)
 
-This is the active roadmap. The phase-A-through-G build-out is complete and shipped in v0.2.7-alpha; that history lives in [`ROADMAP-v0.1.md`](ROADMAP-v0.1.md). The next cycle is **two big swings**:
+The v0.3 cycle is **closed** as of `v0.3.2-alpha`. Final tally:
+**83 ✅ / 1 💭** (Debian unstable submission, deferred — needs a
+sponsor; re-open when one surfaces).
+
+The active roadmap moves to [`ROADMAP-v0.4.md`](ROADMAP-v0.4.md) and
+the active intake to [`BETA-INTAKE.md`](BETA-INTAKE.md). The v0.4
+cycle is bug + vulnerability hunting only — no feature work lands
+until beta closes. The cycle marker we're moving towards is **`v0.4`
+beta** (no open critical/high findings + published findings doc).
+
+This file is preserved as the operational record of v0.3. The
+phase-A-through-G build-out is in [`ROADMAP-v0.1.md`](ROADMAP-v0.1.md).
+For design rationale see [`PLAN.md`](PLAN.md). Per-version release
+notes are in [`CHANGELOG.md`](../CHANGELOG.md). How to help in
+[`CONTRIBUTING.md`](../CONTRIBUTING.md).
+
+The two cycle swings the roadmap addressed:
 
 1. **Reach** — get Proteus running well on any Linux distro / device, not just Fedora 43+ / systemd / NetworkManager. The headline change is a `NetworkBackend` abstraction that lets Proteus drive `systemd-networkd` or raw `ip` + `iw` + `wpa_supplicant`/`iwd` instead of being hardcoded to NM.
 2. **Persona** — turn stealth into a first-class feature with two coexisting modes: the existing entropy-based **randomizer** (anonymity goal) gains a sibling **device-persona** mode (cover-identity goal) where every marker is shaped to look like a specific device — iPhone 15, MacBook Air M3, Pixel 8, Samsung TV, IoT camera, and 20+ more out of the box, with users free to author their own.
-
-For design rationale and the original phase model, see [`PLAN.md`](PLAN.md). For per-version release notes, see [`CHANGELOG.md`](../CHANGELOG.md). For how to help, see [`CONTRIBUTING.md`](../CONTRIBUTING.md).
 
 ## Status legend
 
@@ -234,9 +248,26 @@ The mission is local controllable fingerprint reduction. These items live on ano
 
 ## How to help
 
-- **Real-world testing** — `proteus doctor` + `proteus apply` on coffee-shop / hotel / conference / airport networks; report bugs via the issue template (highest-value contribution right now).
-- **Independent security review** — eyes on `wiki/threat-model.md` and the DBus surface in `src/nm/`, `src/bluetooth/`, `src/commands/dhcp.rs`, `src/commands/ipv6.rs`. Once Milestone 6's `docs/security/dbus-surface.md` lands, that's the artifact to review against.
-- **Persona contributions** — once Milestone 2 lands, the `data/personas/*.toml` schema is open for community PRs to grow the catalogue.
-- **Distro packaging** — Milestone 5 needs Alpine, Void, Gentoo packagers, plus AUR / Copr / Debian unstable submission sponsors.
-- **Wiki** — pages are landed but always improvable; voice should match `wiki/intro.md`.
+The v0.3 cycle is closed. All contribution paths now flow through the
+v0.4 beta intake — **see [`BETA-INTAKE.md`](BETA-INTAKE.md)** for the
+form, severity rubric, and out-of-scope list.
+
+- **Real-world testing** — highest-value contribution. `proteus doctor`
+  + `proteus apply` on coffee-shop / hotel / conference / airport
+  networks; attach `tests/realworld/probe.sh` output to the intake.
+- **Vulnerability hunting** — see "Hunt suggestions" in
+  [`BETA-INTAKE.md`](BETA-INTAKE.md) for the leads the
+  bypass-hardening pass *didn't* cover.
+- **Independent security review** — `wiki/threat-model.md`,
+  `docs/security/dbus-surface.md`, and
+  `docs/security/bypass-hardening-pass.md` are the artifacts to
+  review against.
+- **Persona contributions** — `data/personas/*.toml` schema is open;
+  PRs adding new built-in covers welcome (the schema-check test
+  enforces correctness on every PR).
+- **Distro packaging** — Alpine, Void, Gentoo packager testing on
+  real hosts (the recipes ship untested-by-author). Debian unstable
+  submission still needs a sponsor.
+- **Wiki** — pages are landed but always improvable; voice should
+  match `wiki/intro.md`.
 - **Code** — see [`CONTRIBUTING.md`](../CONTRIBUTING.md).

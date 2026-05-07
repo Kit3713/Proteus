@@ -118,4 +118,11 @@ Telemetry, update checks, analytics — never.
 
 ## What's next
 
-Once this reads right, I commit it as the first commit on `main` and push. Then phase A: Cargo project, src skeleton, three wiki pages, README, LICENSE files.
+This document is preserved as the original design rationale. The
+phase-A-through-G build-out shipped in v0.2.7-alpha (history in
+`ROADMAP-v0.1.md`), and the **v0.3 "Reach + Persona" cycle closed at
+`v0.3.2-alpha`** with `83 ✅ / 1 💭` (history in `ROADMAP.md`).
+
+The active cycle now is **v0.4 beta** — bug + vulnerability hunting
+only, no new features land. See `BETA-INTAKE.md` for the intake form
+and severity rubric, and `ROADMAP-v0.4.md` for the operational view.
