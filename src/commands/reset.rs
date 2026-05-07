@@ -106,14 +106,59 @@ fn render_minimal(profile: Profile) -> String {
     format!("profile = \"{}\"\n", profile.name())
 }
 
-/// Copy `path` to `backup_path` if it exists. Returns whether a backup was made.
+/// Maximum number of `.bak.<ts>` files to retain per config file. Older
+/// backups are pruned at reset time (issue #161). Five is enough to recover
+/// from a recent mistake without letting cached identifiers (pinned MAC,
+/// pinned alias, pinned hostname) accumulate indefinitely on disk.
+const MAX_BACKUPS: usize = 5;
+
+/// Copy `path` to `backup_path` if it exists, then prune older sibling
+/// backups beyond `MAX_BACKUPS`. Returns whether a backup was made.
 /// Avoids a TOCTOU pre-check by reacting to NotFound from `fs::copy`.
 fn backup_existing(path: &Path, backup_path: &Path) -> Result<bool> {
-    match fs::copy(path, backup_path) {
-        Ok(_) => Ok(true),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
-        Err(e) => Err(e)
-            .with_context(|| format!("backing up {} to {}", path.display(), backup_path.display())),
+    let made = match fs::copy(path, backup_path) {
+        Ok(_) => true,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+        Err(e) => {
+            return Err(e).with_context(|| {
+                format!("backing up {} to {}", path.display(), backup_path.display())
+            });
+        }
+    };
+    if made {
+        prune_old_backups(path);
+    }
+    Ok(made)
+}
+
+/// Issue #161: prune `.bak.<ts>` siblings beyond `MAX_BACKUPS`. ISO-8601
+/// timestamps sort lexicographically by chronology, so the oldest are the
+/// first when the list is sorted. Best-effort: failures here don't fail
+/// the reset — the user already got a clean config write.
+fn prune_old_backups(config_path: &Path) {
+    let Some(parent) = config_path.parent() else {
+        return;
+    };
+    let Some(name) = config_path.file_name().and_then(|s| s.to_str()) else {
+        return;
+    };
+    let prefix = format!("{name}.bak.");
+    let Ok(entries) = fs::read_dir(parent) else {
+        return;
+    };
+    let mut backups: Vec<PathBuf> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            p.file_name()
+                .and_then(|s| s.to_str())
+                .is_some_and(|s| s.starts_with(&prefix))
+        })
+        .collect();
+    backups.sort();
+    let to_remove = backups.len().saturating_sub(MAX_BACKUPS);
+    for path in backups.into_iter().take(to_remove) {
+        let _ = fs::remove_file(&path);
     }
 }
 

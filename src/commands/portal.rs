@@ -33,6 +33,13 @@ struct ListReport {
     known_portal_ssids: Vec<String>,
 }
 
+/// Issue #163: minimum interval between actual probe network requests. A
+/// `proteus session` polling loop (e.g. wrapped in `watch -n 1`) used to
+/// fire one detector request per second against a shared third-party
+/// endpoint (`nmcheck.gnome.org`). Cap us at one real probe per minute and
+/// return the cached result for sub-minute calls.
+const PORTAL_STATUS_CACHE_SECS: u64 = 60;
+
 pub fn run_status(json: bool, state_path: Option<&Path>, config_path: Option<&Path>) -> Result<u8> {
     let state_path = super::state_path(state_path);
     let config_path = super::config_path(config_path);
@@ -48,6 +55,11 @@ pub fn run_status(json: bool, state_path: Option<&Path>, config_path: Option<&Pa
             timestamp: super::now_iso8601(),
         };
         return render_status(&report, json);
+    }
+
+    // If we have a recent cached result, return it without hitting the net.
+    if let Some(cached) = load_recent_portal_check(&state_path, PORTAL_STATUS_CACHE_SECS, &config) {
+        return render_status(&cached, json);
     }
 
     let outcome = run_detector(&config);
@@ -67,6 +79,61 @@ pub fn run_status(json: bool, state_path: Option<&Path>, config_path: Option<&Pa
     }
 
     render_status(&report, json)
+}
+
+/// Return the last cached portal check from state.json if it's fresher
+/// than `max_age_secs` and the cached result still matches the configured
+/// detect_url. Issue #163: prevents `watch -n 1 proteus session` from
+/// hammering the detect endpoint.
+fn load_recent_portal_check(
+    state_path: &Path,
+    max_age_secs: u64,
+    config: &Config,
+) -> Option<StatusReport> {
+    let state = State::load(state_path).ok().flatten()?;
+    let last = state.last_portal_check.as_ref()?;
+    let parsed = parse_iso8601_secs(&last.timestamp)?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_secs();
+    if now.saturating_sub(parsed) > max_age_secs {
+        return None;
+    }
+    Some(StatusReport {
+        enabled: true,
+        detect_url: config.captive_portal.detect_url.clone(),
+        classification: last.classification.clone(),
+        note: last.note.clone().unwrap_or_else(|| "(cached)".into()),
+        redirect_target: None,
+        timestamp: last.timestamp.clone(),
+    })
+}
+
+/// Parse the `YYYY-MM-DDTHH:MM:SSZ` ISO-8601 form Proteus emits via
+/// `commands::now_iso8601()`. Returns Unix seconds. Best-effort — anything
+/// off-format yields `None`, which the caller treats as cache miss.
+fn parse_iso8601_secs(s: &str) -> Option<u64> {
+    let s = s.strip_suffix('Z')?;
+    let (date, time) = s.split_once('T')?;
+    let mut parts = date.splitn(3, '-');
+    let y: u32 = parts.next()?.parse().ok()?;
+    let mo: u32 = parts.next()?.parse().ok()?;
+    let d: u32 = parts.next()?.parse().ok()?;
+    let mut tparts = time.splitn(3, ':');
+    let h: u32 = tparts.next()?.parse().ok()?;
+    let mi: u32 = tparts.next()?.parse().ok()?;
+    let se: u32 = tparts.next()?.parse().ok()?;
+    // Inverse of `unix_to_ymdhms` in commands/mod.rs (Howard Hinnant).
+    let y = if mo <= 2 { y - 1 } else { y };
+    let era = (y as i64).div_euclid(400);
+    let yoe = (y as i64 - era * 400) as u64;
+    let mp = if mo > 2 { mo - 3 } else { mo + 9 };
+    let doy = (153 * mp as u64 + 2) / 5 + d as u64 - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe as i64 - 719_468;
+    let secs = days * 86_400 + (h as i64) * 3600 + (mi as i64) * 60 + se as i64;
+    if secs < 0 { None } else { Some(secs as u64) }
 }
 
 pub fn run_list(json: bool, state_path: Option<&Path>) -> Result<u8> {
