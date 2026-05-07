@@ -1,4 +1,4 @@
-RF fingerprinting is a hardware problem. This page is about a limit, not a feature. Read it before you trust Proteus against an adversary with an SDR.
+RF fingerprinting is two problems. The hardware-baked part (analog imperfections of your radio chip) is unfixable in software — Proteus does not pretend otherwise. The OS-controllable part (TX power, probe-request behavior, scan policy, the chip inventory you can read out) is in scope and is a focus area. This page covers both halves so you know exactly where the boundary is.
 
 ## What RF fingerprinting is
 
@@ -18,15 +18,21 @@ What this means in practice: rotating your MAC defeats every adversary who only 
 
 ## What Proteus does
 
-Nothing fixes the analog characteristics. They're physically baked into the silicon.
+Nothing fixes the analog characteristics. They're physically baked into the silicon. But the radio's *control surface* — what the OS asks the chip to emit, when, and at what power — is software. That part is in scope.
 
-Proteus offers two things in this area, both modest:
+**TX power reduction.** Opt-in. Reduces your transmit power so passive listeners need to be physically closer to capture you cleanly. The signature doesn't change; the audience that can read it shrinks. See the dedicated section below.
 
-**TX power reduction.** Opt-in. Reduces your transmit power so passive listeners need to be physically closer to capture you cleanly. The signature doesn't change; the audience that can read it shrinks.
+**Probe-request privacy.** Per-scan MAC randomization at the NetworkManager / wpa_supplicant layer, plus suppression of unnecessary active probes when passive scanning is enough. A laptop searching for known SSIDs broadcasts a list of every network it remembers — that's an L2 leak that Proteus addresses by tightening the supplicant's scan behavior, not the radio.
 
-**Chipset reporting.** `proteus status` surfaces the Wi-Fi driver, chip ID, firmware version, and Bluetooth chip vendor and firmware. Knowing what's in your machine lets you cross-reference RF-fingerprinting research and understand your exposure.
+**Chipset and firmware inventory.** `proteus status` surfaces the Wi-Fi driver, chip ID, firmware version, and Bluetooth chip vendor and firmware. Knowing what's in your machine lets you cross-reference RF-fingerprinting research and understand your exposure.
 
-That's it. Anything else in this domain is marketing.
+**Bluetooth radio policy.** `discoverable=off` by default, BLE Resolvable Private Address (RPA) where the controller supports it, generic device alias. The classic BR/EDR BD_ADDR rotation is chipset-specific HCI territory and stays deferred — too easy to brick across vendors.
+
+What Proteus does *not* try to do, and won't:
+
+- Spoof a different chipset's RF signature. No COTS firmware permits this.
+- Mask oscillator drift, DAC nonlinearity, IQ imbalance, or carrier frequency offset. Physical properties of the radio.
+- Defeat targeted close-range SDR analysis aimed at *your specific chip*. Only swapping the radio helps.
 
 ## What Proteus can NOT do
 
@@ -78,7 +84,7 @@ Take the chipset family and search IEEE Xplore, ACM Digital Library, USENIX, or 
 
 **Bulk RF collection at backbone or carrier scale.** Out of scope for any host-side tool. If this is your threat model you have problems Proteus cannot reason about.
 
-The honest summary: Proteus is a network-layer fingerprint eraser. RF is a physical-layer leak. The naming makes the boundary clear and this page exists so you don't accidentally trust the wrong layer.
+The honest summary: Proteus reduces every fingerprint the OS can control. RF has two halves — the hardware-baked half is a physical leak Proteus cannot touch, and the software-controlled half (TX power, probe behavior, scan policy, chip inventory) is in scope and a focus area. This page exists so you don't accidentally trust the wrong half.
 
 See `proteus wiki threat-model` for the full picture and the line between in-scope and out-of-scope identifiers.
 

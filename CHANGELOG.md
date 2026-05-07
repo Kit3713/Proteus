@@ -15,6 +15,38 @@ landed, what is in flight, and what is on the bench. See
 
 ### Added
 
+- feat: `proteus session` — current network session snapshot in one read-only
+  view (active SSID, gateway, link-layer MAC, hostname, captive-portal
+  classification). Designed for GUI wrappers via `--json`.
+- feat(phase-c): captive portal detection + `proteus portal` subcommand
+  family. Classifies as `clear` / `portal-required` / `portal-authed` /
+  `unknown` against `nmcheck.gnome.org` (configurable). New subcommands:
+  `portal status`, `portal mark <ssid>`, `portal unmark`, `portal list`,
+  `portal open` (launches the auth page in the default browser). Policy
+  hooks for `rotate-before-auth` (default), `preserve-mac`, and `ask`.
+- feat(phase-d): DHCP option suppression via NM DBus (12/60/61/81 + DHCPv6
+  DUID/IAID). Per-managed-connection state is captured to `state.json` and
+  restored by `proteus dhcp revert`. Driven entirely through NM settings
+  keys — no `nmcli` shelling.
+- feat(phase-d): DNS ECS-strip drop-in for systemd-resolved with
+  detect-and-defer hard guard. If dnscrypt-proxy / Pi-hole / a non-default
+  resolver is present, Proteus refuses to install the drop-in and exits 0
+  with a friendly note. The user's DNS setup always wins.
+- feat(phase-d): IPv6 stable-privacy + temporary addresses + DUID rotation.
+  Per-iface sysctls go in a Proteus drop-in; per-NM-connection IPv6 settings
+  are applied via DBus. `proteus ipv6 revert` restores the cached originals.
+- feat(phase-d): 802.1X anonymous outer identity (eduroam, corporate Wi-Fi).
+  Opt-in, default off. `proteus enterprise-wifi enable --connection <id>`
+  sets `802-1x.anonymous-identity = anonymous@<realm>` per connection.
+- feat(phase-e): nftables ruleset for ICMP info-reply drops, optional SSDP
+  block, optional WSD block. Installed as the `inet proteus` table; left
+  alone by `nft list ruleset` if absent.
+- feat(phase-e): sysctl drop-in for TCP/ICMP/NDP stack hardening
+  (`/etc/sysctl.d/95-proteus.conf`). Header SHA tracked so drift is
+  detectable via `proteus stack status`.
+- feat(phase-f): full-text wiki search via build-time index. `proteus wiki
+  search <terms>` returns ranked hits with snippets; ~50ms cold on the
+  ~38-page corpus.
 - feat(phase-g): `proteus kill` / `proteus resume` — emergency network
   shutdown. `sudo proteus kill --yes` brings every managed interface down
   via `ip link`, disables NetworkManager Wi-Fi + WWAN radios via DBus, and
@@ -26,9 +58,37 @@ landed, what is in flight, and what is on the bench. See
   when to use it (hostile networks, suspected compromise, border
   crossings), what it does, what it deliberately does not do, and the
   manual recovery path.
+- feat(phase-g): `proteus revert` — restore cached originals (hostname,
+  Bluetooth alias, IPv6 + DHCP per-connection settings, sysctl/timesyncd/
+  resolved drop-ins, dispatcher hook, nft table). Idempotent and shared
+  with `proteus uninstall`.
+- feat(phase-g): `proteus diff` — config-vs-defaults-vs-live drift detection
+  including managed-file SHA verification.
+- feat(phase-g): `proteus dry-run <cmd>` — preview any mutator without
+  applying. Routes through a `Plan` enum so the same code path describes
+  and executes.
+- feat(phase-g): integration test scaffolding (privileged podman + systemd
+  container with stubbed NM and BlueZ).
+- feat: curated wiki TOC at `wiki/_index.md` — `proteus wiki` (no args) now
+  renders the curated table of contents instead of an alphabetical page
+  list. Search and the page list still exclude `_index` itself.
+- feat: `proteus apply` risk warnings — when applying a config with knobs
+  known to break specific things on some networks (`discovery.ssdp_block`,
+  `discovery.wsd_block`, `enterprise_wifi.anonymous_outer_identity`,
+  `stack.suppress_gratuitous_arp`), prints a one-line warning per active
+  knob with a wiki pointer before running the orchestrator.
 
 ### Changed
 
+- refactor: split monolithic `src/cli.rs` (744 lines) into
+  `src/cli/{mod,command,actions,dispatch}.rs`. No behavior change — `Cli`,
+  `Command`, every action enum, and `cli::run` keep the same paths.
+- fix(phase-d): `proteus apply` now wires the dhcp/dns/stack/nft/ipv6
+  modules into the orchestrator (previously they returned
+  `not yet implemented` even though the modules themselves had landed).
+  `proteus revert` now also calls `ipv6::revert` and `dhcp::revert`
+  explicitly so per-NM-connection DBus state is restored alongside the
+  on-disk drop-in cleanup.
 - chore: reproducible build infrastructure (pinned toolchain, deterministic
   `SOURCE_DATE_EPOCH`, sha256 verification script). `rust-toolchain.toml` now
   pins to `1.93.0` instead of floating `stable`; the release workflow exports

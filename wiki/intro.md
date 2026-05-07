@@ -34,7 +34,7 @@ When you are ready to apply, `sudo proteus apply` is idempotent: running it ten 
 
 ## What Proteus is not
 
-This is a network-layer fingerprint eraser. It is not a privacy suite. It will not pretend to solve problems that belong to other tools.
+Proteus's mission is *local controllable* fingerprint reduction — every identifier the OS / NetworkManager / BlueZ / kernel / supplicant can rewrite, plus the OS-controllable RF surface. It is not a privacy suite, and it will not pretend to solve problems that belong to another tool's layer.
 
 - Not a TLS or browser fingerprint tool. Use Tor Browser, librewolf, or Brave's randomization.
 - Not a DNS-privacy tool beyond the one ECS-strip knob. Use dnscrypt-proxy, NextDNS, AdGuard Home, or Pi-hole.

@@ -1,6 +1,6 @@
 # Proteus
 
-A Rust CLI that erases the network identifiers your Linux laptop hands out every time it joins a network. MAC addresses, DHCP options, IPv6 derivations, hostname, mDNS chatter, TCP fingerprint quirks, Bluetooth name. Rotates MACs on a schedule and on connectivity loss. Single binary, embedded wiki, runs on Fedora 43+ with systemd and NetworkManager.
+A Rust CLI that reduces every identifier your Linux laptop can locally control when joining or transmitting on a network. MAC addresses, DHCP options, IPv6 derivations, hostname, mDNS chatter, TCP fingerprint quirks, Bluetooth name, and the parts of the RF surface software can shape (TX power, probe-request behavior). Rotates MACs on a schedule and on connectivity loss. Single binary, embedded wiki, runs on Fedora 43+ with systemd and NetworkManager.
 
 Named after the shapeshifter.
 
@@ -10,13 +10,13 @@ Named after the shapeshifter.
 
 What has shipped on `main`:
 
-- Phase A (skeleton) — done. Cargo project, full clap CLI surface, read-only commands, embedded wiki with terminal renderer, journald logging, stable exit codes
+- Phase A (skeleton) — done. Cargo project, full clap CLI surface, read-only commands, embedded wiki with terminal renderer + full-text search, journald logging, stable exit codes
 - Phase B (L2 identity) — done. Wi-Fi and Ethernet MAC rotation via NetworkManager DBus, OUI pool, ARP collision check, pin/unpin per interface or NM connection, Bluetooth alias + `discoverable=off` + BLE RPA via BlueZ
-- Phase C (probes, timers, captive portals) — partial. NetworkManager dispatcher hook and systemd sleep hook (event-driven rotation, no daemon), `proteus probe` manual quorum check, `proteus timer` user-controllable timers. Probe-driven rotation callbacks and the captive-portal classifier are next
-- Phase D (DHCP, IPv6, hostname, 802.1X, DNS) — partial. Hostname rotation via `hostname1` DBus (kernel/pretty/transient) plus a 534-entry router-flavored wordlist. DHCP, IPv6, 802.1X, and the ECS-strip DNS knob are still ahead
-- Phase E (discovery silencing, stack fingerprint, RF surface) — not started
-- Phase F (cross-cutting wiki, search, packaging) — packaging done. 32 wiki pages, `install.sh` and `uninstall.sh`, systemd units, man page, shell completions (bash/zsh/fish), PolicyKit policy, and distro packaging for Arch / Fedora / Debian / NixOS. Full-text wiki search and the error-path audit are still ahead
-- Phase G (diff, dry-run, reset, uninstall, integration tests) — partial. `proteus reset` and `proteus uninstall` shipped; `proteus diff` and `proteus dry-run` are still ahead
+- Phase C (probes, timers, captive portals) — done. NetworkManager dispatcher hook and systemd sleep hook (event-driven rotation, no daemon), `proteus probe` manual quorum check, `proteus timer` user-controllable timers, captive-portal detection + `proteus portal` family with policy-aware rotation
+- Phase D (DHCP, IPv6, hostname, 802.1X, DNS) — done. Hostname rotation via `hostname1` DBus with 534-entry wordlist; IPv6 stable-privacy + temporary addresses + DUID rotation; DHCP option 12/60/61/81 + DUID/IAID suppression via NM DBus; 802.1X anonymous outer identity (opt-in); ECS-strip DNS drop-in with detect-and-defer hard guard
+- Phase E (discovery silencing, stack fingerprint) — done. Sysctl drop-in for TCP/ICMP/NDP hardening; nftables ruleset for ICMP info-drops + optional SSDP/WSD blocks
+- Phase F (cross-cutting wiki, search, packaging) — done. 38 wiki pages with curated TOC + full-text search, `install.sh` and `uninstall.sh`, systemd units, man page, shell completions (bash/zsh/fish), PolicyKit policy, distro packaging for Arch / Fedora / Debian / NixOS, reproducible-build infrastructure
+- Phase G (revert, diff, dry-run, reset, uninstall, kill switch, integration tests) — done. Every mutator has a `revert` path that restores cached originals; `proteus diff` flags drift; `proteus dry-run <cmd>` previews any mutation; `proteus kill` / `proteus resume` is the emergency hatch; podman+systemd integration test scaffold landed
 
 See [CHANGELOG.md](CHANGELOG.md) for the full list and [docs/ROADMAP.md](docs/ROADMAP.md) for the operational view.
 
@@ -24,41 +24,47 @@ See [CHANGELOG.md](CHANGELOG.md) for the full list and [docs/ROADMAP.md](docs/RO
 
 Commands shipping today:
 
-- `proteus status`, `proteus current`, `proteus original` — read-only views of what is applied, what is live, and the cached originals
+- `proteus status`, `proteus current`, `proteus original`, `proteus session` — read-only views of what is applied, what is live, what the cached originals are, and a one-screen current-network snapshot
 - `proteus rotate` — fresh MAC on one or every interface (NetworkManager DBus, no `nmcli` shelling)
 - `proteus pin` / `proteus unpin` — pin a MAC per interface or per NM connection profile
-- `proteus bluetooth apply` / `proteus bluetooth status` — generic alias, `discoverable=off`, BLE Resolvable Private Address mode where the controller supports it
-- `proteus hostname rotate` / `proteus hostname pin` / `proteus hostname status` — rotate kernel/pretty/transient names from the wordlist or pin a generic
-- `proteus timer status` / `enable` / `disable` / `set` / `reset` / `logs` — manage the systemd timers (`proteus-rotate.timer` and `proteus-check.timer`) without scripting
+- `proteus bluetooth status / apply / revert` — generic alias, `discoverable=off`, BLE Resolvable Private Address mode where the controller supports it
+- `proteus hostname rotate / pin / status / revert` — rotate kernel/pretty/transient names from the 534-entry wordlist or pin a generic
+- `proteus ipv6 status / apply / revert` — stable-privacy + temporary addresses + DUID rotation per NM connection
+- `proteus dhcp status / apply / revert` — option 12/60/61/81 + DUID/IAID suppression on managed NM connections
+- `proteus dns status / apply / revert` — EDNS-Client-Subnet strip drop-in for systemd-resolved with detect-and-defer hard guard
+- `proteus stack status / apply / revert` — TCP/ICMP/NDP sysctl hardening drop-in
+- `proteus nft status / apply / revert` — nftables table for ICMP info-drops and optional SSDP/WSD blocks
+- `proteus enterprise-wifi status / enable / disable` — 802.1X anonymous outer identity (opt-in, default off)
+- `proteus portal status / mark / unmark / list / open` — captive-portal detection and known-portal SSID list
+- `proteus kill` / `proteus resume` — emergency network shutdown (interfaces down, radios off, BlueZ adapters powered down) and full restoration
+- `proteus apply [--yes]` — orchestrator across every enabled component, prints risk warnings before applying breaking knobs
+- `proteus revert [--yes]` — back out Proteus's network-layer side-effects (hostname, Bluetooth alias, DHCP/IPv6 NM settings, sysctl/timesyncd/resolved drop-ins, dispatcher hook, nft table)
+- `proteus diff` — drift between config, defaults, and live state (with managed-file SHA verification)
+- `proteus dry-run <cmd>` — preview any mutator without applying
+- `proteus timer status / list / enable / disable / set / reset / logs` — manage the systemd timers without scripting
 - `proteus probe` — manual probe quorum check against the configured targets
-- `proteus config show` / `get` / `set` / `enable` / `disable` / `reset` / `edit` — edit `/etc/proteus/config.toml` without touching TOML by hand (round-trips through `toml_edit` so comments survive)
-- `proteus apply` — orchestrator across enabled components (idempotent; modules not yet implemented surface as `not yet implemented`)
+- `proteus config show / get / set / enable / disable / reset / edit / validate / keys` — edit `/etc/proteus/config.toml` without touching TOML by hand (round-trips through `toml_edit` so comments survive)
 - `proteus doctor` — read-only health check (`ok / warn / fail / skip` per check, only `fail` is non-zero)
 - `proteus reset` — restore config to defaults; cached originals are sacred and untouched
 - `proteus uninstall [--purge]` — full removal hatch
-- `proteus wiki <page>` — render any of the 32 embedded wiki pages to the terminal (markdown to ANSI on TTY, raw on pipe, `NO_COLOR` honored)
-
-Planned, not yet shipped:
-
-- `proteus revert` — back out Proteus changes to the cached originals (currently a stub)
-- `proteus diff`, `proteus dry-run` — drift detection and mutation preview
-- DHCP option 12/60/61/81 suppression, IPv6 stable-privacy + DUID rotation, 802.1X anonymous outer identity, the ECS-strip DNS knob
-- Discovery silencing (mDNS / LLMNR / NetBIOS / SSDP / WSD), `tcp_timestamps=0`, ICMP rules, NDP hardening, NTP normalization, `wifi.tx-power-reduce`
-- Captive portal detector and policy
+- `proteus wiki [page]` — curated TOC by default, or render any embedded wiki page to the terminal (markdown to ANSI on TTY, raw on pipe, `NO_COLOR` honored)
+- `proteus wiki search <query>` — full-text search across every embedded page
 
 Full per-feature plan in [docs/PLAN.md](docs/PLAN.md). Comparison to existing tools in [docs/PRIOR-ART.md](docs/PRIOR-ART.md).
 
 ## What it doesn't do
 
-This is a network-layer fingerprint eraser. It is not:
+The mission is **local controllable fingerprint reduction** — every identifier the OS / NetworkManager / BlueZ / kernel / supplicant can rewrite, plus the parts of the RF surface software can shape (TX power, probe behavior, scan policy). Things controlled by another tool's layer stay with that tool. So Proteus is not:
 
 - a TLS or browser fingerprint tool — use Tor Browser, librewolf, or Brave's randomization
-- a DNS-privacy tool beyond the one ECS-strip knob (planned) — use dnscrypt-proxy, NextDNS, AdGuard Home, or Pi-hole
+- a DNS-privacy tool beyond the one ECS-strip knob — use dnscrypt-proxy, NextDNS, AdGuard Home, or Pi-hole
 - a tracker blocker — use Pi-hole, NextDNS, or uBlock Origin
 - a traffic correlation defense — use Tor or Mullvad VPN
 - a hardening framework — Proteus refuses to weaken Fedora's `crypto-policies`, touch `/etc/ssh/ssh_config`, or rotate `/etc/machine-id`
+- an SSH client fingerprint tool — your `ssh_config` is yours
+- a fix for hardware-baked RF fingerprints (oscillator drift, DAC nonlinearity, IQ imbalance) — those need a swappable USB Wi-Fi adapter, not software
 
-`proteus wiki threat-model` spells this out so you do not over-trust the tool.
+`proteus wiki threat-model` and `proteus wiki rf-fingerprinting` spell out the boundary so you do not over-trust the tool.
 
 ## Quick start
 
@@ -77,15 +83,16 @@ For the first-time tutorial, run `proteus wiki getting-started`.
 
 ## Why use this
 
-You join a coffee-shop, hotel, conference, or airport network and your laptop screams "I am Chris, I have been here before" at the L2 layer. The MAC, the hostname in the DHCP request, the `_workstation._tcp` mDNS announcement, the IPv6 address derived from the MAC. Network-side analytics platforms key on those. Proteus shuts them up.
+You join a coffee-shop, hotel, conference, or airport network and your laptop screams "I am Chris, I have been here before" — the MAC, the hostname in the DHCP request, the `_workstation._tcp` mDNS announcement, the IPv6 address derived from the MAC, and even the probe-request burst that names every saved SSID. Network-side analytics platforms key on those. Proteus shuts them up.
 
 Proteus is one layer in a defense-in-depth stack. It pairs naturally with:
 
 - Tor Browser or LibreWolf for the L7 browser fingerprint
 - dnscrypt-proxy, NextDNS, AdGuard Home, or Pi-hole for DNS resolution policy
 - Mullvad or Tor for IP-layer correlation and traffic analysis
+- A swappable USB Wi-Fi adapter when the RF threat is targeted SDR-in-the-room (Proteus reduces the OS-controllable RF surface; it cannot change your chip's analog characteristics)
 
-Each layer is its own complex world and deserves its own tooling. Proteus owns the network-joining identity layer. It refuses to overstep — the detect-and-defer guards on DNS and NTP are deliberate, your tool wins. See `proteus wiki hostile-environments` for the field guide and `proteus wiki threat-model` for the boundary discussion.
+Each layer is its own complex world and deserves its own tooling. Proteus owns the surface that the local OS can rewrite. It refuses to overstep — the detect-and-defer guards on DNS and NTP are deliberate, your tool wins. See `proteus wiki hostile-environments` for the field guide, `proteus wiki threat-model` for the boundary discussion, and `proteus wiki rf-fingerprinting` for the RF half.
 
 ## Requirements
 
@@ -131,7 +138,9 @@ sudo proteus uninstall --purge  # also clear /etc/proteus and /var/lib/proteus
 
 ## Documentation
 
-Wiki entry points (every page is also accessible via `proteus wiki <page>` from the embedded copy):
+Run `proteus wiki` (no args) for the curated TOC, or `proteus wiki search <term>` for full-text search across every embedded page.
+
+Suggested entry points:
 
 - `proteus wiki getting-started` — first-time tutorial: doctor, current, first rotation, cadence, daily mental model
 - `proteus wiki concepts` — mental model: identifiers, rotation, captive portals, managed files, revert
@@ -151,7 +160,7 @@ Project-level docs:
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). The open frontiers right now are Phase C (probe-driven rotation callbacks, captive-portal classifier) and Phase D (DHCP suppression, IPv6 stable-privacy, the ECS-strip DNS knob). [docs/ROADMAP.md](docs/ROADMAP.md) marks every item; pick something flagged planned and open an issue first if it is non-trivial.
+See [CONTRIBUTING.md](CONTRIBUTING.md). The major phases are landed; the open frontiers right now are real-world testing on diverse Wi-Fi (coffee shops, hotels, conferences with quirky DHCP servers), independent security review of the threat model + DBus surface, and distro adoption (AUR/Copr/Debian-unstable submissions need a packager sponsor). [docs/ROADMAP.md](docs/ROADMAP.md) marks every item; pick something flagged planned and open an issue first if it is non-trivial.
 
 ## License
 

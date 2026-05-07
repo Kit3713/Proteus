@@ -4,7 +4,7 @@ Structure: scope, what Proteus resists, what Proteus does not resist (with the r
 
 ## Who this is for
 
-Linux users on Fedora 43+ (or other modern systemd + NetworkManager systems) who want to reduce the network-layer fingerprint their laptop hands out every time it joins a network. Home Wi-Fi, public Wi-Fi, conference Wi-Fi, work Wi-Fi, hotel Wi-Fi.
+Linux users on Fedora 43+ (or other modern systemd + NetworkManager systems) who want to reduce every fingerprint their laptop locally controls when joining or transmitting on a network — L2 identifiers, DHCP/IPv6/discovery chatter, TCP/ICMP/NDP stack quirks, Bluetooth radio policy, and the OS-controllable parts of the RF surface. Home Wi-Fi, public Wi-Fi, conference Wi-Fi, work Wi-Fi, hotel Wi-Fi.
 
 Not a privacy panacea. Not a daily-driver replacement for Tor Browser, Mullvad, dnscrypt-proxy, Pi-hole, or any other tool that owns one problem well. A focused CLI for the network-joining identity layer, designed to compose with the rest.
 
@@ -26,6 +26,7 @@ Each item below is a real, mostly-passive observation an attacker can make on a 
 - **BLE advertising address.** A passive observer can track BLE devices by their advertising address. Proteus enables Resolvable Private Address mode where the controller supports it.
 - **IPv6 derivation correlation.** Under EUI-64 the IPv6 IID leaks the MAC directly; under stable-privacy it derives deterministically from the MAC plus a network-scoped key. Proteus rotates the IID alongside the MAC and uses temp addresses by default.
 - **DUID stickiness across MAC rotations.** A static DHCPv6 client identifier defeats MAC rotation. Proteus rotates DUID alongside MAC.
+- **OS-controllable RF surface.** Probe-request bursts naming every saved SSID, active-scan-when-passive-would-do behavior, and unconstrained TX power all leak identity beyond the L2 frame. Proteus tightens the supplicant's scan behavior, can reduce TX power on demand, and surfaces your chip + firmware inventory in `proteus status` so you can cross-reference the RF-fingerprinting research for your hardware. The hardware-analog half (oscillator drift, DAC nonlinearity, IQ imbalance) is documented separately under "what Proteus does not resist" — only a hardware swap fixes that.
 
 If your concern is on the list above, Proteus is the right tool for that part of your stack. If your concern is not on the list, read the rest of this page before assuming Proteus helps; the right answer is almost always a different tool.
 
