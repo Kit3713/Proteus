@@ -39,6 +39,7 @@ entry below, or `proteus wiki search <term>` for full-text search.
 - `doctor` — self-diagnostic checks
 - `probes` — connectivity probe rounds
 - `troubleshooting` — when things don't go as expected
+- `real-world-testing` — verifying Proteus on a coffee shop, hotel, or conference network
 - `uninstall` — clean removal
 
 ## Reference
