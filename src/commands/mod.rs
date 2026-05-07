@@ -4,6 +4,7 @@ pub mod bluetooth_cmd;
 pub mod current;
 pub mod original;
 pub mod pin;
+pub mod reset;
 pub mod rotate;
 pub mod show_config;
 pub mod show_defaults;
