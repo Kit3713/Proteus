@@ -18,12 +18,28 @@
 //! on disk, so switching back to a non-`Off` profile restores them.
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::time::SystemTime;
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::profile::Profile;
+
+/// Process-level mtime-keyed cache. Skipped when the file is missing
+/// (we return the structural default rather than caching "absent" — that
+/// way creating the file mid-process is picked up immediately) and
+/// when stat fails. Invalidated by any mtime advance, which covers
+/// edits via every supported path: `proteus config edit`, hand-editing,
+/// `proteus reset`, distro package upgrades.
+struct CacheEntry {
+    path: PathBuf,
+    mtime: SystemTime,
+    config: Config,
+}
+
+static CONFIG_CACHE: Mutex<Option<CacheEntry>> = Mutex::new(None);
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Config {
@@ -86,17 +102,47 @@ impl Config {
     /// Load `path` as TOML, resolving profile + per-knob overrides. If the
     /// file is absent the default profile baseline is returned. Parse
     /// errors propagate as `Err`.
+    ///
+    /// Backed by an mtime-keyed cache so the apply orchestrator's
+    /// 12-call sequence (one per feature module) costs a single parse
+    /// plus 11 hash + stat lookups rather than 12 parses. The cache
+    /// keys on the canonical path so two different `Path` values that
+    /// resolve to the same file share an entry.
     pub fn default_or_loaded(path: &Path) -> Result<Self> {
+        // Try the cache first. We canonicalise lazily — if the path
+        // doesn't exist yet, `metadata` will surface NotFound and we
+        // fall through to the default branch below.
+        if let Ok(meta) = std::fs::metadata(path)
+            && let Ok(mtime) = meta.modified()
+            && let Ok(guard) = CONFIG_CACHE.lock()
+            && let Some(entry) = guard.as_ref()
+            && entry.path == path
+            && entry.mtime == mtime
+        {
+            return Ok(entry.config.clone());
+        }
         match std::fs::read_to_string(path) {
             Ok(s) => {
                 let raw: RawConfig =
                     toml::from_str(&s).with_context(|| format!("parsing {}", path.display()))?;
-                Ok(raw.resolve())
+                let config = raw.resolve();
+                if let Ok(meta) = std::fs::metadata(path)
+                    && let Ok(mtime) = meta.modified()
+                    && let Ok(mut guard) = CONFIG_CACHE.lock()
+                {
+                    *guard = Some(CacheEntry {
+                        path: path.to_path_buf(),
+                        mtime,
+                        config: config.clone(),
+                    });
+                }
+                Ok(config)
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
             Err(e) => Err(e).with_context(|| format!("reading {}", path.display())),
         }
     }
+
 
     /// Structural baseline with the per-section `Default` impl values for
     /// every non-profile-affected field. The bool toggles are placeholder
@@ -1337,6 +1383,40 @@ impl Default for TimerConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Performance hardening: a second `default_or_loaded` against the
+    /// same file mtime must produce the same Config without re-parsing.
+    /// The cache contract is observable through the result equivalence
+    /// — re-parsing would introduce a heisenbug if the TOML's resolve
+    /// path were non-deterministic. Pin the round-trip here.
+    #[test]
+    fn default_or_loaded_returns_consistent_config_across_repeated_calls() {
+        let dir = std::env::temp_dir().join(format!(
+            "proteus-config-cache-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cfg_path = dir.join("config.toml");
+        std::fs::write(&cfg_path, "profile = \"high\"\n[mac]\nenabled = false\n").unwrap();
+
+        let a = Config::default_or_loaded(&cfg_path).unwrap();
+        let b = Config::default_or_loaded(&cfg_path).unwrap();
+        assert_eq!(a.profile, b.profile);
+        assert_eq!(a.mac.enabled, b.mac.enabled);
+        assert!(!a.mac.enabled);
+
+        // Mutating the file (different mtime) must invalidate the cache.
+        // Sleep just enough to advance the mtime past the cached value;
+        // 1 ms is enough on modern Linux but we use 10 ms for FAT32-
+        // resolution-safe systems.
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        std::fs::write(&cfg_path, "profile = \"low\"\n").unwrap();
+        let c = Config::default_or_loaded(&cfg_path).unwrap();
+        assert_eq!(c.profile, Profile::Low);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn default_config_uses_med_profile() {

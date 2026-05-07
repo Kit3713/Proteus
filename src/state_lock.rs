@@ -69,7 +69,7 @@ fn retry_attempts_from_env(get: impl Fn(&str) -> Option<String>) -> u32 {
         .and_then(|s| s.parse::<u64>().ok())
         .unwrap_or(DEFAULT_LOCK_BUDGET_MS);
     let granularity_ms = RETRY_DELAY.as_millis() as u64;
-    let attempts = (budget_ms.max(granularity_ms) + granularity_ms - 1) / granularity_ms;
+    let attempts = budget_ms.max(granularity_ms).div_ceil(granularity_ms);
     attempts.min(u32::MAX as u64) as u32
 }
 

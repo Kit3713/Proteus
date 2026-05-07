@@ -372,7 +372,7 @@ fn explain_candidate_from_attempt(a: CandidateAttempt) -> ExplainCandidate {
 /// rather than the tool quietly recording a known-cloned value as the
 /// restoration target.
 fn capture_original_mac(state: &mut State, iface: &str, _hw_hint: Option<&str>) {
-    capture_original_mac_under(state, iface, |i| factory::permanent_address(i))
+    capture_original_mac_under(state, iface, factory::permanent_address)
 }
 
 /// Test-injectable form of [`capture_original_mac`]. The closure stands in

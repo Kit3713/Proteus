@@ -165,7 +165,6 @@ fn parse_ethtool_permanent(stdout: &str) -> Option<String> {
 mod tests {
     use std::collections::HashMap;
     use std::fs;
-    use std::path::PathBuf;
 
     use super::*;
 

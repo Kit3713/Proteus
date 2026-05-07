@@ -1118,11 +1118,22 @@ fn strip_quotes(s: &str) -> &str {
     s.trim_matches('"').trim_matches('\'')
 }
 
+/// Cached split of `$PATH`. The doctor calls `binary_exists` 8+ times
+/// per invocation (nft, dnscrypt-proxy, AdGuardHome, kresd, chronyd,
+/// ntpd, iwd, wpa_supplicant). Re-splitting and re-allocating `$PATH`
+/// on every call is wasteful when the env var doesn't change between
+/// calls inside a single CLI invocation. Cache once, reuse.
+fn path_dirs() -> &'static [PathBuf] {
+    static CACHE: std::sync::OnceLock<Vec<PathBuf>> = std::sync::OnceLock::new();
+    CACHE.get_or_init(|| {
+        std::env::var_os("PATH")
+            .map(|p| std::env::split_paths(&p).collect::<Vec<_>>())
+            .unwrap_or_default()
+    })
+}
+
 fn binary_exists(name: &str) -> bool {
-    let Some(path) = std::env::var_os("PATH") else {
-        return false;
-    };
-    std::env::split_paths(&path).any(|dir| {
+    path_dirs().iter().any(|dir| {
         let p: PathBuf = dir.join(name);
         p.is_file()
     })

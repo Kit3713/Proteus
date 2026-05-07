@@ -321,61 +321,52 @@ fn apply_json_to_command(cmd: &mut Command) {
         | Command::Doctor { json, .. } => {
             *json = true;
         }
-        Command::Bluetooth { action } => match action {
-            BluetoothAction::Status { json } => *json = true,
-            _ => {}
-        },
-        Command::Hostname { action } => match action {
-            HostnameAction::Status { json } => *json = true,
-            _ => {}
-        },
-        Command::Ipv6 { action } => match action {
-            Ipv6Action::Status { json } => *json = true,
-            _ => {}
-        },
-        Command::Dhcp { action } => match action {
-            DhcpAction::Status { json } => *json = true,
-            _ => {}
-        },
-        Command::Dns { action } => match action {
-            DnsAction::Status { json } => *json = true,
-            _ => {}
-        },
-        Command::Resolved { action } => match action {
-            ResolvedAction::Status { json } => *json = true,
-            _ => {}
-        },
-        Command::Ntp { action } => match action {
-            NtpAction::Status { json } => *json = true,
-            _ => {}
-        },
-        Command::Stack { action } => match action {
-            StackAction::Status { json } => *json = true,
-            _ => {}
-        },
-        Command::Nft { action } => match action {
-            NftAction::Status { json } => *json = true,
-            _ => {}
-        },
-        Command::Rf { action } => match action {
-            RfAction::Status { json }
-            | RfAction::Scan { json }
-            | RfAction::Chipset { json } => *json = true,
-            _ => {}
-        },
-        Command::EnterpriseWifi { action } => match action {
-            EnterpriseWifiAction::Status { json } => *json = true,
-            _ => {}
-        },
-        Command::Portal { action } => match action {
-            PortalAction::Status { json }
-            | PortalAction::List { json } => *json = true,
-            _ => {}
-        },
-        Command::Timer { action } => match action {
-            TimerAction::Status { json } | TimerAction::List { json } => *json = true,
-            _ => {}
-        },
+        Command::Bluetooth {
+            action: BluetoothAction::Status { json },
+        }
+        | Command::Hostname {
+            action: HostnameAction::Status { json },
+        }
+        | Command::Ipv6 {
+            action: Ipv6Action::Status { json },
+        }
+        | Command::Dhcp {
+            action: DhcpAction::Status { json },
+        }
+        | Command::Dns {
+            action: DnsAction::Status { json },
+        }
+        | Command::Resolved {
+            action: ResolvedAction::Status { json },
+        }
+        | Command::Ntp {
+            action: NtpAction::Status { json },
+        }
+        | Command::Stack {
+            action: StackAction::Status { json },
+        }
+        | Command::Nft {
+            action: NftAction::Status { json },
+        }
+        | Command::EnterpriseWifi {
+            action: EnterpriseWifiAction::Status { json },
+        }
+        | Command::Portal {
+            action:
+                PortalAction::Status { json } | PortalAction::List { json },
+        }
+        | Command::Timer {
+            action:
+                TimerAction::Status { json } | TimerAction::List { json },
+        }
+        | Command::Rf {
+            action:
+                RfAction::Status { json }
+                | RfAction::Scan { json }
+                | RfAction::Chipset { json },
+        } => {
+            *json = true;
+        }
         // Subcommands without a `json` flag, or whose readers don't
         // benefit from JSON, are left untouched. Future readers can
         // join the match above.

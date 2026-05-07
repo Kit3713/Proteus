@@ -317,10 +317,7 @@ fn migrate_state(state: &mut State) {
 /// deprecation plan.
 fn migrate_known_portals_to_per_ssid(state: &mut State) {
     for ssid in &state.known_portal_ssids {
-        let entry = state
-            .per_ssid_seed
-            .entry(ssid.clone())
-            .or_insert_with(PerSsidStateSeed::default);
+        let entry = state.per_ssid_seed.entry(ssid.clone()).or_default();
         if entry.portal_policy.is_none() {
             entry.portal_policy = Some("fresh-mac-per-visit".to_string());
         }

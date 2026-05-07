@@ -11,7 +11,74 @@ landed, what is in flight, and what is on the bench. See
 
 ## [Unreleased]
 
-(post-v0.3.1-alpha work lands here)
+### Roadmap follow-ups
+
+- **M3 connection-up wiring** — `rotate-if-needed` grows `--ssid`; the
+  NM dispatcher passes `CONNECTION_ID` through; per-SSID `pin_mac`
+  short-circuits the rotate and `rotate_interval` lifts the cooldown
+  floor. The `proteus events run` daemon's `RotateOnTriggerHandler`
+  resolves the per-SSID policy on every `ConnectionUp` trigger and
+  traces the contributing layers.
+- **M4a persona-aware NTP** — `ntp::servers_for_persona` maps Apple /
+  Pixel / Galaxy / Surface persona ids onto vendor-NTP pools so the
+  wire-side NTP queries match the cover identity. Randomizers and
+  unmapped covers leave the configured pool alone.
+- **M4a persona-aware nft** — new `persona_drops` chain emits
+  `udp dport 5353 drop` when the persona's `mdns_advertise` is false.
+  Distinct chain priority (-97) preserves the issue-#148 eval-order
+  invariant.
+- **M4c `renew_on_apply`** — orchestrator now runs a backend-routed
+  renew loop after a successful DHCP write when `[dhcp] renew_on_apply`
+  is set. Folds the per-iface tally (reapplied / cycled / skipped /
+  failed) into the `dhcp` row of the apply summary; flips status to
+  Failed when the renew breaks.
+- **M5 doctor** — new `next_steps` section synthesises actionable
+  hints from the existing checks: backend-unavailable,
+  pinned-but-missing driver, DNS / NTP defer, alternate iface manager,
+  quirky setup, config parse error.
+- **M6 `--format`** — global `--format json|yaml|table` flag at the
+  CLI top level. `json` flips every reader's per-subcommand `--json`
+  at dispatch time; `table` is the default; `yaml` returns a clear
+  reserved-for-follow-up error pending a yaml dependency.
+
+### Runtime performance
+
+- **Config cache** — `Config::default_or_loaded` now hits a
+  process-level mtime-keyed cache. The apply orchestrator's 12-call
+  sequence (one per feature module) collapses from 12 file-reads +
+  12 TOML parses to 1 read + 1 parse + 11 stat lookups. Invalidates
+  on any mtime advance, so `proteus config edit` and hand-edits are
+  picked up on the next call.
+- **Built-in persona cache** — every embedded persona TOML is parsed
+  once at first access into a `LazyLock<HashMap<id, Persona>>`. A
+  single `proteus apply` cycle resolves the persona at six sites
+  (rotate / hostname / dhcp / bluetooth / ntp / nft); the cache turns
+  the per-site cost from O(parse) into O(hash).
+- **Events daemon config cache** — the long-lived `proteus events run`
+  daemon previously re-parsed `config.toml` on every trigger. Now
+  caches by mtime and re-parses only when the operator actually edits
+  the file.
+- **Doctor PATH cache** — `binary_exists` walked `$PATH` independently
+  for each of 8 lookups (chronyd / ntpd / nft / iwd /
+  wpa_supplicant / dnscrypt-proxy / kresd / AdGuardHome). Now splits
+  PATH once into a `OnceLock<Vec<PathBuf>>` and reuses for every
+  lookup in the same CLI invocation.
+
+### Fixes
+
+- **clippy cleanups** — removed an unused `PathBuf` import in
+  `mac/factory.rs` tests, replaced manual `div_ceil` in
+  `state_lock.rs` with the standard-library form, swapped
+  `or_insert_with(Default::default)` for `or_default()` in
+  `state.rs::migrate_known_portals_to_per_ssid`, dropped a redundant
+  closure around `factory::permanent_address` in
+  `commands/rotate.rs`. No functional changes.
+- **`apply_json_to_command`** collapsed redundant per-action `match`
+  arms into a single OR-pattern so the dispatch helper that
+  implements `--format json` is one match expression rather than
+  thirteen.
+
+
 
 ## [0.3.1-alpha] - 2026-05-07
 

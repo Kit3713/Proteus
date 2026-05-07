@@ -22,8 +22,8 @@
 //! Proteus's side, the daemon is opt-in via `[events] enabled`.
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Context, Result};
 
@@ -50,6 +50,18 @@ use crate::exit;
 struct RotateOnTriggerHandler {
     counter: std::sync::atomic::AtomicU64,
     config_path: Option<PathBuf>,
+    /// mtime-keyed config cache. The daemon can run for hours; on every
+    /// trigger we'd otherwise re-read and re-parse a typically-stable
+    /// TOML file. `mtime → Config` means we re-parse only when the
+    /// operator actually edits the file. The mutex is uncontended (one
+    /// trigger at a time through the registry's serial dispatch).
+    cached: Mutex<Option<CachedConfig>>,
+}
+
+#[derive(Clone)]
+struct CachedConfig {
+    mtime: SystemTime,
+    config: Config,
 }
 
 impl RotateOnTriggerHandler {
@@ -57,12 +69,33 @@ impl RotateOnTriggerHandler {
         Self {
             counter: std::sync::atomic::AtomicU64::new(0),
             config_path,
+            cached: Mutex::new(None),
         }
     }
 
+    /// Return the active config, parsing only when the file's mtime
+    /// has advanced since the last load. Falls back to a fresh parse
+    /// when the path is missing (the file was just deleted) or when
+    /// stat fails — both are recoverable from the next trigger.
     fn load_config(&self) -> Option<Config> {
         let cfg_path = super::config_path(self.config_path.as_deref());
-        Config::default_or_loaded(&cfg_path).ok()
+        let mtime = std::fs::metadata(&cfg_path)
+            .and_then(|m| m.modified())
+            .ok();
+        if let (Some(m), Ok(guard)) = (mtime, self.cached.lock())
+            && let Some(c) = guard.as_ref()
+            && c.mtime == m
+        {
+            return Some(c.config.clone());
+        }
+        let config = Config::default_or_loaded(&cfg_path).ok()?;
+        if let (Some(m), Ok(mut guard)) = (mtime, self.cached.lock()) {
+            *guard = Some(CachedConfig {
+                mtime: m,
+                config: config.clone(),
+            });
+        }
+        Some(config)
     }
 }
 

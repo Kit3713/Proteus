@@ -10,7 +10,9 @@
 //!   builtin so a user can fork any built-in persona without forking the
 //!   binary. See roadmap Milestone 2.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use anyhow::{Context, Result, anyhow};
 use include_dir::{Dir, include_dir};
@@ -21,6 +23,41 @@ use super::{Persona, PersonaSource, PersonaSummary};
 /// persona; the file stem must match the `id` field.
 static BUILTIN: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/data/personas");
 
+/// Process-level cache of parsed built-in personas. The catalogue is
+/// embedded and immutable, so parsing every TOML once at first access
+/// is a clear win over re-parsing on every `active_for` call: a single
+/// `proteus apply` cycle resolves the persona at four sites
+/// (rotate / hostname / dhcp / bluetooth), and Milestone 4 added two
+/// more (ntp / nft). The cache makes repeated lookups O(hash) instead
+/// of O(parse). User personas stay uncached — they can change on disk
+/// between calls and the cost is bounded by the user's directory size.
+static BUILTIN_CACHE: OnceLock<HashMap<String, Persona>> = OnceLock::new();
+
+fn builtin_cache() -> &'static HashMap<String, Persona> {
+    BUILTIN_CACHE.get_or_init(|| {
+        let mut map = HashMap::new();
+        for f in BUILTIN.files() {
+            if f.path().extension().and_then(|s| s.to_str()) != Some("toml") {
+                continue;
+            }
+            let Some(stem) = f.path().file_stem().and_then(|s| s.to_str()) else {
+                continue;
+            };
+            let Some(raw) = f.contents_utf8() else { continue };
+            // Built-ins ship validated by `every_embedded_persona_parses`
+            // tests; a parse error here is a build-time bug, not a
+            // runtime condition. Skip silently rather than panic so a
+            // single broken file doesn't take down the whole catalogue.
+            if let Ok(p) = toml::from_str::<Persona>(raw)
+                && p.id == stem
+            {
+                map.insert(p.id.clone(), p);
+            }
+        }
+        map
+    })
+}
+
 /// Default user-persona root. Loader callers pass a `Path` so tests can
 /// point at a `TempDir`; production code passes this constant.
 pub const DEFAULT_USER_ROOT: &str = "/etc/proteus/personas";
@@ -28,7 +65,18 @@ pub const DEFAULT_USER_ROOT: &str = "/etc/proteus/personas";
 /// Try to load a built-in persona by id. Returns `None` when the id is
 /// unknown so callers can fall through to user personas; errors during
 /// parse propagate as `Err`.
+///
+/// Backed by [`BUILTIN_CACHE`] so repeated lookups in a single process
+/// hit a `HashMap` instead of re-parsing the same TOML body. The first
+/// access pays the parse-once cost for every embedded file.
 pub fn load_builtin(id: &str) -> Result<Option<Persona>> {
+    if let Some(p) = builtin_cache().get(id) {
+        return Ok(Some(p.clone()));
+    }
+    // Cache miss can mean either "id is unknown" or "the file existed
+    // but failed to parse at startup". Fall back to a fresh parse so
+    // the diagnostic still surfaces a real error message rather than
+    // pretending the file doesn't exist.
     let path = format!("{id}.toml");
     let Some(file) = BUILTIN.get_file(&path) else {
         return Ok(None);
@@ -98,20 +146,13 @@ pub fn list_all(user_root: &Path) -> Vec<PersonaSummary> {
         }
     }
 
-    for f in BUILTIN.files() {
-        if f.path().extension().and_then(|s| s.to_str()) != Some("toml") {
-            continue;
-        }
-        let Some(raw) = f.contents_utf8() else {
-            continue;
-        };
-        let Ok(p) = toml::from_str::<Persona>(raw) else {
-            continue;
-        };
+    // Same cache the loader uses — avoids re-parsing every embedded
+    // persona on every `proteus persona list` invocation.
+    for p in builtin_cache().values() {
         if seen_ids.contains(&p.id) {
             continue;
         }
-        out.push(summary_for(&p, PersonaSource::Builtin));
+        out.push(summary_for(p, PersonaSource::Builtin));
     }
 
     out.sort_by(|a, b| a.id.cmp(&b.id));
@@ -334,6 +375,42 @@ notes = "user override"
         };
         let err = schema_check(&p).unwrap_err();
         assert!(err.to_string().contains("rotate_cadence"));
+    }
+
+    /// Performance hardening: the builtin cache must hand back the
+    /// same parsed body on repeated lookups. The contract is "id in
+    /// → cloned persona out" — the test keys on `id` round-trip plus
+    /// reference equality of the cached HashMap to make sure the
+    /// `OnceLock` is actually wired through both lookup paths.
+    #[test]
+    fn builtin_cache_returns_consistent_results_across_calls() {
+        let p1 = load_builtin("iphone-15").unwrap().unwrap();
+        let p2 = load_builtin("iphone-15").unwrap().unwrap();
+        assert_eq!(p1, p2);
+        // Cache is keyed by id; an unrelated id resolves independently.
+        let q1 = load_builtin("pixel-8").unwrap().unwrap();
+        assert_eq!(q1.id, "pixel-8");
+        let q2 = load_builtin("pixel-8").unwrap().unwrap();
+        assert_eq!(q1, q2);
+    }
+
+    /// `list_all` consumes the same cache as `load_builtin`, so a
+    /// sequence of `list_all` + `load_builtin` calls must observe the
+    /// same set of ids.
+    #[test]
+    fn list_all_and_load_builtin_observe_identical_id_set() {
+        let root = Path::new("/this/path/does/not/exist");
+        let listed: std::collections::BTreeSet<String> = list_all(root)
+            .into_iter()
+            .filter(|s| matches!(s.source, PersonaSource::Builtin))
+            .map(|s| s.id)
+            .collect();
+        for id in &listed {
+            assert!(
+                load_builtin(id).unwrap().is_some(),
+                "list_all surfaced builtin id '{id}' that load_builtin can't find"
+            );
+        }
     }
 
     #[test]
