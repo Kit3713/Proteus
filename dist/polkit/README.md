@@ -15,9 +15,12 @@ terminal `sudo` dialog.
   `proteus reset`, `proteus uninstall`. The "modify managed system
   configuration" path.
 
-Both actions default to `auth_admin_keep` for active sessions: prompt for an
-admin password, remember it for ~5 minutes. Inactive sessions are denied.
-That matches the convention for desktop tooling that mutates system state.
+Both actions default to `auth_admin` for active sessions: prompt for an
+admin password each time. Inactive sessions are denied. We deliberately
+avoid `auth_admin_keep` (the cached variant) on these mutating actions so
+a user who runs `proteus apply` and steps away does not leave a ~5 minute
+window where any local process can re-invoke proteus mutators without
+re-authenticating.
 
 ## Install
 
@@ -39,10 +42,11 @@ command) has two reasonable options for elevation:
    raises the same desktop password dialog the rest of the session uses,
    and runs the command with elevated privileges if the user authenticates.
 
-This file makes option 2 work cleanly: the dialog shows the
-`<message>` text from the action ("Authentication is required to rotate
-network identifiers."), and the `auth_admin_keep` default avoids
-re-prompting for back-to-back operations.
+This file makes option 2 work cleanly: the dialog shows the `<message>`
+text from the action ("Authentication is required to rotate network
+identifiers."). The `auth_admin` default re-prompts for each mutating
+operation; we trade one extra password prompt for closing the
+walk-away replay window described above.
 
 ## Honest caveat
 

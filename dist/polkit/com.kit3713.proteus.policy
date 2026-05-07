@@ -11,7 +11,7 @@
     <message>Authentication is required to rotate network identifiers.</message>
     <defaults>
       <allow_inactive>no</allow_inactive>
-      <allow_active>auth_admin_keep</allow_active>
+      <allow_active>auth_admin</allow_active>
     </defaults>
     <annotate key="org.freedesktop.policykit.exec.path">/usr/bin/proteus</annotate>
   </action>
@@ -21,7 +21,7 @@
     <message>Authentication is required to modify network configuration via Proteus.</message>
     <defaults>
       <allow_inactive>no</allow_inactive>
-      <allow_active>auth_admin_keep</allow_active>
+      <allow_active>auth_admin</allow_active>
     </defaults>
     <annotate key="org.freedesktop.policykit.exec.path">/usr/bin/proteus</annotate>
   </action>

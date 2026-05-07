@@ -16,7 +16,12 @@ optdepends=(
 )
 backup=('etc/proteus/config.toml')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/v$pkgver.tar.gz")
-sha256sums=('SKIP')   # placeholder until first release
+# The release workflow rewrites the `source` line above to point at a locally
+# staged tarball before invoking `makepkg`, so no remote download happens
+# during the official build. `SKIP` is therefore safe in that pipeline. If you
+# adapt this recipe to fetch the GitHub archive directly, replace `SKIP` with
+# the real sha256 of the tag tarball — see issue #136 for the rationale.
+sha256sums=('SKIP')
 
 build() {
   cd "Proteus-$pkgver"

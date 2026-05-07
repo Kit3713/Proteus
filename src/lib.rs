@@ -81,6 +81,7 @@ mod tests {
         assert_eq!(version::PHASE, 'B');
     }
 
+<<<<<<< HEAD
     // Packaging invariant (issue #134): every shipped systemd .service unit
     // that orders itself After=network-online.target must also Wants= it.
     // Without the matching Wants, the After is a no-op against an inactive
@@ -130,6 +131,37 @@ mod tests {
         assert!(
             body.contains("actions-rust-lang/setup-rust-toolchain@v1"),
             "ci.yml should use actions-rust-lang/setup-rust-toolchain@v1"
+        );
+    }
+
+    /// Issue #136: passing `--skipchecksums` plus an unverified remote
+    /// tarball lets an MITM swap the source. Comment lines are stripped so
+    /// explanatory prose can still mention the flag without false-positive.
+    #[test]
+    fn release_workflow_does_not_skip_makepkg_checksums() {
+        const RELEASE_WORKFLOW: &str = include_str!("../.github/workflows/release.yml");
+        for (lineno, line) in RELEASE_WORKFLOW.lines().enumerate() {
+            if line.trim_start().starts_with('#') {
+                continue;
+            }
+            assert!(
+                !line.contains("--skipchecksums"),
+                "release.yml line {} passes --skipchecksums to makepkg (issue #136): {}",
+                lineno + 1,
+                line,
+            );
+        }
+    }
+
+    /// Issue #133: `auth_admin_keep` caches elevation for ~5 minutes,
+    /// leaving a walk-away replay window. Mutating actions must use the
+    /// one-shot `auth_admin`.
+    #[test]
+    fn polkit_mutating_actions_do_not_cache_auth() {
+        const POLKIT_POLICY: &str = include_str!("../dist/polkit/com.kit3713.proteus.policy");
+        assert!(
+            !POLKIT_POLICY.contains("auth_admin_keep"),
+            "polkit policy uses auth_admin_keep on a mutating action (issue #133)"
         );
     }
 }
