@@ -154,6 +154,7 @@ fn feature_table(
     let v6_state = ipv6_state(state, config);
     let ew_state = enterprise_wifi_state(state, config);
     let stack_state = stack_state(state, config);
+    let dns_state = dns_ecs_state(config);
     vec![
         FeatureStatus {
             name: "mac-rotation",
@@ -197,8 +198,8 @@ fn feature_table(
         },
         FeatureStatus {
             name: "dns-ecs-strip",
-            state: "not implemented".into(),
-            note: "phase D".into(),
+            state: dns_state.0,
+            note: dns_state.1,
         },
         FeatureStatus {
             name: "discovery-silence",
@@ -297,6 +298,32 @@ fn ipv6_state(state: Option<&State>, config: &Config) -> (String, String) {
     (
         "idle".to_string(),
         "configured; run `proteus ipv6 apply` to harden".to_string(),
+    )
+}
+
+fn dns_ecs_state(config: &Config) -> (String, String) {
+    if !config.dns.strip_edns_client_subnet {
+        return (
+            "idle".to_string(),
+            "disabled in config (dns.strip_edns_client_subnet = false)".to_string(),
+        );
+    }
+    let paths = crate::dns::Paths::system_default();
+    if let Some(reason) = crate::dns::detect_defer_system(&paths) {
+        return (
+            "skipped".to_string(),
+            format!("deferred to {}", reason.tool_name()),
+        );
+    }
+    if crate::dns::apply::dropin_present(&paths) {
+        return (
+            "applied".to_string(),
+            "drop-in present at /etc/systemd/resolved.conf.d/10-proteus-no-ecs.conf".to_string(),
+        );
+    }
+    (
+        "idle".to_string(),
+        "configured; run `proteus dns apply` to install".to_string(),
     )
 }
 
