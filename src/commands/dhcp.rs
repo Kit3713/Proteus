@@ -77,6 +77,10 @@ pub fn apply(state_path: Option<&Path>, config_path: Option<&Path>) -> Result<u8
         eprintln!("proteus: {e}");
         return Ok(exit::PERMISSION_ERROR);
     }
+    let _lock = match super::acquire_state_lock_or_print(state_path) {
+        Ok(g) => g,
+        Err(code) => return Ok(code),
+    };
     let state_path = super::state_path(state_path);
     let config_path = super::config_path(config_path);
     let config = Config::default_or_loaded(&config_path)?;
@@ -90,7 +94,10 @@ pub fn apply(state_path: Option<&Path>, config_path: Option<&Path>) -> Result<u8
         .enable_all()
         .build()
         .context("starting tokio runtime")?;
-    let result = rt.block_on(async { do_apply(&config, &mut state).await });
+    // Pass `state_path` through so `do_apply` can save originals to disk
+    // BEFORE each per-connection NM update (sacred-originals invariant;
+    // issue #119).
+    let result = rt.block_on(async { do_apply(&config, &mut state, &state_path).await });
     let outcomes = match result {
         Ok(o) => o,
         Err(e) => {
@@ -110,6 +117,10 @@ pub fn revert(state_path: Option<&Path>) -> Result<u8> {
         eprintln!("proteus: {e}");
         return Ok(exit::PERMISSION_ERROR);
     }
+    let _lock = match super::acquire_state_lock_or_print(state_path) {
+        Ok(g) => g,
+        Err(code) => return Ok(code),
+    };
     let state_path = super::state_path(state_path);
     let mut state = State::load_or_default(&state_path)?;
 
@@ -199,7 +210,11 @@ async fn gather_status() -> Result<StatusReport> {
     })
 }
 
-async fn do_apply(config: &Config, state: &mut State) -> Result<Vec<ApplyOutcome>> {
+async fn do_apply(
+    config: &Config,
+    state: &mut State,
+    state_path: &Path,
+) -> Result<Vec<ApplyOutcome>> {
     let conn = zbus::Connection::system()
         .await
         .context("connecting to system DBus (NetworkManager required)")?;
@@ -235,9 +250,13 @@ async fn do_apply(config: &Config, state: &mut State) -> Result<Vec<ApplyOutcome
             continue;
         }
 
-        // Cache originals on first touch, so revert restores even after
-        // multiple applies.
+        // Cache originals on first touch, then persist to disk BEFORE the
+        // per-connection NM Update() so a crash between Update() and the
+        // final state.save() can't leave a connection mutated with no
+        // recorded original (sacred-originals invariant; issue #119).
         capture_originals(state, &id, &settings);
+        persist_capture_metadata(state);
+        state.save(state_path)?;
 
         let mut new_settings: ConnectionSettings = settings.clone();
         let changed_dhcp = nmdhcp::apply_dhcp_settings(
@@ -503,5 +522,61 @@ fn persist_capture_metadata(state: &mut State) {
     }
     if state.captured_at.is_none() {
         state.captured_at = Some(super::now_iso8601());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::ConnectionOriginals;
+
+    /// Issue #119 — sacred-originals invariant. The dhcp apply path saves
+    /// state.json AFTER each per-connection capture and BEFORE the
+    /// `nm::Update()` DBus call. This test pins the round-trip half: a
+    /// captured DHCP snapshot must round-trip through `State::save()` so
+    /// revert can restore it after a crash mid-apply.
+    #[test]
+    fn captured_dhcp_originals_persist_to_disk() {
+        let dir = crate::testing::TempRoot::new("dhcp");
+        let state_path = dir.path.join("state.json");
+
+        let mut state = State::default();
+        state.originals.connections.insert(
+            "Wired connection 1".into(),
+            ConnectionOriginals {
+                anonymous_identity: None,
+                dhcp_settings: Some(DhcpSettingsSnapshot {
+                    ipv4_dhcp_send_hostname: Some(true),
+                    ipv4_dhcp_hostname: Some("factory-host".into()),
+                    ipv4_dhcp_fqdn: None,
+                    ipv4_dhcp_vendor_class_identifier: Some("vendor-x".into()),
+                    ipv4_dhcp_client_id: Some("mac".into()),
+                    ipv6_dhcp_duid: None,
+                    ipv6_dhcp_iaid: None,
+                }),
+            },
+        );
+        persist_capture_metadata(&mut state);
+
+        state.save(&state_path).expect("state.save");
+
+        // Simulate a crash: drop in-memory state. On-disk record persists.
+        drop(state);
+
+        let loaded = State::load(&state_path).expect("load").expect("present");
+        let snap = loaded
+            .originals
+            .connections
+            .get("Wired connection 1")
+            .and_then(|c| c.dhcp_settings.as_ref())
+            .expect("dhcp_settings captured");
+        assert_eq!(snap.ipv4_dhcp_send_hostname, Some(true));
+        assert_eq!(snap.ipv4_dhcp_hostname.as_deref(), Some("factory-host"));
+        assert_eq!(
+            snap.ipv4_dhcp_vendor_class_identifier.as_deref(),
+            Some("vendor-x")
+        );
+        assert_eq!(snap.ipv4_dhcp_client_id.as_deref(), Some("mac"));
+        assert!(loaded.captured_at.is_some());
     }
 }

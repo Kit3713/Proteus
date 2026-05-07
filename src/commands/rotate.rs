@@ -51,6 +51,11 @@ pub fn run(
         eprintln!("proteus: {e}");
         return Ok(exit::PERMISSION_ERROR);
     }
+    // Issue #126: serialize concurrent rotates on <state-dir>/.lock.
+    let _lock = match super::acquire_state_lock_or_print(state_path) {
+        Ok(g) => g,
+        Err(code) => return Ok(code),
+    };
 
     let state_path = super::state_path(state_path);
     let config_path = super::config_path(config_path);
@@ -73,7 +78,16 @@ pub fn run(
             .await
             .context("connecting to system DBus (NetworkManager required)")?;
         let devices = nm::list_devices(&conn).await?;
-        rotate_devices(&conn, devices, iface_filter, &config, &avoid, &mut state).await
+        rotate_devices(
+            &conn,
+            devices,
+            iface_filter,
+            &config,
+            &avoid,
+            &mut state,
+            &state_path,
+        )
+        .await
     });
 
     let report = match result {
@@ -103,6 +117,7 @@ async fn rotate_devices(
     config: &Config,
     avoid: &HashSet<Mac>,
     state: &mut State,
+    state_path: &Path,
 ) -> Result<RotateReport> {
     let mut report = RotateReport {
         rotated: Vec::new(),
@@ -136,7 +151,7 @@ async fn rotate_devices(
             });
             continue;
         }
-        match rotate_one(conn, &dev, config, avoid, state).await {
+        match rotate_one(conn, &dev, config, avoid, state, state_path).await {
             Ok(entry) => report.rotated.push(entry),
             Err(e) => report.skipped.push(SkippedEntry {
                 iface: dev.interface.clone(),
@@ -153,6 +168,7 @@ async fn rotate_one(
     config: &Config,
     avoid: &HashSet<Mac>,
     state: &mut State,
+    state_path: &Path,
 ) -> Result<RotatedEntry> {
     let connection_path = dev
         .connections
@@ -160,7 +176,14 @@ async fn rotate_one(
         .cloned()
         .ok_or_else(|| anyhow!("no NM connection profile available"))?;
 
+    // Capture-then-save-then-mutate: the original factory MAC must be
+    // durable on disk BEFORE we ask NetworkManager to set a cloned MAC.
+    // Otherwise a crash between the DBus write and the final state.save()
+    // at the end of `run` would lose the factory MAC and turn `revert` into
+    // a no-op (sacred-originals invariant; issue #119).
     capture_original_mac(state, &dev.interface, dev.hw_address.as_deref());
+    persist_capture_metadata(state);
+    state.save(state_path)?;
 
     let forbidden = build_forbidden(state, dev.hw_address.as_deref());
     let opts = GenerateOptions {
@@ -264,5 +287,55 @@ fn print_report(report: &RotateReport) {
     }
     for s in &report.skipped {
         println!("skipped {}: {}", s.iface, s.reason);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Issue #119 — sacred-originals invariant. `rotate_one` now saves
+    /// state.json AFTER `capture_original_mac` and BEFORE the
+    /// `nm::set_cloned_mac` DBus write. This test pins the round-trip half:
+    /// a captured factory MAC must survive a crash between save and the
+    /// DBus mutation so revert can restore it.
+    #[test]
+    fn captured_factory_mac_persists_to_disk() {
+        let dir = crate::testing::TempRoot::new("rotate");
+        let state_path = dir.path.join("state.json");
+
+        let mut state = State::default();
+        capture_original_mac(&mut state, "wlan0", Some("aa:bb:cc:dd:ee:ff"));
+        capture_original_mac(&mut state, "eth0", Some("11:22:33:44:55:66"));
+        persist_capture_metadata(&mut state);
+
+        state.save(&state_path).expect("state.save");
+        drop(state);
+
+        let loaded = State::load(&state_path).expect("load").expect("present");
+        assert_eq!(
+            loaded.original_macs.get("wlan0").map(String::as_str),
+            Some("aa:bb:cc:dd:ee:ff"),
+            "wlan0 factory MAC must be on disk before any DBus mutation"
+        );
+        assert_eq!(
+            loaded.original_macs.get("eth0").map(String::as_str),
+            Some("11:22:33:44:55:66")
+        );
+        assert!(loaded.captured_at.is_some());
+    }
+
+    /// `capture_original_mac` is capture-once: a second call with a
+    /// different MAC must not clobber the first capture.
+    #[test]
+    fn capture_original_mac_is_idempotent() {
+        let mut state = State::default();
+        capture_original_mac(&mut state, "wlan0", Some("aa:bb:cc:dd:ee:ff"));
+        capture_original_mac(&mut state, "wlan0", Some("00:00:00:00:00:00"));
+        assert_eq!(
+            state.original_macs.get("wlan0").map(String::as_str),
+            Some("aa:bb:cc:dd:ee:ff"),
+            "second capture must not overwrite (sacred-originals)"
+        );
     }
 }

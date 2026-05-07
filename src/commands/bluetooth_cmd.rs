@@ -148,6 +148,12 @@ pub fn apply(state_path: Option<&Path>, config_path: Option<&Path>) -> Result<u8
         eprintln!("proteus: {e}");
         return Ok(exit::PERMISSION_ERROR);
     }
+    // Issue #126: lock is reentrant within a process, so the orchestrator
+    // calling us is fine; a parallel `proteus bluetooth apply` is not.
+    let _lock = match super::acquire_state_lock_or_print(state_path) {
+        Ok(g) => g,
+        Err(code) => return Ok(code),
+    };
     let state_path = super::state_path(state_path);
     let config_path = super::config_path(config_path);
     let config = Config::default_or_loaded(&config_path)?;
@@ -163,27 +169,44 @@ pub fn apply(state_path: Option<&Path>, config_path: Option<&Path>) -> Result<u8
         .enable_all()
         .build()
         .context("starting tokio runtime")?;
+
+    // Capture-then-save-then-mutate: list adapters, capture originals into
+    // `state`, persist to disk, THEN mutate via DBus. Persisting before any
+    // DBus write means a crash between capture and mutation cannot leave
+    // the system mutated with no on-disk record of what to revert to
+    // (sacred-originals invariant; issue #119).
+    let listed = match rt.block_on(async { bluetooth::connect_and_list().await }) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("proteus: bluetooth apply failed: {e:#}");
+            return Ok(exit::GENERIC_ERROR);
+        }
+    };
+    let Some((conn, adapters)) = listed else {
+        println!("{SKIP_NOTE}");
+        return Ok(exit::SUCCESS);
+    };
+
+    for a in &adapters {
+        bt_apply::capture_originals_step(&mut state, a);
+    }
+    persist_capture_metadata(&mut state);
+    state.save(&state_path)?;
+
     let result = rt.block_on(async {
-        let Some((conn, adapters)) = bluetooth::connect_and_list().await? else {
-            return Ok::<_, anyhow::Error>(None);
-        };
         let mut outcomes = Vec::new();
         for a in &adapters {
             let alias = bt_alias::select_alias(&config.bluetooth)?;
-            let outcome =
-                bt_apply::apply_one(&conn, a, &config.bluetooth, &alias, &mut state).await?;
+            let outcome = bt_apply::apply_one(&conn, a, &config.bluetooth, &alias).await?;
             outcomes.push(outcome);
         }
-        Ok(Some(outcomes))
+        Ok::<_, anyhow::Error>(outcomes)
     });
 
     match result {
-        Ok(None) => {
-            println!("{SKIP_NOTE}");
-            Ok(exit::SUCCESS)
-        }
-        Ok(Some(outcomes)) => {
-            persist_capture_metadata(&mut state);
+        Ok(outcomes) => {
+            // Re-save to record post-mutation metadata; idempotent against
+            // unchanged originals.
             state.save(&state_path)?;
             for o in &outcomes {
                 println!(
@@ -211,6 +234,10 @@ pub fn revert(state_path: Option<&Path>) -> Result<u8> {
         eprintln!("proteus: {e}");
         return Ok(exit::PERMISSION_ERROR);
     }
+    let _lock = match super::acquire_state_lock_or_print(state_path) {
+        Ok(g) => g,
+        Err(code) => return Ok(code),
+    };
     let state_path = super::state_path(state_path);
     let state = State::load_or_default(&state_path)?;
 
@@ -267,5 +294,91 @@ fn persist_capture_metadata(state: &mut State) {
     }
     if state.captured_at.is_none() {
         state.captured_at = Some(super::now_iso8601());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::bluetooth::AdapterInfo;
+
+    /// Issue #119 — sacred-originals invariant. The new
+    /// `bt_apply::capture_originals_step` populates `state.originals` from
+    /// adapter info; this test verifies that round-tripping the captured
+    /// state through disk preserves the alias so revert can later restore.
+    #[test]
+    fn captured_bluetooth_alias_persists_to_disk() {
+        let dir = crate::testing::TempRoot::new("bluetooth");
+        let state_path = dir.path.join("state.json");
+
+        let info = AdapterInfo {
+            hci: "hci0".into(),
+            path: "/org/bluez/hci0".try_into().unwrap(),
+            address: Some("AA:BB:CC:DD:EE:FF".into()),
+            address_type: Some("public".into()),
+            alias: Some("Factory Laptop".into()),
+            name: Some("Factory Laptop".into()),
+            discoverable: Some(false),
+            pairable: Some(true),
+            powered: Some(true),
+            privacy_capable: false,
+            privacy_active: false,
+        };
+
+        let mut state = State::default();
+        bt_apply::capture_originals_step(&mut state, &info);
+        persist_capture_metadata(&mut state);
+
+        state.save(&state_path).expect("state.save");
+
+        // Simulate a crash: drop in-memory state. On-disk originals remain.
+        drop(state);
+
+        let loaded = State::load(&state_path).expect("load").expect("present");
+        assert_eq!(
+            loaded
+                .originals
+                .bluetooth_aliases
+                .get("hci0")
+                .map(String::as_str),
+            Some("Factory Laptop"),
+            "captured alias must be durable on disk before any DBus mutation"
+        );
+        assert!(loaded.captured_at.is_some());
+    }
+
+    /// `capture_originals_step` is capture-once; a second call with a
+    /// different alias must NOT clobber the first capture.
+    #[test]
+    fn capture_originals_step_is_idempotent() {
+        let mut state = State::default();
+        let info_first = AdapterInfo {
+            hci: "hci0".into(),
+            path: "/org/bluez/hci0".try_into().unwrap(),
+            address: None,
+            address_type: None,
+            alias: Some("first".into()),
+            name: None,
+            discoverable: None,
+            pairable: None,
+            powered: None,
+            privacy_capable: false,
+            privacy_active: false,
+        };
+        let info_second = AdapterInfo {
+            alias: Some("second".into()),
+            ..info_first.clone()
+        };
+        bt_apply::capture_originals_step(&mut state, &info_first);
+        bt_apply::capture_originals_step(&mut state, &info_second);
+        assert_eq!(
+            state
+                .originals
+                .bluetooth_aliases
+                .get("hci0")
+                .map(String::as_str),
+            Some("first"),
+            "second capture must not overwrite the first (sacred-originals)"
+        );
     }
 }

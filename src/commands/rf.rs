@@ -99,6 +99,10 @@ pub fn apply(yes: bool, state_path: Option<&Path>, config_path: Option<&Path>) -
     if let Err(code) = super::require_yes(yes, "'rf apply' is mutating", "proteus help rf") {
         return Ok(code);
     }
+    let _lock = match super::acquire_state_lock_or_print(state_path) {
+        Ok(g) => g,
+        Err(code) => return Ok(code),
+    };
     let state_path = super::state_path(state_path);
     let config_path = super::config_path(config_path);
     let config = Config::default_or_loaded(&config_path)?;
@@ -125,7 +129,12 @@ pub fn apply(yes: bool, state_path: Option<&Path>, config_path: Option<&Path>) -
     let mut applied = 0usize;
     let mut skipped = 0usize;
     for iface in &interfaces {
+        // Capture-then-save-then-mutate: each iface's original TX power is
+        // persisted to disk BEFORE we ask the driver to change it. A crash
+        // between `set_tx_power_mbm` and the final state.save() can't lose
+        // the original (sacred-originals invariant; issue #119).
         capture_original(&mut state, iface);
+        state.save(&state_path)?;
         match rf::set_tx_power_mbm(iface, target_mbm) {
             Ok(()) => {
                 applied += 1;
@@ -157,6 +166,10 @@ pub fn revert(yes: bool, state_path: Option<&Path>) -> Result<u8> {
     if let Err(code) = super::require_yes(yes, "'rf revert' is mutating", "proteus help rf") {
         return Ok(code);
     }
+    let _lock = match super::acquire_state_lock_or_print(state_path) {
+        Ok(g) => g,
+        Err(code) => return Ok(code),
+    };
     let state_path = super::state_path(state_path);
     let mut state = State::load_or_default(&state_path)?;
 
@@ -367,5 +380,54 @@ mod tests {
         // We can't shell `iw` in tests, but the entry must exist so revert
         // sees it. tx_power_mbm being None is the correct "iw missing" path.
         assert!(state.originals.rf.contains_key("fake-iface-no-iw"));
+    }
+
+    /// Issue #119 — sacred-originals invariant. The rf apply loop saves
+    /// state.json AFTER each per-iface `capture_original` and BEFORE the
+    /// `set_tx_power_mbm` driver call. This test pins the round-trip half:
+    /// a captured TX power must survive a crash between save and the
+    /// driver write so revert can restore it.
+    #[test]
+    fn captured_tx_power_persists_to_disk() {
+        let dir = crate::testing::TempRoot::new("rf");
+        let state_path = dir.path.join("state.json");
+
+        let mut state = State::default();
+        state.originals.rf.insert(
+            "wlan0".into(),
+            RfOriginals {
+                tx_power_mbm: Some(2_000),
+            },
+        );
+        state
+            .originals
+            .rf
+            .insert("wlan1".into(), RfOriginals { tx_power_mbm: None });
+
+        state.save(&state_path).expect("state.save");
+        drop(state);
+
+        let loaded = State::load(&state_path).expect("load").expect("present");
+        assert_eq!(
+            loaded
+                .originals
+                .rf
+                .get("wlan0")
+                .and_then(|r| r.tx_power_mbm),
+            Some(2_000),
+            "wlan0 TX power must be on disk before any driver mutation"
+        );
+        assert!(
+            loaded.originals.rf.contains_key("wlan1"),
+            "iface entry must exist even when iw didn't expose TX power"
+        );
+        assert_eq!(
+            loaded
+                .originals
+                .rf
+                .get("wlan1")
+                .and_then(|r| r.tx_power_mbm),
+            None
+        );
     }
 }

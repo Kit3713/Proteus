@@ -57,6 +57,10 @@ pub fn apply(config_path: Option<&Path>) -> Result<u8> {
         eprintln!("proteus: {e}");
         return Ok(exit::PERMISSION_ERROR);
     }
+    let _lock = match super::acquire_state_lock_or_print(None) {
+        Ok(g) => g,
+        Err(code) => return Ok(code),
+    };
     let cfg = load_config(config_path);
     let paths = Paths::system_default();
 
@@ -114,6 +118,10 @@ pub fn revert() -> Result<u8> {
         eprintln!("proteus: {e}");
         return Ok(exit::PERMISSION_ERROR);
     }
+    let _lock = match super::acquire_state_lock_or_print(None) {
+        Ok(g) => g,
+        Err(code) => return Ok(code),
+    };
     let paths = Paths::system_default();
     remove_and_restart(&paths)
 }

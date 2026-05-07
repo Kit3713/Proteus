@@ -66,6 +66,11 @@ pub fn run(yes: bool, state_path: Option<&Path>, config_path: Option<&Path>) -> 
         eprintln!("proteus: {e}");
         return Ok(exit::PERMISSION_ERROR);
     }
+    // Issue #126: serialize concurrent mutating runs on <state-dir>/.lock.
+    let _lock = match super::acquire_state_lock_or_print(state_path) {
+        Ok(g) => g,
+        Err(code) => return Ok(code),
+    };
 
     let cfg_path = super::config_path(config_path);
     let config = Config::default_or_loaded(&cfg_path)?;

@@ -286,7 +286,7 @@ fn check_resolv_conf(paths: &Paths) -> Option<DeferReason> {
             });
         }
     };
-    if !points_to_resolved_stub(&target, &paths.resolved_stub()) {
+    if !points_to_resolved_stub(&target, &paths.resolved_stub(), &p) {
         return Some(DeferReason::CustomResolvConf {
             detail: format!("{} -> {}", p.display(), target.display()),
         });
@@ -294,18 +294,26 @@ fn check_resolv_conf(paths: &Paths) -> Option<DeferReason> {
     None
 }
 
-fn points_to_resolved_stub(target: &Path, expected: &Path) -> bool {
-    // Accept either the absolute expected path or any link tail that ends in
-    // `run/systemd/resolve/stub-resolv.conf`. The default Fedora layout
-    // ships `/etc/resolv.conf -> ../run/systemd/resolve/stub-resolv.conf`,
-    // so a literal-equality check would miss the relative variant.
+fn points_to_resolved_stub(target: &Path, expected: &Path, link_path: &Path) -> bool {
+    // Tail of the well-known stub path. Fedora's default layout ships
+    // `/etc/resolv.conf -> ../run/systemd/resolve/stub-resolv.conf`, so a
+    // literal absolute-path check on `target` (the read_link result) would
+    // miss the relative variant.
+    const STUB_TAIL: &str = "run/systemd/resolve/stub-resolv.conf";
+
     if target == expected {
         return true;
     }
-    let tgt_str = target.to_string_lossy();
-    // Tail match against the well-known stub path. `expected` may be re-rooted
-    // under a tempdir in tests, so compare against the canonical run-time tail.
-    tgt_str.ends_with("run/systemd/resolve/stub-resolv.conf")
+    // Canonicalize to follow the full symlink chain. Defends against an
+    // attacker who chains symlinks so the first read_link looks like the
+    // stub but actually resolves to attacker-controlled content. If
+    // canonicalization succeeds, *only* the canonical result decides.
+    if let Ok(canon_link) = std::fs::canonicalize(link_path) {
+        return canon_link == *expected || canon_link.to_string_lossy().ends_with(STUB_TAIL);
+    }
+    // Canonicalization failed (broken link, missing target). Fall back to
+    // the literal tail check on the read_link string.
+    target.to_string_lossy().ends_with(STUB_TAIL)
 }
 
 fn check_foreign_dropin(paths: &Paths) -> Option<DeferReason> {
@@ -321,8 +329,17 @@ fn check_foreign_dropin(paths: &Paths) -> Option<DeferReason> {
         if !is_conf {
             continue;
         }
+        // Proteus's atomic writer only ever produces regular files, so a
+        // symlink in this directory is by construction not ours — even if
+        // its filename matches our prefix. Treating any symlink as foreign
+        // closes the redirection where an attacker plants
+        // `10-proteus-X.conf -> /attacker/payload` and slips past the
+        // prefix-skip below.
+        let is_symlink = entry.file_type().map(|t| t.is_symlink()).unwrap_or(false);
         let name = entry.file_name();
-        if name.to_string_lossy().starts_with(PROTEUS_DROPIN_PREFIX) {
+        let is_proteus_owned =
+            !is_symlink && name.to_string_lossy().starts_with(PROTEUS_DROPIN_PREFIX);
+        if is_proteus_owned {
             continue;
         }
         return Some(DeferReason::ForeignDropIn {
@@ -511,6 +528,28 @@ mod tests {
         let paths = Paths::rooted_at(&root.path);
         let probe = MockProbe::default();
         assert!(detect_defer(&paths, &probe).is_none());
+    }
+
+    /// Issue #130: a symlink in the drop-in dir whose name matches the
+    /// proteus prefix must still be flagged as foreign — Proteus's atomic
+    /// writer never produces symlinks, so any symlink there is attacker
+    /// (or admin) content masquerading as managed.
+    #[test]
+    fn proteus_prefixed_symlink_dropin_trips_the_guard() {
+        let root = clean_root();
+        let dropin_dir = root.path.join("etc/systemd/resolved.conf.d");
+        let attacker_payload = root.path.join("attacker.conf");
+        fs::write(&attacker_payload, "[Resolve]\nDNS=10.0.0.1\n").unwrap();
+        symlink(&attacker_payload, dropin_dir.join("10-proteus-evil.conf")).unwrap();
+        let paths = Paths::rooted_at(&root.path);
+        let probe = MockProbe::default();
+        let reason = detect_defer(&paths, &probe).expect("should defer");
+        match reason {
+            DeferReason::ForeignDropIn { path } => {
+                assert!(path.ends_with("10-proteus-evil.conf"));
+            }
+            other => panic!("expected ForeignDropIn, got {other:?}"),
+        }
     }
 
     #[test]

@@ -25,20 +25,26 @@ pub enum RpaAction {
     NotSupported,
 }
 
+/// Capture the live alias for this adapter into `state.originals` (capture-
+/// once on first apply; never overwritten). Caller must persist `state` to
+/// disk via `state.save()` BEFORE invoking `apply_one`, so a crash between
+/// capture and mutation cannot lose the original (sacred-originals
+/// invariant; issue #119).
+pub fn capture_originals_step(state: &mut State, info: &AdapterInfo) {
+    capture_original_alias(state, &info.hci, info.alias.as_deref());
+}
+
 pub async fn apply_one(
     conn: &zbus::Connection,
     info: &AdapterInfo,
     cfg: &BluetoothConfig,
     new_alias: &str,
-    state: &mut State,
 ) -> Result<ApplyOutcome> {
     let proxy = Adapter1Proxy::builder(conn)
         .path(info.path.clone())?
         .build()
         .await
         .context("connecting to BlueZ Adapter1")?;
-
-    capture_original_alias(state, &info.hci, info.alias.as_deref());
 
     let mut notes = Vec::new();
     let alias_before = proxy.alias().await.ok();

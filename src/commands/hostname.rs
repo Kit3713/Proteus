@@ -83,6 +83,10 @@ pub fn rotate(state_path: Option<&Path>, config_path: Option<&Path>) -> Result<u
         eprintln!("proteus: {e}");
         return Ok(exit::PERMISSION_ERROR);
     }
+    let _lock = match super::acquire_state_lock_or_print(state_path) {
+        Ok(g) => g,
+        Err(code) => return Ok(code),
+    };
     let state_path = super::state_path(state_path);
     let config_path = super::config_path(config_path);
     let config = Config::default_or_loaded(&config_path)?;
@@ -107,12 +111,27 @@ pub fn rotate(state_path: Option<&Path>, config_path: Option<&Path>) -> Result<u
         .enable_all()
         .build()
         .context("starting tokio runtime")?;
+
+    // Capture-then-save-then-mutate: persist originals to disk BEFORE the
+    // DBus write so a crash between capture and mutation can't lose them
+    // (sacred-originals invariant; issue #119).
+    let before = match rt.block_on(async { host_apply::capture_originals_step(&mut state).await }) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("proteus: hostname rotate failed: {e:#}");
+            return Ok(exit::GENERIC_ERROR);
+        }
+    };
+    persist_capture_metadata(&mut state);
+    state.save(&state_path)?;
+
     let result =
-        rt.block_on(async { host_apply::apply_hostname(&new_name, &mode_label, &mut state).await });
+        rt.block_on(async { host_apply::mutate_hostname(&new_name, &mode_label, before).await });
 
     match result {
         Ok(outcome) => {
-            persist_capture_metadata(&mut state);
+            // Re-save to record post-mutation metadata; idempotent against
+            // unchanged originals.
             state.save(&state_path)?;
             print_apply(&outcome);
             Ok(exit::SUCCESS)
@@ -133,6 +152,10 @@ pub fn pin(name: &str, state_path: Option<&Path>, config_path: Option<&Path>) ->
         eprintln!("proteus: invalid hostname '{name}': {e}");
         return Ok(exit::CONFIG_ERROR);
     }
+    let _lock = match super::acquire_state_lock_or_print(state_path) {
+        Ok(g) => g,
+        Err(code) => return Ok(code),
+    };
 
     let state_path = super::state_path(state_path);
     let config_path = super::config_path(config_path);
@@ -154,12 +177,26 @@ pub fn pin(name: &str, state_path: Option<&Path>, config_path: Option<&Path>) ->
         .build()
         .context("starting tokio runtime")?;
     let mode_label = hostname::Mode::Pinned.as_str();
-    let result =
-        rt.block_on(async { host_apply::apply_hostname(name, mode_label, &mut state).await });
+
+    // Capture-then-save-then-mutate: persist originals to disk BEFORE the
+    // DBus write so a crash between capture and mutation can't lose them
+    // (sacred-originals invariant; issue #119).
+    let before = match rt.block_on(async { host_apply::capture_originals_step(&mut state).await }) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("proteus: hostname pin failed: {e:#}");
+            return Ok(exit::GENERIC_ERROR);
+        }
+    };
+    persist_capture_metadata(&mut state);
+    state.save(&state_path)?;
+
+    let result = rt.block_on(async { host_apply::mutate_hostname(name, mode_label, before).await });
 
     match result {
         Ok(outcome) => {
-            persist_capture_metadata(&mut state);
+            // Re-save to record post-mutation metadata; idempotent against
+            // unchanged originals.
             state.save(&state_path)?;
             print_apply(&outcome);
             Ok(exit::SUCCESS)
@@ -176,6 +213,10 @@ pub fn revert(state_path: Option<&Path>) -> Result<u8> {
         eprintln!("proteus: {e}");
         return Ok(exit::PERMISSION_ERROR);
     }
+    let _lock = match super::acquire_state_lock_or_print(state_path) {
+        Ok(g) => g,
+        Err(code) => return Ok(code),
+    };
     let state_path = super::state_path(state_path);
     let state = State::load_or_default(&state_path)?;
 
@@ -268,4 +309,40 @@ fn persist_capture_metadata(state: &mut State) {
 
 fn yesno(b: bool) -> &'static str {
     if b { "yes" } else { "no" }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Issue #119 — sacred-originals invariant. Verifies that a captured
+    /// hostname triple round-trips through `State::save()` and stays on
+    /// disk so revert can restore even after a crash between save and the
+    /// hostnamed DBus calls.
+    #[test]
+    fn captured_hostname_originals_persist_to_disk() {
+        let dir = crate::testing::TempRoot::new("hostname");
+        let state_path = dir.path.join("state.json");
+
+        let mut state = State::default();
+        state.originals.hostname = Some(HostnameOriginals {
+            kernel: Some("factory-laptop".into()),
+            pretty: Some("Factory Laptop".into()),
+            transient: Some("factory-laptop".into()),
+        });
+        persist_capture_metadata(&mut state);
+
+        state.save(&state_path).expect("state.save");
+
+        // Simulate a crash: drop in-memory state. On-disk originals must
+        // remain.
+        drop(state);
+
+        let loaded = State::load(&state_path).expect("load").expect("present");
+        let triple = loaded.originals.hostname.expect("hostname captured");
+        assert_eq!(triple.kernel.as_deref(), Some("factory-laptop"));
+        assert_eq!(triple.pretty.as_deref(), Some("Factory Laptop"));
+        assert_eq!(triple.transient.as_deref(), Some("factory-laptop"));
+        assert!(loaded.captured_at.is_some());
+    }
 }
