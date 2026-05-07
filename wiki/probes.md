@@ -10,6 +10,8 @@ The single job is reachability — not health-check, not latency, not throughput
 
 If you're tracing why a rotation happened, `proteus status` shows the last probe round's result and per-endpoint outcome. Per-round results land in journald under `proteus-check.service`.
 
+You can also run a probe round on demand with `proteus probe`. It prints the per-endpoint outcome and the classification, and exits with one of the documented codes (`0` clear, `1` down, `2` inconclusive, `3` portal-suspected). Add `--json` for machine-readable output or `--quick` to hit only the first endpoint when you just want a fast yes/no.
+
 ## Quorum
 
 Default: contact 4 endpoints in parallel, declare "down" only if 3 or more fail. The thresholds are configurable as `probes.quorum_n` (failures required) and `probes.quorum_total` (endpoints contacted).

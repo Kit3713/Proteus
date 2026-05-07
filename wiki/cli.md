@@ -153,6 +153,18 @@ Pin a MAC to a specific interface or NetworkManager connection. Pinned targets a
 Exit: `0` success · `1` generic · `64` stub · `66` not root.
 Example: `sudo proteus pin "Home Wi-Fi"`
 
+### `probe` — phase **C**
+
+```
+proteus probe [--json] [--quick]
+```
+
+Run one probe round against the configured endpoints and print the result. Reads `[probes]` from `/etc/proteus/config.toml`; defaults to four public IPs at port 443. Read-only; no root required. ICMP fallback is documented in `proteus wiki probes` but not implemented yet — a TCP-only failure stays `inconclusive` rather than escalating.
+
+Flags: `--json` machine-readable (see [`probe` JSON](#proteus-probe---json)) · `--quick` single-endpoint fast check (uses the first configured endpoint and a 1-of-1 quorum).
+Exit: `0` clear · `1` down · `2` inconclusive · `3` portal-suspected.
+Example: `proteus probe --json | jq .classification`
+
 ### `reset` — phase **stub** (lands G)
 
 ```
@@ -470,7 +482,8 @@ The full `Config` struct serialized as JSON. Schema and every default cross-refe
   "dns":       { "strip_edns_client_subnet": true },
   "discovery": { "mdns_silence": false, "llmnr_silence": false,
                  "ssdp_block": false, "wsd_block": false },
-  "probes":    { "quorum_n": 3, "quorum_total": 4, "interval": "5m", "cooldown": "60s" }
+  "probes":    { "quorum_n": 3, "quorum_total": 4, "interval": "5m", "cooldown": "60s",
+                 "endpoints": ["1.1.1.1:443", "8.8.8.8:443", "9.9.9.9:443", "142.250.190.78:443"] }
 }
 ```
 
@@ -485,6 +498,29 @@ When `/etc/proteus/config.toml` is missing, `show-config --json` emits a differe
 ```
 
 Branch on `config_present` (absent → present config; `false` → defaults in effect).
+
+### `proteus probe --json`
+
+```json
+{
+  "schema_version": 1,
+  "classification": "clear",
+  "endpoints": [
+    { "target": "1.1.1.1:443",        "method": "tcp", "ok": true,  "duration_ms": 47,   "error": null },
+    { "target": "8.8.8.8:443",        "method": "tcp", "ok": true,  "duration_ms": 53,   "error": null },
+    { "target": "9.9.9.9:443",        "method": "tcp", "ok": true,  "duration_ms": 61,   "error": null },
+    { "target": "142.250.190.78:443", "method": "tcp", "ok": false, "duration_ms": 3001, "error": "tcp: connection timed out" }
+  ],
+  "quorum_n": 3,
+  "quorum_total": 4,
+  "successes": 3
+}
+```
+
+- `classification` is `clear`, `down`, `inconclusive`, or `portal-suspected`. The exit code matches the documented mapping (0/1/2/3).
+- `endpoints[].method` is `tcp` today; `icmp` may appear once the fallback lands.
+- `endpoints[].error` is `null` on success and a short reason string on failure.
+- `schema_version` is the integer version of this shape; bump if a future change breaks parsers.
 
 ## Idempotency
 
@@ -523,7 +559,7 @@ Notes for GUI / automation wrappers. The CLI is designed to be wrappable; the JS
 |-------|--------|-------------------|
 | A | skeleton, read surface, embedded wiki, config CLI, diagnostics | `status`, `current`, `original`, `show-config`, `show-defaults`, `config`, `doctor`, `wiki`, `help` |
 | B | L2 identity (MAC, Bluetooth alias) | `rotate`, `pin`, `unpin` |
-| C | probes, timers, captive portals | (extends `apply` / `status`) |
+| C | probes, timers, captive portals | `probe`, `timer` (extends `apply` / `status`) |
 | D | DHCP, IPv6, hostname, 802.1X, DNS knob | first wiring of `apply` |
 | E | discovery silencing, stack fingerprint, RF | (extends `apply` / `status`) |
 | F | cross-cutting wiki (this page), search, packaging | (no new subcommands) |

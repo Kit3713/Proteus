@@ -163,6 +163,12 @@ pub enum Command {
         #[arg(long)]
         json: bool,
         /// Skip the slower checks (DBus probes, filesystem walks).
+    /// Run a manual probe round against the configured endpoints.
+    Probe {
+        /// Machine-readable JSON output.
+        #[arg(long)]
+        json: bool,
+        /// Single endpoint, fast.
         #[arg(long)]
         quick: bool,
     },
@@ -361,6 +367,7 @@ pub fn run() -> ExitCode {
             state_path: cli.state.as_deref(),
             config_path: cli.config.as_deref(),
         }),
+        Command::Probe { json, quick } => commands::probe::run(json, quick, cli.config.as_deref()),
     };
 
     ExitCode::from(code.unwrap_or(exit::GENERIC_ERROR))
