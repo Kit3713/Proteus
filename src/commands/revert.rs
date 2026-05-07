@@ -191,6 +191,48 @@ mod tests {
     }
 
     #[test]
+    fn nm_dispatcher_hook_pins_absolute_path_and_resets_path_env() {
+        // Issue #121: NM dispatcher runs as root, so resolving `proteus` via
+        // $PATH is a privilege-escalation surface. The shipped script must
+        // pin to an absolute path and reset $PATH to a root-owned set, so a
+        // future regression — e.g. someone "simplifying" back to PATH lookup
+        // — fails the build instead of silently rooting the host.
+        let script = include_str!("../../dist/networkmanager/dispatcher.d/01-proteus");
+
+        assert!(
+            script.contains("/usr/bin/proteus"),
+            "dispatcher must reference /usr/bin/proteus by absolute path"
+        );
+        assert!(
+            script.contains("PATH=/usr/sbin:/usr/bin:/sbin:/bin"),
+            "dispatcher must reset PATH to a minimal root-owned set"
+        );
+
+        // Forbidden tokens that imply $PATH-based resolution. We scan
+        // non-comment lines so the header rationale doesn't trip us.
+        const FORBIDDEN: &[&str] = &["command -v proteus", "which proteus", "exec proteus "];
+        for (lineno, raw) in script.lines().enumerate() {
+            let line = raw.trim_start();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            for token in FORBIDDEN {
+                assert!(
+                    !line.contains(token),
+                    "dispatcher line {} uses PATH lookup ({token:?}): {raw}",
+                    lineno + 1
+                );
+            }
+            // A leading `proteus <args>` call (not part of a path/variable).
+            assert!(
+                !(line.starts_with("proteus ") || line.starts_with("proteus\t")),
+                "dispatcher line {} starts with bare `proteus`: {raw}",
+                lineno + 1
+            );
+        }
+    }
+
+    #[test]
     fn remove_file_opt_is_idempotent_on_missing_path() {
         // The whole revert flow is required to be idempotent; the file-removal
         // helper must not error on a re-run when the target is already gone.
