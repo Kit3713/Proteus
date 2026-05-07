@@ -5,6 +5,7 @@ pub mod bluetooth_cmd;
 pub mod config_cmd;
 pub mod current;
 pub mod diff;
+pub mod dns;
 pub mod doctor;
 pub mod dry_run;
 pub mod enterprise_wifi;

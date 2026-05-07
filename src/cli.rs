@@ -160,6 +160,11 @@ pub enum Command {
         #[command(subcommand)]
         action: StackAction,
     },
+    /// DNS ECS-strip drop-in on systemd-resolved (one knob, hard guard).
+    Dns {
+        #[command(subcommand)]
+        action: DnsAction,
+    },
     /// Browse the embedded wiki (or search it with `wiki search <query>`).
     #[command(args_conflicts_with_subcommands = true)]
     Wiki {
@@ -479,6 +484,25 @@ pub enum StackAction {
     },
 }
 
+#[derive(Subcommand, Debug)]
+pub enum DnsAction {
+    /// Show what is applied or what we deferred to and why.
+    Status {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Apply the ECS-strip drop-in (no-op if hard guard trips).
+    Apply {
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Remove the ECS-strip drop-in.
+    Revert {
+        #[arg(long)]
+        yes: bool,
+    },
+}
+
 pub fn run() -> ExitCode {
     let cli = Cli::parse();
     logging::init(cli.verbose, cli.quiet, cli.no_color);
@@ -567,6 +591,11 @@ pub fn run() -> ExitCode {
                 commands::stack::apply(yes, cli.state.as_deref(), cli.config.as_deref())
             }
             StackAction::Revert { yes } => commands::stack::revert(yes, cli.state.as_deref()),
+        },
+        Command::Dns { action } => match action {
+            DnsAction::Status { json } => commands::dns::status(json, cli.config.as_deref()),
+            DnsAction::Apply { .. } => commands::dns::apply(cli.config.as_deref()),
+            DnsAction::Revert { .. } => commands::dns::revert(),
         },
         Command::Timer { action } => match action {
             TimerAction::Status { json } => commands::timer::run_status(json),
