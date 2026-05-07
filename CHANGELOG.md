@@ -30,6 +30,18 @@ landed, what is in flight, and what is on the bench. See
   PATH. Emits a risk-warning line when the knob is on. Real-hardware
   effects are driver-dependent — if reception degrades after `rf apply`,
   run `sudo proteus rf revert --yes` to restore.
+- feat(profiles): per-profile timer cadence baselines with user overrides.
+  New `[timers.rotate]` and `[timers.check]` config sections set the systemd
+  cadence for `proteus-rotate.timer` and `proteus-check.timer` respectively.
+  Each profile carries a baseline (`off`/`min` -> `never`, `low` -> `4h`/`5m`,
+  `med` -> `2h`/`5m`, `high` -> `30m`/`2m`, `agr` -> `15m`/`1m`); user
+  overrides survive profile changes via the existing override-only-if-present
+  resolution. `proteus apply` reconciles the configured intervals against the
+  on-disk drop-ins at `/etc/systemd/system/proteus-*.timer.d/` (writing,
+  updating, or removing as needed) and restarts the affected units. The
+  apply path requires a real systemd context; non-systemd environments are
+  skipped cleanly. `proteus config set timers.rotate.interval 1h --yes` is
+  the supported CLI path for setting overrides.
 - feat: `proteus session` — current network session snapshot in one read-only
   view (active SSID, gateway, link-layer MAC, hostname, captive-portal
   classification). Designed for GUI wrappers via `--json`.

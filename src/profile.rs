@@ -118,10 +118,11 @@ impl Profile {
     pub fn baseline(self) -> Config {
         // Start from the per-section Default impls (which define all the
         // non-bool defaults like `rotation_interval = "2h"`), then
-        // override the profile-affected bool toggles.
+        // override the profile-affected bool toggles and timer cadences.
         let mut cfg = Config::structural_default();
         cfg.profile = self;
         apply_bools(&mut cfg, self);
+        apply_timer_intervals(&mut cfg, self);
         cfg
     }
 }
@@ -283,6 +284,66 @@ fn bool_baseline(profile: Profile) -> BoolBaseline {
     }
 }
 
+/// Sentinel value for `[timers.<name>].interval` meaning "do not run this
+/// timer"; the apply orchestrator removes any drop-in and treats the timer
+/// as disabled. See `wiki/profiles.md` for the per-profile cadence table.
+pub const TIMER_NEVER: &str = "never";
+
+/// Project a profile's timer-cadence baseline onto `cfg`. Mirrors
+/// `apply_bools` but for the `[timers]` section. Cadences are strings to
+/// keep the parsing path identical to `proteus timer set --interval`.
+fn apply_timer_intervals(cfg: &mut Config, profile: Profile) {
+    let t = timer_baseline(profile);
+    cfg.timers.rotate.interval = t.rotate.into();
+    cfg.timers.check.interval = t.check.into();
+}
+
+/// Per-profile timer cadence baseline. Strings flow straight into the
+/// drop-in renderer via `timer::parse_interval`. `TIMER_NEVER` disables
+/// the timer.
+struct TimerBaseline {
+    rotate: &'static str,
+    check: &'static str,
+}
+
+const TIMER_OFF: TimerBaseline = TimerBaseline {
+    rotate: TIMER_NEVER,
+    check: TIMER_NEVER,
+};
+
+const TIMER_LOW: TimerBaseline = TimerBaseline {
+    rotate: "4h",
+    check: "5m",
+};
+
+const TIMER_MED: TimerBaseline = TimerBaseline {
+    rotate: "2h",
+    check: "5m",
+};
+
+const TIMER_HIGH: TimerBaseline = TimerBaseline {
+    rotate: "30m",
+    check: "2m",
+};
+
+const TIMER_AGR: TimerBaseline = TimerBaseline {
+    rotate: "15m",
+    check: "1m",
+};
+
+fn timer_baseline(profile: Profile) -> TimerBaseline {
+    match profile {
+        // Off and Min both disable scheduled rotation. Off short-circuits
+        // resolution so user overrides are dropped; Min still respects
+        // user overrides via `RawConfig::resolve`.
+        Profile::Off | Profile::Min => TIMER_OFF,
+        Profile::Low => TIMER_LOW,
+        Profile::Med => TIMER_MED,
+        Profile::High => TIMER_HIGH,
+        Profile::Agr => TIMER_AGR,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -392,16 +453,12 @@ mod tests {
 
     #[test]
     fn high_and_agr_enable_rf_tx_power_reduction() {
-        // [rf] is a hostile-network knob: high adds it on top of med, and
-        // agr keeps it on while layering breaking-knob deltas.
         assert!(Profile::High.baseline().rf.tx_power_reduce);
         assert!(Profile::Agr.baseline().rf.tx_power_reduce);
     }
 
     #[test]
     fn quiet_profiles_do_not_enable_rf_tx_power_reduction() {
-        // Reducing TX power degrades range from APs, so off/min/low/med
-        // leave it alone. Operators opt in via high/agr or per-knob.
         assert!(!Profile::Off.baseline().rf.tx_power_reduce);
         assert!(!Profile::Min.baseline().rf.tx_power_reduce);
         assert!(!Profile::Low.baseline().rf.tx_power_reduce);
@@ -410,8 +467,6 @@ mod tests {
 
     #[test]
     fn user_override_for_rf_tx_power_reduce_survives_med_to_high() {
-        // The override-beats-profile invariant: explicitly disabling rf
-        // in the file means high cannot turn it back on at the next apply.
         let toml_str = r#"
 profile = "med"
 
@@ -426,5 +481,42 @@ tx_power_reduce = false
             !cfg.rf.tx_power_reduce,
             "explicit override must beat the High baseline"
         );
+    }
+
+    #[test]
+    fn med_baseline_uses_two_hour_rotate_cadence() {
+        let cfg = Profile::Med.baseline();
+        assert_eq!(cfg.timers.rotate.interval, "2h");
+        assert_eq!(cfg.timers.check.interval, "5m");
+    }
+
+    #[test]
+    fn agr_baseline_uses_aggressive_timer_cadences() {
+        let cfg = Profile::Agr.baseline();
+        assert_eq!(cfg.timers.rotate.interval, "15m");
+        assert_eq!(cfg.timers.check.interval, "1m");
+    }
+
+    #[test]
+    fn high_baseline_bumps_rotate_to_thirty_minutes() {
+        let cfg = Profile::High.baseline();
+        assert_eq!(cfg.timers.rotate.interval, "30m");
+        assert_eq!(cfg.timers.check.interval, "2m");
+    }
+
+    #[test]
+    fn low_baseline_uses_relaxed_home_cadence() {
+        let cfg = Profile::Low.baseline();
+        assert_eq!(cfg.timers.rotate.interval, "4h");
+        assert_eq!(cfg.timers.check.interval, "5m");
+    }
+
+    #[test]
+    fn off_and_min_baselines_force_timers_to_never() {
+        for p in [Profile::Off, Profile::Min] {
+            let cfg = p.baseline();
+            assert_eq!(cfg.timers.rotate.interval, TIMER_NEVER);
+            assert_eq!(cfg.timers.check.interval, TIMER_NEVER);
+        }
     }
 }

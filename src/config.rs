@@ -40,6 +40,7 @@ pub struct Config {
     pub dhcp: DhcpConfig,
     pub captive_portal: CaptivePortalConfig,
     pub rf: RfConfig,
+    pub timers: TimersConfig,
 }
 
 impl Default for Config {
@@ -83,6 +84,7 @@ impl Config {
             dhcp: DhcpConfig::default(),
             captive_portal: CaptivePortalConfig::default(),
             rf: RfConfig::default(),
+            timers: TimersConfig::default(),
         }
     }
 
@@ -163,6 +165,14 @@ impl Config {
                 tx_power_reduce: Some(self.rf.tx_power_reduce),
                 tx_power_reduction_db: Some(self.rf.tx_power_reduction_db),
             }),
+            timers: Some(RawTimersConfig {
+                rotate: Some(RawTimerConfig {
+                    interval: Some(self.timers.rotate.interval.clone()),
+                }),
+                check: Some(RawTimerConfig {
+                    interval: Some(self.timers.check.interval.clone()),
+                }),
+            }),
         }
     }
 }
@@ -189,6 +199,7 @@ pub struct RawConfig {
     pub dhcp: Option<RawDhcpConfig>,
     pub captive_portal: Option<RawCaptivePortalConfig>,
     pub rf: Option<RawRfConfig>,
+    pub timers: Option<RawTimersConfig>,
 }
 
 impl RawConfig {
@@ -363,6 +374,18 @@ impl RawConfig {
                 cfg.rf.tx_power_reduction_db = v;
             }
         }
+        if let Some(t) = self.timers {
+            if let Some(r) = t.rotate
+                && let Some(v) = r.interval
+            {
+                cfg.timers.rotate.interval = v;
+            }
+            if let Some(c) = t.check
+                && let Some(v) = c.interval
+            {
+                cfg.timers.check.interval = v;
+            }
+        }
         cfg
     }
 
@@ -444,6 +467,18 @@ impl RawConfig {
             ]
         );
         any_some!(&self.rf, [tx_power_reduce, tx_power_reduction_db]);
+        if let Some(t) = &self.timers {
+            if let Some(r) = &t.rotate
+                && r.interval.is_some()
+            {
+                return true;
+            }
+            if let Some(c) = &t.check
+                && c.interval.is_some()
+            {
+                return true;
+            }
+        }
         false
     }
 }
@@ -552,6 +587,19 @@ pub struct RawCaptivePortalConfig {
 pub struct RawRfConfig {
     pub tx_power_reduce: Option<bool>,
     pub tx_power_reduction_db: Option<u8>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct RawTimersConfig {
+    pub rotate: Option<RawTimerConfig>,
+    pub check: Option<RawTimerConfig>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct RawTimerConfig {
+    pub interval: Option<String>,
 }
 
 // ---- Resolved (public) sub-configs --------------------------------------
@@ -673,6 +721,25 @@ pub struct RfConfig {
     pub tx_power_reduce: bool,
     /// dB below the regulatory maximum. Hardware-clamped on actual write.
     pub tx_power_reduction_db: u8,
+}
+
+/// Per-timer cadence baselines. Each entry maps to a `proteus-<name>.timer`
+/// systemd unit; `interval` accepts the same syntax as `proteus timer set
+/// <name> --interval <duration>` (compact durations like `2h`, named
+/// systemd cadences, raw calendar expressions). The sentinel value
+/// `"never"` means "do not run this timer"; the apply orchestrator
+/// removes any existing drop-in for a `"never"` interval.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TimersConfig {
+    pub rotate: TimerConfig,
+    pub check: TimerConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TimerConfig {
+    pub interval: String,
 }
 
 // ---- Defaults -----------------------------------------------------------
@@ -819,6 +886,31 @@ impl Default for RfConfig {
     }
 }
 
+// `Default` for `TimersConfig` returns the structural placeholder shape:
+// the per-timer `Default` values are inert sentinels that
+// `Profile::baseline` always overwrites with the profile-specific cadence.
+// Direct callers (tests of the renderer) see the documented "as-is" defaults.
+impl Default for TimersConfig {
+    fn default() -> Self {
+        Self {
+            rotate: TimerConfig {
+                interval: "2h".into(),
+            },
+            check: TimerConfig {
+                interval: "5m".into(),
+            },
+        }
+    }
+}
+
+impl Default for TimerConfig {
+    fn default() -> Self {
+        Self {
+            interval: "2h".into(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -936,7 +1028,6 @@ enabled = true
 
     #[test]
     fn rf_section_round_trips_through_toml() {
-        // Explicit values for [rf] survive serialize -> parse -> resolve.
         let toml_str = r#"
 profile = "med"
 
@@ -954,5 +1045,73 @@ tx_power_reduction_db = 9
         let back = parsed.resolve();
         assert!(back.rf.tx_power_reduce);
         assert_eq!(back.rf.tx_power_reduction_db, 9);
+    }
+
+    #[test]
+    fn timers_round_trip_through_toml() {
+        let toml_str = r#"
+profile = "med"
+
+[timers.rotate]
+interval = "1h"
+
+[timers.check]
+interval = "30s"
+"#;
+        let raw: RawConfig = toml::from_str(toml_str).unwrap();
+        assert!(raw.has_overrides());
+        let resolved = raw.resolve();
+        let raw_back = resolved.to_raw_explicit();
+        let s = toml::to_string(&raw_back).unwrap();
+        let parsed: RawConfig = toml::from_str(&s).unwrap();
+        let resolved_back = parsed.resolve();
+        assert_eq!(resolved_back.timers.rotate.interval, "1h");
+        assert_eq!(resolved_back.timers.check.interval, "30s");
+    }
+
+    #[test]
+    fn timer_user_override_survives_profile_change_med_to_high() {
+        let toml_str = r#"
+profile = "med"
+
+[timers.rotate]
+interval = "1h"
+"#;
+        let raw: RawConfig = toml::from_str(toml_str).unwrap();
+        let cfg = raw.clone().resolve();
+        assert_eq!(cfg.timers.rotate.interval, "1h");
+        assert_eq!(cfg.timers.check.interval, "5m");
+
+        let mut switched = raw;
+        switched.profile = Some(Profile::High);
+        let cfg = switched.resolve();
+        assert_eq!(
+            cfg.timers.rotate.interval, "1h",
+            "user override should survive profile change"
+        );
+        assert_eq!(
+            cfg.timers.check.interval, "2m",
+            "non-overridden timer should follow new profile"
+        );
+    }
+
+    #[test]
+    fn off_profile_short_circuits_timer_overrides() {
+        let toml_str = r#"
+profile = "off"
+
+[timers.rotate]
+interval = "30m"
+"#;
+        let raw: RawConfig = toml::from_str(toml_str).unwrap();
+        let cfg = raw.resolve();
+        assert_eq!(cfg.timers.rotate.interval, "never");
+        assert_eq!(cfg.timers.check.interval, "never");
+    }
+
+    #[test]
+    fn timers_section_alone_triggers_has_overrides() {
+        let raw: RawConfig = toml::from_str("[timers.rotate]\ninterval = \"1h\"\n").unwrap();
+        assert!(raw.has_overrides());
     }
 }

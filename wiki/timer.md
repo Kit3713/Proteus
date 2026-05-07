@@ -68,6 +68,30 @@ Equivalent to `journalctl -u <unit> -n <lines> --no-pager`. Default 50 lines. Re
 
 Zero-duration intervals are rejected. Empty strings are rejected. Unknown unit suffixes are rejected with the list of valid ones.
 
+## Per-profile cadence baselines
+
+Each profile in `/etc/proteus/config.toml` carries a baseline cadence for the `rotate` and `check` timers. `sudo proteus apply --yes` reconciles the configured intervals against the on-disk drop-ins, writing or removing them as needed and restarting the affected units. Switching profile from `low` to `high` automatically tightens the rotation cadence without any explicit `proteus timer set` call.
+
+The on-disk shape:
+
+```toml
+profile = "high"
+
+[timers.rotate]
+interval = "30m"
+
+[timers.check]
+interval = "2m"
+```
+
+Interval syntax matches `--interval` (`30m`, `1h`, `hourly`, `*-*-* 06:00:00`). The sentinel `never` disables the timer; `proteus apply` removes any drop-in for a `never` interval.
+
+User overrides survive profile changes. If `[timers.rotate].interval = "1h"` is set explicitly, switching profile to `med`, `high`, or `agr` keeps the user's `1h` cadence; only timers without an explicit override follow the new profile's baseline. The `off` profile is the exception: while `off` is active every timer resolves to `never` regardless of overrides, and the overrides remain on disk untouched so they take effect again the moment the profile changes back.
+
+The full per-profile table lives in `proteus wiki profiles`.
+
+`proteus config set timers.rotate.interval 1h --yes` is the supported way to set a per-timer override from the CLI; round-trips through `toml_edit` so user comments survive. `proteus timer set rotate --interval 1h` continues to work as the direct-write convenience that bypasses config and writes the drop-in directly.
+
 ## The drop-in mechanism
 
 Each `set` writes one file at `/etc/systemd/system/proteus-<name>.timer.d/override.conf`.
