@@ -101,6 +101,9 @@ pub fn chip_info_under(root: &Path, iface: &str) -> Result<ChipInfo> {
 /// line. Returns `None` if the binary is missing, the iface is unknown, or
 /// the line is absent.
 pub fn current_tx_power_mbm(iface: &str) -> Option<i32> {
+    if !is_safe_iface(iface) {
+        return None;
+    }
     let output = Command::new("iw")
         .args(["dev", iface, "info"])
         .output()
@@ -114,6 +117,9 @@ pub fn current_tx_power_mbm(iface: &str) -> Option<i32> {
 /// Set the fixed TX power for `iface`. `mbm` is the value `iw` itself wants
 /// (milli-dBm). Errors propagate so callers can warn-and-continue.
 pub fn set_tx_power_mbm(iface: &str, mbm: i32) -> Result<()> {
+    if !is_safe_iface(iface) {
+        bail!("refusing to invoke iw with iface {iface:?}: contains unsafe characters");
+    }
     let mbm_str = mbm.to_string();
     let output = Command::new("iw")
         .args(["dev", iface, "set", "txpower", "fixed", &mbm_str])
@@ -161,6 +167,18 @@ pub fn iw_present() -> bool {
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false)
+}
+
+/// Defense-in-depth (security audit L-3): refuse iface names that contain
+/// `/`, NUL, or a leading `-`. Today these come from kernel-validated
+/// sources (sysfs walks, NM Device proxy), but the caller has no way to
+/// see that and a future call site might forward attacker-shaped input.
+fn is_safe_iface(iface: &str) -> bool {
+    !iface.is_empty()
+        && !iface.starts_with('-')
+        && iface
+            .bytes()
+            .all(|b| b != b'/' && b != 0 && b.is_ascii_graphic())
 }
 
 /// Re-shape `crate::bluetooth::list_adapters` output for the inventory caller.

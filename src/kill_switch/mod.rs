@@ -144,13 +144,36 @@ pub fn enumerate_managed(sysfs_root: &Path) -> Vec<String> {
 /// Bring a single interface down via `ip link set <iface> down`. Returns
 /// `Ok(true)` on success, `Ok(false)` if `ip` is missing (caller can
 /// surface a remediation), and the captured stderr otherwise.
+///
+/// Security audit L-3: defensive iface-name validation. Today the iface
+/// comes from a sysfs walk (kernel-validated), but a future call site
+/// could pass attacker-shaped input. Reject leading `-` so `ip` cannot
+/// parse the iface as a flag.
 pub fn link_down(iface: &str) -> Result<bool, String> {
+    if !is_safe_iface(iface) {
+        return Err(format!(
+            "refusing iface name {iface:?}: leading - or unsafe chars"
+        ));
+    }
     run_ip(&["link", "set", iface, "down"])
 }
 
 /// Bring a single interface back up via `ip link set <iface> up`.
 pub fn link_up(iface: &str) -> Result<bool, String> {
+    if !is_safe_iface(iface) {
+        return Err(format!(
+            "refusing iface name {iface:?}: leading - or unsafe chars"
+        ));
+    }
     run_ip(&["link", "set", iface, "up"])
+}
+
+fn is_safe_iface(iface: &str) -> bool {
+    !iface.is_empty()
+        && !iface.starts_with('-')
+        && iface
+            .bytes()
+            .all(|b| b != b'/' && b != 0 && b.is_ascii_graphic())
 }
 
 fn run_ip(args: &[&str]) -> Result<bool, String> {
