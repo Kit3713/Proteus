@@ -66,4 +66,25 @@ mod tests {
     fn version_phase_is_b() {
         assert_eq!(version::PHASE, 'B');
     }
+
+    /// Polkit `exec.path` must point at `/usr/bin/proteus` — the path every
+    /// distro package (RPM, .deb, Arch, Nix) installs to. install.sh
+    /// rewrites this annotation when it deploys to /usr/local/bin/, so the
+    /// canonical bundled file should always reflect the package layout.
+    /// Issue #120: when the bundled policy hardcoded /usr/local/bin, polkit
+    /// silently refused pkexec from distro-installed proteus binaries.
+    #[test]
+    fn polkit_policy_targets_usr_bin_proteus() {
+        let policy = include_str!("../dist/polkit/com.kit3713.proteus.policy");
+        assert!(
+            policy.contains(
+                "<annotate key=\"org.freedesktop.policykit.exec.path\">/usr/bin/proteus</annotate>"
+            ),
+            "polkit policy must annotate exec.path=/usr/bin/proteus (issue #120); got:\n{policy}"
+        );
+        assert!(
+            !policy.contains("/usr/local/bin/proteus"),
+            "polkit policy must not hardcode /usr/local/bin/proteus (issue #120)"
+        );
+    }
 }

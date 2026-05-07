@@ -152,10 +152,28 @@ fi
 # proteus commands via pkexec (desktop password prompt) instead of sudo (TTY
 # prompt). The binary itself does not enforce per-action policy; this file is
 # a hint to pkexec and desktop tooling. Skip when polkit is not installed.
+#
+# The bundled policy points at /usr/bin/proteus (the distro-package path) so
+# that the same source file works unmodified for RPM/.deb/Arch/Nix builds.
+# install.sh deploys to $BINARY_DST (default /usr/local/bin/proteus) to avoid
+# clashing with a future distro package, so we rewrite the exec.path here.
 if [ -f "$POLKIT_SRC" ]; then
     if [ -d "$POLKIT_DIR" ]; then
         info "installing polkit policy to $POLKIT_DIR"
-        run install -m 0644 "$POLKIT_SRC" "$POLKIT_DIR/com.kit3713.proteus.policy"
+        polkit_dst="$POLKIT_DIR/com.kit3713.proteus.policy"
+        annotate='<annotate key="org.freedesktop.policykit.exec.path">'
+        if [ "$DRY_RUN" -eq 1 ]; then
+            printf 'would run: install -m 0644 %s %s (with exec.path -> %s)\n' \
+                "$POLKIT_SRC" "$polkit_dst" "$BINARY_DST"
+        else
+            tmp_policy=$(mktemp)
+            trap 'rm -f "$tmp_policy"' EXIT
+            sed "s|${annotate}/usr/bin/proteus</annotate>|${annotate}${BINARY_DST}</annotate>|g" \
+                "$POLKIT_SRC" >"$tmp_policy"
+            install -m 0644 "$tmp_policy" "$polkit_dst"
+            rm -f "$tmp_policy"
+            trap - EXIT
+        fi
     else
         warn "$POLKIT_DIR not found — skipping polkit policy (PolicyKit not installed?)"
     fi
