@@ -1,0 +1,344 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+//! nftables rule manager for Proteus.
+//!
+//! Owns a single dedicated table `inet proteus` with separate chains for the
+//! different fingerprint-reduction concerns Proteus addresses:
+//!
+//! - `icmp_drops` — always installed when nft is managed. Drops the pre-DHCP
+//!   ICMP discovery vectors (RFC 792 timestamp/info/address-mask requests) plus
+//!   a small ICMPv6 trim. See `proteus wiki stack-fingerprint`.
+//! - `discovery_drops` — installed only when `[discovery] ssdp_block` and/or
+//!   `wsd_block` are on. SSDP and WSD are off by default because they break
+//!   KDE Connect and WS-Discovery printers respectively. See
+//!   `proteus wiki discovery`.
+//!
+//! This module is pure rendering plus the `nft` invocation. Subcommand glue
+//! lives in `crate::commands::nft`. Keeping the table dedicated means revert
+//! is a single `delete table inet proteus` — no surgical removal of rules
+//! from a shared table.
+//!
+//! Rule application is idempotent: we always emit a `delete table inet
+//! proteus` (suppressing the not-found error) before adding the freshly
+//! rendered ruleset. Running apply ten times converges to the same state as
+//! running it once.
+
+use std::io::Write;
+use std::process::{Command, Stdio};
+
+use anyhow::{Context, Result, anyhow};
+
+use crate::config::DiscoveryConfig;
+use crate::version;
+
+/// Canonical table name. Single source of truth.
+pub const TABLE_NAME: &str = "proteus";
+/// Canonical address family.
+pub const TABLE_FAMILY: &str = "inet";
+
+/// Render the full ruleset for the given discovery config.
+///
+/// Always includes the `icmp_drops` chain. Adds `discovery_drops` when at
+/// least one of `ssdp_block` / `wsd_block` is on.
+pub fn render_ruleset(discovery: &DiscoveryConfig) -> String {
+    let mut out = String::new();
+    out.push_str(&render_header());
+    out.push_str(&format!(
+        "table {family} {table} {{\n",
+        family = TABLE_FAMILY,
+        table = TABLE_NAME
+    ));
+    out.push_str(&render_icmp_chain());
+    if discovery.ssdp_block || discovery.wsd_block {
+        out.push_str(&render_discovery_chain(discovery));
+    }
+    out.push_str("}\n");
+    out
+}
+
+fn render_header() -> String {
+    format!(
+        "# managed by proteus v{version}\n\
+         # do not edit; manage via `proteus nft apply` / `proteus nft revert`\n",
+        version = version::VERSION
+    )
+}
+
+fn render_icmp_chain() -> String {
+    // priority -100 is above conntrack (NF_IP_PRI_CONNTRACK = -200), below
+    // raw (NF_IP_PRI_RAW = -300). Same priority firewalld uses for its
+    // pre-routing chains; safe place to drop on input. policy accept means
+    // we don't disturb existing input rulesets — we only drop the specific
+    // ICMP types.
+    let mut out = String::new();
+    out.push_str("    chain icmp_drops {\n");
+    out.push_str("        type filter hook input priority -100; policy accept;\n");
+    out.push_str("        # ICMP info-request, timestamp-request, address-mask-request (RFC 792 fingerprint vectors)\n");
+    out.push_str(
+        "        icmp type { timestamp-request, info-request, address-mask-request } drop\n",
+    );
+    out.push_str(
+        "        # ICMPv6 small trim — node-info-query is rarely used in modern userspace\n",
+    );
+    out.push_str("        icmpv6 type { nd-redirect, mld-listener-query } drop\n");
+    out.push_str("    }\n");
+    out
+}
+
+fn render_discovery_chain(discovery: &DiscoveryConfig) -> String {
+    let mut out = String::new();
+    out.push_str("    chain discovery_drops {\n");
+    out.push_str("        type filter hook input priority -100; policy accept;\n");
+    if discovery.ssdp_block {
+        out.push_str("        # SSDP (UPnP) — breaks KDE Connect when blocked; opt-in\n");
+        out.push_str("        udp dport 1900 drop\n");
+    }
+    if discovery.wsd_block {
+        out.push_str(
+            "        # WSD (Web Services for Devices) — breaks WSD-only printers; opt-in\n",
+        );
+        out.push_str("        udp dport 3702 drop\n");
+        out.push_str("        tcp dport 5357 drop\n");
+    }
+    out.push_str("    }\n");
+    out
+}
+
+/// Render the `add table; delete table` prelude that makes ruleset application
+/// idempotent without erroring on a fresh system.
+///
+/// `add table` is a no-op in nft when the table already exists; the following
+/// `delete table` then succeeds whether the table was installed or not. This
+/// avoids needing the `destroy` keyword, which only exists on nftables 1.0.5+.
+pub fn render_delete_script() -> String {
+    format!(
+        "add table {family} {table}\ndelete table {family} {table}\n",
+        family = TABLE_FAMILY,
+        table = TABLE_NAME
+    )
+}
+
+/// Detect whether the `nft` binary is on `$PATH`.
+///
+/// We don't actually invoke it here — `nft list tables` requires root for
+/// full output, and `which`-style binary presence is the right gate for
+/// status reads. Mutating commands surface errors from `nft -f -` directly.
+pub fn nft_present() -> bool {
+    Command::new("nft")
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// Outcome of probing for our table.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TableProbe {
+    /// Table is installed; full ruleset returned in the inner string.
+    Present(String),
+    /// Table is absent. nft confirmed via "No such file or directory".
+    Absent,
+    /// nft refused to answer (typically `Operation not permitted` for non-root).
+    /// Status callers can keep going; mutating callers should already be root.
+    PermissionDenied,
+}
+
+/// Run `nft list table inet proteus` and classify the outcome.
+///
+/// Returns `Err(_)` only if `nft` itself fails for an unexpected reason.
+pub fn list_our_table() -> Result<TableProbe> {
+    let output = Command::new("nft")
+        .args(["list", "table", TABLE_FAMILY, TABLE_NAME])
+        .output()
+        .context("invoking nft list")?;
+    if output.status.success() {
+        let s = String::from_utf8_lossy(&output.stdout).into_owned();
+        if s.trim().is_empty() {
+            return Ok(TableProbe::Absent);
+        }
+        return Ok(TableProbe::Present(s));
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    // The "No such file or directory" message is what nft prints when the
+    // table is absent. Not an error condition for us.
+    if stderr.contains("No such file") || stderr.contains("does not exist") {
+        return Ok(TableProbe::Absent);
+    }
+    // Non-root callers (status invoked as a normal user) hit this. We don't
+    // want to surface a stack trace for the common case.
+    if stderr.contains("Operation not permitted") || stderr.contains("Permission denied") {
+        return Ok(TableProbe::PermissionDenied);
+    }
+    Err(anyhow!(
+        "nft list table {} {} exited {}: {}",
+        TABLE_FAMILY,
+        TABLE_NAME,
+        output.status,
+        stderr.trim()
+    ))
+}
+
+/// Apply the rendered ruleset via a single `nft -f -` invocation.
+///
+/// Idempotent in one transaction: `add table` is a no-op when the table
+/// already exists, the following `delete table` then clears prior chains,
+/// and the final ruleset re-installs them.
+pub fn apply_ruleset(discovery: &DiscoveryConfig) -> Result<()> {
+    let mut script = render_delete_script();
+    script.push_str(&render_ruleset(discovery));
+    run_nft_script(&script).context("applying proteus nft ruleset")
+}
+
+/// Revert by deleting our table. No-op if the table is absent.
+pub fn revert_ruleset() -> Result<()> {
+    if matches!(list_our_table()?, TableProbe::Absent) {
+        return Ok(());
+    }
+    let script = format!(
+        "delete table {family} {table}\n",
+        family = TABLE_FAMILY,
+        table = TABLE_NAME
+    );
+    run_nft_script(&script).context("removing proteus nft table")
+}
+
+fn run_nft_script(script: &str) -> Result<()> {
+    let mut child = Command::new("nft")
+        .args(["-f", "-"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .context("spawning nft -f -")?;
+    {
+        let stdin = child
+            .stdin
+            .as_mut()
+            .ok_or_else(|| anyhow!("could not open nft stdin"))?;
+        stdin
+            .write_all(script.as_bytes())
+            .context("writing ruleset to nft stdin")?;
+    }
+    let output = child.wait_with_output().context("waiting on nft")?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    Err(anyhow!(
+        "nft -f - exited {}: {}",
+        output.status,
+        stderr.trim()
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cfg(ssdp: bool, wsd: bool) -> DiscoveryConfig {
+        DiscoveryConfig {
+            ssdp_block: ssdp,
+            wsd_block: wsd,
+            ..DiscoveryConfig::default()
+        }
+    }
+
+    #[test]
+    fn ruleset_always_includes_table_and_icmp_chain() {
+        let body = render_ruleset(&cfg(false, false));
+        assert!(body.contains("table inet proteus"), "missing table: {body}");
+        assert!(
+            body.contains("chain icmp_drops"),
+            "missing icmp chain: {body}"
+        );
+        assert!(body.contains("type filter hook input priority -100"));
+        assert!(body.contains("timestamp-request"));
+        assert!(body.contains("info-request"));
+        assert!(body.contains("address-mask-request"));
+    }
+
+    #[test]
+    fn ruleset_includes_managed_header() {
+        let body = render_ruleset(&cfg(false, false));
+        assert!(
+            body.contains("# managed by proteus"),
+            "missing managed-file header: {body}"
+        );
+    }
+
+    #[test]
+    fn ruleset_omits_discovery_chain_by_default() {
+        let body = render_ruleset(&cfg(false, false));
+        assert!(
+            !body.contains("chain discovery_drops"),
+            "discovery chain should not appear when neither block is set: {body}"
+        );
+        assert!(!body.contains("udp dport 1900"));
+        assert!(!body.contains("udp dport 3702"));
+        assert!(!body.contains("tcp dport 5357"));
+    }
+
+    #[test]
+    fn ssdp_block_adds_only_ssdp_rules() {
+        let body = render_ruleset(&cfg(true, false));
+        assert!(
+            body.contains("chain discovery_drops"),
+            "missing chain: {body}"
+        );
+        assert!(body.contains("udp dport 1900 drop"));
+        assert!(
+            !body.contains("udp dport 3702"),
+            "WSD UDP rule must not appear when only ssdp_block is set"
+        );
+        assert!(
+            !body.contains("tcp dport 5357"),
+            "WSD TCP rule must not appear when only ssdp_block is set"
+        );
+    }
+
+    #[test]
+    fn wsd_block_adds_only_wsd_rules() {
+        let body = render_ruleset(&cfg(false, true));
+        assert!(body.contains("chain discovery_drops"));
+        assert!(body.contains("udp dport 3702 drop"));
+        assert!(body.contains("tcp dport 5357 drop"));
+        assert!(
+            !body.contains("udp dport 1900"),
+            "SSDP rule must not appear when only wsd_block is set"
+        );
+    }
+
+    #[test]
+    fn both_blocks_render_both() {
+        let body = render_ruleset(&cfg(true, true));
+        assert!(body.contains("udp dport 1900 drop"));
+        assert!(body.contains("udp dport 3702 drop"));
+        assert!(body.contains("tcp dport 5357 drop"));
+    }
+
+    #[test]
+    fn delete_script_is_idempotent_form() {
+        let s = render_delete_script();
+        assert!(
+            s.contains("add table inet proteus"),
+            "missing add prelude: {s}"
+        );
+        assert!(
+            s.contains("delete table inet proteus"),
+            "missing delete: {s}"
+        );
+        // add must come before delete so a not-found delete on a fresh system
+        // doesn't abort the script.
+        let add_pos = s.find("add table").unwrap();
+        let del_pos = s.find("delete table").unwrap();
+        assert!(add_pos < del_pos, "add must precede delete: {s}");
+    }
+
+    #[test]
+    fn icmpv6_trim_present() {
+        let body = render_ruleset(&cfg(false, false));
+        assert!(body.contains("icmpv6 type"), "missing icmpv6 trim: {body}");
+    }
+}

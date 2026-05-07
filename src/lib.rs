@@ -12,6 +12,7 @@ pub mod ipv6;
 pub mod kill_switch;
 pub mod logging;
 pub mod mac;
+pub mod nft;
 pub mod nm;
 pub mod probe;
 pub mod stack;

@@ -218,6 +218,11 @@ pub enum Command {
         #[arg(long)]
         yes: bool,
     },
+    /// Manage the Proteus nftables table (ICMP info-drops + optional discovery blocks).
+    Nft {
+        #[command(subcommand)]
+        action: NftAction,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -226,6 +231,25 @@ pub enum KillAction {
     Status {
         #[arg(long)]
         json: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum NftAction {
+    /// Show whether our nft table is installed plus the rendered ruleset.
+    Status {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Install or refresh the Proteus nft table (idempotent).
+    Apply {
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Remove the Proteus nft table.
+    Revert {
+        #[arg(long)]
+        yes: bool,
     },
 }
 
@@ -577,6 +601,11 @@ pub fn run() -> ExitCode {
             None => commands::kill::kill_run(yes, cli.state.as_deref()),
         },
         Command::Resume { yes } => commands::kill::resume_run(yes, cli.state.as_deref()),
+        Command::Nft { action } => match action {
+            NftAction::Status { json } => commands::nft::status(json, cli.config.as_deref()),
+            NftAction::Apply { yes } => commands::nft::apply(yes, cli.config.as_deref()),
+            NftAction::Revert { yes } => commands::nft::revert(yes),
+        },
     };
 
     ExitCode::from(code.unwrap_or(exit::GENERIC_ERROR))
