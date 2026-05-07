@@ -44,6 +44,18 @@ pub const TABLE_FAMILY: &str = "inet";
 /// set. Each chain has a distinct `(hook, priority)` so eval order between
 /// them is deterministic — see issue #148.
 pub fn render_ruleset(discovery: &DiscoveryConfig, nft: &NftConfig) -> String {
+    render_ruleset_with_persona(discovery, nft, None)
+}
+
+/// Roadmap Milestone 4a: persona-aware nftables variants. Emits the
+/// same baseline ruleset as [`render_ruleset`] plus an optional
+/// `persona_drops` chain shaped by the active persona — for instance,
+/// stealth covers that don't advertise mDNS get an inbound-5353 drop.
+pub fn render_ruleset_with_persona(
+    discovery: &DiscoveryConfig,
+    nft: &NftConfig,
+    persona: Option<&crate::persona::Persona>,
+) -> String {
     let mut out = String::new();
     out.push_str(&render_header());
     out.push_str(&format!(
@@ -58,8 +70,19 @@ pub fn render_ruleset(discovery: &DiscoveryConfig, nft: &NftConfig) -> String {
     if extra_chain_active(nft) {
         out.push_str(&render_extra_chain(nft));
     }
+    if let Some(p) = persona
+        && persona_chain_active(p)
+    {
+        out.push_str(&render_persona_chain(p));
+    }
     out.push_str("}\n");
     out
+}
+
+/// True iff the active persona supplies any nft-shaping rule. Today's
+/// rule set is small (mDNS posture); growing this stays additive.
+pub fn persona_chain_active(p: &crate::persona::Persona) -> bool {
+    !p.mdns_advertise
 }
 
 /// True iff at least one of the opt-in `[nft]` knobs is on. Keeps the
@@ -90,6 +113,10 @@ pub(crate) const DISCOVERY_CHAIN_PRIORITY: i32 = -99;
 /// as above: pick a distinct slot so eval order between the three chains is
 /// always deterministic.
 pub(crate) const EXTRA_CHAIN_PRIORITY: i32 = -98;
+/// Priority for the persona-aware `persona_drops` chain (Milestone 4a
+/// follow-up). Distinct from the three chains above so the eval-order
+/// invariant from issue #148 stays explicit.
+pub(crate) const PERSONA_CHAIN_PRIORITY: i32 = -97;
 
 fn render_icmp_chain() -> String {
     // policy accept means we don't disturb existing input rulesets — we
@@ -139,6 +166,27 @@ fn render_extra_chain(nft: &NftConfig) -> String {
         // (mDNS already handled separately).
         out.push_str("        # IGMP membership-query suppression — leaks listener state\n");
         out.push_str("        ip protocol igmp drop\n");
+    }
+    out.push_str("    }\n");
+    out
+}
+
+/// Render persona-aware drops. The cover identity should accept or
+/// reject discovery traffic the way the modelled device does. Today's
+/// shape: `mdns_advertise = false` personas drop UDP 5353 inbound
+/// (stealth phones / laptops that don't expose Bonjour). TVs, printers,
+/// and randomizers leave it open.
+fn render_persona_chain(p: &crate::persona::Persona) -> String {
+    let mut out = String::new();
+    out.push_str("    chain persona_drops {\n");
+    out.push_str(&format!(
+        "        type filter hook input priority {PERSONA_CHAIN_PRIORITY}; policy accept;\n"
+    ));
+    if !p.mdns_advertise {
+        out.push_str(
+            "        # persona does not advertise mDNS; drop inbound 5353\n",
+        );
+        out.push_str("        udp dport 5353 drop\n");
     }
     out.push_str("    }\n");
     out
@@ -247,8 +295,18 @@ pub fn list_our_table() -> Result<TableProbe> {
 /// already exists, the following `delete table` then clears prior chains,
 /// and the final ruleset re-installs them.
 pub fn apply_ruleset(discovery: &DiscoveryConfig, nft: &NftConfig) -> Result<()> {
+    apply_ruleset_with_persona(discovery, nft, None)
+}
+
+/// Roadmap Milestone 4a follow-up: apply the persona-aware variant.
+/// `apply_ruleset` is now a thin wrapper over this with `persona = None`.
+pub fn apply_ruleset_with_persona(
+    discovery: &DiscoveryConfig,
+    nft: &NftConfig,
+    persona: Option<&crate::persona::Persona>,
+) -> Result<()> {
     let mut script = render_delete_script();
-    script.push_str(&render_ruleset(discovery, nft));
+    script.push_str(&render_ruleset_with_persona(discovery, nft, persona));
     run_nft_script(&script).context("applying proteus nft ruleset")
 }
 
@@ -478,6 +536,79 @@ mod tests {
     fn icmpv6_trim_present() {
         let body = render_ruleset(&cfg(false, false), &NftConfig::default());
         assert!(body.contains("icmpv6 type"), "missing icmpv6 trim: {body}");
+    }
+
+    fn persona_with_mdns(advertise: bool) -> crate::persona::Persona {
+        crate::persona::Persona {
+            id: "test-persona".into(),
+            display_name: "Test".into(),
+            kind: crate::persona::PersonaKind::Stealth,
+            category: crate::persona::PersonaCategory::Phone,
+            oui_pool: vec![],
+            mac_byte_pattern: None,
+            hostname_template: "{owner}".into(),
+            dhcp_fingerprint: Default::default(),
+            tcp_stack: Default::default(),
+            ipv6_traits: Default::default(),
+            mdns_advertise: advertise,
+            bt_name_template: String::new(),
+            rf_traits: Default::default(),
+            rotate_cadence: None,
+            notes: String::new(),
+        }
+    }
+
+    /// Roadmap Milestone 4a follow-up: persona that does not advertise
+    /// mDNS contributes a `persona_drops` chain with an inbound-5353
+    /// drop. Personas that *do* advertise (TVs, printers, randomizers)
+    /// don't add the chain at all.
+    #[test]
+    fn persona_chain_appears_only_when_persona_drops_mdns() {
+        let p_quiet = persona_with_mdns(false);
+        let p_loud = persona_with_mdns(true);
+        let body_quiet =
+            render_ruleset_with_persona(&cfg(false, false), &NftConfig::default(), Some(&p_quiet));
+        assert!(body_quiet.contains("chain persona_drops"), "{body_quiet}");
+        assert!(body_quiet.contains("udp dport 5353 drop"));
+
+        let body_loud =
+            render_ruleset_with_persona(&cfg(false, false), &NftConfig::default(), Some(&p_loud));
+        assert!(!body_loud.contains("chain persona_drops"), "{body_loud}");
+
+        let body_no_persona =
+            render_ruleset_with_persona(&cfg(false, false), &NftConfig::default(), None);
+        assert!(!body_no_persona.contains("chain persona_drops"));
+    }
+
+    #[test]
+    fn persona_chain_uses_distinct_priority_from_others() {
+        assert_ne!(PERSONA_CHAIN_PRIORITY, ICMP_CHAIN_PRIORITY);
+        assert_ne!(PERSONA_CHAIN_PRIORITY, DISCOVERY_CHAIN_PRIORITY);
+        assert_ne!(PERSONA_CHAIN_PRIORITY, EXTRA_CHAIN_PRIORITY);
+        let p = persona_with_mdns(false);
+        let body =
+            render_ruleset_with_persona(&cfg(false, false), &NftConfig::default(), Some(&p));
+        let marker =
+            format!("type filter hook input priority {PERSONA_CHAIN_PRIORITY}; policy accept;");
+        assert!(body.contains(&marker), "{body}");
+    }
+
+    #[test]
+    fn persona_chain_active_helper_matches_render_decision() {
+        let p_quiet = persona_with_mdns(false);
+        let p_loud = persona_with_mdns(true);
+        assert!(persona_chain_active(&p_quiet));
+        assert!(!persona_chain_active(&p_loud));
+    }
+
+    #[test]
+    fn render_ruleset_back_compat_is_persona_none() {
+        // The legacy entry point and the persona-aware one with `None`
+        // must produce identical output. Pin the back-compat invariant.
+        let body_a = render_ruleset(&cfg(true, true), &nft_cfg(true, true, true));
+        let body_b =
+            render_ruleset_with_persona(&cfg(true, true), &nft_cfg(true, true, true), None);
+        assert_eq!(body_a, body_b);
     }
 
     #[test]

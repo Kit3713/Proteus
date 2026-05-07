@@ -185,6 +185,12 @@ pub(crate) fn print_json<T: Serialize>(value: &T) -> Result<()> {
     Ok(())
 }
 
+// Roadmap Milestone 6: the `--format json|yaml|table` global flag is
+// resolved at dispatch time (`cli::dispatch::apply_json_to_command`)
+// and folds into the existing per-subcommand `--json` flag. Future
+// per-format renderers can lift back into this module when more than
+// one consumer needs them.
+
 /// Atomic file write: temp file + sync + rename. Used by both state and
 /// config writers so we share one durability story.
 ///

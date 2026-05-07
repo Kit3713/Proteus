@@ -92,6 +92,7 @@ fn build_report(opts: &Options<'_>) -> Report {
     push_init(&mut checks);
     push_runtime(&mut checks);
     push_proteus_state(&mut checks, opts.state_path);
+    push_next_steps(&mut checks);
     let summary = aggregate(&checks);
     Report {
         schema_version: SCHEMA_VERSION,
@@ -99,6 +100,110 @@ fn build_report(opts: &Options<'_>) -> Report {
         phase: version::PHASE,
         checks,
         summary,
+    }
+}
+
+/// Roadmap Milestone 5: next-step suggestions for misconfigured
+/// systems. Walks the already-emitted checks and synthesises one or
+/// more `Status::Skip` entries that point at the operator-actionable
+/// fix (e.g. "no NM and no networkd; install one or use
+/// `--backend=raw`"). The section is empty on a clean system, so its
+/// presence is itself a signal.
+fn push_next_steps(checks: &mut Vec<Check>) {
+    let mut hints: Vec<String> = Vec::new();
+    // Backend misconfiguration: nothing available at all, or the
+    // pinned driver is missing on the host.
+    let has_backend_fail = checks.iter().any(|c| {
+        c.category == "backend" && (c.name == "available" || c.name == "selected")
+            && c.status == Status::Fail
+    });
+    let pinned_to_missing = checks.iter().any(|c| {
+        c.category == "backend"
+            && c.name == "selected"
+            && c.status == Status::Warn
+            && c.message.contains("not available on this host")
+    });
+    if has_backend_fail {
+        hints.push(
+            "no network backend available — install NetworkManager (`sudo dnf install \
+             NetworkManager`), enable systemd-networkd (`sudo systemctl enable --now \
+             systemd-networkd`), or set `[backend] driver = \"raw\"` to use plain ip+iw"
+                .into(),
+        );
+    } else if pinned_to_missing {
+        hints.push(
+            "[backend] driver pins a backend not available on this host — change to \
+             \"auto\" or install the missing backend"
+                .into(),
+        );
+    }
+    // DNS / NTP detect-and-defer warnings: surface the remediation that
+    // the per-check entries pointed at, but rolled up into one line.
+    let dns_warn = checks
+        .iter()
+        .any(|c| c.category == "detect_and_defer" && c.name == "dns" && c.status == Status::Warn);
+    if dns_warn {
+        hints.push(
+            "DNS-privacy tool detected — Proteus's ECS-strip drop-in will defer; \
+             see `proteus wiki dns` for the precedence rules"
+                .into(),
+        );
+    }
+    let ntp_warn = checks
+        .iter()
+        .any(|c| c.category == "detect_and_defer" && c.name == "ntp" && c.status == Status::Warn);
+    if ntp_warn {
+        hints.push(
+            "third-party NTP client detected (chrony/ntpd) — Proteus's timesyncd \
+             drop-in will defer; configure NTP via the existing client"
+                .into(),
+        );
+    }
+    // Iface-manager warning: NM absent but an alternate manager exists.
+    let iface_warn = checks.iter().any(|c| {
+        c.category == "detect_and_defer" && c.name == "iface_manager" && c.status == Status::Warn
+    });
+    if iface_warn {
+        hints.push(
+            "NetworkManager is absent but iwd / wpa_supplicant is present — set \
+             `[backend] driver = \"raw\"` (Milestone 1) to drive iwd directly"
+                .into(),
+        );
+    }
+    // Quirky-setup warning: roll up the Pi-hole / dnscrypt-proxy /
+    // openresolv / NM-l2tp warning into the next-steps block as well.
+    let quirky = checks.iter().any(|c| {
+        c.category == "system" && c.name == "quirky-setup" && c.status == Status::Warn
+    });
+    if quirky {
+        hints.push(
+            "host has tools that overlap Proteus's surface — read \
+             `proteus wiki troubleshooting` for the per-tool interaction matrix"
+                .into(),
+        );
+    }
+    // Config-file parse failure: the only way the whole CLI is unusable.
+    let cfg_fail = checks
+        .iter()
+        .any(|c| c.category == "files" && c.name == "config_file" && c.status == Status::Fail);
+    if cfg_fail {
+        hints.push(
+            "config file parse error — run `proteus config validate` to surface \
+             the line number, or `proteus reset` to fall back to defaults"
+                .into(),
+        );
+    }
+    if hints.is_empty() {
+        return;
+    }
+    for h in hints {
+        checks.push(Check {
+            category: "next_steps",
+            name: "hint",
+            status: Status::Skip,
+            message: h,
+            remediation: None,
+        });
     }
 }
 
@@ -1119,6 +1224,7 @@ fn category_label(cat: &str) -> &'static str {
         "init" => "Init",
         "runtime" => "Runtime",
         "proteus_state" => "Proteus state",
+        "next_steps" => "Next steps",
         _ => "Other",
     }
 }
@@ -1139,6 +1245,7 @@ fn render_human(report: &Report, style: RenderStyle, verbose: bool) -> String {
         "init",
         "runtime",
         "proteus_state",
+        "next_steps",
     ];
     for cat in order {
         let group: Vec<&Check> = report.checks.iter().filter(|c| c.category == cat).collect();
@@ -1292,6 +1399,90 @@ mod tests {
     #[test]
     fn render_style_respects_no_color_flag() {
         assert_eq!(render_style(true), RenderStyle::Bracket);
+    }
+
+    /// Roadmap Milestone 5: when no backend is available the
+    /// next-steps section emits a single actionable hint about
+    /// installing NM / enabling networkd / pinning to raw.
+    #[test]
+    fn next_steps_emits_backend_install_hint_on_total_unavailability() {
+        let mut checks = vec![Check {
+            category: "backend",
+            name: "available",
+            status: Status::Fail,
+            message: "no backend available".into(),
+            remediation: None,
+        }];
+        push_next_steps(&mut checks);
+        let next: Vec<&Check> = checks.iter().filter(|c| c.category == "next_steps").collect();
+        assert!(!next.is_empty());
+        let msg = &next[0].message;
+        assert!(msg.contains("NetworkManager"));
+        assert!(msg.contains("systemd-networkd"));
+        assert!(msg.contains("raw"));
+    }
+
+    #[test]
+    fn next_steps_hints_when_pinned_backend_is_missing() {
+        let mut checks = vec![Check {
+            category: "backend",
+            name: "selected",
+            status: Status::Warn,
+            message: "pinned to networkd, but networkd is not available on this host".into(),
+            remediation: None,
+        }];
+        push_next_steps(&mut checks);
+        let next: Vec<&Check> = checks.iter().filter(|c| c.category == "next_steps").collect();
+        assert!(!next.is_empty());
+        assert!(next[0].message.contains("driver pins"));
+    }
+
+    #[test]
+    fn next_steps_hints_when_iface_manager_alternate_present() {
+        let mut checks = vec![Check {
+            category: "detect_and_defer",
+            name: "iface_manager",
+            status: Status::Warn,
+            message: "no NetworkManager but found: iwd".into(),
+            remediation: None,
+        }];
+        push_next_steps(&mut checks);
+        let next: Vec<&Check> = checks.iter().filter(|c| c.category == "next_steps").collect();
+        assert!(!next.is_empty());
+        assert!(next[0].message.contains("iwd"));
+        assert!(next[0].message.contains("raw"));
+    }
+
+    #[test]
+    fn next_steps_empty_on_clean_input() {
+        // No warnings / fails in the input — the next-steps section
+        // emits nothing so a clean host renders without an unnecessary
+        // header.
+        let mut checks = vec![Check {
+            category: "system",
+            name: "linux_kernel",
+            status: Status::Ok,
+            message: "Linux 6.18.0".into(),
+            remediation: None,
+        }];
+        push_next_steps(&mut checks);
+        let next: Vec<&Check> = checks.iter().filter(|c| c.category == "next_steps").collect();
+        assert!(next.is_empty());
+    }
+
+    #[test]
+    fn next_steps_hints_on_config_file_parse_failure() {
+        let mut checks = vec![Check {
+            category: "files",
+            name: "config_file",
+            status: Status::Fail,
+            message: "/etc/proteus/config.toml parse error".into(),
+            remediation: None,
+        }];
+        push_next_steps(&mut checks);
+        let next: Vec<&Check> = checks.iter().filter(|c| c.category == "next_steps").collect();
+        assert!(!next.is_empty());
+        assert!(next[0].message.contains("config validate"));
     }
 
     // --- Init section (Roadmap Milestone 5) ----------------------------------

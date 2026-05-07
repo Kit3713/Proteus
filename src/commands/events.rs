@@ -21,7 +21,7 @@
 //! disable one or the other; the dispatcher is non-mutating from
 //! Proteus's side, the daemon is opt-in via `[events] enabled`.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -39,15 +39,30 @@ use crate::exit;
 /// handler captures the state + config paths at construction so the
 /// async rotate path runs against the same files the rest of the
 /// CLI does.
+///
+/// Roadmap Milestone 3: when a `ConnectionUp` trigger carries an SSID,
+/// the handler resolves the per-SSID policy via
+/// [`crate::per_ssid::resolve_for_ssid`] so the persona / profile /
+/// pin_mac override for that specific network is visible at trigger
+/// time. The resolution is reload-on-trigger (cheap, the config is a
+/// small TOML) so an operator can edit `config.toml` without restarting
+/// the daemon.
 struct RotateOnTriggerHandler {
     counter: std::sync::atomic::AtomicU64,
+    config_path: Option<PathBuf>,
 }
 
 impl RotateOnTriggerHandler {
-    fn new() -> Self {
+    fn new(config_path: Option<PathBuf>) -> Self {
         Self {
             counter: std::sync::atomic::AtomicU64::new(0),
+            config_path,
         }
+    }
+
+    fn load_config(&self) -> Option<Config> {
+        let cfg_path = super::config_path(self.config_path.as_deref());
+        Config::default_or_loaded(&cfg_path).ok()
     }
 }
 
@@ -73,6 +88,28 @@ impl EventHandler for RotateOnTriggerHandler {
         // with `CAP_NET_ADMIN` flips the gate.
         self.counter
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+
+        // Roadmap Milestone 3 connection-up wiring: when the trigger
+        // carries an SSID, resolve the per-SSID policy and log it so
+        // an operator can see the right network rules took effect.
+        // Other trigger kinds fall through to a plain trigger log.
+        if let RotationTrigger::ConnectionUp { iface, ssid: Some(ssid) } = trigger
+            && let Some(cfg) = self.load_config()
+        {
+            let policy = crate::per_ssid::resolve_for_ssid(&cfg, ssid);
+            tracing::info!(
+                kind = trigger.kind(),
+                iface = iface.as_str(),
+                ssid = ssid.as_str(),
+                persona = policy.persona.as_deref().unwrap_or("-"),
+                profile = ?policy.profile,
+                pinned = policy.pin_mac.is_some(),
+                source = ?policy.source,
+                "events: connection-up resolved per-SSID policy"
+            );
+            return Ok(());
+        }
+
         tracing::info!(
             kind = trigger.kind(),
             "events: trigger observed; rotating via backend"
@@ -105,7 +142,9 @@ pub fn run(
     }
 
     let registry = EventRegistry::shared();
-    registry.register(Box::new(RotateOnTriggerHandler::new()));
+    registry.register(Box::new(RotateOnTriggerHandler::new(
+        config_path.map(PathBuf::from),
+    )));
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -300,7 +339,7 @@ mod tests {
     /// added with a regression test alongside.
     #[test]
     fn default_handler_counts_every_trigger_kind() {
-        let h = RotateOnTriggerHandler::new();
+        let h = RotateOnTriggerHandler::new(None);
         h.handle(&RotationTrigger::ConnectionUp {
             iface: "wlan0".into(),
             ssid: None,
@@ -324,5 +363,60 @@ mod tests {
             4,
             "handler must observe every kind"
         );
+    }
+
+    /// Roadmap Milestone 3: when a `ConnectionUp` trigger carries an
+    /// SSID and the loaded config has a `[per_ssid."<ssid>"]` block,
+    /// the handler resolves the policy at trigger time. The handler
+    /// itself is observable via its counter (the resolved policy goes
+    /// to tracing); the test pins the contract that the load+resolve
+    /// path runs without panic against a real on-disk config.
+    #[test]
+    fn handler_resolves_per_ssid_policy_on_connection_up() {
+        let dir = std::env::temp_dir().join(format!(
+            "proteus-events-per-ssid-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+        let cfg_path = dir.join("config.toml");
+        std::fs::write(
+            &cfg_path,
+            "profile = \"med\"\n\
+             [per_ssid.\"home\"]\n\
+             aggressiveness_profile = \"agr\"\n\
+             pin_mac = \"aa:bb:cc:dd:ee:ff\"\n",
+        )
+        .unwrap();
+
+        let h = RotateOnTriggerHandler::new(Some(cfg_path.clone()));
+        h.handle(&RotationTrigger::ConnectionUp {
+            iface: "wlan0".into(),
+            ssid: Some("home".into()),
+        })
+        .unwrap();
+        assert_eq!(h.counter.load(Ordering::SeqCst), 1);
+
+        // Sanity: the resolver returns the per-SSID policy when called
+        // directly with the same config the handler loaded.
+        let cfg = crate::config::Config::default_or_loaded(&cfg_path).unwrap();
+        let policy = crate::per_ssid::resolve_for_ssid(&cfg, "home");
+        assert_eq!(policy.profile, crate::profile::Profile::Agr);
+        assert_eq!(policy.pin_mac.as_deref(), Some("aa:bb:cc:dd:ee:ff"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `ConnectionUp` without an SSID falls through to the plain
+    /// trigger log path (no per-SSID resolution). Pin so a future
+    /// refactor can't accidentally panic on `ssid = None`.
+    #[test]
+    fn handler_handles_connection_up_without_ssid() {
+        let h = RotateOnTriggerHandler::new(None);
+        h.handle(&RotationTrigger::ConnectionUp {
+            iface: "eth0".into(),
+            ssid: None,
+        })
+        .unwrap();
+        assert_eq!(h.counter.load(Ordering::SeqCst), 1);
     }
 }

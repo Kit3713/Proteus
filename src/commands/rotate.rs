@@ -524,6 +524,7 @@ fn print_report(report: &RotateReport, explain: bool) {
 pub fn run_if_needed(
     iface: Option<&str>,
     cooldown_secs: u64,
+    ssid: Option<&str>,
     yes: bool,
     state_path: Option<&Path>,
     config_path: Option<&Path>,
@@ -542,7 +543,28 @@ pub fn run_if_needed(
     let _state_unused = state_path; // accepted for symmetry with `rotate::run`.
     let config_path = super::config_path(config_path);
     let config = Config::default_or_loaded(&config_path).unwrap_or_default();
-    let cooldown = std::time::Duration::from_secs(cooldown_secs);
+
+    // Roadmap Milestone 3: when the caller (typically the NM dispatcher)
+    // tells us which SSID just came up, fold the per-SSID policy into
+    // the cooldown decision before we hit the backend. A pinned MAC
+    // means "never rotate on this SSID" — surface a typed skip line so
+    // the dispatcher's logger captures it. A larger `rotate_interval`
+    // raises the cooldown floor so per-SSID slow-rotate networks don't
+    // get whip-sawed by the global cadence.
+    let policy = ssid.map(|s| crate::per_ssid::resolve_for_ssid(&config, s));
+    if let Some(p) = &policy
+        && p.pin_mac.is_some()
+    {
+        let iface_label = iface.unwrap_or("(no iface)");
+        println!("skipped {iface_label}: pinned by per-SSID policy");
+        return Ok(exit::SUCCESS);
+    }
+    let effective_cooldown_secs = policy
+        .as_ref()
+        .and_then(|p| p.rotate_interval.map(|d| d.as_secs()))
+        .map(|p_secs| p_secs.max(cooldown_secs))
+        .unwrap_or(cooldown_secs);
+    let cooldown = std::time::Duration::from_secs(effective_cooldown_secs);
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()

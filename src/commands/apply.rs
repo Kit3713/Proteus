@@ -290,7 +290,61 @@ fn run_dhcp(
     if !config.dhcp.enabled {
         return skipped("dhcp", "disabled in config (dhcp.enabled = false)");
     }
-    classify("dhcp", super::dhcp::apply(state_path, config_path))
+    let primary = classify("dhcp", super::dhcp::apply(state_path, config_path));
+    // Roadmap Milestone 4c: when `[dhcp] renew_on_apply = true`, follow
+    // the apply with a lease release+renew so the upstream DHCP server
+    // hands out a fresh lease against the new client identity. Skipped
+    // when the apply itself failed — chaining a renew on top of a
+    // broken DHCP write only produces noise.
+    if !config.dhcp.renew_on_apply || primary.status == Status::Failed {
+        return primary;
+    }
+    let renew = run_dhcp_renew_after_apply(config, state_path);
+    merge_dhcp_with_renew(primary, renew)
+}
+
+fn run_dhcp_renew_after_apply(
+    config: &Config,
+    state_path: Option<&Path>,
+) -> Result<u8, anyhow::Error> {
+    let _ = state_path; // renew is read-only against state today
+    let driver = config.backend.driver.clone();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("starting tokio runtime for dhcp renew")?;
+    let tally = rt.block_on(async {
+        let backend = crate::backend::select::select(&driver).await?;
+        super::dhcp::renew_after_apply(backend.as_ref()).await
+    })?;
+    if tally.total() == 0 {
+        return Ok(exit::SUCCESS);
+    }
+    println!(
+        "dhcp renew (renew_on_apply): reapplied={} cycled={} skipped={} failed={}",
+        tally.reapplied, tally.cycled, tally.skipped_no_active, tally.failed,
+    );
+    if tally.failed > 0 {
+        Ok(exit::GENERIC_ERROR)
+    } else {
+        Ok(exit::SUCCESS)
+    }
+}
+
+fn merge_dhcp_with_renew(
+    primary: ComponentReport,
+    renew: Result<u8, anyhow::Error>,
+) -> ComponentReport {
+    let (renewed_ok, suffix) = match &renew {
+        Ok(c) if *c == exit::SUCCESS => (true, " + renewed".to_string()),
+        Ok(c) => (false, format!(" + renew failed (exit {c})")),
+        Err(e) => (false, format!(" + renew error: {e:#}")),
+    };
+    ComponentReport {
+        name: primary.name,
+        status: if renewed_ok { primary.status } else { Status::Failed },
+        note: format!("{}{suffix}", primary.note),
+    }
 }
 
 // `dns.strip_edns_client_subnet` is the only DNS knob today, so it doubles
@@ -655,6 +709,49 @@ mod tests {
         let rf = rf.expect("rf.tx_power_reduce warning expected");
         assert_eq!(rf.wiki, "rf-fingerprinting");
         assert!(rf.breakage.contains("TX power"));
+    }
+
+    /// Roadmap Milestone 4c: when the DHCP apply succeeds and
+    /// `renew_on_apply` is true, the orchestrator merges the renew
+    /// outcome into the same component note. A successful renew
+    /// preserves the Applied status and tags the note. A failed renew
+    /// flips the merged status to Failed so the apply's exit code
+    /// reflects the breakage.
+    #[test]
+    fn merge_dhcp_with_renew_preserves_applied_on_success() {
+        let primary = ComponentReport {
+            name: "dhcp",
+            status: Status::Applied,
+            note: "ok".into(),
+        };
+        let merged = merge_dhcp_with_renew(primary, Ok(exit::SUCCESS));
+        assert_eq!(merged.status, Status::Applied);
+        assert!(merged.note.contains("renewed"));
+    }
+
+    #[test]
+    fn merge_dhcp_with_renew_marks_failed_when_renew_errors() {
+        let primary = ComponentReport {
+            name: "dhcp",
+            status: Status::Applied,
+            note: "ok".into(),
+        };
+        let merged = merge_dhcp_with_renew(primary, Err(anyhow::anyhow!("boom")));
+        assert_eq!(merged.status, Status::Failed);
+        assert!(merged.note.contains("renew error"));
+        assert!(merged.note.contains("boom"));
+    }
+
+    #[test]
+    fn merge_dhcp_with_renew_marks_failed_on_nonzero_exit() {
+        let primary = ComponentReport {
+            name: "dhcp",
+            status: Status::Applied,
+            note: "ok".into(),
+        };
+        let merged = merge_dhcp_with_renew(primary, Ok(exit::GENERIC_ERROR));
+        assert_eq!(merged.status, Status::Failed);
+        assert!(merged.note.contains("renew failed"));
     }
 
     #[test]

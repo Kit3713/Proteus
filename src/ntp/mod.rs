@@ -27,6 +27,58 @@ use crate::version;
 pub const PROTEUS_NTP_DROPIN_NAME: &str = "10-proteus.conf";
 pub const TIMESYNCD_DROPIN_DIR: &str = "/etc/systemd/timesyncd.conf.d";
 
+/// Roadmap Milestone 4a: persona-aware NTP server selection.
+///
+/// Real devices ship with vendor-specific NTP pools — iPhones hit
+/// `time.apple.com`, Pixels hit `time.google.com`, Surface devices hit
+/// `time.windows.com`. A passive observer can fingerprint a device by
+/// the NTP queries on the wire alone, so the stealth covers shape this
+/// surface alongside everything else. Returns the (primary, fallback)
+/// pair to write into the timesyncd drop-in, or `None` when the
+/// persona has no opinion (e.g. randomizer mirrors, generic-IoT).
+///
+/// Mapping is keyed first on persona id (precise covers — `iphone-15`,
+/// `macbook-air-m3`) and falls back on category (any phone defaults to
+/// a phone-shaped pool). Order matters: a precise id beats the
+/// category default.
+pub fn servers_for_persona(p: &crate::persona::Persona) -> Option<(Vec<String>, Vec<String>)> {
+    use crate::persona::PersonaCategory;
+    // Randomizer personas inherit the global pool — overriding to a
+    // single-vendor pool would defeat the anonymity goal.
+    if p.kind == crate::persona::PersonaKind::Randomizer {
+        return None;
+    }
+    // Precise-id covers. Match by lowercase id stem; the catalogue
+    // uses kebab-case ids so this is a stable lookup.
+    let id_lc = p.id.to_ascii_lowercase();
+    if id_lc.starts_with("iphone-")
+        || id_lc.starts_with("ipad-")
+        || id_lc.starts_with("macbook-")
+    {
+        return Some((
+            vec!["time.apple.com".into()],
+            vec!["time1.apple.com".into(), "time2.apple.com".into()],
+        ));
+    }
+    if id_lc.starts_with("pixel-") || id_lc.starts_with("galaxy-") || id_lc.starts_with("chromecast") {
+        return Some((
+            vec!["time.google.com".into()],
+            vec!["time1.google.com".into(), "time2.google.com".into()],
+        ));
+    }
+    if id_lc.starts_with("surface-") {
+        return Some((
+            vec!["time.windows.com".into()],
+            vec!["time.nist.gov".into()],
+        ));
+    }
+    // Category-default fallback. Phones / tablets / TVs / consoles
+    // historically ping vendor-NTP; without a vendor lock we keep the
+    // global pool and skip overriding.
+    let _ = PersonaCategory::Generic;
+    None
+}
+
 /// Canonical install paths for the third-party NTP daemons we yield to.
 const CHRONYD_BINS: &[&str] = &[
     "/usr/sbin/chronyd",
@@ -447,6 +499,62 @@ mod tests {
         assert!(!dir.join(PROTEUS_NTP_DROPIN_NAME).exists());
         // Third-party file is untouched.
         assert!(dir.join("99-third-party.conf").exists());
+    }
+
+    /// Roadmap Milestone 4a: persona-aware NTP server selection.
+    /// Apple persona ids map to time.apple.com, Pixel/Galaxy/Chromecast
+    /// to time.google.com, Surface to time.windows.com.
+    #[test]
+    fn servers_for_persona_maps_apple_ids_to_apple_pool() {
+        let p = sample_stealth("iphone-15", crate::persona::PersonaCategory::Phone);
+        let (primary, fallback) = servers_for_persona(&p).expect("apple mapping");
+        assert!(primary.iter().any(|s| s == "time.apple.com"));
+        assert!(fallback.iter().any(|s| s.contains("apple.com")));
+    }
+
+    #[test]
+    fn servers_for_persona_maps_google_ids_to_google_pool() {
+        for id in ["pixel-8", "galaxy-s24", "chromecast"] {
+            let p = sample_stealth(id, crate::persona::PersonaCategory::Phone);
+            let (primary, _) = servers_for_persona(&p).expect("google mapping");
+            assert!(primary.iter().any(|s| s == "time.google.com"));
+        }
+    }
+
+    #[test]
+    fn servers_for_persona_returns_none_for_randomizer_personas() {
+        let mut p = sample_stealth("iphone-15", crate::persona::PersonaCategory::Phone);
+        p.kind = crate::persona::PersonaKind::Randomizer;
+        assert!(servers_for_persona(&p).is_none());
+    }
+
+    #[test]
+    fn servers_for_persona_returns_none_for_unmapped_personas() {
+        let p = sample_stealth("router-tplink", crate::persona::PersonaCategory::Router);
+        assert!(servers_for_persona(&p).is_none());
+    }
+
+    fn sample_stealth(
+        id: &str,
+        category: crate::persona::PersonaCategory,
+    ) -> crate::persona::Persona {
+        crate::persona::Persona {
+            id: id.into(),
+            display_name: id.into(),
+            kind: crate::persona::PersonaKind::Stealth,
+            category,
+            oui_pool: vec![],
+            mac_byte_pattern: None,
+            hostname_template: "{owner}".into(),
+            dhcp_fingerprint: Default::default(),
+            tcp_stack: Default::default(),
+            ipv6_traits: Default::default(),
+            mdns_advertise: false,
+            bt_name_template: String::new(),
+            rf_traits: Default::default(),
+            rotate_cadence: None,
+            notes: String::new(),
+        }
     }
 
     #[test]

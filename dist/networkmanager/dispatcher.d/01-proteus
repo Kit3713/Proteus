@@ -73,7 +73,19 @@ case "$action" in
         # gone — fragile against JSON-shape changes and any nested key
         # named `last_rotated` would have shadowed the intended one.
         cooldown_secs=60
-        out="$("$proteus_bin" rotate-if-needed --iface "$iface" --cooldown "$cooldown_secs" --yes 2>/dev/null)"
+        # Roadmap Milestone 3: NM exports the SSID via CONNECTION_ID
+        # (the connection profile's id, which on Wi-Fi defaults to
+        # the SSID). Pass it through so rotate-if-needed can resolve
+        # `[per_ssid."<ssid>"]` overrides (pin_mac, rotate_interval).
+        ssid_arg=""
+        if [ -n "${CONNECTION_ID:-}" ]; then
+            ssid_arg="--ssid"
+        fi
+        if [ -n "$ssid_arg" ]; then
+            out="$("$proteus_bin" rotate-if-needed --iface "$iface" --cooldown "$cooldown_secs" "$ssid_arg" "$CONNECTION_ID" --yes 2>/dev/null)"
+        else
+            out="$("$proteus_bin" rotate-if-needed --iface "$iface" --cooldown "$cooldown_secs" --yes 2>/dev/null)"
+        fi
         rc=$?
         if [ "$rc" -eq 0 ]; then
             log "iface=$iface up: $out"

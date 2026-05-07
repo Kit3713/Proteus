@@ -60,8 +60,34 @@ pub struct Cli {
     #[arg(long = "no-color", global = true)]
     pub no_color: bool,
 
+    /// Output format for read commands. Roadmap Milestone 6.
+    ///
+    /// `table` (default) renders human-readable text. `json` matches the
+    /// existing `--json` flag on each subcommand. `yaml` is reserved
+    /// for a follow-up — emitting it requires a yaml dependency we
+    /// haven't pulled in yet, so it currently returns a clear error.
+    #[arg(long = "format", global = true, value_name = "FORMAT", value_enum)]
+    pub format: Option<OutputFormat>,
+
     #[command(subcommand)]
     pub command: Command,
+}
+
+/// Roadmap Milestone 6: machine-readable output formats for every
+/// reader. Today's readers all expose a `--json` flag. The global
+/// `--format` knob unifies that surface so wrappers don't need to know
+/// which subcommand spelled the flag which way, and adds a default
+/// `table` form that maps to the existing human renderers.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, clap::ValueEnum)]
+#[value(rename_all = "lowercase")]
+pub enum OutputFormat {
+    /// Human-readable table-style output (default; matches the
+    /// existing per-subcommand renderer).
+    Table,
+    /// JSON, matches `--json` on each reader.
+    Json,
+    /// YAML — reserved for a follow-up; surfaces a clear error today.
+    Yaml,
 }
 
 /// Entry point for the `proteus` binary.
