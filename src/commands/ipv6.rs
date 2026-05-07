@@ -332,6 +332,8 @@ async fn read_nm_iface(
     if !matches!(dev.kind, DeviceKind::Wifi | DeviceKind::Ethernet) {
         return None;
     }
+    // Show the first profile in status for compactness; the apply path
+    // walks all of them (issue #122).
     let path = dev.connections.first().cloned()?;
     let connection = nm::apply::read_connection_id(conn, &path)
         .await
@@ -357,17 +359,50 @@ async fn apply_nm_one(
     if !matches!(dev.kind, DeviceKind::Wifi | DeviceKind::Ethernet) {
         return NmApplyOutcome::Skipped(format!("unsupported kind {:?}", dev.kind));
     }
-    let Some(path) = dev.connections.first().cloned() else {
+    if dev.connections.is_empty() {
         return NmApplyOutcome::Skipped("no connection profile".into());
-    };
-    let connection = nm::apply::read_connection_id(conn, &path)
-        .await
-        .ok()
-        .flatten();
-    match crate::ipv6::nm::apply_settings(conn, &path, &Default::default()).await {
-        Ok(()) => NmApplyOutcome::Applied { connection },
-        Err(e) => NmApplyOutcome::Skipped(format!("update failed: {e:#}")),
     }
+    // Issue #122: walk every profile bound to the device, not just the
+    // first. The first-only shortcut left secondary SSIDs/profiles with the
+    // legacy IPv6 settings.
+    let mut applied: Vec<String> = Vec::new();
+    let mut errors: Vec<String> = Vec::new();
+    for path in &dev.connections {
+        let id = nm::apply::read_connection_id(conn, path)
+            .await
+            .ok()
+            .flatten();
+        match crate::ipv6::nm::apply_settings(conn, path, &Default::default()).await {
+            Ok(()) => {
+                if let Some(c) = id {
+                    applied.push(c);
+                }
+            }
+            Err(e) => {
+                let label = id.unwrap_or_else(|| "<unknown>".into());
+                errors.push(format!("{label}: {e:#}"));
+            }
+        }
+    }
+    if applied.is_empty() {
+        return NmApplyOutcome::Skipped(format!(
+            "all {} profile(s) failed: {}",
+            dev.connections.len(),
+            errors.join("; ")
+        ));
+    }
+    let connection = first_or_summary(&applied, dev.connections.len());
+    NmApplyOutcome::Applied { connection }
+}
+
+fn first_or_summary(applied: &[String], total: usize) -> Option<String> {
+    if applied.is_empty() {
+        return None;
+    }
+    if total <= 1 || applied.len() == 1 {
+        return Some(applied[0].clone());
+    }
+    Some(format!("{} (+{} more)", applied[0], applied.len() - 1))
 }
 
 fn managed_iface_names() -> Vec<(String, String)> {

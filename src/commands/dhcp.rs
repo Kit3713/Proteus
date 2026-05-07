@@ -234,10 +234,22 @@ async fn do_apply(config: &Config, state: &mut State) -> Result<Vec<ApplyOutcome
             });
             continue;
         }
+        // State keys by uuid (issue #124). A connection without a uuid is
+        // a transient/in-memory profile NM hasn't persisted; skip it
+        // rather than risk colliding-by-id state.
+        let Some(uuid) = nmdhcp::connection_uuid(&settings) else {
+            outcomes.push(ApplyOutcome {
+                id,
+                kind,
+                changed: false,
+                note: Some("skipped (connection has no uuid)".into()),
+            });
+            continue;
+        };
 
         // Cache originals on first touch, so revert restores even after
         // multiple applies.
-        capture_originals(state, &id, &settings);
+        capture_originals(state, &uuid, &settings);
 
         let mut new_settings: ConnectionSettings = settings.clone();
         let changed_dhcp = nmdhcp::apply_dhcp_settings(
@@ -299,10 +311,12 @@ async fn do_revert(state: &mut State) -> Result<Vec<RevertOutcome>> {
         if !nmdhcp::is_proteus_managed(&settings) {
             continue;
         }
-        let snap = state
-            .originals
-            .connections
-            .get(&id)
+        // State is uuid-keyed (issue #124); fall back to a no-snap revert
+        // when this profile hasn't been persisted (no uuid).
+        let uuid = nmdhcp::connection_uuid(&settings);
+        let snap = uuid
+            .as_deref()
+            .and_then(|u| state.originals.connections.get(u))
             .and_then(|c| c.dhcp_settings.clone());
         let mut new_settings: ConnectionSettings = settings.clone();
         match snap {
@@ -317,7 +331,9 @@ async fn do_revert(state: &mut State) -> Result<Vec<RevertOutcome>> {
                     });
                     continue;
                 }
-                to_clear.push(id.clone());
+                if let Some(u) = uuid {
+                    to_clear.push(u);
+                }
                 outcomes.push(RevertOutcome {
                     id,
                     restored: true,
@@ -345,8 +361,8 @@ async fn do_revert(state: &mut State) -> Result<Vec<RevertOutcome>> {
             }
         }
     }
-    for id in to_clear {
-        if let Some(c) = state.originals.connections.get_mut(&id) {
+    for uuid in to_clear {
+        if let Some(c) = state.originals.connections.get_mut(&uuid) {
             c.dhcp_settings = None;
         }
     }
@@ -354,11 +370,11 @@ async fn do_revert(state: &mut State) -> Result<Vec<RevertOutcome>> {
     Ok(outcomes)
 }
 
-fn capture_originals(state: &mut State, id: &str, settings: &ConnectionSettings) {
+fn capture_originals(state: &mut State, uuid: &str, settings: &ConnectionSettings) {
     let entry = state
         .originals
         .connections
-        .entry(id.to_string())
+        .entry(uuid.to_string())
         .or_default();
     if entry.dhcp_settings.is_none() {
         entry.dhcp_settings = Some(nmdhcp::snapshot_dhcp(settings));
@@ -503,5 +519,94 @@ fn persist_capture_metadata(state: &mut State) {
     }
     if state.captured_at.is_none() {
         state.captured_at = Some(super::now_iso8601());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+    use zbus::zvariant::Value;
+
+    fn make_settings(id: &str, uuid: &str, send_hostname: bool) -> ConnectionSettings {
+        let mut settings: ConnectionSettings = HashMap::new();
+        let conn = settings
+            .entry(nmdhcp::SECTION_CONNECTION.to_string())
+            .or_default();
+        conn.insert(
+            "id".to_string(),
+            Value::from(id.to_string()).try_into().unwrap(),
+        );
+        conn.insert(
+            "uuid".to_string(),
+            Value::from(uuid.to_string()).try_into().unwrap(),
+        );
+        let ipv4 = settings
+            .entry(nmdhcp::SECTION_IPV4.to_string())
+            .or_default();
+        ipv4.insert(
+            nmdhcp::KEY_DHCP_SEND_HOSTNAME.to_string(),
+            Value::from(send_hostname).try_into().unwrap(),
+        );
+        settings
+    }
+
+    #[test]
+    fn capture_originals_keys_distinct_uuids_under_separate_entries() {
+        // Issue #124: two NM profiles with the same connection.id but
+        // different uuids must NOT collide in state. capture_originals is
+        // the per-apply hook that owns the keying; it has to land each
+        // uuid under its own slot.
+        let mut state = State::default();
+        let id = "MyHomeWiFi";
+        let uuid_a = "11111111-1111-1111-1111-111111111111";
+        let uuid_b = "22222222-2222-2222-2222-222222222222";
+        // Distinct on-wire DHCP shape so we can tell the snapshots apart
+        // without poking into private fields.
+        let s_a = make_settings(id, uuid_a, true);
+        let s_b = make_settings(id, uuid_b, false);
+        capture_originals(&mut state, uuid_a, &s_a);
+        capture_originals(&mut state, uuid_b, &s_b);
+        assert_eq!(
+            state.originals.connections.len(),
+            2,
+            "two uuids -> two state entries; pre-#124 keying collapsed them"
+        );
+        let snap_a = state.originals.connections[uuid_a]
+            .dhcp_settings
+            .as_ref()
+            .expect("uuid_a snapshot");
+        let snap_b = state.originals.connections[uuid_b]
+            .dhcp_settings
+            .as_ref()
+            .expect("uuid_b snapshot");
+        assert_eq!(snap_a.ipv4_dhcp_send_hostname, Some(true));
+        assert_eq!(snap_b.ipv4_dhcp_send_hostname, Some(false));
+    }
+
+    #[test]
+    fn capture_originals_is_idempotent_per_uuid() {
+        // Re-running apply on a uuid we already cached must NOT clobber the
+        // pre-Proteus snapshot — that's how revert can put the profile back
+        // even after multiple toggles. The dhcp.rs flow always tags the
+        // current settings, so the second call could accidentally overwrite
+        // the originals if `or_default` + unconditional assign were used.
+        let mut state = State::default();
+        let uuid = "33333333-3333-3333-3333-333333333333";
+        let original = make_settings("WiFi", uuid, true);
+        capture_originals(&mut state, uuid, &original);
+        // Now imagine apply ran and the live dict shows our suppressed
+        // values — re-capture must preserve the original.
+        let post_apply = make_settings("WiFi", uuid, false);
+        capture_originals(&mut state, uuid, &post_apply);
+        let snap = state.originals.connections[uuid]
+            .dhcp_settings
+            .as_ref()
+            .expect("snapshot present");
+        assert_eq!(
+            snap.ipv4_dhcp_send_hostname,
+            Some(true),
+            "second capture must NOT overwrite the cached original"
+        );
     }
 }

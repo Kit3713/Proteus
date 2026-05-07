@@ -26,6 +26,11 @@ struct RotatedEntry {
     previous: Option<String>,
     new: String,
     connection: Option<String>,
+    /// How many NM profiles bound to this device were rewritten. Always
+    /// equals `profiles_total` on a clean run — strictly less if a single
+    /// profile failed to update (issue #122).
+    profiles_updated: usize,
+    profiles_total: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -147,11 +152,9 @@ async fn rotate_one(
     avoid: &HashSet<Mac>,
     state: &mut State,
 ) -> Result<RotatedEntry> {
-    let connection_path = dev
-        .connections
-        .first()
-        .cloned()
-        .ok_or_else(|| anyhow!("no NM connection profile available"))?;
+    if dev.connections.is_empty() {
+        return Err(anyhow!("no NM connection profile available"));
+    }
 
     capture_original_mac(state, &dev.interface, dev.hw_address.as_deref());
 
@@ -162,36 +165,97 @@ async fn rotate_one(
         avoid,
     };
     let new_mac = generator::generate(&opts)?;
-    let connection_id = nm::apply::read_connection_id(conn, &connection_path)
-        .await
-        .ok()
-        .flatten();
-    nm::apply::set_cloned_mac(conn, &connection_path, dev.kind, new_mac).await?;
 
-    let rec = state
-        .managed
-        .interfaces
-        .entry(dev.interface.clone())
-        .or_default();
-    let previous = rec.current_mac.clone().or_else(|| dev.hw_address.clone());
-    rec.current_mac = Some(new_mac.to_string());
-    rec.last_rotated = Some(super::now_iso8601());
-    rec.rotation_count += 1;
-
-    let last_rotated = rec.last_rotated.clone();
-    if let Some(id) = &connection_id {
-        let crec = state.managed.connections.entry(id.clone()).or_default();
-        crec.current_mac = Some(new_mac.to_string());
-        crec.last_rotated = last_rotated;
-        crec.rotation_count += 1;
+    // Issue #122: walk ALL profiles bound to this device. The first-only
+    // shortcut left secondary SSIDs/profiles holding the previous MAC, so
+    // joining them later leaked the prior identity. Errors on a single
+    // profile are recorded but never abort the rest.
+    let mut connection_label: Option<String> = None;
+    let mut updated_uuids: Vec<String> = Vec::new();
+    let mut updated_count: usize = 0;
+    let mut update_errors: Vec<String> = Vec::new();
+    for path in &dev.connections {
+        // Single GetSettings + Update round trip per profile — each
+        // accessor call would otherwise re-fetch the whole dict.
+        match nm::apply::set_cloned_mac_returning_ids(conn, path, dev.kind, new_mac).await {
+            Ok((id, uuid)) => {
+                if connection_label.is_none() {
+                    connection_label = id;
+                }
+                if let Some(u) = uuid {
+                    updated_uuids.push(u);
+                }
+                updated_count += 1;
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "rotate: failed to set MAC on profile for {}: {e:#}",
+                    dev.interface
+                );
+                update_errors.push(format!("{e:#}"));
+            }
+        }
     }
+    if updated_count == 0 {
+        return Err(anyhow!(
+            "no profiles updated for {} ({} attempt(s) failed: {})",
+            dev.interface,
+            dev.connections.len(),
+            update_errors.join("; "),
+        ));
+    }
+
+    let previous = record_rotation(
+        state,
+        &dev.interface,
+        dev.hw_address.as_deref(),
+        new_mac,
+        &updated_uuids,
+        &super::now_iso8601(),
+    );
 
     Ok(RotatedEntry {
         iface: dev.interface.clone(),
         previous,
         new: new_mac.to_string(),
-        connection: connection_id,
+        connection: connection_label,
+        profiles_updated: updated_count,
+        profiles_total: dev.connections.len(),
     })
+}
+
+/// Bump per-interface and per-profile rotation counters. Issue #122
+/// requires every profile bound to the device land under its own
+/// `state.managed.connections` entry — keyed by uuid (issue #124).
+/// Returns the previous MAC so the caller can show before/after in output.
+fn record_rotation(
+    state: &mut State,
+    iface: &str,
+    hw_address: Option<&str>,
+    new_mac: Mac,
+    updated_uuids: &[String],
+    now_iso: &str,
+) -> Option<String> {
+    let rec = state
+        .managed
+        .interfaces
+        .entry(iface.to_string())
+        .or_default();
+    let previous = rec
+        .current_mac
+        .clone()
+        .or_else(|| hw_address.map(str::to_string));
+    rec.current_mac = Some(new_mac.to_string());
+    rec.last_rotated = Some(now_iso.to_string());
+    rec.rotation_count += 1;
+
+    for uuid in updated_uuids {
+        let crec = state.managed.connections.entry(uuid.clone()).or_default();
+        crec.current_mac = Some(new_mac.to_string());
+        crec.last_rotated = Some(now_iso.to_string());
+        crec.rotation_count += 1;
+    }
+    previous
 }
 
 fn capture_original_mac(state: &mut State, iface: &str, hw: Option<&str>) {
@@ -237,12 +301,104 @@ fn build_forbidden(state: &State, hw: Option<&str>) -> HashSet<Mac> {
 fn print_report(report: &RotateReport) {
     for r in &report.rotated {
         let prev = r.previous.as_deref().unwrap_or("?");
+        let profile_label = if r.profiles_total > 1 {
+            format!(" [{}/{} profiles]", r.profiles_updated, r.profiles_total)
+        } else {
+            String::new()
+        };
         match &r.connection {
-            Some(id) => println!("rotated {} ({}): {} -> {}", r.iface, id, prev, r.new),
-            None => println!("rotated {}: {} -> {}", r.iface, prev, r.new),
+            Some(id) => println!(
+                "rotated {} ({}): {} -> {}{}",
+                r.iface, id, prev, r.new, profile_label
+            ),
+            None => println!(
+                "rotated {}: {} -> {}{}",
+                r.iface, prev, r.new, profile_label
+            ),
         }
     }
     for s in &report.skipped {
         println!("skipped {}: {}", s.iface, s.reason);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn mac(s: &str) -> Mac {
+        s.parse::<Mac>().expect("valid MAC")
+    }
+
+    #[test]
+    fn record_rotation_walks_every_profile_uuid() {
+        // Issue #122: a device may carry multiple NM connection profiles
+        // (e.g. two Wi-Fi SSIDs). The pre-fix code only updated the first;
+        // every secondary profile kept the old MAC, leaking on next join.
+        // record_rotation is the per-rotate state-update primitive — it
+        // must touch every uuid it's handed.
+        let mut state = State::default();
+        let new = mac("aa:bb:cc:dd:ee:ff");
+        let uuids: Vec<String> = vec![
+            "11111111-1111-1111-1111-111111111111".to_string(),
+            "22222222-2222-2222-2222-222222222222".to_string(),
+            "33333333-3333-3333-3333-333333333333".to_string(),
+        ];
+        let prev = record_rotation(
+            &mut state,
+            "wlan0",
+            Some("00:11:22:33:44:55"),
+            new,
+            &uuids,
+            "2026-05-07T00:00:00Z",
+        );
+        assert_eq!(prev.as_deref(), Some("00:11:22:33:44:55"));
+        // Per-iface row must reflect the rotation.
+        let iface_rec = state
+            .managed
+            .interfaces
+            .get("wlan0")
+            .expect("iface row created");
+        assert_eq!(iface_rec.current_mac.as_deref(), Some("aa:bb:cc:dd:ee:ff"));
+        assert_eq!(iface_rec.rotation_count, 1);
+        // Every uuid landed under its own state slot — and crucially, all
+        // three carry the new MAC. Pre-fix this would have been one entry.
+        assert_eq!(
+            state.managed.connections.len(),
+            uuids.len(),
+            "every profile uuid must own a state entry (issue #122)"
+        );
+        for uuid in &uuids {
+            let rec = state
+                .managed
+                .connections
+                .get(uuid)
+                .expect("uuid present in state");
+            assert_eq!(
+                rec.current_mac.as_deref(),
+                Some("aa:bb:cc:dd:ee:ff"),
+                "secondary profile {uuid} kept stale MAC"
+            );
+            assert_eq!(rec.rotation_count, 1);
+        }
+    }
+
+    #[test]
+    fn record_rotation_skips_profiles_with_no_uuid() {
+        // Transient/in-memory NM profiles can be uuid-less. We deliberately
+        // don't record those — they'd collide on the next apply if multiple
+        // shared a name. Uuid-bearing siblings still go in.
+        let mut state = State::default();
+        let new = mac("aa:bb:cc:dd:ee:ff");
+        let uuids = vec!["44444444-4444-4444-4444-444444444444".to_string()];
+        record_rotation(
+            &mut state,
+            "wlan0",
+            None,
+            new,
+            &uuids,
+            "2026-05-07T00:00:00Z",
+        );
+        assert_eq!(state.managed.connections.len(), 1);
     }
 }

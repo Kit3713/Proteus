@@ -142,3 +142,5 @@ pub(crate) fn render_config(cfg: &Config, json: bool) -> Result<()> {
         Ok(())
     }
 }
+
+pub(crate) use crate::state::looks_like_uuid;

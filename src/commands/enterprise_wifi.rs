@@ -26,7 +26,7 @@ use zbus::zvariant::OwnedObjectPath;
 use crate::config::{Config, EnterpriseWifiConfig};
 use crate::enterprise_wifi::{self, nm as eap_nm};
 use crate::exit;
-use crate::nm;
+use crate::nm::{self, dhcp as nmdhcp};
 use crate::state::{ConnectionOriginals, State};
 use crate::version;
 
@@ -42,6 +42,10 @@ struct StatusReport {
 struct ConnectionStatus {
     /// NM connection profile id (the human-friendly name).
     name: String,
+    /// NM `connection.uuid` — stable, unique key (issue #124). Used to
+    /// match against `state.originals.connections`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    uuid: Option<String>,
     /// Inner identity, redacted to `***@realm` for safe display.
     identity: Option<String>,
     /// Current value of `802-1x.anonymous-identity`. `None` means unset.
@@ -202,9 +206,7 @@ async fn enable_one(
     cfg: &EnterpriseWifiConfig,
     state: &mut State,
 ) -> Result<EnableOutcome> {
-    let (path, settings) = nm::apply::find_connection_by_id(conn, connection)
-        .await
-        .with_context(|| format!("looking up NM connection '{connection}'"))?;
+    let (path, settings) = resolve_connection(conn, connection).await?;
     let snapshot = eap_nm::EapSnapshot::from_settings(&settings);
     if !snapshot.has_eap_section {
         return Ok(EnableOutcome::NotEap {
@@ -225,14 +227,16 @@ async fn enable_one(
     .to_string();
     let new_value = enterprise_wifi::anonymous_identity_for(&realm);
 
-    // Cache the pre-Proteus value exactly once. Re-runs on a connection we
-    // already manage do NOT clobber the cached original — that's how revert
-    // can put the profile back the way it was on first apply, even after
-    // multiple toggles.
+    // Cache the pre-Proteus value exactly once, keyed by uuid (issue #124).
+    // Re-runs on a connection we already manage do NOT clobber the cached
+    // original — that's how revert can put the profile back the way it was on
+    // first apply, even after multiple toggles.
+    let uuid = nmdhcp::connection_uuid(&settings)
+        .ok_or_else(|| anyhow!("connection '{connection}' has no uuid; cannot key state"))?;
     state
         .originals
         .connections
-        .entry(connection.to_string())
+        .entry(uuid)
         .or_insert_with(|| ConnectionOriginals {
             anonymous_identity: snapshot.anonymous_identity.clone(),
             dhcp_settings: None,
@@ -252,9 +256,7 @@ async fn disable_one(
     connection: &str,
     state: &mut State,
 ) -> Result<DisableOutcome> {
-    let (path, settings) = nm::apply::find_connection_by_id(conn, connection)
-        .await
-        .with_context(|| format!("looking up NM connection '{connection}'"))?;
+    let (path, settings) = resolve_connection(conn, connection).await?;
     let snapshot = eap_nm::EapSnapshot::from_settings(&settings);
     if !snapshot.has_eap_section {
         return Ok(DisableOutcome::NotEap {
@@ -263,12 +265,34 @@ async fn disable_one(
     }
 
     eap_nm::write_anonymous_identity(conn, &path, "").await?;
-    let _ = state.originals.connections.remove(connection);
+    if let Some(uuid) = nmdhcp::connection_uuid(&settings) {
+        let _ = state.originals.connections.remove(&uuid);
+    }
 
     Ok(DisableOutcome::Cleared {
         connection: connection.to_string(),
         previous: snapshot.anonymous_identity,
     })
+}
+
+/// Accept either an NM connection id (human-readable, may collide) or the
+/// stable uuid. uuid lookup is unambiguous; id lookup errors loudly when more
+/// than one profile shares the name so the operator can disambiguate.
+async fn resolve_connection(
+    conn: &zbus::Connection,
+    target: &str,
+) -> Result<(
+    zbus::zvariant::OwnedObjectPath,
+    crate::nm::ConnectionSettings,
+)> {
+    if super::looks_like_uuid(target) {
+        return nm::apply::find_connection_by_uuid(conn, target)
+            .await
+            .with_context(|| format!("looking up NM connection by uuid '{target}'"));
+    }
+    nm::apply::find_connection_by_id(conn, target)
+        .await
+        .with_context(|| format!("looking up NM connection '{target}'"))
 }
 
 /// Walk every NM connection profile, return one row per profile that has an
@@ -302,8 +326,12 @@ fn list_eap_connections(state: &State) -> Result<Vec<ConnectionStatus>> {
             }
         }
         // Mark proteus-managed connections via the cached originals.
+        // Keyed by uuid (issue #124); fall back to false when uuid is absent.
         for row in &mut out {
-            row.proteus_managed = state.originals.connections.contains_key(&row.name);
+            row.proteus_managed = row
+                .uuid
+                .as_deref()
+                .is_some_and(|u| state.originals.connections.contains_key(u));
         }
         // Stable order so JSON output is deterministic.
         out.sort_by(|a, b| a.name.cmp(&b.name));
@@ -322,8 +350,10 @@ async fn read_one_for_status(
     let id = nm::apply::read_connection_id(conn, path)
         .await?
         .ok_or_else(|| anyhow!("connection has no `connection.id`"))?;
+    let uuid = nm::apply::read_connection_uuid(conn, path).await?;
     Ok(Some(ConnectionStatus {
         name: id,
+        uuid,
         identity: snapshot
             .identity
             .as_deref()
@@ -416,15 +446,17 @@ mod tests {
     #[test]
     fn disable_untags_connection_in_state() {
         let mut state = State::default();
+        // Issue #124: keys are NM uuids, not human-friendly ids.
+        let uuid = "12345678-1234-1234-1234-123456789abc";
         state.originals.connections.insert(
-            "MyWiFi".to_string(),
+            uuid.to_string(),
             ConnectionOriginals {
                 anonymous_identity: Some("old@x.y".to_string()),
                 dhcp_settings: None,
             },
         );
         // Simulate the line from `disable_one` that drops the cached entry.
-        state.originals.connections.remove("MyWiFi");
-        assert!(!state.originals.connections.contains_key("MyWiFi"));
+        state.originals.connections.remove(uuid);
+        assert!(!state.originals.connections.contains_key(uuid));
     }
 }

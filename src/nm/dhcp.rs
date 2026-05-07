@@ -207,6 +207,13 @@ pub fn connection_id(settings: &ConnectionSettings) -> Option<String> {
     extract_str(settings, SECTION_CONNECTION, "id")
 }
 
+/// Pull the `connection.uuid` field out of a settings dict. NM guarantees
+/// every persisted profile has one, but we still return `Option` because the
+/// in-memory connection list can briefly carry transient entries.
+pub fn connection_uuid(settings: &ConnectionSettings) -> Option<String> {
+    extract_str(settings, SECTION_CONNECTION, "uuid")
+}
+
 /// Pull the `connection.type` field, mapping NM type strings to friendly
 /// labels for display.
 pub fn connection_kind(settings: &ConnectionSettings) -> String {
@@ -443,6 +450,35 @@ mod tests {
         if let Some(section) = s.get(SECTION_CONNECTION) {
             assert!(section.get(KEY_USER_DATA).is_none());
         }
+    }
+
+    #[test]
+    fn connection_uuid_extracts_uuid_field() {
+        // Issue #124: state must key by `connection.uuid`, not `connection.id`.
+        // Confirm the helper extracts the right field — and ignores `id`.
+        let mut s = empty_settings();
+        let conn = s.entry(SECTION_CONNECTION.to_string()).or_default();
+        conn.insert(
+            "id".to_string(),
+            Value::from("MyHomeWiFi".to_string()).try_into().unwrap(),
+        );
+        conn.insert(
+            "uuid".to_string(),
+            Value::from("12345678-1234-1234-1234-123456789abc".to_string())
+                .try_into()
+                .unwrap(),
+        );
+        assert_eq!(connection_id(&s).as_deref(), Some("MyHomeWiFi"));
+        assert_eq!(
+            connection_uuid(&s).as_deref(),
+            Some("12345678-1234-1234-1234-123456789abc")
+        );
+    }
+
+    #[test]
+    fn connection_uuid_is_none_when_unset() {
+        let s = empty_settings();
+        assert!(connection_uuid(&s).is_none());
     }
 
     #[test]

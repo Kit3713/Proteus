@@ -14,6 +14,20 @@ pub async fn set_cloned_mac(
     kind: DeviceKind,
     mac: Mac,
 ) -> Result<()> {
+    set_cloned_mac_returning_ids(conn, connection_path, kind, mac)
+        .await
+        .map(|_| ())
+}
+
+/// Same as `set_cloned_mac` but also returns the profile's `id` and `uuid`
+/// captured from the same `GetSettings` call. Lets callers like `rotate`
+/// avoid two extra DBus round-trips per profile (issue #122 hot path).
+pub async fn set_cloned_mac_returning_ids(
+    conn: &zbus::Connection,
+    connection_path: &OwnedObjectPath,
+    kind: DeviceKind,
+    mac: Mac,
+) -> Result<(Option<String>, Option<String>)> {
     let key = kind.setting_key().ok_or_else(|| {
         anyhow!(
             "device type {:?} does not expose a cloned-MAC setting key",
@@ -28,6 +42,8 @@ pub async fn set_cloned_mac(
         .get_settings()
         .await
         .context("calling Settings.Connection.GetSettings")?;
+    let id = extract_str(&settings, "connection", "id");
+    let uuid = extract_str(&settings, "connection", "uuid");
     let mac_str = mac.to_string();
     let entry = settings.entry(key.to_string()).or_default();
     entry.insert(
@@ -43,7 +59,7 @@ pub async fn set_cloned_mac(
         .update(settings)
         .await
         .context("calling Settings.Connection.Update")?;
-    Ok(())
+    Ok((id, uuid))
 }
 
 pub async fn read_cloned_mac(
@@ -75,12 +91,48 @@ pub async fn read_connection_id(
     Ok(extract_str(&settings, "connection", "id"))
 }
 
+/// Read the `connection.uuid` for a single profile. NM-assigned, stable across
+/// renames; the canonical state-keying field per issue #124.
+pub async fn read_connection_uuid(
+    conn: &zbus::Connection,
+    connection_path: &OwnedObjectPath,
+) -> Result<Option<String>> {
+    let proxy = ConnectionProxy::builder(conn)
+        .path(connection_path.clone())?
+        .build()
+        .await?;
+    let settings = proxy.get_settings().await?;
+    Ok(extract_str(&settings, "connection", "uuid"))
+}
+
 pub async fn find_connection_by_id(
     conn: &zbus::Connection,
     id: &str,
 ) -> Result<(OwnedObjectPath, ConnectionSettings)> {
+    let mut matches = find_connections_by_id(conn, id).await?;
+    if matches.is_empty() {
+        bail!("no NetworkManager connection profile with id '{id}'")
+    }
+    if matches.len() > 1 {
+        bail!(
+            "id '{id}' matches {} connection profiles; pass the uuid to disambiguate",
+            matches.len()
+        )
+    }
+    Ok(matches.remove(0))
+}
+
+/// Return every NM connection whose `connection.id` matches. NM's id field is
+/// not unique (issue #124), so callers that want uniqueness should key by
+/// uuid; commands that mutate per-id should iterate this list instead of
+/// taking just the first match (issue #122).
+pub async fn find_connections_by_id(
+    conn: &zbus::Connection,
+    id: &str,
+) -> Result<Vec<(OwnedObjectPath, ConnectionSettings)>> {
     let settings_proxy = super::SettingsProxy::new(conn).await?;
     let conns = settings_proxy.list_connections().await?;
+    let mut out = Vec::new();
     for path in conns {
         let proxy = ConnectionProxy::builder(conn)
             .path(path.clone())?
@@ -90,10 +142,29 @@ pub async fn find_connection_by_id(
             && let Some(found_id) = extract_str(&s, "connection", "id")
             && found_id == id
         {
-            return Ok((path, s));
+            out.push((path, s));
         }
     }
-    bail!("no NetworkManager connection profile with id '{id}'")
+    Ok(out)
+}
+
+/// Look up an NM connection by its stable `connection.uuid` field. Returns
+/// the path and full settings dict; errors if no profile carries the uuid.
+pub async fn find_connection_by_uuid(
+    conn: &zbus::Connection,
+    uuid: &str,
+) -> Result<(OwnedObjectPath, ConnectionSettings)> {
+    let settings_proxy = super::SettingsProxy::new(conn).await?;
+    let path = settings_proxy
+        .get_connection_by_uuid(uuid)
+        .await
+        .with_context(|| format!("no NM connection with uuid '{uuid}'"))?;
+    let proxy = ConnectionProxy::builder(conn)
+        .path(path.clone())?
+        .build()
+        .await?;
+    let settings = proxy.get_settings().await?;
+    Ok((path, settings))
 }
 
 fn extract_str(

@@ -61,7 +61,15 @@ async fn resolve_and_pin(target: &str, mac: Option<Mac>, state: &mut State) -> R
         return Ok(format!("pinned interface {target} to {pin_mac}"));
     }
 
-    if let Ok((path, _)) = nm::apply::find_connection_by_id(&conn, target).await {
+    // Accept either an NM uuid or a (potentially-colliding) id. Looking up
+    // by uuid is unambiguous; id lookup errors out when more than one
+    // profile shares the name so the operator can disambiguate.
+    let lookup = if super::looks_like_uuid(target) {
+        nm::apply::find_connection_by_uuid(&conn, target).await
+    } else {
+        nm::apply::find_connection_by_id(&conn, target).await
+    };
+    if let Ok((path, settings)) = lookup {
         let pin_mac = match mac {
             Some(m) => m,
             None => {
@@ -78,11 +86,10 @@ async fn resolve_and_pin(target: &str, mac: Option<Mac>, state: &mut State) -> R
                 }
             }
         };
-        let entry = state
-            .managed
-            .connections
-            .entry(target.to_string())
-            .or_default();
+        // Issue #124: state.managed.connections is keyed by uuid, not id.
+        let uuid = nm::dhcp::connection_uuid(&settings)
+            .ok_or_else(|| anyhow!("connection '{target}' has no uuid; cannot key state"))?;
+        let entry = state.managed.connections.entry(uuid).or_default();
         entry.pinned = Some(pin_mac.to_string());
         return Ok(format!("pinned connection {target} to {pin_mac}"));
     }
