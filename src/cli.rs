@@ -185,8 +185,8 @@ pub fn run() -> ExitCode {
         Command::Uninstall { .. } => {
             commands::stub::not_implemented("uninstall", 'G', "proteus wiki uninstall")
         }
-        Command::Wiki { page } => commands::wiki_cmd::run(page.as_deref()),
-        Command::Help { feature } => commands::wiki_cmd::run_help(feature.as_deref()),
+        Command::Wiki { page } => commands::wiki_cmd::run(page.as_deref(), cli.no_color),
+        Command::Help { feature } => commands::wiki_cmd::run_help(feature.as_deref(), cli.no_color),
     };
 
     ExitCode::from(code.unwrap_or(exit::GENERIC_ERROR))
