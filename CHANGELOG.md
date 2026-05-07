@@ -11,7 +11,11 @@ landed, what is in flight, and what is on the bench. See
 
 ## [Unreleased]
 
-(work in progress; see [docs/ROADMAP.md](docs/ROADMAP.md))
+(post-v0.1.0-alpha work lands here)
+
+## [0.1.0-alpha] - 2026-05-07
+
+First public alpha. The codebase reflects every phase landed in main as of the tag commit. The CLI surface, config schema, and on-disk formats remain provisional and may change before v0.1.0. See `docs/ROADMAP.md` for the operational view, `wiki/profiles.md` for the six functional profiles, and `wiki/real-world-testing.md` for the field guide.
 
 ### Added
 
@@ -144,14 +148,7 @@ landed, what is in flight, and what is on the bench. See
   surface for the expanded subcommand set. The 3.75 MB number is a
   considered target with ~200 KB headroom for the next phase of work.
 
-## [0.1.0-alpha] - 2026-05-07
-
-Pre-release. Phase A skeleton, Phase B L2 identity, partial Phase C, partial
-Phase D, partial Phase F packaging, and the first slice of Phase G have
-shipped. NOT a stable release; the CLI surface, config schema, and on-disk
-formats may still change before v0.1.0.
-
-### Added
+### Phase scaffolding (historical detail for v0.1.0-alpha)
 
 #### Phase A — Skeleton
 
