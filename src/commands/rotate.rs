@@ -36,10 +36,17 @@ struct SkippedEntry {
 
 pub fn run(
     iface_filter: Option<&str>,
-    _yes: bool,
+    yes: bool,
     state_path: Option<&Path>,
     config_path: Option<&Path>,
 ) -> Result<u8> {
+    if let Err(code) = super::require_yes(
+        yes,
+        "'rotate' is mutating (writes new MACs to NetworkManager)",
+        "proteus help rotate",
+    ) {
+        return Ok(code);
+    }
     if let Err(e) = super::require_root() {
         eprintln!("proteus: {e}");
         return Ok(exit::PERMISSION_ERROR);

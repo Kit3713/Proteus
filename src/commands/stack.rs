@@ -112,7 +112,11 @@ pub fn status(json: bool, state_path: Option<&Path>, config_path: Option<&Path>)
     Ok(exit::SUCCESS)
 }
 
-pub fn apply(_yes: bool, state_path: Option<&Path>, config_path: Option<&Path>) -> Result<u8> {
+pub fn apply(yes: bool, state_path: Option<&Path>, config_path: Option<&Path>) -> Result<u8> {
+    if let Err(code) = commands::require_yes(yes, "'stack apply' is mutating", "proteus help stack")
+    {
+        return Ok(code);
+    }
     if let Err(e) = commands::require_root() {
         eprintln!("proteus: {e}");
         return Ok(exit::PERMISSION_ERROR);
@@ -160,7 +164,12 @@ pub fn apply(_yes: bool, state_path: Option<&Path>, config_path: Option<&Path>) 
     Ok(exit::SUCCESS)
 }
 
-pub fn revert(_yes: bool, _state_path: Option<&Path>) -> Result<u8> {
+pub fn revert(yes: bool, _state_path: Option<&Path>) -> Result<u8> {
+    if let Err(code) =
+        commands::require_yes(yes, "'stack revert' is mutating", "proteus help stack")
+    {
+        return Ok(code);
+    }
     if let Err(e) = commands::require_root() {
         eprintln!("proteus: {e}");
         return Ok(exit::PERMISSION_ERROR);

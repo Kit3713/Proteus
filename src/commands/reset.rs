@@ -15,12 +15,17 @@ use crate::exit;
 /// in `state.json` are sacred and untouched. `apply` is not invoked
 /// automatically — the user decides when to re-apply.
 pub fn run(yes: bool, dry_run: bool, config_override: Option<&Path>) -> Result<u8> {
-    if !yes && !dry_run {
-        eprintln!(
-            "proteus: reset is destructive; pass --yes to confirm or --dry-run to preview. \
-             See: proteus wiki concepts"
-        );
-        return Ok(exit::NOT_IMPLEMENTED);
+    // `--dry-run` is a free preview, so it implicitly satisfies the
+    // confirmation gate. The shared helper handles the message + exit code
+    // for the unconfirmed real-run path.
+    if !dry_run
+        && let Err(code) = super::require_yes(
+            yes,
+            "reset is destructive (or pass --dry-run to preview)",
+            "proteus wiki concepts",
+        )
+    {
+        return Ok(code);
     }
 
     if !dry_run {

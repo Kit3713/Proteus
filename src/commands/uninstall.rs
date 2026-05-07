@@ -43,9 +43,9 @@ const RESOLVED_DROPIN_PREFIX: &str = "10-proteus-";
 
 /// Public entry point invoked from `cli::run`.
 pub fn run(purge: bool, yes: bool) -> Result<u8> {
-    if !yes {
-        eprintln!("proteus: uninstall is destructive; pass --yes to confirm");
-        return Ok(exit::NOT_IMPLEMENTED);
+    if let Err(code) = super::require_yes(yes, "uninstall is destructive", "proteus help uninstall")
+    {
+        return Ok(code);
     }
     if let Err(e) = super::require_root() {
         eprintln!("proteus: {e}");

@@ -34,6 +34,16 @@ pub mod exit {
     pub const CONFIG_ERROR: u8 = 65;
     pub const PERMISSION_ERROR: u8 = 66;
     pub const SYSTEM_NOT_SUPPORTED: u8 = 70;
+
+    /// Mutating commands that require `--yes` use this when the flag is
+    /// missing. Aliased to `CONFIG_ERROR` (65) — "you must adjust the
+    /// invocation to confirm the change" — rather than `NOT_IMPLEMENTED`
+    /// (64), which historically meant "the feature has not landed yet" and
+    /// misled wrappers into thinking the command itself was a stub. The
+    /// numeric value is unchanged so wrappers that already grep for `65`
+    /// keep working; the alias just makes the intent legible at the call
+    /// site.
+    pub const CONFIRMATION_REQUIRED: u8 = CONFIG_ERROR;
 }
 
 #[cfg(test)]
@@ -60,6 +70,11 @@ mod tests {
         assert_eq!(exit::CONFIG_ERROR, 65);
         assert_eq!(exit::PERMISSION_ERROR, 66);
         assert_eq!(exit::SYSTEM_NOT_SUPPORTED, 70);
+        // CONFIRMATION_REQUIRED is an intent alias; pinning the numeric
+        // value documents that it's wire-compatible with CONFIG_ERROR so
+        // existing wrappers don't break when callers migrate off the
+        // legacy NOT_IMPLEMENTED return.
+        assert_eq!(exit::CONFIRMATION_REQUIRED, 65);
     }
 
     #[test]

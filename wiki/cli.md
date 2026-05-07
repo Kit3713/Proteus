@@ -33,7 +33,7 @@ proteus apply [--yes]
 Apply the current config to the system: rotate MACs that need rotating, write managed files under `/etc/`, install systemd timers. Idempotent — running ten times converges to the same state as once. Mutating; requires root.
 
 Flags: `--yes` proceed without confirmation.
-Exit: `0` success · `1` generic · `64` stub · `65` config error · `66` not root · `70` system unsupported.
+Exit: `0` success · `1` generic · `65` config error / missing `--yes` · `66` not root · `70` system unsupported.
 Example: `sudo proteus apply --yes`
 
 ### `config` — phase **A**
@@ -148,10 +148,11 @@ The cache itself only populates from phase B onward (when the first mutating com
 proteus pin <TARGET>
 ```
 
-Pin a MAC to a specific interface or NetworkManager connection. Pinned targets are skipped by both scheduled and probe-driven rotation. For environments that lock you to one MAC: corporate networks, hotel Wi-Fi after auth, MAC-bound DHCP reservations. `<TARGET>` is interface name or NM connection profile (profile preferred when ambiguous). Mutating; requires root.
+Pin a MAC to a specific interface or NetworkManager connection. Pinned targets are skipped by both scheduled and probe-driven rotation. For environments that lock you to one MAC: corporate networks, hotel Wi-Fi after auth, MAC-bound DHCP reservations. `<TARGET>` is interface name or NM connection profile (profile preferred when ambiguous). Mutating; requires root and `--yes`.
 
-Exit: `0` success · `1` generic · `64` stub · `66` not root.
-Example: `sudo proteus pin "Home Wi-Fi"`
+Flags: `--mac <MAC>` pin to an explicit MAC instead of the current one · `--yes` proceed without confirmation.
+Exit: `0` success · `1` generic · `65` missing `--yes` · `66` not root.
+Example: `sudo proteus pin "Home Wi-Fi" --yes`
 
 ### `probe` — phase **C**
 
@@ -173,7 +174,7 @@ proteus reset [--yes]
 
 Clear `/etc/proteus/config.toml` to defaults and re-apply. The "I tinkered and broke it" hatch. Deliberately does **not** touch the cached original MACs in `state.json` — those remain sacred. Mutating; requires root.
 
-Exit: `0` success · `64` stub · `66` not root.
+Exit: `0` success · `65` missing `--yes` · `66` not root.
 
 ### `revert` — phase **stub** (lands G)
 
@@ -183,7 +184,7 @@ proteus revert [--yes]
 
 Restore everything to the cached originals. The panic button. **Invariant**: must work at every commit from phase B onward — if a feature can't be backed out cleanly, it does not ship. Mutating; requires root.
 
-Exit: `0` success · `1` generic · `64` stub · `66` not root.
+Exit: `0` success · `1` generic · `65` missing `--yes` · `66` not root.
 Example: `sudo proteus revert --yes`
 
 ### `rotate` — phase **stub** (lands B)
@@ -195,7 +196,7 @@ proteus rotate [--iface <NAME>] [--yes]
 Generate a fresh MAC and apply it. With no `--iface`, rotates every managed interface. Skips pinned interfaces. Avoids picking a MAC that matches the gateway or anything else in the local ARP table. Mutating; requires root.
 
 Flags: `--iface <NAME>` limit to one interface · `--yes` proceed without confirmation.
-Exit: `0` success · `1` generic · `64` stub · `66` not root.
+Exit: `0` success · `1` generic · `65` missing `--yes` · `66` not root.
 Example: `sudo proteus rotate --iface wlan0 --yes`
 
 ### `show-config` — phase **A**
@@ -331,7 +332,7 @@ proteus uninstall [--purge] [--yes]
 Full removal. Runs `revert` first, removes the binary, removes the systemd timers. Mutating; requires root.
 
 Flags: `--purge` also delete `/etc/proteus/` and `/var/lib/proteus/`. Without `--purge`, the original-MAC cache is preserved so a reinstall can restore the same identity. `--yes` proceed without confirmation.
-Exit: `0` success · `64` stub · `66` not root.
+Exit: `0` success · `65` missing `--yes` · `66` not root.
 
 ### `unpin` — phase **stub** (lands B)
 
@@ -371,8 +372,11 @@ Stable. New codes may be added in future versions; existing codes never change m
 | 2 | _(clap)_ | invalid arguments — usage error from the parser |
 | 64 | `NOT_IMPLEMENTED` | command parses but the feature has not landed yet — stderr names the phase |
 | 65 | `CONFIG_ERROR` | config parse failure or invalid value |
+| 65 | `CONFIRMATION_REQUIRED` | mutating command invoked without `--yes` (alias of `CONFIG_ERROR`) |
 | 66 | `PERMISSION_ERROR` | mutating command run without root, or read denied on a privileged file |
 | 70 | `SYSTEM_NOT_SUPPORTED` | not Linux, no systemd, or another precondition the binary can't satisfy |
+
+`CONFIRMATION_REQUIRED` shares the wire value of `CONFIG_ERROR` (`65`); it's an intent alias so source code reads naturally and so wrappers grepping for `65` keep working. Earlier alpha builds returned `64` (`NOT_IMPLEMENTED`) when `--yes` was missing, which conflated "you forgot a flag" with "the feature is a stub" — issue #117. Wrappers that care about telling the two apart should branch on stderr rather than the numeric code.
 
 Wrappers should treat `0` as success and any non-zero as failure. Inspect stderr or journald for the human reason; do **not** scrape stdout for status — `--json` is the contract.
 

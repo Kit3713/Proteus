@@ -58,12 +58,12 @@ trait NmRadio {
 
 /// Public entry point for `proteus kill [--yes]`.
 pub fn kill_run(yes: bool, state_path: Option<&Path>) -> Result<u8> {
-    if !yes {
-        eprintln!(
-            "proteus: kill is destructive (drops all network traffic, disables radios). \
-             Pass --yes to confirm. See: proteus wiki kill-switch"
-        );
-        return Ok(exit::NOT_IMPLEMENTED);
+    if let Err(code) = super::require_yes(
+        yes,
+        "kill is destructive (drops all network traffic, disables radios)",
+        "proteus wiki kill-switch",
+    ) {
+        return Ok(code);
     }
     if let Err(e) = super::require_root() {
         eprintln!("proteus: {e}");
@@ -204,12 +204,12 @@ fn render_status(k: &KillSwitchState, json: bool) -> Result<u8> {
 
 /// Public entry point for `proteus resume [--yes]`.
 pub fn resume_run(yes: bool, state_path: Option<&Path>) -> Result<u8> {
-    if !yes {
-        eprintln!(
-            "proteus: resume re-enables network traffic and radios. Pass --yes to confirm. \
-             See: proteus wiki kill-switch"
-        );
-        return Ok(exit::NOT_IMPLEMENTED);
+    if let Err(code) = super::require_yes(
+        yes,
+        "resume re-enables network traffic and radios",
+        "proteus wiki kill-switch",
+    ) {
+        return Ok(code);
     }
     if let Err(e) = super::require_root() {
         eprintln!("proteus: {e}");
@@ -538,20 +538,22 @@ mod tests {
     }
 
     #[test]
-    fn kill_without_yes_returns_not_implemented_exit() {
+    fn kill_without_yes_returns_confirmation_required_exit() {
         let path = temp_state_path("kill-noyes");
         let code = kill_run(false, Some(&path)).unwrap();
-        // 64 = NOT_IMPLEMENTED, used as the "needs --yes" sentinel by the
-        // rest of the CLI. Same convention as `revert`, `reset`, `uninstall`.
-        assert_eq!(code, exit::NOT_IMPLEMENTED);
+        // CONFIRMATION_REQUIRED (65) — the "needs --yes" sentinel shared by
+        // every mutating subcommand. Issue #117 moved this off the legacy
+        // NOT_IMPLEMENTED (64), which had meant "the feature has not landed
+        // yet" and misled wrappers.
+        assert_eq!(code, exit::CONFIRMATION_REQUIRED);
         let _ = std::fs::remove_file(&path);
     }
 
     #[test]
-    fn resume_without_yes_returns_not_implemented_exit() {
+    fn resume_without_yes_returns_confirmation_required_exit() {
         let path = temp_state_path("resume-noyes");
         let code = resume_run(false, Some(&path)).unwrap();
-        assert_eq!(code, exit::NOT_IMPLEMENTED);
+        assert_eq!(code, exit::CONFIRMATION_REQUIRED);
         let _ = std::fs::remove_file(&path);
     }
 }

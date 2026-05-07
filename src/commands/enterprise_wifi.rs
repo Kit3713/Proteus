@@ -83,11 +83,12 @@ pub fn enable(
         eprintln!("proteus: {e}");
         return Ok(exit::PERMISSION_ERROR);
     }
-    if !yes {
-        eprintln!(
-            "proteus: 'enterprise-wifi enable' is mutating; pass --yes (see `proteus help enterprise-wifi`)"
-        );
-        return Ok(exit::CONFIG_ERROR);
+    if let Err(code) = super::require_yes(
+        yes,
+        "'enterprise-wifi enable' is mutating",
+        "proteus help enterprise-wifi",
+    ) {
+        return Ok(code);
     }
 
     let state_path = super::state_path(state_path);
@@ -133,11 +134,12 @@ pub fn disable(connection: &str, yes: bool, state_path: Option<&Path>) -> Result
         eprintln!("proteus: {e}");
         return Ok(exit::PERMISSION_ERROR);
     }
-    if !yes {
-        eprintln!(
-            "proteus: 'enterprise-wifi disable' is mutating; pass --yes (see `proteus help enterprise-wifi`)"
-        );
-        return Ok(exit::CONFIG_ERROR);
+    if let Err(code) = super::require_yes(
+        yes,
+        "'enterprise-wifi disable' is mutating",
+        "proteus help enterprise-wifi",
+    ) {
+        return Ok(code);
     }
 
     let state_path = super::state_path(state_path);

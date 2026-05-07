@@ -70,6 +70,26 @@ pub(crate) fn require_root() -> anyhow::Result<()> {
     }
 }
 
+/// `--yes` confirmation gate shared by every mutating subcommand.
+///
+/// Returns `Ok(())` when the user passed `--yes`; otherwise prints a
+/// uniform "this is mutating, pass --yes" line to stderr (with the caller's
+/// `description` text and `wiki_hint` pointer) and yields the
+/// `CONFIRMATION_REQUIRED` exit code via `Err`. The caller wires it in as
+/// `if let Err(code) = require_yes(...) { return Ok(code); }`.
+///
+/// `description` should briefly explain *why* the command is destructive
+/// (e.g. `"is mutating (writes state.json)"`) so the operator sees what
+/// they're confirming. `wiki_hint` is the trailing pointer the operator
+/// can read for context (e.g. `"proteus help pin"`).
+pub(crate) fn require_yes(yes: bool, description: &str, wiki_hint: &str) -> Result<(), u8> {
+    if yes {
+        return Ok(());
+    }
+    eprintln!("proteus: {description}; pass --yes to confirm (see `{wiki_hint}`)");
+    Err(crate::exit::CONFIRMATION_REQUIRED)
+}
+
 pub(crate) fn now_iso8601() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let secs = SystemTime::now()

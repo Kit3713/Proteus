@@ -82,7 +82,10 @@ pub fn status(json: bool, config_path: Option<&Path>) -> Result<u8> {
     Ok(exit::SUCCESS)
 }
 
-pub fn apply(_yes: bool, config_path: Option<&Path>) -> Result<u8> {
+pub fn apply(yes: bool, config_path: Option<&Path>) -> Result<u8> {
+    if let Err(code) = super::require_yes(yes, "'nft apply' is mutating", "proteus help nft") {
+        return Ok(code);
+    }
     if let Err(e) = super::require_root() {
         eprintln!("proteus: {e}");
         return Ok(exit::PERMISSION_ERROR);
@@ -112,7 +115,10 @@ pub fn apply(_yes: bool, config_path: Option<&Path>) -> Result<u8> {
     Ok(exit::SUCCESS)
 }
 
-pub fn revert(_yes: bool) -> Result<u8> {
+pub fn revert(yes: bool) -> Result<u8> {
+    if let Err(code) = super::require_yes(yes, "'nft revert' is mutating", "proteus help nft") {
+        return Ok(code);
+    }
     if let Err(e) = super::require_root() {
         eprintln!("proteus: {e}");
         return Ok(exit::PERMISSION_ERROR);
