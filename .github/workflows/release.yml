@@ -1,0 +1,150 @@
+# Proteus release pipeline.
+#
+# Triggered by pushing a tag that matches `v*` (for example `v0.1.0`). Builds
+# stripped release binaries for x86_64 and aarch64, computes SHA256 sums, and
+# attaches everything to a GitHub Release.
+#
+# Architecture matrix:
+#   - x86_64-unknown-linux-gnu: built inside the Fedora 43 container, the same
+#     environment CI uses, so the artifact's glibc requirements match the
+#     primary supported distro.
+#   - aarch64-unknown-linux-gnu: cross-compiled on ubuntu-latest with the
+#     gcc-aarch64-linux-gnu toolchain. There is no ARM runner; we trust the
+#     cross-compile and the size-cap check to catch regressions.
+#
+# 32-bit ARM (armv7l) and other architectures are intentionally unsupported.
+# See dist/release.md for the rationale and the from-source path.
+#
+# This workflow is scaffolding for a future v0.1.0 tag. It does not run on
+# branch pushes — only on tags — so it stays dormant until a release happens.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+# A release run for a given tag must complete; never cancel mid-flight.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  # Native x86_64 build inside Fedora 43 to match CI's primary target distro.
+  build-x86_64:
+    name: build x86_64
+    runs-on: ubuntu-latest
+    container: fedora:43
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install build dependencies
+        run: dnf install -y gcc pkg-config dbus-devel openssl-devel binutils coreutils
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-x86_64
+      - name: cargo build --release
+        run: cargo build --release
+      - name: Strip, size-check, and stage artifact
+        run: |
+          set -euo pipefail
+          BIN=target/release/proteus
+          strip "$BIN"
+          SIZE=$(wc -c < "$BIN")
+          echo "PROTEUS_BINARY_SIZE_BYTES=${SIZE}"
+          if [ "$SIZE" -gt 3000000 ]; then
+            echo "FAIL: stripped x86_64 proteus binary is ${SIZE} bytes, exceeds 3,000,000 byte cap" >&2
+            exit 1
+          fi
+          mkdir -p dist-out
+          cp "$BIN" dist-out/proteus-x86_64-unknown-linux-gnu
+          ( cd dist-out && sha256sum proteus-x86_64-unknown-linux-gnu > proteus-x86_64-unknown-linux-gnu.sha256 )
+      - uses: actions/upload-artifact@v4
+        with:
+          name: proteus-x86_64
+          path: dist-out/*
+          if-no-files-found: error
+          retention-days: 7
+
+  # Cross-compiled aarch64 build on ubuntu-latest. Mirrors the cross-build
+  # job in ci.yml so the toolchain story stays consistent.
+  build-aarch64:
+    name: build aarch64
+    runs-on: ubuntu-latest
+    env:
+      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install aarch64 cross-compile toolchain
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-gnu
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-aarch64
+      - name: cargo build --release --target aarch64-unknown-linux-gnu
+        run: cargo build --release --target aarch64-unknown-linux-gnu
+      - name: Strip, size-check, and stage artifact
+        run: |
+          set -euo pipefail
+          BIN=target/aarch64-unknown-linux-gnu/release/proteus
+          aarch64-linux-gnu-strip "$BIN"
+          SIZE=$(wc -c < "$BIN")
+          echo "PROTEUS_BINARY_SIZE_BYTES=${SIZE}"
+          if [ "$SIZE" -gt 3000000 ]; then
+            echo "FAIL: stripped aarch64 proteus binary is ${SIZE} bytes, exceeds 3,000,000 byte cap" >&2
+            exit 1
+          fi
+          mkdir -p dist-out
+          cp "$BIN" dist-out/proteus-aarch64-unknown-linux-gnu
+          ( cd dist-out && sha256sum proteus-aarch64-unknown-linux-gnu > proteus-aarch64-unknown-linux-gnu.sha256 )
+      - uses: actions/upload-artifact@v4
+        with:
+          name: proteus-aarch64
+          path: dist-out/*
+          if-no-files-found: error
+          retention-days: 7
+
+  # Collect both per-arch artifact bundles and publish a single GitHub Release.
+  # Runs only after both build jobs succeed; if either fails, no release is
+  # cut. softprops/action-gh-release@v2 is pinned to the major version per
+  # action best practice.
+  publish:
+    name: publish release
+    needs: [build-x86_64, build-aarch64]
+    runs-on: ubuntu-latest
+    steps:
+      # No checkout needed: softprops/action-gh-release reads the tag/SHA from
+      # the workflow context, and we attach files from the downloaded artifacts.
+      - name: Download x86_64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: proteus-x86_64
+          path: release-assets
+      - name: Download aarch64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: proteus-aarch64
+          path: release-assets
+      - name: List staged release assets
+        run: ls -la release-assets
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release-assets/proteus-x86_64-unknown-linux-gnu
+            release-assets/proteus-x86_64-unknown-linux-gnu.sha256
+            release-assets/proteus-aarch64-unknown-linux-gnu
+            release-assets/proteus-aarch64-unknown-linux-gnu.sha256
+          draft: true
+          generate_release_notes: true
+          fail_on_unmatched_files: true

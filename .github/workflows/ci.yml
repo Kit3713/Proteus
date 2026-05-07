@@ -119,3 +119,45 @@ jobs:
             exit 1
           fi
           echo "OK: stripped proteus binary is ${SIZE} bytes (under 3,000,000 byte cap)"
+
+  # aarch64 cross-compile sanity. Catches dependency churn that breaks ARM
+  # before a release tag tries to build the artifact for real. Runs on plain
+  # ubuntu-latest because cross-compile toolchains are easier to install via
+  # apt than dnf, and this job only needs to prove that the tree still builds
+  # and strips under the 3 MB cap on the secondary architecture.
+  #
+  # We do not run the produced binary (no ARM runner) and we do not gate
+  # other jobs on this one — it's a parallel signal, not a blocker for x86_64.
+  cross-build-aarch64:
+    name: cross-build aarch64
+    runs-on: ubuntu-latest
+    env:
+      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install aarch64 cross-compile toolchain
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-gnu
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: aarch64
+      - name: cargo build --release --target aarch64-unknown-linux-gnu
+        run: cargo build --release --target aarch64-unknown-linux-gnu
+      - name: Strip and enforce 3 MB size cap (aarch64)
+        run: |
+          set -euo pipefail
+          BIN=target/aarch64-unknown-linux-gnu/release/proteus
+          aarch64-linux-gnu-strip "$BIN"
+          SIZE=$(wc -c < "$BIN")
+          echo "PROTEUS_BINARY_SIZE_BYTES=${SIZE}"
+          echo "PROTEUS_BINARY_SIZE_LIMIT_BYTES=3000000"
+          if [ "$SIZE" -gt 3000000 ]; then
+            echo "FAIL: stripped aarch64 proteus binary is ${SIZE} bytes, exceeds 3,000,000 byte cap" >&2
+            exit 1
+          fi
+          echo "OK: stripped aarch64 proteus binary is ${SIZE} bytes (under 3,000,000 byte cap)"
