@@ -1,0 +1,121 @@
+# Proteus CI pipeline.
+#
+# Enforces the project's quality bar from CONTRIBUTING.md "Style and quality
+# bar" and PLAN.md phases A and G:
+#   - cargo fmt --check clean
+#   - cargo clippy --all-targets -- -D warnings clean
+#   - cargo test passes
+#   - cargo build --release succeeds
+#   - stripped release binary is <= 3 MB (hard project invariant)
+#   - cold release build wallclock logged (soft signal, not enforced)
+#
+# Note: until phase A skeleton lands, Cargo.toml does not exist in the repo
+# and the cargo-invoking jobs will fail with "could not find Cargo.toml".
+# That is expected; the workflow exists so it starts passing the moment the
+# skeleton is committed. We deliberately do not gate on Cargo.toml's presence
+# because that would mask real failures later.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# Cancel in-progress runs for the same PR/branch, except on main where every
+# push to the protected branch must complete (release tagging, history).
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  # Format check is libc-independent and fast; runs on plain ubuntu.
+  fmt:
+    name: cargo fmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: cargo fmt --check
+        run: cargo fmt --check
+
+  # Clippy is also libc-independent; runs on plain ubuntu for speed.
+  clippy:
+    name: cargo clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --all-targets -- -D warnings
+
+  # Tests run inside the primary target distro (Fedora 43) so behavior
+  # tracks what users will actually see on the dev host.
+  test:
+    name: cargo test
+    runs-on: ubuntu-latest
+    container: fedora:43
+    steps:
+      - uses: actions/checkout@v4
+      # gcc + pkg-config for crates that link to system libs.
+      # dbus-devel is pre-installed because zbus pulls it in for system-bus
+      # tests starting in phase B; staging it here keeps the container ready
+      # rather than reshuffling the workflow each phase.
+      # openssl-devel covers any TLS-using build script in transitive deps.
+      - name: Install build dependencies
+        run: dnf install -y gcc pkg-config dbus-devel openssl-devel
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo test
+        run: cargo test
+
+  # Release build + size enforcement. Runs in the Fedora container because
+  # the stripped binary size depends on glibc version and Fedora 43 is the
+  # primary target (PLAN.md "CI runner: start with GitHub-hosted Fedora
+  # container, switch to self-hosted only if it hurts").
+  build-and-size:
+    name: build + size check
+    runs-on: ubuntu-latest
+    container: fedora:43
+    steps:
+      - uses: actions/checkout@v4
+      # See test job for rationale on each package.
+      # binutils provides `strip`; coreutils provides `wc`; both are
+      # already in the base image but listed defensively.
+      - name: Install build dependencies
+        run: dnf install -y gcc pkg-config dbus-devel openssl-devel binutils coreutils
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # Time the cold release build. Soft signal only: the README targets
+      # under 60s on the *dev host*, and CI runner perf is not our dev host.
+      # Logged so regressions are visible, but never fails the job.
+      - name: cargo build --release (timed)
+        run: |
+          set -euo pipefail
+          # `time` writes to stderr; capture it so we can echo the line back
+          # with a marker that's easy to grep in CI logs.
+          { time cargo build --release ; } 2> build-time.txt
+          echo "PROTEUS_BUILD_TIME (soft signal, not enforced):"
+          cat build-time.txt
+      # Strip and enforce the 3 MB invariant. 3,000,000 bytes is the hard
+      # project cap from README/CONTRIBUTING/PLAN. CI must fail above it.
+      - name: Strip and enforce 3 MB size cap
+        run: |
+          set -euo pipefail
+          BIN=target/release/proteus
+          strip "$BIN"
+          SIZE=$(wc -c < "$BIN")
+          echo "PROTEUS_BINARY_SIZE_BYTES=${SIZE}"
+          echo "PROTEUS_BINARY_SIZE_LIMIT_BYTES=3000000"
+          if [ "$SIZE" -gt 3000000 ]; then
+            echo "FAIL: stripped proteus binary is ${SIZE} bytes, exceeds 3,000,000 byte cap" >&2
+            exit 1
+          fi
+          echo "OK: stripped proteus binary is ${SIZE} bytes (under 3,000,000 byte cap)"
