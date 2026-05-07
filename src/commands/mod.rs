@@ -4,6 +4,7 @@ pub mod apply;
 pub mod bluetooth_cmd;
 pub mod config_cmd;
 pub mod current;
+pub mod diff;
 pub mod doctor;
 pub mod hostname;
 pub mod original;
