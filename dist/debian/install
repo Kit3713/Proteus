@@ -1,0 +1,13 @@
+target/release/proteus usr/bin
+dist/man/proteus.1 usr/share/man/man1
+dist/completions/proteus.bash usr/share/bash-completion/completions
+dist/completions/proteus.zsh usr/share/zsh/vendor-completions
+dist/completions/proteus.fish usr/share/fish/vendor_completions.d
+dist/systemd/proteus-boot.service lib/systemd/system
+dist/systemd/proteus-check.service lib/systemd/system
+dist/systemd/proteus-check.timer lib/systemd/system
+dist/systemd/proteus-resume.service lib/systemd/system
+dist/systemd/proteus-rotate.service lib/systemd/system
+dist/systemd/proteus-rotate.timer lib/systemd/system
+dist/networkmanager/dispatcher.d/01-proteus etc/NetworkManager/dispatcher.d
+dist/polkit/com.kit3713.proteus.policy usr/share/polkit-1/actions

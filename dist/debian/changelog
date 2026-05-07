@@ -1,0 +1,6 @@
+proteus (0.1.0-1) unstable; urgency=medium
+
+  * Initial Debian packaging for Phase A/B.
+  * MAC rotation, Bluetooth alias, embedded wiki, systemd timers.
+
+ -- Kit3713 <noreply@example.com>  Wed, 06 May 2026 22:34:28 -0500

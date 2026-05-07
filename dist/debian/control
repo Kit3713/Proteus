@@ -1,0 +1,32 @@
+Source: proteus
+Section: net
+Priority: optional
+Maintainer: Kit3713 <noreply@example.com>
+Build-Depends:
+ debhelper-compat (= 13),
+ cargo,
+ rustc (>= 1.85),
+ pkg-config,
+ libdbus-1-dev
+Standards-Version: 4.6.2
+Homepage: https://github.com/Kit3713/Proteus
+Vcs-Git: https://github.com/Kit3713/Proteus.git
+Vcs-Browser: https://github.com/Kit3713/Proteus
+Rules-Requires-Root: no
+
+Package: proteus
+Architecture: amd64 arm64
+Depends:
+ ${shlibs:Depends},
+ ${misc:Depends},
+ network-manager,
+ systemd
+Recommends:
+ bluez,
+ nftables,
+ policykit-1
+Description: Erase network-layer identifiers on Linux
+ Proteus rotates and scrubs the identifiers your laptop broadcasts when
+ joining a network: MAC address, DHCP options 12/60/61/81, IPv6 stable
+ privacy + DUID, hostname, Bluetooth alias, mDNS announcements, and
+ TCP/ICMP stack fingerprint. CLI-first; designed to be GUI-wrappable.
