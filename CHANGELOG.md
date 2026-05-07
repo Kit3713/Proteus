@@ -11,7 +11,16 @@ landed, what is in flight, and what is on the bench. See
 
 ## [Unreleased]
 
-(post-v0.2.6-alpha work lands here)
+(post-v0.2.7-alpha work lands here)
+
+## [0.2.7-alpha] - 2026-05-07
+
+Sixth alpha point release. Closes the remaining issue queue: the high-severity multi-profile NM bug, the medium-severity state-keying bug, and the last low-severity polish item.
+
+### Bug fixes
+- **#122 (high)** `proteus rotate` and `proteus ipv6 apply` now iterate every NM connection profile bound to a device instead of only the first. A laptop with multiple stored Wi-Fi profiles (home / work / café / hotel / conference) used to leak the original MAC and un-rotated DUID through whichever profile didn't get touched. Per-profile failures are logged but don't fail the whole rotate.
+- **#124 (medium)** `state.originals.connections` and `state.managed.connections` are now keyed by NM `connection.uuid` (the only uniqueness guarantee NM offers) instead of `connection.id` (a display string). Two profiles sharing an id no longer overwrite each other's snapshot. Old state.json files have id-keyed entries silently dropped on load — alpha state contract; the next `proteus apply` re-captures originals correctly.
+- **#164 (low)** `proteus config set` warns on stderr when overwriting a value whose existing TOML type doesn't match the parsed-default type. Surfaces the user's typo (e.g. `mac.enabled = "no"`) instead of silently rewriting it.
 
 ## [0.2.6-alpha] - 2026-05-07
 
