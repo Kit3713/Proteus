@@ -536,10 +536,14 @@ Branch on `config_present` (absent → present config; `false` → defaults in e
 
 ## Logging
 
-- Output goes to **journald** via `tracing-journald` when running under systemd (detected by `JOURNAL_STREAM` being set).
-- **Stderr fallback** otherwise (interactive shells, foreground runs).
-- `RUST_LOG` overrides `-v` / `-q`. Standard `tracing` filter syntax: `RUST_LOG=debug`, `RUST_LOG=proteus=trace`.
-- ANSI colors on stderr honor `--no-color` and `NO_COLOR`.
+- **By default, the tracing subscriber is not installed** — every `tracing::*!` call is a no-op. This keeps the cold-start path lean for the common interactive case (errors are surfaced via stderr regardless; tracing only supplies diagnostic hints).
+- The subscriber is installed when **any** of these is true:
+  - `-v` / `--verbose` (any count) — promotes default level to DEBUG/TRACE.
+  - `-q` / `--quiet` (any count) — demotes default level to WARN/ERROR.
+  - `RUST_LOG` is set — standard `tracing` filter syntax: `RUST_LOG=debug`, `RUST_LOG=proteus=trace`, `RUST_LOG=proteus=debug,zbus=warn`.
+  - `JOURNAL_STREAM` is set — running under systemd; output is routed to **journald** via `tracing-journald`.
+- When the subscriber is on and `JOURNAL_STREAM` is unset, output goes to **stderr**. ANSI colors on stderr honor `--no-color` and `NO_COLOR`.
+- `RUST_LOG` overrides `-v` / `-q` when set.
 - Inspect timer-driven runs:
   ```sh
   journalctl -t proteus -n 100

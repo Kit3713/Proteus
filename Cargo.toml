@@ -14,6 +14,14 @@ codegen-units = 1
 panic = "abort"
 strip = true
 
+# `cargo build --profile release-symbols` produces a release-optimized binary
+# with symbols retained, for callgrind / perf / objdump analysis. Same codegen
+# settings as `release`; only the symbol table differs. Don't ship this build.
+[profile.release-symbols]
+inherits = "release"
+strip = false
+debug = "limited"
+
 [dependencies]
 clap = { version = "4", default-features = false, features = ["derive", "std", "help", "usage", "error-context"] }
 serde = { version = "1", features = ["derive"] }

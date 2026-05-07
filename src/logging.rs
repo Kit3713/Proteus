@@ -9,6 +9,22 @@
 //! free.
 //!
 //! See `wiki/cli.md` Logging section for the user-facing surface.
+//!
+//! ## Lazy init
+//!
+//! Default invocations (no `-v`, no `-q`, no `RUST_LOG`, no `JOURNAL_STREAM`)
+//! short-circuit out of [`init`] without touching the global tracing
+//! dispatcher: every `tracing::*!` macro becomes a no-op for the rest of the
+//! process. proteus emits zero info/debug/trace events at the default level,
+//! and the small number of `tracing::warn!` sites are diagnostic hints rather
+//! than primary error output (errors are surfaced via `anyhow`/`eprintln`),
+//! so suppressing them by default lets the cold-start path skip the
+//! `tracing_subscriber::Registry` plus `sharded-slab` allocations entirely.
+//!
+//! Users who want warnings on stderr re-enable them with `-v` (= verbose=1,
+//! DEBUG-and-above) or `RUST_LOG=warn`. Systemd-launched units always get
+//! the journald subscriber via `JOURNAL_STREAM`. See `docs/perf-baseline.md`
+//! for the measured before/after.
 
 use std::str::FromStr;
 
@@ -19,14 +35,22 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
 pub fn init(verbose: u8, quiet: u8, no_color: bool) {
-    let default_level = level_from_counts(verbose, quiet);
-    let filter = build_filter(default_level);
+    // Read the env once; both checks are also used to guard the fast path.
+    let rust_log = std::env::var("RUST_LOG").ok().filter(|s| !s.is_empty());
+    let on_journal = std::env::var_os("JOURNAL_STREAM").is_some();
 
-    // JOURNAL_STREAM is set by systemd when the process is launched as a unit.
+    // Fast path: nothing to log at default settings, so skip the dispatcher
+    // install. See module docs above for the behavior contract.
+    if verbose == 0 && quiet == 0 && rust_log.is_none() && !on_journal {
+        return;
+    }
+
+    let default_level = level_from_counts(verbose, quiet);
+    let filter = build_filter(default_level, rust_log.as_deref());
+
+    // JOURNAL_STREAM is set by systemd when proteus is launched as a unit.
     // Prefer journald there so timer-driven runs are auto-correlated.
-    if std::env::var_os("JOURNAL_STREAM").is_some()
-        && let Ok(layer) = tracing_journald::layer()
-    {
+    if on_journal && let Ok(layer) = tracing_journald::layer() {
         let _ = tracing_subscriber::registry()
             .with(filter)
             .with(layer)
@@ -45,18 +69,19 @@ pub fn init(verbose: u8, quiet: u8, no_color: bool) {
         .try_init();
 }
 
-/// Parse `RUST_LOG` into a `Targets` filter. Falls back to the requested
-/// `default_level` when the environment variable is unset or unparseable.
+/// Build a `Targets` filter, optionally honouring a pre-extracted `RUST_LOG`
+/// directive string. Falls back to the requested `default_level` when
+/// `rust_log` is `None` or empty.
 ///
 /// Supported syntax (a strict subset of `EnvFilter`):
 ///
 /// * `RUST_LOG=debug` — global default level
 /// * `RUST_LOG=proteus=trace` — single-target override
 /// * `RUST_LOG=proteus=debug,zbus=warn` — comma-separated overrides
-fn build_filter(default_level: Level) -> Targets {
+fn build_filter(default_level: Level, rust_log: Option<&str>) -> Targets {
     let default = LevelFilter::from_level(default_level);
-    match std::env::var("RUST_LOG") {
-        Ok(s) if !s.is_empty() => parse_rust_log(&s, default),
+    match rust_log {
+        Some(s) if !s.is_empty() => parse_rust_log(s, default),
         _ => Targets::new().with_default(default),
     }
 }
@@ -144,5 +169,26 @@ mod tests {
         let t = parse_rust_log("", LevelFilter::WARN);
         assert!(t.would_enable("x", &Level::WARN));
         assert!(!t.would_enable("x", &Level::INFO));
+    }
+
+    #[test]
+    fn build_filter_uses_default_when_rust_log_none() {
+        let t = build_filter(Level::INFO, None);
+        assert!(t.would_enable("x", &Level::INFO));
+        assert!(!t.would_enable("x", &Level::DEBUG));
+    }
+
+    #[test]
+    fn build_filter_uses_default_when_rust_log_empty() {
+        let t = build_filter(Level::WARN, Some(""));
+        assert!(t.would_enable("x", &Level::WARN));
+        assert!(!t.would_enable("x", &Level::INFO));
+    }
+
+    #[test]
+    fn build_filter_honours_rust_log() {
+        let t = build_filter(Level::INFO, Some("proteus=debug"));
+        assert!(t.would_enable("proteus", &Level::DEBUG));
+        assert!(!t.would_enable("proteus", &Level::TRACE));
     }
 }
