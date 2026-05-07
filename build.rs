@@ -23,6 +23,10 @@ fn main() {
     let out_dir = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR"));
     let dest = out_dir.join("wiki_index.rs");
 
+    // `cargo:rerun-if-changed=<dir>` only fires on directory-mtime changes
+    // (files added/removed), not on in-place edits to existing files.
+    // Emit one `rerun-if-changed` per file inside the loop so editing an
+    // existing wiki page also triggers a rebuild (issue #165).
     println!("cargo:rerun-if-changed=wiki");
     println!("cargo:rerun-if-changed=build.rs");
 
@@ -30,6 +34,9 @@ fn main() {
     if let Ok(read_dir) = fs::read_dir(&wiki_dir) {
         for entry in read_dir.flatten() {
             let path = entry.path();
+            // Track every file we read so cargo invalidates this script when
+            // any wiki page is edited in place.
+            println!("cargo:rerun-if-changed={}", path.display());
             if path.extension().and_then(OsStr::to_str) != Some("md") {
                 continue;
             }

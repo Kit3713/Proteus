@@ -291,9 +291,24 @@ jobs:
       - name: Install Debian build tooling
         run: |
           set -euo pipefail
+          # Ubuntu 24.04 ships rustc 1.75; debian/control requires >= 1.85
+          # (issue #190). Use rustup to install the pinned toolchain from
+          # rust-toolchain.toml. Don't install the apt rustc/cargo packages
+          # so dpkg-checkbuilddeps falls through to the rustup-provided ones
+          # that we expose on PATH below.
           apt-get install -y --no-install-recommends \
             build-essential devscripts debhelper dh-make fakeroot \
-            rustc cargo pkg-config libdbus-1-dev
+            pkg-config libdbus-1-dev curl
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
+            sh -s -- -y --default-toolchain none --profile minimal
+          source "$HOME/.cargo/env"
+          rustup toolchain install --profile minimal stable
+          # Symlink rustup's rustc/cargo into /usr/local/bin so root, the
+          # builder user, and dpkg-checkbuilddeps all see the same version.
+          ln -sf "$HOME/.cargo/bin/rustc" /usr/local/bin/rustc
+          ln -sf "$HOME/.cargo/bin/cargo" /usr/local/bin/cargo
+          rustc --version
+          cargo --version
       - name: dpkg-buildpackage -us -uc -b
         env:
           # Skip the cargo test invocation in debian/rules; the release
