@@ -42,6 +42,7 @@ entry below, or `proteus wiki search <term>` for full-text search.
 - `troubleshooting` — when things don't go as expected
 - `real-world-testing` — verifying Proteus on a coffee shop, hotel, or conference network
 - `distro-support` — supported init systems, backends, architectures, and package layouts
+- `backend` — the `NetworkBackend` trait (NM / networkd / raw): selection, status, what each impl covers
 - `uninstall` — clean removal
 
 ## Reference

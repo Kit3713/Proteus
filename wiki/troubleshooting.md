@@ -166,6 +166,56 @@ When in doubt, look at the journal.
 - Run any command with `-vv` for debug: `proteus -vv status`. Verbose output goes to stderr and (under systemd) to journald.
 - Status in JSON for programmatic inspection: `proteus status --json | jq .`. Same data the CLI uses.
 
+## Backend × init-system × persona symptom matrix
+
+Quick-reference for "X broke; what's the likely culprit?" Read across the row, then `proteus wiki <linked-page>` for depth.
+
+### By backend
+
+| Backend | Symptom | Most likely cause | First action |
+|---|---|---|---|
+| `nm` | `proteus rotate` skipped: `pinned to ...` | Profile pin from prior `proteus pin` | `proteus unpin <iface-or-conn>` |
+| `nm` | `set_cloned_mac failed: ... NoSecrets` | NM secrets-merge contention (rare; see #207) | Re-run; `proteus -vv rotate` to surface the section |
+| `nm` | `proteus dhcp renew` exits "Reapply rejected" | NM ≤1.0 doesn't support `Reapply`; Proteus falls back to Disconnect+Activate | Expected; the lease still rotates |
+| `networkd` | every mutating command bails `not yet implemented` | Backend write paths are stubs in v0.3 | Pin `[backend] driver = "nm"` if NM is present, else wait for the M1 follow-up |
+| `raw` | same | same | same |
+| any | doctor `Backend: no backend available` | No NM, no networkd, no `ip` on `$PATH` | `apt install iproute2` / `dnf install iproute` / equivalent |
+| any | rotate exits 75 | State-lock contention (issue #211) | Wait (timer/dispatcher overlap); raise `PROTEUS_LOCK_TIMEOUT_MS` if persistent |
+
+### By init system
+
+| Init | Symptom | Cause | Action |
+|---|---|---|---|
+| systemd | `proteus-rotate.timer` not firing | Unit not enabled | `systemctl enable --now proteus-rotate.timer`; verify with `proteus timer status` |
+| systemd | rotate fires but reports "no factory MAC captured for ..." | #208 — driver lacks phy80211 + `ETHTOOL_GPERMADDR` | Expected; revert is a no-op for that iface — operator should record the original MAC manually before any cloning if revert matters |
+| systemd | hostname doesn't change | `hostnamed` not active or polkit blocked | `systemctl status systemd-hostnamed`; `proteus -vv hostname rotate` to surface DBus error |
+| OpenRC | `rc-service proteus start` fails with "binary not found" | Alpine package paths differ from `/usr/bin/proteus` | Verify the APKBUILD installs to `/usr/bin/proteus`; symlink if a packaging variant differs |
+| OpenRC | periodic rotate not firing | `crond` provider not running | `rc-service crond start && rc-update add crond default` |
+| Runit | service flapping | `run` script's `sleep` argument too short | Edit `/etc/sv/proteus/run` to widen the supervised loop |
+| sysvinit | LSB script reports degraded | Old `/etc/init.d` pattern doesn't match systemd's expectations | `proteus -vv apply` to bypass the init wrapper while debugging |
+
+### By persona
+
+| Persona kind | Symptom | Cause | Action |
+|---|---|---|---|
+| `iphone-15` | `nmap -O` still says Linux | Persona shapes L2/L3/L4 + DHCP + mDNS, **not** TLS / payload — see `wiki/personas` | Verify the persona via `tcpdump 'port 67 or port 68'` for the DHCP fingerprint instead |
+| any stealth | hostname doesn't render the persona template | `[persona] active = "..."` not set in config | `proteus persona use <id> --yes` |
+| any stealth | DHCP option 60 missing in lease | The connection's `dhcp-vendor-class-identifier` is being suppressed by `[dhcp] suppress_vendor_class = true` (per-knob beats persona) | Either set `suppress_vendor_class = false` for that profile or accept persona is opt-in over your stricter config |
+| randomizer | rotation cadence shorter than expected | Per-SSID override (`[per_ssid."<ssid>"].rotate_interval`) is winning | `proteus ssid show <ssid>` to see the resolved policy + source trace |
+| custom user | `proteus persona use my-foo` errors `"persona 'my-foo' not found"` | File at `/etc/proteus/personas/my-foo.toml` missing or not validated | `proteus persona validate /etc/proteus/personas/my-foo.toml` for field-level errors |
+
+### By exit code
+
+| Code | Meaning | First action |
+|---|---|---|
+| 0 | success | — |
+| 1 | generic error | read stderr, then `proteus -vv <last-cmd>` |
+| 64 | not implemented (stub) | check the roadmap; pin a different backend |
+| 65 | config error or `--yes` missing | re-read the message; the helper text names the wiki page |
+| 66 | permission error (not root) | `sudo proteus ...` |
+| 70 | system not supported | doctor matrix; install the missing daemon |
+| 75 | lock contention | retry; `PROTEUS_LOCK_TIMEOUT_MS=10000` if persistent |
+
 ## Cross-refs
 
 - `proteus wiki doctor` — what each `proteus doctor` check does and how to read the output.

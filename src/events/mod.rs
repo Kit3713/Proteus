@@ -22,30 +22,28 @@
 //! - The [`RotationTrigger`] payload enum that every source emits.
 //! - The [`EventHandler`] trait + [`EventRegistry`] that callers use to
 //!   subscribe and dispatch.
-//! - Per-source stub modules under [`source`] that document the
-//!   subscription mechanism (NM `StateChanged`, rfkill notifications,
-//!   `iw event` netlink, captive-portal poller hooks) but don't yet
-//!   wire into the live event streams. The follow-up PR replaces each
-//!   stub `start` with the real subscription.
+//! - Per-source modules under [`source`] that wrap their OS-level
+//!   subscriptions and emit triggers into the registry. Each source
+//!   ships in two flavours: production (real DBus/netlink, gracefully
+//!   degrading to `Unsupported` when capabilities are missing) and a
+//!   mock variant tests use to inject canned events.
+//! - The `proteus events run` subcommand (under `crate::commands::events`)
+//!   that builds an [`EventRegistry`], registers a default rotation
+//!   handler against [`crate::commands::rotate::run_with_backend`], and
+//!   starts every available source.
 //!
-//! ## What this module deliberately does NOT yet do
+//! ## Compatibility with the dispatcher script
 //!
-//! - It does not wire into `proteus apply` or the dispatcher script.
-//!   Other code can register handlers against an `EventRegistry`, but
-//!   nothing yet builds the long-lived registry process. That's the
-//!   integration follow-up — once the live sources land we'll spin up
-//!   a tokio runtime in `proteus daemon` (or fold it into the existing
-//!   timer process) and route triggers through the registry.
-//! - It does not subscribe to the [`crate::backend::NetworkBackend`]
-//!   trait's event stream — that method doesn't exist on the trait
-//!   yet. The follow-up adds `fn watch_events(&self) -> Stream<...>`
-//!   alongside the source-level subscriptions.
-//!
-//! Keeping the surface library-only now means callers in adjacent
-//! milestones (e.g. captive portal, persona application) can begin
-//! emitting handler types without waiting for the wiring PR.
+//! The NM dispatcher under `dist/networkmanager/dispatcher.d/01-proteus`
+//! keeps its existing role: per-event `proteus rotate-if-needed` calls
+//! triggered directly by NM. The long-lived `proteus events run` daemon
+//! is opt-in via a separate systemd unit (`dist/systemd/proteus-events.service`)
+//! and is gated by `[events] enabled`. Operators on systems with the
+//! dispatcher in place don't need both — the daemon is for distros
+//! without the NM dispatcher (networkd, raw) and for triggers the
+//! dispatcher doesn't expose (link-flap, reg-domain, portal-auth).
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
 
@@ -107,10 +105,18 @@ pub trait EventHandler: Send + Sync {
 
 /// Holds the registered handlers and routes triggers to them.
 ///
-/// The registry is `Send + Sync` so the (eventual) source threads can
-/// fire triggers from whatever runtime they live on. Handlers are
-/// invoked serially; if a handler does long work it should spawn its
-/// own task.
+/// The registry is `Send + Sync` so source tasks can fire triggers
+/// from whatever runtime they live on. Handlers are invoked serially
+/// in registration order; if a handler does long work it should spawn
+/// its own task.
+///
+/// Callers that want to share one registry across multiple source
+/// tasks wrap it in an [`Arc`] and clone the handle into each task
+/// — the inner `Mutex` makes that safe. The `&self` shape on `register`
+/// is intentional: the orchestrator pushes every handler before it
+/// starts a source, so contention on the registration mutex is a
+/// non-issue in practice and the `Arc<EventRegistry>` story stays
+/// simple.
 pub struct EventRegistry {
     handlers: Mutex<Vec<Box<dyn EventHandler>>>,
 }
@@ -124,13 +130,23 @@ impl EventRegistry {
         }
     }
 
+    /// Build an `Arc<EventRegistry>` for the orchestrator. Convenience
+    /// — every long-lived source path needs a clonable handle, and
+    /// `Arc::new(EventRegistry::new())` shows up at every call site.
+    pub fn shared() -> Arc<Self> {
+        Arc::new(Self::new())
+    }
+
     /// Add a handler. Order of registration is the order of dispatch
     /// — register more-important handlers first if a later one might
     /// short-circuit (the registry doesn't propagate that today, but
     /// the convention is worth establishing).
-    pub fn register(&mut self, handler: Box<dyn EventHandler>) {
-        // Mutex acquired only to satisfy the &mut self → &Mutex shape;
-        // realistically callers register up front and then read.
+    ///
+    /// `&self` (not `&mut self`) so callers can register against an
+    /// `Arc<EventRegistry>` without juggling `Arc::get_mut`. The inner
+    /// `Mutex` serialises pushes; in practice every register call
+    /// happens before the first source starts, so contention is nil.
+    pub fn register(&self, handler: Box<dyn EventHandler>) {
         if let Ok(mut h) = self.handlers.lock() {
             h.push(handler);
         }
@@ -196,7 +212,7 @@ mod tests {
     fn registry_dispatches_to_registered_handler() {
         let count = Arc::new(AtomicUsize::new(0));
         let last = Arc::new(Mutex::new(None));
-        let mut reg = EventRegistry::new();
+        let reg = EventRegistry::new();
         reg.register(Box::new(CountingHandler {
             count: Arc::clone(&count),
             last_kind: Arc::clone(&last),
@@ -219,7 +235,7 @@ mod tests {
         let c2 = Arc::new(AtomicUsize::new(0));
         let last1 = Arc::new(Mutex::new(None));
         let last2 = Arc::new(Mutex::new(None));
-        let mut reg = EventRegistry::new();
+        let reg = EventRegistry::new();
         reg.register(Box::new(CountingHandler {
             count: Arc::clone(&c1),
             last_kind: Arc::clone(&last1),
@@ -254,7 +270,7 @@ mod tests {
         }
         let count = Arc::new(AtomicUsize::new(0));
         let last = Arc::new(Mutex::new(None));
-        let mut reg = EventRegistry::new();
+        let reg = EventRegistry::new();
         reg.register(Box::new(AlwaysFails));
         reg.register(Box::new(CountingHandler {
             count: Arc::clone(&count),

@@ -191,15 +191,15 @@ Cross-cutting polish; runs alongside the other milestones.
 
 ### Security
 
-- ⏳ Independent DBus-surface review (the old roadmap's ⏳ item) — write `docs/security/dbus-surface.md` enumerating every DBus method called, every property read, every signal subscribed-to with arg validation guarantees. Solicit external review against this artifact rather than against the source.
+- ✅ Independent DBus-surface review — write `docs/security/dbus-surface.md` enumerating every DBus method called, every property read, every signal subscribed-to with arg validation guarantees. Solicit external review against this artifact rather than against the source.
 - ✅ Threat model expansion in `wiki/threat-model.md` for the persona feature (already noted in Milestone 2).
 - ⏳ Bypass hardening pass: review every place we shell out (still after the L-3 interface-name fix); audit every parser added since the May 2026 audit.
 
 ### Docs
 
 - ⏳ Audit pass: every error string in `src/error.rs` and every `bail!` / `anyhow!` callsite carries a `wiki <page>` hint (the ⏳ Phase F item).
-- ⏳ Expand `wiki/troubleshooting.md` with a symptom → cause → fix table per backend, per init system, per persona.
-- ⏳ New pages: `wiki/personas.md`, `wiki/backend.md`, `wiki/distro-support.md`, `wiki/per-ssid.md`.
+- ✅ Expand `wiki/troubleshooting.md` with a symptom → cause → fix table per backend, per init system, per persona.
+- ✅ New pages: `wiki/personas.md`, `wiki/backend.md`, `wiki/distro-support.md`, `wiki/per-ssid.md`.
 
 ### Bug-fix queue (rolling)
 
