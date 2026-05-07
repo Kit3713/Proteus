@@ -25,3 +25,6 @@ tracing-journald = "0.3"
 anyhow = "1"
 thiserror = "2"
 include_dir = "0.7"
+zbus = { version = "5", default-features = false, features = ["tokio"] }
+tokio = { version = "1", default-features = false, features = ["rt", "macros", "sync", "time"] }
+getrandom = "0.2"

@@ -1,14 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::Result;
 use serde::Serialize;
 
 use crate::exit;
 use crate::state::State;
-
-const DEFAULT_STATE_PATH: &str = "/var/lib/proteus/state.json";
 
 #[derive(Serialize)]
 struct EmptyReport {
@@ -18,9 +16,7 @@ struct EmptyReport {
 }
 
 pub fn run(json: bool, override_path: Option<&Path>) -> Result<u8> {
-    let path: PathBuf = override_path
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from(DEFAULT_STATE_PATH));
+    let path = super::state_path(override_path);
 
     match State::load(&path)? {
         None => {

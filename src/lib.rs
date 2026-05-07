@@ -4,6 +4,8 @@ pub mod cli;
 pub mod commands;
 pub mod config;
 pub mod logging;
+pub mod mac;
+pub mod nm;
 pub mod state;
 pub mod version;
 pub mod wiki;
@@ -43,7 +45,7 @@ mod tests {
     }
 
     #[test]
-    fn version_phase_is_a() {
-        assert_eq!(version::PHASE, 'A');
+    fn version_phase_is_b() {
+        assert_eq!(version::PHASE, 'B');
     }
 }
