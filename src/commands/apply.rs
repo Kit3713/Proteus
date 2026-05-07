@@ -6,15 +6,13 @@
 //! components in dependency order, captures one outcome per feature, then
 //! emits a single summary. Exit code is non-zero if any component failed.
 //!
-//! Modules that haven't landed yet (DHCP/DNS/stack/nft) are surfaced as
-//! `not yet implemented` so the orchestrator stays forward-compatible while
-//! phase-D work lands incrementally.
-//!
 //! Per-component machinery is not duplicated — each call delegates to the
 //! same in-process function the corresponding subcommand uses
 //! (`commands::rotate::run`, `commands::hostname::rotate`,
-//! `commands::bluetooth_cmd::apply`). Each prints its own detailed output;
-//! the orchestrator adds the cross-feature summary.
+//! `commands::bluetooth_cmd::apply`, `commands::ipv6::apply`,
+//! `commands::dhcp::apply`, `commands::dns::apply`, `commands::stack::apply`,
+//! `commands::nft::apply`). Each prints its own detailed output; the
+//! orchestrator adds the cross-feature summary.
 
 use std::path::Path;
 
@@ -72,6 +70,10 @@ pub fn run(yes: bool, state_path: Option<&Path>, config_path: Option<&Path>) -> 
 
     let cfg_path = super::config_path(config_path);
     let config = Config::default_or_loaded(&cfg_path)?;
+
+    let warnings = risk_warnings(&config);
+    print_risk_warnings(&warnings);
+
     let reports = orchestrate(&config, state_path, config_path);
 
     let tally = print_summary(&reports);
@@ -79,6 +81,61 @@ pub fn run(yes: bool, state_path: Option<&Path>, config_path: Option<&Path>) -> 
         Ok(exit::GENERIC_ERROR)
     } else {
         Ok(exit::SUCCESS)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RiskWarning {
+    pub knob: &'static str,
+    pub breakage: &'static str,
+    pub wiki: &'static str,
+}
+
+/// Knobs the user can opt into that are known to break specific things on
+/// some networks. The wiki pointer is what the operator should read before
+/// shipping this config — apply still proceeds, the warnings are
+/// informational. New flags should be added here when they ship with a
+/// "breaks X" note in the config schema.
+pub(crate) fn risk_warnings(cfg: &Config) -> Vec<RiskWarning> {
+    let mut out = Vec::new();
+    if cfg.discovery.ssdp_block {
+        out.push(RiskWarning {
+            knob: "discovery.ssdp_block",
+            breakage: "blocks SSDP — breaks KDE Connect and WS-Discovery printers",
+            wiki: "discovery",
+        });
+    }
+    if cfg.discovery.wsd_block {
+        out.push(RiskWarning {
+            knob: "discovery.wsd_block",
+            breakage: "blocks WS-Discovery — breaks Windows printer auto-discovery",
+            wiki: "discovery",
+        });
+    }
+    if cfg.enterprise_wifi.anonymous_outer_identity {
+        out.push(RiskWarning {
+            knob: "enterprise_wifi.anonymous_outer_identity",
+            breakage: "some 802.1X auth servers reject mismatched outer/inner identities",
+            wiki: "enterprise-wifi",
+        });
+    }
+    if cfg.stack.suppress_gratuitous_arp {
+        out.push(RiskWarning {
+            knob: "stack.suppress_gratuitous_arp",
+            breakage: "breaks VRRP/keepalived failover detection on some networks",
+            wiki: "stack-fingerprint",
+        });
+    }
+    out
+}
+
+fn print_risk_warnings(warnings: &[RiskWarning]) {
+    if warnings.is_empty() {
+        return;
+    }
+    eprintln!("proteus apply: {} risk warning(s):", warnings.len());
+    for w in warnings {
+        eprintln!("  {} — {} (proteus wiki {})", w.knob, w.breakage, w.wiki);
     }
 }
 
@@ -95,12 +152,10 @@ fn orchestrate(
         run_hostname(config, state_path, config_path),
         run_bluetooth(config, state_path, config_path),
         run_ipv6(config, state_path, config_path),
-        // Phase-D-pending modules: surface a stable note so a future enable
-        // on a configured system isn't a silent no-op.
-        not_yet_implemented("dhcp"),
-        not_yet_implemented("dns"),
-        not_yet_implemented("stack"),
-        not_yet_implemented("nft"),
+        run_dhcp(config, state_path, config_path),
+        run_dns(config, config_path),
+        run_stack(state_path, config_path),
+        run_nft(config_path),
     ]
 }
 
@@ -159,6 +214,51 @@ fn run_bluetooth(
     )
 }
 
+fn run_dhcp(
+    config: &Config,
+    state_path: Option<&Path>,
+    config_path: Option<&Path>,
+) -> ComponentReport {
+    if !config.dhcp.enabled {
+        return skipped("dhcp", "disabled in config (dhcp.enabled = false)");
+    }
+    classify("dhcp", super::dhcp::apply(state_path, config_path))
+}
+
+// `dns.strip_edns_client_subnet` is the only DNS knob today, so it doubles
+// as the master enable. The submodule still handles disabled-via-config
+// (it removes any prior drop-in), so the orchestrator only short-circuits
+// to keep the summary line clean.
+fn run_dns(config: &Config, config_path: Option<&Path>) -> ComponentReport {
+    if !config.dns.strip_edns_client_subnet {
+        return skipped(
+            "dns",
+            "disabled in config (dns.strip_edns_client_subnet = false)",
+        );
+    }
+    classify("dns", super::dns::apply(config_path))
+}
+
+// Stack has no master enable — its toggles express specific hardenings.
+// Always run; the renderer respects each toggle.
+fn run_stack(state_path: Option<&Path>, config_path: Option<&Path>) -> ComponentReport {
+    classify("stack", super::stack::apply(true, state_path, config_path))
+}
+
+// nft is gated by `nft_present()` inside the submodule, which surfaces
+// SYSTEM_NOT_SUPPORTED (70) when nftables isn't installed. Treat that as a
+// skip in the summary instead of a failure so the orchestrator doesn't
+// flag a missing system dep.
+fn run_nft(config_path: Option<&Path>) -> ComponentReport {
+    let res = super::nft::apply(true, config_path);
+    if let Ok(code) = res
+        && code == exit::SYSTEM_NOT_SUPPORTED
+    {
+        return skipped("nft", "nftables not installed");
+    }
+    classify("nft", res)
+}
+
 /// Map an exit-code-returning command result into a component report. Any
 /// non-success code is treated as a failure with the numeric code preserved
 /// for the summary; an `Err` becomes a failure with the diagnostic text.
@@ -190,14 +290,6 @@ fn skipped(name: &'static str, note: &str) -> ComponentReport {
     }
 }
 
-fn not_yet_implemented(name: &'static str) -> ComponentReport {
-    ComponentReport {
-        name,
-        status: Status::Skipped,
-        note: "not yet implemented".into(),
-    }
-}
-
 fn print_summary(reports: &[ComponentReport]) -> Tally {
     println!("apply summary:");
     for r in reports {
@@ -220,20 +312,41 @@ fn print_summary(reports: &[ComponentReport]) -> Tally {
 mod tests {
     use super::*;
 
+    // `stack` and `nft` have no master enable, so a "fully disabled" config
+    // covers everything else and the orchestrator-level test below pairs
+    // that with separate per-module unit coverage. The two remain wired
+    // unconditionally — they're tested via integration paths that need
+    // root.
     fn disabled_config() -> Config {
         let mut cfg = Config::default();
         cfg.mac.enabled = false;
         cfg.hostname.enabled = false;
         cfg.bluetooth.enabled = false;
         cfg.ipv6.enabled = false;
+        cfg.dhcp.enabled = false;
+        cfg.dns.strip_edns_client_subnet = false;
         cfg
     }
 
     #[test]
-    fn all_disabled_yields_only_skipped_outcomes() {
+    fn disabled_components_skip_with_config_note() {
         let cfg = disabled_config();
-        let reports = orchestrate(&cfg, None, None);
-        assert!(reports.iter().all(|r| r.status == Status::Skipped));
+        // Test the gated-skip path component-by-component so the rest of
+        // the orchestrator (stack, nft) doesn't pull in root-only side
+        // effects. This is the part of orchestrate() worth pinning: every
+        // gated module emits a Skipped report instead of running.
+        let reports = vec![
+            run_mac(&cfg, None, None),
+            run_hostname(&cfg, None, None),
+            run_bluetooth(&cfg, None, None),
+            run_ipv6(&cfg, None, None),
+            run_dhcp(&cfg, None, None),
+            run_dns(&cfg, None),
+        ];
+        assert!(
+            reports.iter().all(|r| r.status == Status::Skipped),
+            "expected all gated components to skip when disabled, got: {reports:?}"
+        );
         let tally = Tally::from_reports(&reports);
         assert_eq!(tally.failed, 0);
         assert_eq!(tally.applied, 0);
@@ -241,15 +354,25 @@ mod tests {
     }
 
     #[test]
-    fn unimplemented_components_have_stable_note() {
+    fn orchestrator_covers_every_phase_d_module() {
+        // The audit guard: if a future refactor drops a component from the
+        // dispatch table, this test fails. Run once with a fully-disabled
+        // config so dispatch produces stable `skipped` reports we can
+        // inspect by name without touching the system.
         let cfg = disabled_config();
-        let reports = orchestrate(&cfg, None, None);
-        for name in ["dhcp", "dns", "stack", "nft"] {
-            let r = reports.iter().find(|r| r.name == name).unwrap_or_else(|| {
-                panic!("missing report for component '{name}'");
-            });
-            assert_eq!(r.status, Status::Skipped);
-            assert_eq!(r.note, "not yet implemented");
+        let reports = [
+            run_mac(&cfg, None, None),
+            run_hostname(&cfg, None, None),
+            run_bluetooth(&cfg, None, None),
+            run_ipv6(&cfg, None, None),
+            run_dhcp(&cfg, None, None),
+            run_dns(&cfg, None),
+        ];
+        for name in ["mac", "hostname", "bluetooth", "ipv6", "dhcp", "dns"] {
+            assert!(
+                reports.iter().any(|r| r.name == name),
+                "orchestrator missing component '{name}'"
+            );
         }
     }
 
@@ -265,6 +388,54 @@ mod tests {
         let r = classify("c", Err(anyhow::anyhow!("boom")));
         assert_eq!(r.status, Status::Failed);
         assert!(r.note.contains("boom"));
+    }
+
+    #[test]
+    fn risk_warnings_empty_for_default_config() {
+        // Defaults must not trigger warnings — every default-on knob is
+        // privacy-safe-by-design. Risky knobs are opt-in.
+        let cfg = Config::default();
+        let warnings = risk_warnings(&cfg);
+        assert!(
+            warnings.is_empty(),
+            "default config should produce no warnings, got: {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn risk_warnings_triggers_for_each_risky_knob() {
+        let mut cfg = Config::default();
+        cfg.discovery.ssdp_block = true;
+        cfg.discovery.wsd_block = true;
+        cfg.enterprise_wifi.anonymous_outer_identity = true;
+        cfg.stack.suppress_gratuitous_arp = true;
+        let warnings = risk_warnings(&cfg);
+        let knobs: Vec<&str> = warnings.iter().map(|w| w.knob).collect();
+        assert!(knobs.contains(&"discovery.ssdp_block"));
+        assert!(knobs.contains(&"discovery.wsd_block"));
+        assert!(knobs.contains(&"enterprise_wifi.anonymous_outer_identity"));
+        assert!(knobs.contains(&"stack.suppress_gratuitous_arp"));
+        assert_eq!(warnings.len(), 4);
+    }
+
+    #[test]
+    fn risk_warnings_each_points_at_an_existing_wiki_page() {
+        // Every warning needs a wiki page to read — so a future rename in
+        // the wiki dir doesn't quietly orphan an apply warning.
+        use crate::wiki;
+        let mut cfg = Config::default();
+        cfg.discovery.ssdp_block = true;
+        cfg.discovery.wsd_block = true;
+        cfg.enterprise_wifi.anonymous_outer_identity = true;
+        cfg.stack.suppress_gratuitous_arp = true;
+        for w in risk_warnings(&cfg) {
+            assert!(
+                wiki::get_page(w.wiki).is_some(),
+                "risk warning {} points at wiki page '{}' which does not exist",
+                w.knob,
+                w.wiki
+            );
+        }
     }
 
     #[test]

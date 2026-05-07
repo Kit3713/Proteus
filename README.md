@@ -1,6 +1,6 @@
 # Proteus
 
-A Rust CLI that reduces every identifier your Linux laptop can locally control when joining or transmitting on a network. MAC addresses, DHCP options, IPv6 derivations, hostname, mDNS chatter, TCP fingerprint quirks, Bluetooth name, and the parts of the RF surface software can shape (TX power, probe-request behavior). Rotates MACs on a schedule and on connectivity loss. Single binary, embedded wiki, runs on Fedora 43+ with systemd and NetworkManager.
+A Rust CLI that reduces every identifier your Linux computer can locally control when joining or transmitting on a network. MAC addresses, DHCP options, IPv6 derivations, hostname, mDNS chatter, TCP fingerprint quirks, Bluetooth name, and the parts of the RF surface software can shape (TX power, probe-request behavior). Rotates MACs on a schedule and on connectivity loss. Single binary, embedded wiki, runs on Fedora 43+ with systemd and NetworkManager.
 
 Named after the shapeshifter.
 
