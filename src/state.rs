@@ -2,11 +2,12 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::Write;
 use std::path::Path;
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+
+use crate::commands;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -69,23 +70,9 @@ impl State {
         Ok(Self::load(path)?.unwrap_or_default())
     }
 
-    // Atomic write: temp file + rename.
     pub fn save(&self, path: &Path) -> Result<()> {
-        let parent = path
-            .parent()
-            .context("state path has no parent directory")?;
-        fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
-        let tmp = path.with_extension("json.tmp");
         let bytes = serde_json::to_vec_pretty(self)?;
-        {
-            let mut f =
-                fs::File::create(&tmp).with_context(|| format!("creating {}", tmp.display()))?;
-            f.write_all(&bytes)?;
-            f.sync_all()?;
-        }
-        fs::rename(&tmp, path)
-            .with_context(|| format!("renaming {} to {}", tmp.display(), path.display()))?;
-        Ok(())
+        commands::write_atomic(path, &bytes)
     }
 }
 

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 pub mod bluetooth_cmd;
+pub mod config_cmd;
 pub mod current;
 pub mod original;
 pub mod pin;
@@ -13,6 +14,7 @@ pub mod timer;
 pub mod unpin;
 pub mod wiki_cmd;
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 pub(crate) const DEFAULT_STATE_PATH: &str = "/var/lib/proteus/state.json";
@@ -92,6 +94,23 @@ pub(crate) fn print_json<T: Serialize>(value: &T) -> Result<()> {
     let mut handle = stdout.lock();
     serde_json::to_writer_pretty(&mut handle, value)?;
     println!();
+    Ok(())
+}
+
+/// Atomic file write: temp file + sync + rename. Used by both state and
+/// config writers so we share one durability story.
+pub(crate) fn write_atomic(path: &Path, contents: &[u8]) -> Result<()> {
+    let parent = path.parent().context("path has no parent directory")?;
+    std::fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+    let tmp = path.with_extension("tmp");
+    {
+        let mut f =
+            std::fs::File::create(&tmp).with_context(|| format!("creating {}", tmp.display()))?;
+        f.write_all(contents)?;
+        f.sync_all()?;
+    }
+    std::fs::rename(&tmp, path)
+        .with_context(|| format!("renaming {} to {}", tmp.display(), path.display()))?;
     Ok(())
 }
 

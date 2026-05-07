@@ -149,6 +149,11 @@ pub enum Command {
         #[command(subcommand)]
         action: TimerAction,
     },
+    /// Manage Proteus configuration without hand-editing config.toml.
+    Config {
+        #[command(subcommand)]
+        action: ConfigAction,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -212,6 +217,67 @@ pub enum BluetoothAction {
     },
 }
 
+#[derive(Subcommand, Debug)]
+pub enum ConfigAction {
+    /// Print the active config (alias for `proteus show-config`).
+    Show {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Print a single config value (e.g. `mac.enabled`).
+    Get {
+        /// Dotted key, e.g. `mac.rotation_interval`.
+        key: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Set a single config value. Requires root + --yes.
+    Set {
+        /// Dotted key, e.g. `mac.rotation_interval`.
+        key: String,
+        /// New value (string, integer, bool — coerced to the existing type).
+        value: String,
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Enable a component (shorthand for `set <component>.enabled true`).
+    Enable {
+        /// Section name, e.g. `mac`, `hostname`.
+        component: String,
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Disable a component, optionally recording a reason as a comment.
+    Disable {
+        /// Section name, e.g. `dns`.
+        component: String,
+        /// Free-form reason; written above the section as a `# Proteus: disabled` comment.
+        #[arg(long)]
+        reason: Option<String>,
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Open $EDITOR on /etc/proteus/config.toml; validate on save.
+    Edit,
+    /// Parse the current config; report errors with file context.
+    Validate {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Reset a section (or the whole file) to built-in defaults. Requires --yes.
+    Reset {
+        /// Optional section to reset; omit to reset everything.
+        section: Option<String>,
+        #[arg(long)]
+        yes: bool,
+    },
+    /// List every supported config key with its type and default.
+    Keys {
+        #[arg(long)]
+        json: bool,
+    },
+}
+
 pub fn run() -> ExitCode {
     let cli = Cli::parse();
     logging::init(cli.verbose, cli.quiet, cli.no_color);
@@ -272,9 +338,29 @@ pub fn run() -> ExitCode {
             TimerAction::Reset(a) => commands::timer::run_reset(&a.name),
             TimerAction::Logs { name, lines } => commands::timer::run_logs(&name, lines),
         },
+        Command::Config { action } => dispatch_config(action, cli.config.as_deref()),
         Command::Wiki { page } => commands::wiki_cmd::run(page.as_deref(), cli.no_color),
         Command::Help { feature } => commands::wiki_cmd::run_help(feature.as_deref(), cli.no_color),
     };
 
     ExitCode::from(code.unwrap_or(exit::GENERIC_ERROR))
+}
+
+fn dispatch_config(action: ConfigAction, config: Option<&std::path::Path>) -> anyhow::Result<u8> {
+    use commands::config_cmd as c;
+    match action {
+        ConfigAction::Show { json } => c::show(json, config),
+        ConfigAction::Get { key, json } => c::get(&key, json, config),
+        ConfigAction::Set { key, value, yes } => c::set(&key, &value, yes, config),
+        ConfigAction::Enable { component, yes } => c::enable(&component, yes, config),
+        ConfigAction::Disable {
+            component,
+            reason,
+            yes,
+        } => c::disable(&component, reason.as_deref(), yes, config),
+        ConfigAction::Edit => c::edit(config),
+        ConfigAction::Validate { json } => c::validate(json, config),
+        ConfigAction::Reset { section, yes } => c::reset(section.as_deref(), yes, config),
+        ConfigAction::Keys { json } => c::keys(json),
+    }
 }

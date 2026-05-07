@@ -36,6 +36,41 @@ Flags: `--yes` proceed without confirmation.
 Exit: `0` success · `1` generic · `64` stub · `65` config error · `66` not root · `70` system unsupported.
 Example: `sudo proteus apply --yes`
 
+### `config` — phase **A**
+
+```
+proteus config <SUBCOMMAND> [args...]
+```
+
+Manage `/etc/proteus/config.toml` from the CLI instead of hand-editing. Read sub-subcommands (`show`, `get`, `keys`, `validate`) work as any user. Mutating sub-subcommands (`set`, `enable`, `disable`, `edit`, `reset`) require root and explicit `--yes`. Round-trips through `toml_edit` so user comments survive.
+
+Sub-subcommands:
+
+- `show [--json]` — print active config; alias for `proteus show-config`. Exit `0` success · `65` parse failure · `66` permission denied.
+- `get <key> [--json]` — print a single dotted key, e.g. `mac.enabled`. Falls back to the built-in default when the user config doesn't set the key. Exit `0` success · `65` unknown key.
+- `set <key> <value> --yes` — coerce `<value>` to the existing key's type (bool/int/string/array) and write atomically. Exit `0` success · `65` unknown key or invalid value · `66` not root.
+- `enable <component> --yes` — set `<component>.enabled = true`. Exit `0` · `65` component has no `enabled` toggle · `66` not root.
+- `disable <component> [--reason <text>] --yes` — set `<component>.enabled = false`. With `--reason`, writes a `# Proteus: disabled at <iso8601> - reason: <text>` comment above the section so `proteus status` can surface it. Exit `0` · `65` · `66`.
+- `edit` — spawn `$VISUAL` or `$EDITOR` (default `vi`) on `/etc/proteus/config.toml`; validate on save and report errors without rolling back. Exit `0` valid · `65` invalid (file saved as-is) · `66` not root.
+- `validate [--json]` — parse the current file; report success or errors with line + column context. Empty/missing config is treated as "defaults in effect" and exits `0`. Exit `0` ok · `65` errors.
+- `reset [<section>] --yes` — reset a single section (or the entire file) to built-in defaults. Other sections are preserved when a section name is given. Exit `0` · `65` unknown section · `66` not root.
+- `keys [--json]` — list every supported key with type and default; the introspectable schema. Exit `0`.
+
+Examples:
+
+```
+proteus config show --json
+proteus config get mac.rotation_interval
+proteus config keys | head -10
+sudo proteus config disable dns --reason "using dnscrypt-proxy" --yes
+sudo proteus config enable bluetooth --yes
+sudo proteus config set mac.rotation_interval 1h --yes
+sudo proteus config reset dns --yes
+sudo proteus config edit
+```
+
+Cross-ref `proteus wiki config` for the full schema.
+
 ### `current` — phase **A**
 
 ```
@@ -442,7 +477,7 @@ Notes for GUI / automation wrappers. The CLI is designed to be wrappable; the JS
 
 | Phase | Brings | Subcommands wired |
 |-------|--------|-------------------|
-| A | skeleton, read surface, embedded wiki | `status`, `current`, `original`, `show-config`, `show-defaults`, `wiki`, `help` |
+| A | skeleton, read surface, embedded wiki, config CLI | `status`, `current`, `original`, `show-config`, `show-defaults`, `config`, `wiki`, `help` |
 | B | L2 identity (MAC, Bluetooth alias) | `rotate`, `pin`, `unpin` |
 | C | probes, timers, captive portals | (extends `apply` / `status`) |
 | D | DHCP, IPv6, hostname, 802.1X, DNS knob | first wiring of `apply` |

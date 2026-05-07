@@ -359,6 +359,50 @@ fresh_mac_per_visit = true
 on_ssid_change = true
 ```
 
+## Managing config via CLI
+
+Hand-editing `/etc/proteus/config.toml` works, but `proteus config` is the first-class path. Read commands run as any user; mutating commands need root and explicit `--yes` (since they touch a privileged file).
+
+```sh
+# Show current config (alias for `proteus show-config`)
+proteus config show
+proteus config show --json
+
+# Inspect a single value — prints user value when set, default otherwise
+proteus config get mac.enabled
+proteus config get mac.rotation_interval --json
+
+# List every supported key with type + default
+proteus config keys
+proteus config keys --json | jq '.[] | select(.type == "bool")'
+
+# Toggle a feature on or off (shorthand for set <component>.enabled true|false)
+sudo proteus config enable bluetooth --yes
+sudo proteus config disable dns --reason "using dnscrypt-proxy" --yes
+
+# Set any single value; type is coerced from the default
+sudo proteus config set mac.rotation_interval 1h --yes
+sudo proteus config set probes.quorum_n 4 --yes
+
+# Open $EDITOR (falls back to vi); validates after save
+sudo proteus config edit
+
+# Sanity check a hand-edit
+proteus config validate
+proteus config validate --json
+
+# Reset back to defaults — section-scoped or whole-file
+sudo proteus config reset dns --yes
+sudo proteus config reset --yes   # nuclear: rewrites the entire file
+```
+
+Notes:
+
+- `proteus config disable <component> --reason <text>` writes a `# Proteus: disabled at <iso8601> - reason: <text>` comment above the section. This is your explicit override path, complementing the automatic detect-and-defer (see `proteus wiki concepts`).
+- `proteus config set` round-trips through `toml_edit`, so user comments and formatting in `config.toml` are preserved.
+- Unknown keys exit 65 with a pointer to `proteus config keys`. Setting an out-of-range value or a string where a bool is expected exits 65 too.
+- The rendered config never contains secrets, so `proteus config show --json` is safe to log or paste into bug reports.
+
 ## Cross-refs
 
 - `proteus wiki cli` — full command-line reference, exit codes, JSON schemas.
