@@ -369,16 +369,37 @@ async fn apply_nm_one(
     if !matches!(dev.kind, DeviceKind::Wifi | DeviceKind::Ethernet) {
         return NmApplyOutcome::Skipped(format!("unsupported kind {:?}", dev.kind));
     }
-    let Some(path) = dev.connections.first().cloned() else {
+    if dev.connections.is_empty() {
         return NmApplyOutcome::Skipped("no connection profile".into());
-    };
-    let connection = nm::apply::read_connection_id(conn, &path)
-        .await
-        .ok()
-        .flatten();
-    match crate::ipv6::nm::apply_settings(conn, &path, &Default::default()).await {
-        Ok(()) => NmApplyOutcome::Applied { connection },
-        Err(e) => NmApplyOutcome::Skipped(format!("update failed: {e:#}")),
+    }
+    // Issue #122: apply IPv6 privacy/temporary-address settings to every
+    // connection profile bound to this device, not just the first one,
+    // otherwise roaming surfaces the un-touched profile's defaults.
+    let mut primary: Option<String> = None;
+    let mut last_err: Option<String> = None;
+    for path in &dev.connections {
+        let connection = nm::apply::read_connection_id(conn, path)
+            .await
+            .ok()
+            .flatten();
+        match crate::ipv6::nm::apply_settings(conn, path, &Default::default()).await {
+            Ok(()) => {
+                if primary.is_none() {
+                    primary = connection;
+                }
+            }
+            Err(e) => {
+                last_err = Some(format!("update failed: {e:#}"));
+                continue;
+            }
+        }
+    }
+    if primary.is_some() {
+        NmApplyOutcome::Applied {
+            connection: primary,
+        }
+    } else {
+        NmApplyOutcome::Skipped(last_err.unwrap_or_else(|| "all profiles failed".into()))
     }
 }
 

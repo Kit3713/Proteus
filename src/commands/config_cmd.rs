@@ -486,8 +486,37 @@ fn set_in_doc(doc: &mut DocumentMut, key: &str, value: Value) -> Result<()> {
             .and_then(|i| i.as_table_mut())
             .ok_or_else(|| anyhow!("section [{seg}] is not a table"))?;
     }
+    // Issue #164: warn when overwriting a user-set value with a different
+    // TOML type. The default-schema-driven coercion in `parse_value_for_key`
+    // is correct for valid config but silently rewrites typo'd hand-edits
+    // (e.g. `discoverable = "no"` → `discoverable = false`) without telling
+    // the user their original was malformed. Surface it on stderr so the
+    // change is visible in shell + journald.
+    if let Some(existing) = table.get(field).and_then(|i| i.as_value())
+        && value_type_tag(existing) != value_type_tag(&value)
+    {
+        eprintln!(
+            "proteus: warning: replacing {key} (was {old}: {existing}) -> ({new}: {value}) — original value had unexpected type",
+            old = value_type_tag(existing),
+            new = value_type_tag(&value),
+        );
+    }
     table[field] = Item::Value(value);
     Ok(())
+}
+
+/// Coarse TOML scalar type tag used to detect type-mismatched overwrites
+/// in `set_in_doc`. Issue #164.
+fn value_type_tag(v: &Value) -> &'static str {
+    match v {
+        Value::String(_) => "string",
+        Value::Integer(_) => "integer",
+        Value::Float(_) => "float",
+        Value::Boolean(_) => "bool",
+        Value::Datetime(_) => "datetime",
+        Value::Array(_) => "array",
+        Value::InlineTable(_) => "table",
+    }
 }
 
 /// Coerce a CLI string into the right TOML value for `key` by consulting the
@@ -651,6 +680,30 @@ mod tests {
         let cfg = parse_config_text(&serialised).unwrap();
         assert!(cfg.mac.enabled);
         assert_eq!(cfg.mac.rotation_interval, "30m");
+    }
+
+    #[test]
+    fn set_in_doc_handles_type_mismatch_overwrite() {
+        // Issue #164: when the user's existing value has a different type
+        // (e.g. `mac.enabled = "no"` instead of `false`), the new value
+        // still lands but the warning surfaces on stderr. Here we just
+        // assert the write itself succeeds and does not regress, since
+        // capturing stderr in unit tests is fragile.
+        let mut doc = default_document().unwrap();
+        let head = doc.as_table_mut().get_mut("mac").unwrap();
+        let mac_table = head.as_table_mut().unwrap();
+        mac_table["enabled"] = Item::Value(Value::from("no"));
+        set_in_doc(&mut doc, "mac.enabled", Value::from(false)).unwrap();
+        let serialised = doc.to_string();
+        let cfg = parse_config_text(&serialised).unwrap();
+        assert!(!cfg.mac.enabled);
+    }
+
+    #[test]
+    fn value_type_tag_distinguishes_basic_scalars() {
+        assert_eq!(value_type_tag(&Value::from(true)), "bool");
+        assert_eq!(value_type_tag(&Value::from(7i64)), "integer");
+        assert_eq!(value_type_tag(&Value::from("x")), "string");
     }
 
     #[test]
