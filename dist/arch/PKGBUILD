@@ -1,0 +1,39 @@
+# Maintainer: Kit3713 <noreply@example.com>
+pkgname=proteus
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Erase the network identifiers your Linux laptop hands out on every join"
+arch=('x86_64' 'aarch64')
+url="https://github.com/Kit3713/Proteus"
+license=('GPL3')
+depends=('networkmanager' 'systemd' 'glibc')
+makedepends=('rust' 'cargo')
+optdepends=(
+  'bluez: Bluetooth alias + RPA support'
+  'nftables: discovery silencing rules (Phase E)'
+  'firewalld: alternative to nftables-direct'
+  'polkit: desktop GUI integration'
+)
+backup=('etc/proteus/config.toml')
+source=("$pkgname-$pkgver.tar.gz::$url/archive/v$pkgver.tar.gz")
+sha256sums=('SKIP')   # placeholder until first release
+
+build() {
+  cd "Proteus-$pkgver"
+  cargo build --release --frozen
+}
+
+package() {
+  cd "Proteus-$pkgver"
+  install -Dm755 target/release/proteus "$pkgdir/usr/bin/proteus"
+  install -Dm644 dist/man/proteus.1 "$pkgdir/usr/share/man/man1/proteus.1"
+  install -Dm644 dist/completions/proteus.bash "$pkgdir/usr/share/bash-completion/completions/proteus"
+  install -Dm644 dist/completions/proteus.zsh "$pkgdir/usr/share/zsh/site-functions/_proteus"
+  install -Dm644 dist/completions/proteus.fish "$pkgdir/usr/share/fish/vendor_completions.d/proteus.fish"
+  for unit in dist/systemd/*.timer dist/systemd/*.service; do
+    install -Dm644 "$unit" "$pkgdir/usr/lib/systemd/system/$(basename "$unit")"
+  done
+  install -Dm755 dist/networkmanager/dispatcher.d/01-proteus "$pkgdir/etc/NetworkManager/dispatcher.d/01-proteus"
+  install -Dm644 dist/polkit/com.kit3713.proteus.policy "$pkgdir/usr/share/polkit-1/actions/com.kit3713.proteus.policy"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}
