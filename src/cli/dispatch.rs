@@ -19,6 +19,25 @@ pub(super) fn dispatch(cli: Cli) -> Result<u8> {
     // Resolve the global --no-color view once so the watch loop's
     // screen-clear logic and the rest of the CLI honour the same flag.
     let no_color = cli.no_color;
+    // Roadmap Milestone 6: the global --format flag overrides per-subcommand
+    // `--json` flags. `--format yaml` errors out here for all readers
+    // since the yaml renderer is reserved for a follow-up; passing
+    // `--format json` flips every read command into json mode without the
+    // user needing to spell `--json` per subcommand.
+    let mut cli = cli;
+    if let Some(global_fmt) = cli.format {
+        match global_fmt {
+            super::OutputFormat::Yaml => {
+                eprintln!(
+                    "proteus: --format yaml is reserved (no yaml dependency yet); \
+                     use --format json or --format table"
+                );
+                return Ok(crate::exit::CONFIG_ERROR);
+            }
+            super::OutputFormat::Json => apply_json_to_command(&mut cli.command),
+            super::OutputFormat::Table => {} // default — leave commands alone
+        }
+    }
     match cli.command {
         Command::Status {
             json,
@@ -94,10 +113,12 @@ pub(super) fn dispatch(cli: Cli) -> Result<u8> {
         Command::RotateIfNeeded {
             iface,
             cooldown,
+            ssid,
             yes,
         } => commands::rotate::run_if_needed(
             iface.as_deref(),
             cooldown,
+            ssid.as_deref(),
             yes,
             cli.state.as_deref(),
             cli.config.as_deref(),
@@ -284,6 +305,84 @@ pub(super) fn dispatch(cli: Cli) -> Result<u8> {
     }
 }
 
+/// Roadmap Milestone 6: when the user passes `--format json`, flip
+/// the per-command `json` flag for every read command that has one.
+/// Mutating commands and commands without a JSON form are left
+/// untouched. Adding a new reader only requires extending this match.
+fn apply_json_to_command(cmd: &mut Command) {
+    match cmd {
+        Command::Status { json, .. }
+        | Command::Session { json, .. }
+        | Command::Current { json, .. }
+        | Command::Original { json }
+        | Command::ShowConfig { json }
+        | Command::ShowDefaults { json }
+        | Command::Diff { json }
+        | Command::Doctor { json, .. } => {
+            *json = true;
+        }
+        Command::Bluetooth { action } => match action {
+            BluetoothAction::Status { json } => *json = true,
+            _ => {}
+        },
+        Command::Hostname { action } => match action {
+            HostnameAction::Status { json } => *json = true,
+            _ => {}
+        },
+        Command::Ipv6 { action } => match action {
+            Ipv6Action::Status { json } => *json = true,
+            _ => {}
+        },
+        Command::Dhcp { action } => match action {
+            DhcpAction::Status { json } => *json = true,
+            _ => {}
+        },
+        Command::Dns { action } => match action {
+            DnsAction::Status { json } => *json = true,
+            _ => {}
+        },
+        Command::Resolved { action } => match action {
+            ResolvedAction::Status { json } => *json = true,
+            _ => {}
+        },
+        Command::Ntp { action } => match action {
+            NtpAction::Status { json } => *json = true,
+            _ => {}
+        },
+        Command::Stack { action } => match action {
+            StackAction::Status { json } => *json = true,
+            _ => {}
+        },
+        Command::Nft { action } => match action {
+            NftAction::Status { json } => *json = true,
+            _ => {}
+        },
+        Command::Rf { action } => match action {
+            RfAction::Status { json }
+            | RfAction::Scan { json }
+            | RfAction::Chipset { json } => *json = true,
+            _ => {}
+        },
+        Command::EnterpriseWifi { action } => match action {
+            EnterpriseWifiAction::Status { json } => *json = true,
+            _ => {}
+        },
+        Command::Portal { action } => match action {
+            PortalAction::Status { json }
+            | PortalAction::List { json } => *json = true,
+            _ => {}
+        },
+        Command::Timer { action } => match action {
+            TimerAction::Status { json } | TimerAction::List { json } => *json = true,
+            _ => {}
+        },
+        // Subcommands without a `json` flag, or whose readers don't
+        // benefit from JSON, are left untouched. Future readers can
+        // join the match above.
+        _ => {}
+    }
+}
+
 fn dispatch_config(action: ConfigAction, config: Option<&Path>) -> Result<u8> {
     use commands::config_cmd as c;
     match action {
@@ -301,5 +400,58 @@ fn dispatch_config(action: ConfigAction, config: Option<&Path>) -> Result<u8> {
         ConfigAction::Reset { section, yes } => c::reset(section.as_deref(), yes, config),
         ConfigAction::Keys { json } => c::keys(json),
         ConfigAction::SetProfile { profile, yes } => c::set_profile(&profile, yes, config),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Roadmap Milestone 6: `--format json` flips the per-subcommand
+    /// `json` flag at dispatch time. Pin the contract for `Status`
+    /// since it's the most-used reader.
+    #[test]
+    fn apply_json_to_status_command_sets_json_flag() {
+        let mut cmd = Command::Status {
+            json: false,
+            watch: false,
+            interval: "2s".into(),
+        };
+        apply_json_to_command(&mut cmd);
+        match cmd {
+            Command::Status { json, .. } => assert!(json),
+            _ => unreachable!(),
+        }
+    }
+
+    /// `Doctor` has a `quick` flag too — flipping `json` must not
+    /// alter the others.
+    #[test]
+    fn apply_json_to_doctor_command_only_flips_json() {
+        let mut cmd = Command::Doctor {
+            json: false,
+            quick: false,
+        };
+        apply_json_to_command(&mut cmd);
+        match cmd {
+            Command::Doctor { json, quick } => {
+                assert!(json);
+                assert!(!quick);
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    /// Subcommands without a `--json` flag must not panic when the
+    /// helper is called against them. Mutating commands like Apply
+    /// are the canonical no-flag case.
+    #[test]
+    fn apply_json_to_mutating_command_is_a_noop() {
+        let mut cmd = Command::Apply { yes: true };
+        apply_json_to_command(&mut cmd);
+        match cmd {
+            Command::Apply { yes } => assert!(yes),
+            _ => unreachable!(),
+        }
     }
 }

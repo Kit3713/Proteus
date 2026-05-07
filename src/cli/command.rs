@@ -103,6 +103,12 @@ pub enum Command {
         /// Cooldown budget in seconds.
         #[arg(long, default_value_t = 60)]
         cooldown: u64,
+        /// SSID being joined, when known. Roadmap Milestone 3: the
+        /// dispatcher passes this so per-SSID policies (`pin_mac`,
+        /// `rotate_interval`) can short-circuit or extend the rotate.
+        /// The plain CLI shape (no SSID) keeps the existing behaviour.
+        #[arg(long)]
+        ssid: Option<String>,
         #[arg(long)]
         yes: bool,
     },

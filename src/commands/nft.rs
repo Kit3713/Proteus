@@ -117,7 +117,14 @@ pub fn apply(yes: bool, config_path: Option<&Path>) -> Result<u8> {
     };
     let config_path = super::config_path(config_path);
     let config = Config::default_or_loaded(&config_path)?;
-    if let Err(e) = nft::apply_ruleset(&config.discovery, &config.nft) {
+    // Roadmap Milestone 4a follow-up: shape the ruleset by the active
+    // persona so stealth covers contribute their discovery posture
+    // (e.g. iOS stealth covers without `mdns_advertise` get an inbound
+    // 5353 drop alongside the existing icmp/discovery chains).
+    let user_root = crate::persona::resolve::default_user_root();
+    let persona = crate::persona::active_for(&config, None, user_root);
+    if let Err(e) = nft::apply_ruleset_with_persona(&config.discovery, &config.nft, persona.as_ref())
+    {
         eprintln!("proteus: nft apply failed: {e:#}");
         return Ok(exit::GENERIC_ERROR);
     }

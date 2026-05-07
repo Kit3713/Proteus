@@ -125,7 +125,7 @@ Builds on Milestone 1 (needs the backend trait to expose connection-keyed state)
 - ✅ New `[per_ssid."<ssid>"]` config sections — fields: `persona`, `aggressiveness_profile` override, `pin_mac`, `rotate_interval` override, `portal_policy` override. `PerSsidPolicy` lives in `src/config.rs`; round-trips through TOML.
 - ✅ Match precedence at runtime: `per_ssid["X"]` (highest) → `[persona]` → `[profile]` baseline → `Config` defaults. Implemented in `src/per_ssid.rs::resolve_for_ssid`; surfaces the source trace via `EffectivePolicy::source`.
 - ✅ CLI: `proteus ssid list` / `ssid show <ssid>` / `ssid set <ssid> <key> <value>` / `ssid clear <ssid>`. Read commands work for any user; mutating commands require root + `--yes`.
-- 🚧 Integrates with the NM connection-up dispatcher and the new backend abstraction so changing networks re-applies the right SSID rules. The resolver and CLI ship now; the connection-up wiring is the follow-up.
+- ✅ Integrates with the NM connection-up dispatcher and the new backend abstraction so changing networks re-applies the right SSID rules. The dispatcher passes `CONNECTION_ID` through to `proteus rotate-if-needed --ssid`, which honours `pin_mac` (skip rotation) and lifts cooldown to the per-SSID `rotate_interval` floor. The events daemon's `RotateOnTriggerHandler` resolves the per-SSID policy on every `ConnectionUp` trigger and traces the contributing layers.
 - ✅ State migration: existing `known_portal_ssids` array merges into per-SSID with `portal_policy = "fresh-mac-per-visit"`. v1 → v2 ladder step landed in `src/state.rs::migrate_known_portals_to_per_ssid`; legacy array kept for one cycle for backwards compatibility.
 
 ## Milestone 4 — Finish fingerprint hardening + RF + rotation triggers
@@ -135,8 +135,8 @@ Three tightly related tracks; can land in parallel once Milestone 1 is done.
 ### 4a — Fingerprint hardening completion
 
 - ✅ `systemd-resolved` drop-in: mDNS responder + resolver off, LLMNR off — `src/dns/resolved.rs` produces `/etc/systemd/resolved.conf.d/10-proteus-mdns-llmnr.conf` with the same detect-and-defer guard as the ECS-strip drop-in. Surfaced via `proteus resolved {status,apply,revert}`.
-- ✅ `timesyncd` NTP normalization — `src/ntp/` produces `/etc/systemd/timesyncd.conf.d/10-proteus.conf` with a privacy-respecting default pool (`2.fedora.pool.ntp.org` + `time.cloudflare.com`); skipped if `chronyd` or `ntpd` is present. Surfaced via `proteus ntp {status,apply,revert}`. Persona-aware NTP-server selection is the follow-up.
-- ✅ `nftables` expansion — `src/nft/` now ships an opt-in `extra_drops` chain with three knobs (`nft.icmpv4_timestamp_drop`, `nft.broadcast_ping_drop`, `nft.igmp_query_drop`), all default-off mirroring `discovery.ssdp_block`'s style. ⏳ Persona-aware variants (e.g. iOS personas drop port 5353 inbound, Android personas allow it) still pending.
+- ✅ `timesyncd` NTP normalization — `src/ntp/` produces `/etc/systemd/timesyncd.conf.d/10-proteus.conf` with a privacy-respecting default pool (`2.fedora.pool.ntp.org` + `time.cloudflare.com`); skipped if `chronyd` or `ntpd` is present. Surfaced via `proteus ntp {status,apply,revert}`. Persona-aware server selection landed: `ntp::servers_for_persona` maps Apple persona ids → `time.apple.com`, Pixel/Galaxy/Chromecast → `time.google.com`, Surface → `time.windows.com`; randomizers and unmapped covers leave the configured pool alone.
+- ✅ `nftables` expansion — `src/nft/` now ships an opt-in `extra_drops` chain with three knobs (`nft.icmpv4_timestamp_drop`, `nft.broadcast_ping_drop`, `nft.igmp_query_drop`), all default-off mirroring `discovery.ssdp_block`'s style. Persona-aware variants landed: when the active persona's `mdns_advertise` is false, a `persona_drops` chain emits `udp dport 5353 drop` so stealth covers shape inbound discovery the way the modelled device would.
 
 ### 4b — RF surface controls finish
 
@@ -147,7 +147,7 @@ Three tightly related tracks; can land in parallel once Milestone 1 is done.
 
 ### 4c — Rotation triggers
 
-- ✅ DHCP lease release+renew without MAC change (rescue `phase-d/ip-rotation`) — new `proteus dhcp renew` subcommand wraps `Device.Reapply` (with `Disconnect`+`ActivateConnection` fallback for older NM); `[dhcp] renew_on_apply` config knob added (default `false`, orchestrator integration is the follow-up).
+- ✅ DHCP lease release+renew without MAC change (rescue `phase-d/ip-rotation`) — new `proteus dhcp renew` subcommand wraps `Device.Reapply` (with `Disconnect`+`ActivateConnection` fallback for older NM); `[dhcp] renew_on_apply` is wired into the apply orchestrator: when set, `apply` follows the per-feature DHCP write with a backend-routed renew loop and folds the per-iface tally (reapplied / cycled / skipped / failed) into the `dhcp` row of the apply summary.
 - ✅ Event-driven framework (rescue `phase-c/event-driven-triggers` and `phase-c/auto-triggers`): triggers on connection-up, link-flap, regulatory-domain change, captive-portal auth completion. Subscription bodies + orchestrator integration landed in `src/events/source/{nm_connection_up,link_flap,reg_domain,portal_auth}.rs` plus the `proteus events run` subcommand and the `dist/systemd/proteus-events.service` unit. Each source ships in production + mock variants; production gracefully degrades to no-op when the host can't honour it (no DBus, no `CAP_NET_ADMIN`, no nl80211). `[events] enabled = true` is opt-in for v0.3.x — the systemd unit refuses to start until the master switch is flipped.
 
 ## Milestone 5 — Distro reach (any-distro, any-arch)
@@ -163,11 +163,11 @@ The backend abstraction (Milestone 1) unblocks NM-less distros; this milestone c
   - ✅ Copr submission — spec polished (`dist/rpm/proteus.spec` now has explicit `BuildRequires: cargo`/`rust >= 1.85`, a `%check` running `cargo test --release --lib`, dropped stale `openssl-devel` BR). Submission upload to copr.fedorainfracloud.org is the maintainer's call.
   - 🚧 Debian unstable submission — `dist/debian/{control,rules,compat,copyright,changelog,source/format}` all landed; ITP filing + sponsor handoff is the maintainer's call.
 - ✅ Architectures: dropped the `ExclusiveArch: x86_64 aarch64` gate from `dist/rpm/proteus.spec`, added **armv7** to the CI cross-compile matrix in `.github/workflows/ci.yml`. Run the test suite at least under qemu for non-native arches (qemu run still pending). (Targeted matrix: x86_64 + aarch64 + armv7 covers laptops, Apple Silicon VMs, Raspberry Pi 2/3/4/5, ARM Chromebooks.)
-- 🚧 `proteus doctor`:
+- ✅ `proteus doctor`:
   - ✅ Reports init system (Milestone 5), libc, distro, backend.
-  - ⏳ Reports package format.
-  - ⏳ Suggests next step on misconfigured systems (e.g. "no NM and no networkd; install one or use `--backend=raw`").
-  - ⏳ Distro-compat warnings for known-quirky setups (Pi-hole, dnscrypt-proxy, openresolv, NetworkManager-l2tp).
+  - ✅ Reports package format (`check_pkg_format` walks `/usr/bin/dpkg`, `/var/lib/rpm`, `/etc/apk`, `/usr/bin/pacman`, `/usr/bin/xbps-install`, `/var/db/pkg` and surfaces the matching `dist/<recipe>/`).
+  - ✅ Suggests next step on misconfigured systems via the new `next_steps` section: rolls up backend-unavailable, pinned-but-missing-driver, DNS / NTP detect-and-defer, alternate-iface-manager, quirky-setup, and config-parse-error into one or more actionable hints.
+  - ✅ Distro-compat warnings for known-quirky setups (Pi-hole, dnscrypt-proxy, openresolv, NetworkManager-l2tp) via `check_known_quirky_setups`.
 - ✅ Documentation: `wiki/distro-support.md` matrix.
 
 ## Milestone 6 — CLI ergonomics, security review, docs, integration tests, ongoing bug-fix queue
@@ -178,7 +178,7 @@ Cross-cutting polish; runs alongside the other milestones.
 
 - ✅ Short aliases (`proteus s` for status, `r` for rotate, `a` for apply).
 - ✅ `--watch` mode for `status / current / session`.
-- ⏳ `--format json|yaml|table` for all readers.
+- 🚧 `--format json|yaml|table` for all readers. Foundation landed: a global `--format` flag on the top-level CLI maps `json` to every reader's existing per-subcommand `--json` flag at dispatch time, `table` is the default human renderer, and `yaml` returns a clear "reserved for follow-up" error pending a yaml dependency.
 - ✅ Colour theming via `NO_COLOR`.
 - ✅ `proteus completions <shell>` regenerator command.
 

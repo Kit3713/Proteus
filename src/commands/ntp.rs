@@ -82,7 +82,12 @@ pub fn apply(config_path: Option<&Path>) -> Result<u8> {
         return Ok(exit::SUCCESS);
     }
 
-    let path = match ntp::write_dropin(&paths, &cfg.ntp) {
+    // Roadmap Milestone 4a: when a stealth persona is active, override
+    // the configured NTP servers with the persona's vendor pool so the
+    // wire-side NTP queries match the cover identity. The user's own
+    // `[ntp]` block always wins for fields the persona doesn't supply.
+    let effective_ntp = persona_shaped_ntp(&cfg);
+    let path = match ntp::write_dropin(&paths, &effective_ntp) {
         Ok(p) => p,
         Err(e) => {
             eprintln!("proteus: writing drop-in failed: {e:#}");
@@ -90,6 +95,12 @@ pub fn apply(config_path: Option<&Path>) -> Result<u8> {
         }
     };
     println!("ntp: wrote {}", path.display());
+    if effective_ntp.ntp_servers != cfg.ntp.ntp_servers {
+        println!(
+            "ntp: persona-shaped servers active (NTP={})",
+            effective_ntp.ntp_servers.join(" ")
+        );
+    }
     if let Err(e) = restart_timesyncd() {
         eprintln!("proteus: failed to restart {TIMESYNCD_UNIT}: {e:#}");
         return Ok(exit::GENERIC_ERROR);
@@ -214,6 +225,23 @@ fn restart_timesyncd() -> Result<()> {
 fn load_config(path: Option<&Path>) -> Config {
     let path = super::config_path(path);
     Config::default_or_loaded(&path).unwrap_or_default()
+}
+
+/// Roadmap Milestone 4a — apply persona-defined NTP servers on top of
+/// the configured `[ntp]` block. The persona's pool replaces both
+/// `ntp_servers` and `fallback_servers` when provided; the user's
+/// config wins when no persona is active or the persona has no opinion.
+fn persona_shaped_ntp(cfg: &Config) -> crate::config::NtpConfig {
+    let user_root = crate::persona::resolve::default_user_root();
+    let active = crate::persona::active_for(cfg, None, user_root);
+    let mut effective = cfg.ntp.clone();
+    if let Some(p) = active.as_ref()
+        && let Some((primary, fallback)) = ntp::servers_for_persona(p)
+    {
+        effective.ntp_servers = primary;
+        effective.fallback_servers = fallback;
+    }
+    effective
 }
 
 #[cfg(test)]

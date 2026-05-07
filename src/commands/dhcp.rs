@@ -272,6 +272,40 @@ pub(crate) async fn do_renew_with_backend(
     Ok(out)
 }
 
+/// Roadmap Milestone 4c — orchestrator hook for `[dhcp] renew_on_apply`.
+/// Runs the same backend-routed renew loop `proteus dhcp renew` uses,
+/// then summarises the per-iface outcomes into a single tally so the
+/// orchestrator can render one summary line without touching the
+/// per-iface struct (whose fields are crate-private by design).
+#[derive(Debug, Default, Clone, Copy)]
+pub(crate) struct RenewTally {
+    pub reapplied: usize,
+    pub cycled: usize,
+    pub skipped_no_active: usize,
+    pub failed: usize,
+}
+
+impl RenewTally {
+    pub(crate) fn total(self) -> usize {
+        self.reapplied + self.cycled + self.skipped_no_active + self.failed
+    }
+}
+
+pub(crate) async fn renew_after_apply(backend: &dyn NetworkBackend) -> Result<RenewTally> {
+    let outcomes = do_renew_with_backend(backend, None).await?;
+    let mut t = RenewTally::default();
+    for o in &outcomes {
+        match o.method.as_str() {
+            "reapply" => t.reapplied += 1,
+            "disconnect+activate" => t.cycled += 1,
+            "skipped" => t.skipped_no_active += 1,
+            "failed" => t.failed += 1,
+            _ => {}
+        }
+    }
+    Ok(t)
+}
+
 /// Same filter rule as [`device_matches`] but for the trait's
 /// `BackendDevice`. Roadmap M1.
 fn backend_device_matches(dev: &BackendDevice, iface_filter: Option<&str>) -> bool {
