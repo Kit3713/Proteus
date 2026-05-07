@@ -1,0 +1,12 @@
+[Unit]
+Description=Proteus probe-driven rotation check (every 5 min by default)
+
+[Timer]
+# Probe-driven check: if the probe quorum fails, rotate immediately. See the
+# `rotation` and `probes` wiki pages for tuning.
+OnCalendar=*-*-* *:00/5:00
+AccuracySec=30s
+Unit=proteus-check.service
+
+[Install]
+WantedBy=timers.target
