@@ -2,7 +2,7 @@
 
 Status: Phase A landed. Phase B (MAC + Bluetooth) landed. Phase C event-driven triggers landed; probe quorum + captive portal still pending. Phases D, E, G not started. Packaging (F) mostly landed (wiki search still pending).
 
-This is the operational view: what's done, what's next, what's on the bench. For design rationale and per-feature reasoning, see [PLAN.md](PLAN.md). For how to help, see [CONTRIBUTING.md](../CONTRIBUTING.md). For the mental model behind the phases, run `proteus wiki concepts`.
+This is the operational view: what's done, what's next, what's on the bench. For design rationale and per-feature reasoning, see [PLAN.md](PLAN.md). For per-version release notes, see [CHANGELOG.md](../CHANGELOG.md). For how to help, see [CONTRIBUTING.md](../CONTRIBUTING.md). For the mental model behind the phases, run `proteus wiki concepts`.
 
 ## Recent landings
 
