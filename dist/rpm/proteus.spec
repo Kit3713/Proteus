@@ -36,7 +36,12 @@ NetworkManager.
 %autosetup -n Proteus-%{version}
 
 %build
-%cargo_build
+# Use an explicit cargo invocation rather than %cargo_build. The
+# rust-rpm-macros / systemd-rpm-macros %cargo_build expansion has been
+# observed to exit non-zero on fedora:43 (likely vendoring or %{__cargo}
+# resolution issues in the container). Calling cargo directly matches the
+# rest of CI and is the same recipe used for the raw-binary release jobs.
+cargo build --release --locked
 
 %install
 install -Dm755 target/release/proteus %{buildroot}%{_bindir}/proteus
