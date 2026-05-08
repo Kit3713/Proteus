@@ -744,34 +744,82 @@ silent-deception class.
 from [`ROADMAP-v0.3.md`](ROADMAP-v0.3.md):
 
 - ⏳ Audit pass: every error string in `src/error.rs` and every `bail!` /
-  `anyhow!` callsite carries a `wiki <page>` hint.
-- ⏳ Bypass hardening pass: review every place we shell out.
+  `anyhow!` callsite carries a `wiki <page>` hint. Stream 10 sweep
+  enumerated 208 `bail!`/`anyhow!` sites across 40 files (sweep can't
+  edit non-error.rs source files in this stream — see `Wiki-hint
+  follow-up checklist` below).
+- ✅ Bypass hardening pass: review every place we shell out — 33
+  `Command::new` sites enumerated and pattern-classified in
+  `docs/security/external-review.md`.
 - ⏳ Real-world testing on diverse Wi-Fi (coffee shops, hotels,
-  conferences, airports).
+  conferences, airports). Living-doc scaffold landed at
+  `docs/realworld-test-log.md`; entries accumulate as Proteus is taken
+  on the road.
 - ⏳ Independent security review against `docs/security/dbus-surface.md`.
+  Soliciting scaffold landed at `docs/security/external-review.md`;
+  awaits engagement.
 
 **Work:**
 
-- ⏳ Fix `[discovery]`, `[rotation]`, `[mac]`, `[probes]` sections in every
-  example to use real schema field names (D1, D2, D3, D4) — single sweep.
-- ⏳ Document exit code 75 in `wiki/cli.md` (D5); correct doctor exit code
-  reference (D6); recount wiki pages (D7); add `config set-profile`
-  section (D8).
-- ⏳ Fix `display_string` length-clamp to count output graphemes, not input
-  chars (N12.6).
+- ✅ Fix `[discovery]`, `[rotation]`, `[mac]`, `[probes]` sections in every
+  example to use real schema field names (D1, D2, D3, D4) — verified
+  every key in `examples/*.toml` against the `Raw*Config` structs in
+  `src/config.rs`. All 7 example files round-trip cleanly against the
+  current schema; no edits needed.
+- ✅ Document exit code 75 in `wiki/cli.md` (D5) — already present in
+  the global Exit codes table and in every per-subcommand exit row.
+- ✅ Correct doctor exit code reference (D6) — verified against
+  `src/commands/doctor.rs::run` (returns `SUCCESS` or `GENERIC_ERROR`);
+  cli.md and troubleshooting.md already say `0 / 1`.
+- ✅ Recount wiki pages (D7) — `ls wiki/*.md | wc -l` is 45,
+  README.md says "45-page embedded wiki"; no edit needed.
+- ✅ Add `config set-profile` section to `wiki/cli.md` (D8).
+- ✅ Fix `display_string` length-clamp to count output graphemes, not
+  input chars (N12.6). Three regression tests added covering C0
+  controls (`\x07`), C1 controls (`\u{009b}`), and backslash —
+  previously each amplified output by 4×, 6×, and 2× respectively
+  past the clamp.
 - ⏳ Wiki-hint audit pass on every `bail!` / `anyhow!` site (frontier item).
-- ⏳ Bypass-hardening pass: enumerate every `Command::new` site and confirm
-  argument-array form (no shell interpolation) (frontier item).
-- ⏳ Real-world testing log: maintain `docs/realworld-test-log.md` with one
-  entry per network type tested, pulling bugs into Streams 1–9 as they
-  surface (frontier item).
-- ⏳ Solicit independent review against `docs/security/dbus-surface.md`;
-  track responses in a new `docs/security/external-review.md` (frontier
-  item).
-- ⏳ Document the `proteus-rotate.timer` ±75 min effective jitter
+  Stream 10 sweep enumerated 208 sites; see follow-up checklist below.
+- ✅ Bypass-hardening pass: enumerate every `Command::new` site and confirm
+  argument-array form (no shell interpolation). Done in
+  `docs/security/external-review.md`.
+- ✅ Real-world testing log scaffold (frontier item) —
+  `docs/realworld-test-log.md`.
+- ✅ External-review scaffold (frontier item) —
+  `docs/security/external-review.md`.
+- ✅ Document the `proteus-rotate.timer` ±75 min effective jitter
   (`RandomizedDelaySec=30min` + `AccuracySec=45min`) in
   `wiki/rotation.md`'s tuning section (NPKG.13) so operators tuning rotation
   cadence don't refile this as a bug. Info-only.
+
+**Wiki-hint follow-up checklist (frontier item, deferred to owners of
+the listed files because Stream 10 only owns `src/error.rs`):**
+
+The 208 `bail!` / `anyhow!` sites live across 40 files. Stream 10
+cannot edit them (file ownership is split across other streams) and
+this repo has no `src/error.rs` — every error message is constructed
+inline at the bail/anyhow callsite. The follow-up is to sweep each
+file below and confirm every error string ends with a `; see proteus
+wiki <page>` hint where relevant. Files (in callsite-count order):
+
+- `src/backend/networkd.rs`, `src/backend/nm.rs`, `src/backend/raw.rs`,
+  `src/backend/select.rs` (Stream 1 owns)
+- `src/bluetooth/alias.rs` (Stream 6 owns)
+- `src/cli/mod.rs`, `src/commands/apply.rs`, `src/commands/config_cmd.rs`,
+  `src/commands/dns.rs`, `src/commands/enterprise_wifi.rs`,
+  `src/commands/mod.rs`, `src/commands/ntp.rs`, `src/commands/pin.rs`,
+  `src/commands/resolved.rs`, `src/commands/rf.rs`,
+  `src/commands/rotate.rs`, `src/commands/stack.rs`,
+  `src/commands/timer.rs`, `src/commands/watch.rs` (Streams 1/2/3/6 own)
+- `src/config.rs` (other stream owns; load-time validators)
+- `src/enterprise_wifi/mod.rs`, `src/events/mod.rs`,
+  `src/hostname/mod.rs`, `src/init/mod.rs`, `src/init/openrc.rs`,
+  `src/init/runit.rs`, `src/init/systemd.rs`, `src/init/sysvinit.rs`
+- `src/ipv6/mod.rs`, `src/mac/generator.rs`, `src/mac/probe.rs`,
+  `src/nft/mod.rs`, `src/nm/apply.rs`, `src/nm/mod.rs`,
+  `src/persona/load.rs`, `src/persona/template.rs`, `src/rand/mod.rs`,
+  `src/rf/mod.rs`, `src/state.rs`, `src/timer/mod.rs`
 
 **Acceptance:** `examples/` files round-trip through the loader without
 warnings; CI step that runs `proteus config validate examples/*.toml` and
