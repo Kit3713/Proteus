@@ -2,6 +2,29 @@
 <!DOCTYPE policyconfig PUBLIC
  "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
  "http://www.freedesktop.org/standards/PolicyKit/1.0/policyconfig.dtd">
+<!--
+  Authorisation model:
+
+  * `<allow_active>auth_admin</allow_active>` — every privileged
+    invocation requires a fresh prompt for an admin credential. Issue
+    #133 explicitly chose this one-shot variant over the keep-cache
+    alternative so the audit trail is a 1:1 prompt-per-action map; the
+    prompt-fatigue trade-off was accepted.
+  * `<allow_inactive>no</allow_inactive>` — inactive (e.g. orphaned ssh)
+    sessions cannot fire the action at all.
+  * `<allow_any>` is omitted on purpose so non-{active,inactive}
+    contexts (cron, system services) must use their own root-only
+    execution path rather than routing through polkit.
+
+  Stream 9 / S7 / B15: group restriction (only members of `wheel` /
+  `sudo` may answer the prompt) cannot be expressed in the XML policy
+  format — `<defaults>` does not accept a `<unix-group>` selector. To
+  layer that on, distros / operators ship a polkit JS rule under
+  `/etc/polkit-1/rules.d/` that returns `polkit.Result.NO` for any
+  subject not in `wheel`/`sudo`. The packaging README documents the
+  template. (Strict-group enforcement at the policy level was deferred;
+  see `docs/ROADMAP.md` Stream 9.)
+-->
 <policyconfig>
   <vendor>Proteus</vendor>
   <vendor_url>https://github.com/Kit3713/Proteus</vendor_url>

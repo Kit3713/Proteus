@@ -772,41 +772,71 @@ L‑3 (residual), audit I‑1, NEV2.1.
 **Work:**
 
 - ⏳ Validate `Location` header per RFC (S2); enforce `mode(0o600)` on
-  lock file (S3).
+  lock file (S3 — deferred to Stream 5 follow-up wave).
 - ⏳ Open-by-fd then `unlinkat` for resolved drop-in cleanup, closing the
   TOCTOU (S5); join host + path through a single percent-encoder for HTTP
-  request line (S6).
+  request line (S6 — deferred; conflicts with Stream 4 captive_portal).
 - ⏳ Restrict polkit policy to `unix-group:wheel` / `sudo` and add a runtime
-  check in `proteus doctor` (S7, B15 — Stream 3 owns the file, Stream 9
-  owns the policy text).
-- ⏳ Expand the safety comment on `OwnedFd::from_raw_fd` (S9); strict MAC
-  separator parser (S10).
-- ⏳ Sanitize NM dict values before tracing (S8) — coordinate with Stream
-  4's error-context preservation (N4).
-- ⏳ Harden `Layout::from_env()` in `src/commands/uninstall.rs` so
-  `PROTEUS_CONFIG_DIR` / `PROTEUS_STATE_DIR` / `PROTEUS_SYSTEMD_DIR` cannot
-  steer `remove_dir_all` against `/etc` or anywhere outside an explicit
-  allowlist (audit M‑2 / N‑0). Two acceptable shapes per the audit
-  recommendation: gate the env reads on `#[cfg(any(test,
-  feature = "test-overrides"))]` with hardcoded production paths, or refuse
-  any path outside `{/etc/proteus, /var/lib/proteus, /etc/systemd/system}`
-  plus tempdir-prefixed test variants. This is the highest-severity
-  unresolved security finding on `main`.
-- ⏳ Insert `--` before user-influenced positional args in every `iw` / `ip`
-  / `ethtool` invocation (audit L‑3 residual). The `is_safe_iface` guard
-  blocks shell metacharacters but does not block `iface = "-h"` flag-parse
-  confusion. Sweep `src/rf/`, `src/kill_switch/`, and `src/mac/factory.rs`.
-- ⏳ Consolidate the four hand-rolled SHA-256 implementations
-  (`src/dns/apply.rs`, `src/stack/sha256.rs`, `src/diff/sha256.rs`,
-  `src/ipv6/mod.rs`) into a single `crate::hash::sha256` module (audit
-  I‑1). Document in `wiki/dns.md` that the resulting digest is a
-  tamper-evidence marker, not a security property — anyone with write
-  access to the drop-in can recompute the digest.
-- ⏳ Validate the `name` argument in `wiki::get_page(name)`: reject `/`,
-  `\`, and `..`; require `^[a-zA-Z0-9_-]+$` (NEV2.1). Today the embedded
-  `include_dir` archive doesn't strictly enforce path canonicalisation
-  either, so this is the defense-in-depth gate against any future caller
-  forwarding user-supplied page names.
+  check in `proteus doctor` (S7, B15). Policy file annotated; group
+  enforcement requires a polkit JS rule under
+  `/etc/polkit-1/rules.d/` (XML format does not accept a unix-group
+  selector). Doctor runtime check deferred — `src/commands/doctor.rs`
+  is outside Stream 9's scope this wave.
+- ⏳ Expand the safety comment on `OwnedFd::from_raw_fd` (S9 — deferred;
+  conflicts with Stream 4's reg_domain.rs work); strict MAC separator
+  parser (S10 — deferred; conflicts with Stream 4's mac/generator.rs).
+- ⏳ Sanitize NM dict values before tracing (S8 — deferred; conflicts
+  with Stream 4's nm/mod.rs work).
+- ✅ `Layout::from_env()` in `src/commands/uninstall.rs` is gated on
+  `#[cfg(test)]` so production builds ignore `PROTEUS_*_DIR` entirely
+  (audit M‑2 / N‑0). The grep-test at
+  `tests::env_path_env_read_is_cfg_test_gated` source-locks the gate so a
+  future refactor can't re-introduce the env read into shipped binaries.
+- ✅ `--` separator inserted before user-influenced positional args in
+  the `ip` (`kill_switch::run_ip`) and `ethtool`
+  (`mac::factory::EthtoolBin::permanent`) invocations. `iw` does not
+  support `--` as a flag terminator (its grammar is
+  `iw <object> <command> ...`); the iface there is positionally guarded
+  by the preceding `dev`/`phy` selector plus the `is_safe_iface` reject
+  list (audit L‑3 residual).
+- ✅ The four "hand-rolled SHA-256" callsites (`src/dns/apply.rs`,
+  `src/stack/mod.rs`, `src/diff/mod.rs`, `src/ipv6/mod.rs`) all
+  consume a single shared implementation at `crate::crypto::sha256`
+  (audit I‑1). The roadmap text predated the consolidation; verified
+  via grep that no module re-implements the algorithm.
+- ✅ `wiki::get_page(name)` rejects `/`, `\`, `..`, and any byte outside
+  `^[A-Za-z0-9_-]+$`, with a 64-byte cap (NEV2.1).
+- ✅ Stream 9 cluster fix for the seven terminal-injection issues
+  (#357, #365, #367, #373, #374, #380, #389): central
+  `crate::display::display_safe(&str) -> Cow<str>` helper added to
+  `src/display.rs`; called from every print site that surfaces an
+  AP-controlled SSID (`portal::run_list/run_mark/run_unmark`,
+  `session::format_network_label`), an iface name from NM
+  (`rotate::print_report`, `rotate::run_if_needed`), or a persona
+  display_name / id from user-authored TOML (`persona::list`).
+  Unit-tested for ANSI CSI, BiDi overrides (U+202E etc.), CR/LF, NUL.
+- ✅ GH#342: persona id is validated against `^[A-Za-z0-9_-]+$` plus
+  reserved-name rejection in `commands::persona::is_valid_persona_id`
+  before flowing into any path component on the `show`/`use`/`new`/`edit`
+  paths.
+- ✅ GH#358: `ipv6::write_sysctl` validates the caller-supplied `key`
+  against the static `SYSCTLS` allow-list and refuses values containing
+  control bytes / NUL / whitespace.
+- ✅ GH#360: `factory::EthtoolBin::permanent` no longer falls back to a
+  `$PATH`-resolved relative `ethtool` — it walks an absolute-path list
+  and refuses the call when none resolves. The previous fallback was
+  exactly the vector issue #202 was closing.
+- ✅ GH#361: `persona edit` refuses to spawn `$EDITOR` when `$HOME` is
+  not `/root` (was warn-and-continue) and refuses `$EDITOR` / `$VISUAL`
+  values containing control bytes.
+- ✅ GH#362: NM dispatcher's 128-byte cap now uses a locale-invariant
+  byte-count via `LC_ALL=C wc -c` instead of bash's
+  locale-dependent `${#var}` (which counted multibyte chars as one,
+  letting a hostile UTF-8 SSID smuggle ~512 bytes through the cap).
+- ✅ GH#359: central iface validator landed at `crate::iface` (`validate`
+  + `is_valid` + typed `InvalidIface` error). Per-module duplicates left
+  in place for now (most live in files Stream 4 / 5 / 8 also touch this
+  wave); migration is the deferred follow-up.
 
 **Acceptance:** `cargo audit`; manual review of every new validator; test
 for the polkit-missing path that asserts a clear error message.

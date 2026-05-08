@@ -124,6 +124,14 @@ pub fn current_tx_power_mbm(iface: &str) -> Option<i32> {
     if !is_safe_iface(iface) {
         return None;
     }
+    // Audit L-3 residual: `iw` does not support `--` as a global flag
+    // terminator (its grammar is `iw <object> <command> [args]`). The
+    // iface lives in argument position 2 (`dev <iface>`) where the
+    // preceding `dev` selector already disambiguates it; a leading-`-`
+    // iface name would still be rejected by the kernel `dev_valid_name`
+    // check, AND `is_safe_iface` above refuses it at the boundary. The
+    // `--` separator pattern instead applies to `ip` / `ethtool` calls
+    // (see `kill_switch::run_ip` and `EthtoolBin::permanent`).
     let output = Command::new(iw_bin())
         .args(["dev", iface, "info"])
         .output()

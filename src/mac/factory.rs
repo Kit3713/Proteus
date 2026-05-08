@@ -210,15 +210,29 @@ pub(crate) trait EthtoolRunner {
     fn permanent(&self, iface: &str) -> Option<String>;
 }
 
-/// Production implementation: shells out to `/usr/sbin/ethtool -P <iface>`.
+/// Production implementation: shells out to one of a small list of
+/// absolute paths to `ethtool`.
 ///
-/// Issue #202: pinned to the absolute path so a `$PATH` override on a
-/// suid-helper or systemd-unit invocation can't redirect us to an
-/// attacker-controlled binary. Matches the #121 hardening pattern. If
-/// the absolute path doesn't resolve we fall back to the `$PATH` lookup
-/// — a Nix or Alpine layout that ships ethtool elsewhere keeps working,
-/// just without the absolute-path guarantee.
-const ETHTOOL_ABS_PATH: &str = "/usr/sbin/ethtool";
+/// Issue #202 / GH#360: pinned to absolute paths so a `$PATH` override on
+/// a suid-helper or systemd-unit invocation can't redirect us to an
+/// attacker-controlled binary. The previous shape fell back to a
+/// `$PATH`-resolved `"ethtool"` literal when none of the absolute paths
+/// existed — that fallback contradicted the absolute-path pinning intent
+/// of issue #202 (a hostile `$PATH` could still slip a shim in front of
+/// the canonical install). We now refuse the call rather than fall back.
+///
+/// The list covers the locations real distros ship: Debian / Arch /
+/// Fedora at `/usr/sbin/ethtool`, Alpine + busybox at `/sbin/ethtool`,
+/// NixOS at `/run/current-system/sw/bin/ethtool`. A non-resolving
+/// `EthtoolBin::permanent` returns `None` so the caller falls through to
+/// `read_address_if_perm` (which is the documented last-resort fallback
+/// in this module's doc-comment).
+const ETHTOOL_ABS_PATHS: &[&str] = &[
+    "/usr/sbin/ethtool",
+    "/sbin/ethtool",
+    "/usr/bin/ethtool",
+    "/run/current-system/sw/bin/ethtool",
+];
 
 pub(crate) struct EthtoolBin;
 
@@ -232,12 +246,20 @@ impl EthtoolRunner for EthtoolBin {
         if !is_valid_iface_name(iface) {
             return None;
         }
-        let bin = if Path::new(ETHTOOL_ABS_PATH).exists() {
-            ETHTOOL_ABS_PATH
-        } else {
-            "ethtool"
-        };
-        let out = Command::new(bin).args(["-P", iface]).output().ok()?;
+        // GH#360: only run an absolute path that actually exists. No
+        // `$PATH` fallback — the previous "fall back to a relative
+        // `ethtool`" branch is exactly the vector issue #202 was
+        // closing.
+        let bin = ETHTOOL_ABS_PATHS
+            .iter()
+            .copied()
+            .find(|p| Path::new(p).exists())?;
+        // Audit L-3 residual: insert `--` before the iface so a
+        // hypothetical leading-`-` value couldn't be re-parsed as a
+        // global ethtool option even if `is_valid_iface_name` regressed.
+        // The `-P` flag itself stays before `--` because it's the
+        // command selector, not an iface argument.
+        let out = Command::new(bin).args(["-P", "--", iface]).output().ok()?;
         if !out.status.success() {
             return None;
         }

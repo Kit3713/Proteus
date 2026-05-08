@@ -88,9 +88,18 @@ validate_cli_value() {
     if [ -z "$val" ]; then
         return 1
     fi
-    # Length cap: 128 bytes leaves margin for UTF-8 multibyte chars.
-    if [ "${#val}" -gt 128 ]; then
-        log "rejected $label: too long (${#val} bytes)"
+    # GH#362: bash `${#val}` is *character* length, not byte length, and
+    # the count depends on the active LC_* locale. Under a UTF-8 locale a
+    # 4-byte codepoint counts as 1, so a hostile SSID could smuggle up to
+    # ~512 bytes through this 128-cap. Resolve by computing byte length
+    # explicitly via `wc -c` after `LC_ALL=C` so the count is locale-
+    # invariant. Subtract 0 (printf %s emits no trailing newline; wc -c
+    # counts every byte we hand it).
+    local _bytelen
+    _bytelen="$(LC_ALL=C printf '%s' "$val" | LC_ALL=C wc -c)"
+    _bytelen="${_bytelen##* }"  # strip any leading whitespace from BSD wc
+    if [ "$_bytelen" -gt 128 ]; then
+        log "rejected $label: too long ($_bytelen bytes)"
         return 1
     fi
     # Leading dash means clap would treat it as a flag (mitigated by the
@@ -111,10 +120,14 @@ validate_cli_value() {
     esac
     # Reject ASCII control characters (incl. NUL, newline, tab, CR, DEL).
     # `tr -d '[:cntrl:]'` is byte-stream-aware (unlike grep, which works
-    # line-by-line and would never see embedded \n). We compare lengths;
-    # a hostile string with any cntrl char drops bytes and trips the test.
-    _stripped=$(LC_ALL=C printf '%s' "$val" | LC_ALL=C tr -d '[:cntrl:]')
-    if [ "${#val}" -ne "${#_stripped}" ]; then
+    # line-by-line and would never see embedded \n). We compare BYTE
+    # lengths; a hostile string with any cntrl char drops bytes and
+    # trips the test. GH#362: `${#var}` is locale-dependent, so use
+    # `LC_ALL=C wc -c` for both sides to keep the comparison byte-exact.
+    _stripped="$(LC_ALL=C printf '%s' "$val" | LC_ALL=C tr -d '[:cntrl:]')"
+    _stripped_len="$(LC_ALL=C printf '%s' "$_stripped" | LC_ALL=C wc -c)"
+    _stripped_len="${_stripped_len##* }"
+    if [ "$_bytelen" -ne "$_stripped_len" ]; then
         log "rejected $label: control character in value"
         unset _stripped val label
         return 1

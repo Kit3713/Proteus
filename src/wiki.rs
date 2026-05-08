@@ -32,8 +32,32 @@ pub fn list_pages() -> Vec<String> {
 }
 
 pub fn get_page(name: &str) -> Option<&'static str> {
+    // NEV2.1: defense-in-depth — refuse names that could traverse out of
+    // the embedded archive. The `include_dir!` archive itself rejects
+    // path-component traversal at build time, but a future caller may
+    // forward user-supplied page names (already happens via `proteus
+    // wiki <name>`); a strict allow-list on the way in is cheaper than
+    // auditing every caller for shape.
+    if !is_valid_page_name(name) {
+        return None;
+    }
     let path = format!("{name}.md");
     WIKI.get_file(&path).and_then(|f| f.contents_utf8())
+}
+
+/// NEV2.1: page names are `^[A-Za-z0-9_-]+$`. Includes the curated
+/// index page name (`_index`) so the `curated_index()` accessor still
+/// resolves. Rejects path-traversal markers, separators, and embedded
+/// dots (which would let a caller bypass the `.md` suffix join).
+fn is_valid_page_name(name: &str) -> bool {
+    if name.is_empty() || name.len() > 64 {
+        return false;
+    }
+    if name == "." || name == ".." {
+        return false;
+    }
+    name.bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
 /// Curated table-of-contents page (`_index.md`). When present, `proteus wiki`
@@ -464,6 +488,38 @@ fn utf8_char_len(first: u8) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn get_page_refuses_path_traversal_names() {
+        // NEV2.1: a future caller forwarding user input must not be
+        // able to read arbitrary embedded paths via traversal markers.
+        for bad in [
+            "",
+            "..",
+            ".",
+            "../etc/passwd",
+            "/etc/passwd",
+            "captive-portals/extra",
+            "captive\0portals",
+            "captive portals",
+            "name with space",
+            "a.b",
+        ] {
+            assert!(
+                get_page(bad).is_none(),
+                "{bad:?} must be refused by get_page"
+            );
+        }
+    }
+
+    #[test]
+    fn get_page_resolves_known_pages() {
+        // Known-good shapes still work post-validation.
+        assert!(get_page(CURATED_INDEX_PAGE).is_some());
+        for name in list_pages() {
+            assert!(get_page(&name).is_some(), "page {name} must resolve");
+        }
+    }
 
     #[test]
     fn raw_passthrough_appends_trailing_newline() {
