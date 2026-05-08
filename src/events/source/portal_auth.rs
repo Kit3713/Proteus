@@ -105,14 +105,20 @@ impl PortalAuthSource {
         let sampler = Arc::clone(&self.sampler);
         let poll = Duration::from_secs(self.poll_secs.max(1));
         let join = tokio::spawn(async move {
-            let mut prev: Option<Classification> = None;
+            // Issue #261: a small ring buffer of recent classifications
+            // lets the auth-edge detector skip transient `Unknown`
+            // blips (DNS hiccup, captive-portal mid-redirect TCP reset)
+            // and still recognise `Required → ... → Clear` as an
+            // auth completion. The ring is intentionally tiny — the
+            // detector only needs to look back to the last
+            // non-Unknown sample.
+            let mut history = ClassificationHistory::new();
             loop {
                 let next = sampler.sample();
-                if is_auth_edge(prev, next) {
+                if history.observe_and_is_auth_edge(next) {
                     let ssid = sampler.current_ssid().unwrap_or_default();
                     let _ = registry.fire(RotationTrigger::PortalAuth { ssid });
                 }
-                prev = Some(next);
                 // Issue #233: race the stop signal against the poll
                 // cadence so shutdown wins. Previously the loop slept
                 // for a full `poll` interval before checking
@@ -181,9 +187,60 @@ impl EventSource for PortalAuthSource {
 /// `PortalRequired → Clear|PortalAuthed` edge. Pulled out so the
 /// detection logic is unit-testable without standing up the full
 /// poll loop.
+///
+/// This is the strict pair-based check; the history-aware variant
+/// lives on [`ClassificationHistory::observe_and_is_auth_edge`] and
+/// is what the production poll loop calls. The pair-based check
+/// stays in the test module to pin the original truth table —
+/// `ClassificationHistory` extends it without violating any of the
+/// strict pairs.
+#[cfg(test)]
 fn is_auth_edge(prev: Option<Classification>, next: Classification) -> bool {
     matches!(prev, Some(Classification::PortalRequired))
         && matches!(next, Classification::Clear | Classification::PortalAuthed)
+}
+
+/// History-aware auth-edge detector. Issue #261.
+///
+/// The pair-based predicate ([`is_auth_edge`]) misses
+/// `Required → Unknown → Clear` because the intermediate `Unknown`
+/// shifts `prev` away from `PortalRequired`. In practice every
+/// captive-portal redirect generates one or two `Unknown` polls
+/// while the AP is rewriting DNS / juggling a 302; swallowing those
+/// blips matters because that's the exact moment we want to fire
+/// the trigger.
+///
+/// The detector reports an auth edge whenever `next ∈ {Clear,
+/// PortalAuthed}` and the most recent **non-Unknown** observation
+/// was `PortalRequired`. That captures the strict pair
+/// `Required → Clear` (no intermediate blip) and the transient-blip
+/// case `Required → Unknown* → Clear` uniformly.
+#[derive(Debug, Default)]
+pub(crate) struct ClassificationHistory {
+    /// Most recent non-Unknown observation. `None` until the
+    /// detector has seen any non-Unknown sample. Storing only the
+    /// last non-Unknown entry is sufficient because the predicate
+    /// never looks back further than that.
+    last_non_unknown: Option<Classification>,
+}
+
+impl ClassificationHistory {
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    /// Observe `next` and report whether it completes an auth edge
+    /// from a recent `Required`. The detector skips intermediate
+    /// `Unknown` samples so a transient detector blip during the
+    /// auth handover doesn't silence the trigger.
+    pub(crate) fn observe_and_is_auth_edge(&mut self, next: Classification) -> bool {
+        let edge = matches!(self.last_non_unknown, Some(Classification::PortalRequired))
+            && matches!(next, Classification::Clear | Classification::PortalAuthed);
+        if !matches!(next, Classification::Unknown) {
+            self.last_non_unknown = Some(next);
+        }
+        edge
+    }
 }
 
 /// Test sampler — returns canned classifications in sequence. Tests
@@ -256,13 +313,16 @@ impl EventSource for MockPortalAuthSource {
 
     fn start(&self, registry: &EventRegistry) -> Result<()> {
         let drain: Vec<Classification> = std::mem::take(&mut *self.sampler.queue.lock().unwrap());
-        let mut prev: Option<Classification> = None;
+        // Issue #261: the mock now mirrors the production detector
+        // by routing every observation through `ClassificationHistory`,
+        // so tests covering the transient-Unknown case go through the
+        // same path the daemon uses.
+        let mut history = ClassificationHistory::new();
         for next in drain {
-            if is_auth_edge(prev, next) {
+            if history.observe_and_is_auth_edge(next) {
                 let ssid = self.sampler.current_ssid().unwrap_or_default();
                 registry.fire(RotationTrigger::PortalAuth { ssid })?;
             }
-            prev = Some(next);
         }
         Ok(())
     }
@@ -299,7 +359,8 @@ mod tests {
         reg.register(Box::new(Counter {
             n: Arc::clone(&n),
             last: Arc::clone(&last),
-        }));
+        }))
+        .unwrap();
         (reg, n, last)
     }
 
@@ -359,10 +420,14 @@ mod tests {
         assert_eq!(n.load(Ordering::SeqCst), 0);
     }
 
-    /// `Unknown` (TCP failure / DNS timeout) doesn't fire — wrapping
-    /// it in either direction is just noise.
+    /// Issue #261: a transient `Unknown` (TCP failure / DNS timeout)
+    /// in the middle of a `Required → Clear` transition must not
+    /// silence the auth-edge trigger. The history-aware detector
+    /// looks past intermediate `Unknown` samples back to the last
+    /// non-Unknown observation; here `Required → Unknown → Clear`
+    /// fires exactly once.
     #[test]
-    fn unknown_classification_does_not_fire() {
+    fn transient_unknown_between_required_and_clear_still_fires() {
         let (reg, n, _) = rig();
         let s = Arc::new(MockPortalSampler::new());
         s.push(Classification::PortalRequired);
@@ -370,8 +435,54 @@ mod tests {
         s.push(Classification::Clear);
         let src = MockPortalAuthSource::new(Arc::clone(&s));
         src.start(&reg).unwrap();
-        // Required→Unknown is not an auth edge; Unknown→Clear is not
-        // either (prev needs to be Required). Net: zero triggers.
+        assert_eq!(n.load(Ordering::SeqCst), 1);
+    }
+
+    /// A leading `Unknown` (no prior state) does not fire — the
+    /// detector requires a non-Unknown reference state, and the
+    /// only non-Unknown ahead of `Clear` here is missing.
+    #[test]
+    fn leading_unknown_then_clear_does_not_fire() {
+        let (reg, n, _) = rig();
+        let s = Arc::new(MockPortalSampler::new());
+        s.push(Classification::Unknown);
+        s.push(Classification::Clear);
+        let src = MockPortalAuthSource::new(Arc::clone(&s));
+        src.start(&reg).unwrap();
+        assert_eq!(n.load(Ordering::SeqCst), 0);
+    }
+
+    /// Multiple consecutive `Unknown` between Required and Clear
+    /// also fire — the ring buffer carries the prior `Required`
+    /// marker through several poll rounds. Pin the case so a future
+    /// detector that shrinks the ring without thinking can't
+    /// regress this.
+    #[test]
+    fn multiple_unknowns_between_required_and_clear_still_fire() {
+        let (reg, n, _) = rig();
+        let s = Arc::new(MockPortalSampler::new());
+        s.push(Classification::PortalRequired);
+        s.push(Classification::Unknown);
+        s.push(Classification::Unknown);
+        s.push(Classification::Unknown);
+        s.push(Classification::Clear);
+        let src = MockPortalAuthSource::new(Arc::clone(&s));
+        src.start(&reg).unwrap();
+        assert_eq!(n.load(Ordering::SeqCst), 1);
+    }
+
+    /// `Clear → Unknown → Clear` does not fire — the prior
+    /// non-Unknown is `Clear`, not `Required`, so this is a
+    /// transient detector blip on a steady-state line.
+    #[test]
+    fn unknown_blip_on_clear_line_does_not_fire() {
+        let (reg, n, _) = rig();
+        let s = Arc::new(MockPortalSampler::new());
+        s.push(Classification::Clear);
+        s.push(Classification::Unknown);
+        s.push(Classification::Clear);
+        let src = MockPortalAuthSource::new(Arc::clone(&s));
+        src.start(&reg).unwrap();
         assert_eq!(n.load(Ordering::SeqCst), 0);
     }
 
@@ -387,6 +498,61 @@ mod tests {
         let src = MockPortalAuthSource::new(Arc::clone(&s));
         src.start(&reg).unwrap();
         assert_eq!(n.load(Ordering::SeqCst), 2);
+    }
+
+    /// Issue #261: `ClassificationHistory::observe_and_is_auth_edge`
+    /// owns the auth-edge predicate the production poll loop uses.
+    /// Pin the truth table directly so a future tweak to the
+    /// look-back logic can't silently regress.
+    #[test]
+    fn classification_history_truth_table() {
+        use Classification as C;
+
+        // Strict pair `Required → Clear` fires.
+        let mut h = ClassificationHistory::new();
+        assert!(!h.observe_and_is_auth_edge(C::PortalRequired));
+        assert!(h.observe_and_is_auth_edge(C::Clear));
+
+        // Strict pair `Required → PortalAuthed` fires.
+        let mut h = ClassificationHistory::new();
+        assert!(!h.observe_and_is_auth_edge(C::PortalRequired));
+        assert!(h.observe_and_is_auth_edge(C::PortalAuthed));
+
+        // Transient `Unknown` between `Required` and `Clear` still fires.
+        let mut h = ClassificationHistory::new();
+        assert!(!h.observe_and_is_auth_edge(C::PortalRequired));
+        assert!(!h.observe_and_is_auth_edge(C::Unknown));
+        assert!(h.observe_and_is_auth_edge(C::Clear));
+
+        // Multiple `Unknown` between still fires.
+        let mut h = ClassificationHistory::new();
+        assert!(!h.observe_and_is_auth_edge(C::PortalRequired));
+        assert!(!h.observe_and_is_auth_edge(C::Unknown));
+        assert!(!h.observe_and_is_auth_edge(C::Unknown));
+        assert!(!h.observe_and_is_auth_edge(C::Unknown));
+        assert!(h.observe_and_is_auth_edge(C::Clear));
+
+        // No prior history — `Clear` alone does not fire.
+        let mut h = ClassificationHistory::new();
+        assert!(!h.observe_and_is_auth_edge(C::Clear));
+
+        // Leading `Unknown` then `Clear` does not fire (no
+        // non-Unknown reference state).
+        let mut h = ClassificationHistory::new();
+        assert!(!h.observe_and_is_auth_edge(C::Unknown));
+        assert!(!h.observe_and_is_auth_edge(C::Clear));
+
+        // `Clear → Required` is not an auth edge.
+        let mut h = ClassificationHistory::new();
+        assert!(!h.observe_and_is_auth_edge(C::Clear));
+        assert!(!h.observe_and_is_auth_edge(C::PortalRequired));
+
+        // `Clear → Unknown → Clear` is not an auth edge — prior
+        // non-Unknown is `Clear`, not `Required`.
+        let mut h = ClassificationHistory::new();
+        assert!(!h.observe_and_is_auth_edge(C::Clear));
+        assert!(!h.observe_and_is_auth_edge(C::Unknown));
+        assert!(!h.observe_and_is_auth_edge(C::Clear));
     }
 
     /// `is_auth_edge` is the load-bearing predicate. Pin every input
