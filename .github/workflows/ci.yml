@@ -37,10 +37,10 @@ jobs:
     name: cargo fmt
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
       # Reads rust-toolchain.toml so the pinned channel installs verbatim;
       # rustfmt + clippy are listed in `components` there, so no `with:` here.
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: actions-rust-lang/setup-rust-toolchain@2b1f5e9b395427c92ee4e3331786ca3c37afe2d7  # v1
       - name: cargo fmt --check
         run: cargo fmt --check
 
@@ -53,8 +53,8 @@ jobs:
     name: lockfile freshness
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - uses: actions-rust-lang/setup-rust-toolchain@2b1f5e9b395427c92ee4e3331786ca3c37afe2d7  # v1
       - name: cargo metadata --locked
         run: cargo metadata --locked --format-version 1 > /dev/null
 
@@ -63,9 +63,9 @@ jobs:
     name: cargo clippy
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - uses: actions-rust-lang/setup-rust-toolchain@2b1f5e9b395427c92ee4e3331786ca3c37afe2d7  # v1
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32  # v2
       - name: cargo clippy --all-targets -- -D warnings
         run: cargo clippy --all-targets -- -D warnings
 
@@ -76,7 +76,7 @@ jobs:
     runs-on: ubuntu-latest
     container: fedora:43
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
       # gcc + pkg-config for crates that link to system libs.
       # dbus-devel is pre-installed because zbus pulls it in for system-bus
       # tests starting in phase B; staging it here keeps the container ready
@@ -84,8 +84,8 @@ jobs:
       # openssl-devel covers any TLS-using build script in transitive deps.
       - name: Install build dependencies
         run: dnf install -y gcc pkg-config dbus-devel openssl-devel
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions-rust-lang/setup-rust-toolchain@2b1f5e9b395427c92ee4e3331786ca3c37afe2d7  # v1
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32  # v2
       - name: cargo test --locked
         run: cargo test --locked
 
@@ -103,14 +103,14 @@ jobs:
     runs-on: ubuntu-latest
     container: fedora:43
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
       # See test job for rationale on each package.
       # binutils provides `strip`; coreutils provides `wc`; both are
       # already in the base image but listed defensively.
       - name: Install build dependencies
         run: dnf install -y gcc pkg-config dbus-devel openssl-devel binutils coreutils
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions-rust-lang/setup-rust-toolchain@2b1f5e9b395427c92ee4e3331786ca3c37afe2d7  # v1
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32  # v2
       # Time the cold release build. Soft signal only: the README targets
       # under 60s on the *dev host*, and CI runner perf is not our dev host.
       # Logged so regressions are visible, but never fails the job.
@@ -172,16 +172,16 @@ jobs:
             strip: arm-linux-gnueabihf-strip
             cache-key: armv7
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
       - name: Install ${{ matrix.target }} cross-compile toolchain
         run: |
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y ${{ matrix.apt-pkg }}
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: actions-rust-lang/setup-rust-toolchain@2b1f5e9b395427c92ee4e3331786ca3c37afe2d7  # v1
         with:
           target: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32  # v2
         with:
           key: ${{ matrix.cache-key }}
       - name: cargo build --release --locked --target ${{ matrix.target }}

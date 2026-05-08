@@ -135,22 +135,24 @@ pub(super) fn dispatch(cli: Cli) -> Result<u8> {
         Command::Uninstall { purge, yes } => commands::uninstall::run(purge, yes),
         Command::Bluetooth { action } => match action {
             BluetoothAction::Status { json } => commands::bluetooth_cmd::status(json),
-            BluetoothAction::Apply { .. } => {
-                commands::bluetooth_cmd::apply(cli.state.as_deref(), cli.config.as_deref())
+            BluetoothAction::Apply { yes } => {
+                commands::bluetooth_cmd::apply(yes, cli.state.as_deref(), cli.config.as_deref())
             }
-            BluetoothAction::Revert { .. } => commands::bluetooth_cmd::revert(cli.state.as_deref()),
+            BluetoothAction::Revert { yes } => {
+                commands::bluetooth_cmd::revert(yes, cli.state.as_deref())
+            }
         },
         Command::Hostname { action } => match action {
             HostnameAction::Status { json } => {
                 commands::hostname::status(json, cli.state.as_deref(), cli.config.as_deref())
             }
-            HostnameAction::Rotate { .. } => {
-                commands::hostname::rotate(cli.state.as_deref(), cli.config.as_deref())
+            HostnameAction::Rotate { yes } => {
+                commands::hostname::rotate(yes, cli.state.as_deref(), cli.config.as_deref())
             }
-            HostnameAction::Pin { name, .. } => {
-                commands::hostname::pin(&name, cli.state.as_deref(), cli.config.as_deref())
+            HostnameAction::Pin { name, yes } => {
+                commands::hostname::pin(&name, yes, cli.state.as_deref(), cli.config.as_deref())
             }
-            HostnameAction::Revert { .. } => commands::hostname::revert(cli.state.as_deref()),
+            HostnameAction::Revert { yes } => commands::hostname::revert(yes, cli.state.as_deref()),
         },
         Command::Ipv6 { action } => match action {
             Ipv6Action::Status { json } => {
@@ -186,20 +188,20 @@ pub(super) fn dispatch(cli: Cli) -> Result<u8> {
         },
         Command::Dns { action } => match action {
             DnsAction::Status { json } => commands::dns::status(json, cli.config.as_deref()),
-            DnsAction::Apply { .. } => commands::dns::apply(cli.config.as_deref()),
-            DnsAction::Revert { .. } => commands::dns::revert(),
+            DnsAction::Apply { yes } => commands::dns::apply(yes, cli.config.as_deref()),
+            DnsAction::Revert { yes } => commands::dns::revert(yes),
         },
         Command::Resolved { action } => match action {
             ResolvedAction::Status { json } => {
                 commands::resolved::status(json, cli.config.as_deref())
             }
-            ResolvedAction::Apply { .. } => commands::resolved::apply(cli.config.as_deref()),
-            ResolvedAction::Revert { .. } => commands::resolved::revert(),
+            ResolvedAction::Apply { yes } => commands::resolved::apply(yes, cli.config.as_deref()),
+            ResolvedAction::Revert { yes } => commands::resolved::revert(yes),
         },
         Command::Ntp { action } => match action {
             NtpAction::Status { json } => commands::ntp::status(json, cli.config.as_deref()),
-            NtpAction::Apply { .. } => commands::ntp::apply(cli.config.as_deref()),
-            NtpAction::Revert { .. } => commands::ntp::revert(),
+            NtpAction::Apply { yes } => commands::ntp::apply(yes, cli.config.as_deref()),
+            NtpAction::Revert { yes } => commands::ntp::revert(yes),
         },
         Command::Dhcp { action } => match action {
             DhcpAction::Status { json } => commands::dhcp::status(json),

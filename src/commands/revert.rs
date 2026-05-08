@@ -22,8 +22,9 @@ use anyhow::Result;
 use crate::exit;
 
 /// Drop-ins Proteus writes outside `/etc/proteus/`. Mirrors `wiki/uninstall.md`
-/// and the install script.
-const EXTERNAL_DROPINS: &[&str] = &[
+/// and the install script. `pub(crate)` so the dry-run preview iterates the
+/// same list as the real teardown (issue #265).
+pub(crate) const EXTERNAL_DROPINS: &[&str] = &[
     "/etc/sysctl.d/95-proteus.conf",
     "/etc/systemd/timesyncd.conf.d/10-proteus.conf",
     "/etc/NetworkManager/dispatcher.d/01-proteus",
@@ -86,12 +87,16 @@ pub(crate) struct RevertChanged {
 /// DBus state for IPv6 and DHCP is *not* covered by file removal — those
 /// settings live inside NetworkManager keyfiles or in-memory connections,
 /// so the corresponding submodule reverts are called explicitly.
+///
+/// Issue #242: each per-feature revert below is passed `yes=true` because
+/// the parent (`commands::revert::run` or `commands::uninstall::run`) has
+/// already cleared its own `--yes` gate.
 pub(crate) fn revert_best_effort(warns: &mut Vec<String>) {
     let mut changed = RevertChanged::default();
-    if let Err(e) = super::hostname::revert(None) {
+    if let Err(e) = super::hostname::revert(true, None) {
         warns.push(format!("hostname: {e:#}"));
     }
-    if let Err(e) = super::bluetooth_cmd::revert(None) {
+    if let Err(e) = super::bluetooth_cmd::revert(true, None) {
         warns.push(format!("bluetooth: {e:#}"));
     }
     if let Err(e) = super::ipv6::revert(true, None) {

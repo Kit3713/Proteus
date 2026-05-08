@@ -13,6 +13,11 @@
 //! `commands::dhcp::apply`, `commands::dns::apply`, `commands::stack::apply`,
 //! `commands::nft::apply`). Each prints its own detailed output; the
 //! orchestrator adds the cross-feature summary.
+//!
+//! Issue #242: per-feature handlers carry their own `--yes` gate so that
+//! direct CLI invocations stay safe. The orchestrator's `run` already
+//! cleared its own gate at the top, so every per-feature call below
+//! passes `yes=true` to satisfy the gate without re-prompting.
 
 use std::path::Path;
 
@@ -215,7 +220,7 @@ fn run_resolved(config: &Config, config_path: Option<&Path>) -> ComponentReport 
             "disabled in config (resolved.mdns_off and resolved.llmnr_off both false)",
         );
     }
-    classify("resolved", super::resolved::apply(config_path))
+    classify("resolved", super::resolved::apply(true, config_path))
 }
 
 // ntp respects the `[ntp] enabled` master switch. The submodule's hard
@@ -224,7 +229,7 @@ fn run_ntp(config: &Config, config_path: Option<&Path>) -> ComponentReport {
     if !config.ntp.enabled {
         return skipped("ntp", "disabled in config (ntp.enabled = false)");
     }
-    classify("ntp", super::ntp::apply(config_path))
+    classify("ntp", super::ntp::apply(true, config_path))
 }
 
 fn run_ipv6(
@@ -235,8 +240,6 @@ fn run_ipv6(
     if !config.ipv6.enabled {
         return skipped("ipv6", "disabled in config (ipv6.enabled = false)");
     }
-    // Orchestrator already gated on `--yes`; pass it through so the
-    // sub-command's own --yes guard is satisfied.
     classify("ipv6", super::ipv6::apply(true, state_path, config_path))
 }
 
@@ -262,7 +265,10 @@ fn run_hostname(
     if !config.hostname.enabled {
         return skipped("hostname", "disabled in config (hostname.enabled = false)");
     }
-    classify("hostname", super::hostname::rotate(state_path, config_path))
+    classify(
+        "hostname",
+        super::hostname::rotate(true, state_path, config_path),
+    )
 }
 
 fn run_bluetooth(
@@ -278,7 +284,7 @@ fn run_bluetooth(
     }
     classify(
         "bluetooth",
-        super::bluetooth_cmd::apply(state_path, config_path),
+        super::bluetooth_cmd::apply(true, state_path, config_path),
     )
 }
 
@@ -362,7 +368,7 @@ fn run_dns(config: &Config, config_path: Option<&Path>) -> ComponentReport {
             "disabled in config (dns.strip_edns_client_subnet = false)",
         );
     }
-    classify("dns", super::dns::apply(config_path))
+    classify("dns", super::dns::apply(true, config_path))
 }
 
 // Stack has no master enable — its toggles express specific hardenings.

@@ -79,13 +79,13 @@ jobs:
     runs-on: ubuntu-latest
     container: fedora:43
     steps:
-      # `actions/checkout@v4` falls back to a tarball download when git is
+      # `actions/checkout` falls back to a tarball download when git is
       # absent inside the container, which leaves no .git for the
       # SOURCE_DATE_EPOCH computation below. Install git first so the
       # checkout uses native git and preserves the repository history.
       - name: Install git for checkout
         run: dnf install -y git
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
         with:
           # Need the tagged commit, not a shallow snapshot, so we can read
           # the commit timestamp for SOURCE_DATE_EPOCH.
@@ -103,10 +103,10 @@ jobs:
           echo "Using SOURCE_DATE_EPOCH=${SDE} (tag commit timestamp)"
       # `actions-rust-lang/setup-rust-toolchain` reads rust-toolchain.toml
       # (no `toolchain:` arg) so the pinned channel installs verbatim.
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: actions-rust-lang/setup-rust-toolchain@2b1f5e9b395427c92ee4e3331786ca3c37afe2d7  # v1
         with:
           rustflags: ""
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32  # v2
         with:
           key: release-x86_64
       - name: cargo build --release --locked
@@ -138,7 +138,7 @@ jobs:
             echo "kernel_uname=$(uname -srm)"
             echo "binary_sha256=$(sha256sum dist-out/proteus-x86_64-unknown-linux-gnu | cut -d' ' -f1)"
           } > dist-out/proteus-x86_64-unknown-linux-gnu.build-info
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
           name: proteus-x86_64
           path: dist-out/*
@@ -156,7 +156,7 @@ jobs:
     env:
       CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
         with:
           fetch-depth: 0
       - name: Install aarch64 cross-compile toolchain
@@ -170,11 +170,11 @@ jobs:
           SDE=$(git log -1 --pretty=%ct)
           echo "SOURCE_DATE_EPOCH=${SDE}" >> "$GITHUB_ENV"
           echo "Using SOURCE_DATE_EPOCH=${SDE} (tag commit timestamp)"
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: actions-rust-lang/setup-rust-toolchain@2b1f5e9b395427c92ee4e3331786ca3c37afe2d7  # v1
         with:
           target: aarch64-unknown-linux-gnu
           rustflags: ""
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32  # v2
         with:
           key: release-aarch64
       - name: cargo build --release --locked --target aarch64-unknown-linux-gnu
@@ -206,7 +206,7 @@ jobs:
             echo "host_kernel_uname=$(uname -srm)"
             echo "binary_sha256=$(sha256sum dist-out/proteus-aarch64-unknown-linux-gnu | cut -d' ' -f1)"
           } > dist-out/proteus-aarch64-unknown-linux-gnu.build-info
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
           name: proteus-aarch64
           path: dist-out/*
@@ -230,7 +230,7 @@ jobs:
     steps:
       - name: Install git for checkout
         run: dnf install -y git
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
       - name: Install rpmbuild toolchain
         run: dnf install -y rpm-build rpmdevtools tar gzip gcc pkg-config dbus-devel openssl-devel rust cargo systemd-rpm-macros
       - name: Set up rpmbuild tree
@@ -257,7 +257,7 @@ jobs:
           find ~/rpmbuild/SRPMS -type f -name '*.rpm' -exec cp -v {} dist-out/ \;
           ( cd dist-out && for f in *.rpm; do sha256sum "$f" > "$f.sha256"; done )
           ls -la dist-out
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
           name: proteus-rpm
           path: dist-out/*
@@ -287,7 +287,7 @@ jobs:
         run: |
           apt-get update
           apt-get install -y --no-install-recommends git ca-certificates
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
       - name: Install Debian build tooling
         run: |
           set -euo pipefail
@@ -341,7 +341,7 @@ jobs:
             -exec cp -v {} dist-out/ \;
           ( cd dist-out && for f in *.deb; do [ -e "$f" ] && sha256sum "$f" > "$f.sha256" || true; done )
           ls -la dist-out
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
           name: proteus-deb
           path: dist-out/*
@@ -363,7 +363,7 @@ jobs:
     steps:
       - name: Install git for checkout
         run: pacman -Sy --noconfirm --needed git
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
       - name: Refresh pacman and install helpers
         run: |
           set -euo pipefail
@@ -417,7 +417,7 @@ jobs:
           find dist/arch -maxdepth 1 -type f -name '*.pkg.tar.zst' -exec cp -v {} dist-out/ \;
           ( cd dist-out && for f in *.pkg.tar.zst; do sha256sum "$f" > "$f.sha256"; done )
           ls -la dist-out
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
           name: proteus-arch
           path: dist-out/*
@@ -432,10 +432,11 @@ jobs:
   # packaging recipe does not block the release; we just pull whichever
   # artifacts succeeded via `if-no-files-found: warn` on the download steps.
   #
-  # softprops/action-gh-release@v2 is pinned to the major version per action
-  # best practice. `fail_on_unmatched_files: false` is intentional: missing
-  # package artifacts (because their job failed) should not abort the
-  # release.
+  # Issue #260: every third-party action is SHA-pinned (the comment after
+  # the SHA records the floating tag the SHA corresponds to) so a hostile
+  # tag-move can't substitute a malicious commit. `fail_on_unmatched_files:
+  # false` is intentional: missing package artifacts (because their job
+  # failed) should not abort the release.
   publish:
     name: publish release
     needs: [build-x86_64, build-aarch64, build-rpm, build-deb, build-arch-pkg]
@@ -444,29 +445,29 @@ jobs:
       # No checkout needed: softprops/action-gh-release reads the tag/SHA from
       # the workflow context, and we attach files from the downloaded artifacts.
       - name: Download x86_64 artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
         with:
           name: proteus-x86_64
           path: release-assets
       - name: Download aarch64 artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
         with:
           name: proteus-aarch64
           path: release-assets
       - name: Download RPM artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
         continue-on-error: true
         with:
           name: proteus-rpm
           path: release-assets
       - name: Download .deb artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
         continue-on-error: true
         with:
           name: proteus-deb
           path: release-assets
       - name: Download Arch package artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
         continue-on-error: true
         with:
           name: proteus-arch
@@ -474,7 +475,7 @@ jobs:
       - name: List staged release assets
         run: ls -la release-assets || true
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65  # v2
         with:
           # Glob each artifact group so missing optional files (e.g. when a
           # packaging job fails) do not abort the release. The raw binaries
