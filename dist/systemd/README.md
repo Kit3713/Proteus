@@ -6,14 +6,20 @@ and at boot.
 ## Units
 
 - `proteus-rotate.timer` / `proteus-rotate.service` — scheduled MAC rotation,
-  every 2h by default. Tunable via `[rotation] interval` in
+  *roughly* every 2h by default. Tunable via `[rotation] interval` in
   `/etc/proteus/config.toml`. `Persistent=true` so a suspended laptop catches
-  up on the next wake.
+  up on the next wake. The default `AccuracySec=45min` +
+  `RandomizedDelaySec=30min` is intentional — see issue #303 and
+  `wiki/threat-model.md` ("Rotation cadence as a fingerprint"). The 2h
+  cadence is preserved on average; only the cross-host wallclock cluster is
+  removed.
 - `proteus-check.timer` / `proteus-check.service` — probe-driven rotation
-  check, every 5 min by default. If the probe quorum fails, rotate
-  immediately. The probe-conditional logic lands in phase C; until then the
-  service invokes `proteus rotate --if-needed --yes`, which is a no-op until
-  the quorum + cooldown logic is wired up.
+  check, *roughly* every 5 min by default (`AccuracySec=2min` +
+  `RandomizedDelaySec=2min` for the same anti-fingerprint reason). If the
+  probe quorum fails, rotate immediately. The probe-conditional logic lands
+  in phase C; until then the service invokes
+  `proteus rotate --if-needed --yes`, which is a no-op until the quorum +
+  cooldown logic is wired up.
 - `proteus-boot.service` — runs `proteus apply --yes` once after
   NetworkManager comes up at boot.
 

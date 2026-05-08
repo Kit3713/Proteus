@@ -208,20 +208,79 @@ fn parse_duration_seconds(s: &str) -> Result<u64> {
 /// The leading `OnCalendar=` line is intentional: systemd *appends* timer
 /// triggers from drop-ins to the unit-file ones, so we clear the unit-file
 /// `OnCalendar=` first and then add our own knob.
+///
+/// Issue #303: user-set drop-ins also carry `AccuracySec=` and
+/// `RandomizedDelaySec=` proportional to the cadence, so a user who sets
+/// `proteus timer set rotate --interval 2h` does not fall back to the
+/// systemd-default `AccuracySec=1min` cluster — they keep the
+/// anti-fingerprint jitter that the shipped unit-file defaults already
+/// have. Pure-relative `OnUnitActiveSec=` cadences are naturally
+/// non-clustering across hosts (each host's "0 of N seconds" starts at a
+/// different wall time), but applying jitter on top further smears the
+/// fire-time within any one host's schedule, which makes the
+/// per-rotation moment harder to predict for an attacker who knows the
+/// last fire time.
 pub fn render_dropin(interval: &Interval) -> String {
     let header = format!(
         "# managed by proteus v{version}\n# do not edit; manage via `proteus timer set ...`\n",
         version = version::VERSION
     );
+    let (accuracy, randomized) = pick_jitter(interval_period_seconds(interval));
     let body = match interval {
         Interval::UnitActive { seconds, original } => format!(
-            "[Timer]\n# user-requested cadence: {original}\nOnCalendar=\nOnUnitActiveSec={seconds}\n"
+            "[Timer]\n# user-requested cadence: {original}\nOnCalendar=\nOnUnitActiveSec={seconds}\nAccuracySec={accuracy}\nRandomizedDelaySec={randomized}\n"
         ),
         Interval::Calendar { expr } => {
-            format!("[Timer]\nOnCalendar=\nOnCalendar={expr}\n")
+            format!(
+                "[Timer]\nOnCalendar=\nOnCalendar={expr}\nAccuracySec={accuracy}\nRandomizedDelaySec={randomized}\n"
+            )
         }
     };
     format!("{header}{body}")
+}
+
+/// Approximate cadence period in seconds, used to scale jitter. For
+/// `OnUnitActiveSec=` we know the answer exactly. For named cadences and
+/// raw calendar expressions we don't, so we fall back to a conservative
+/// 1-hour estimate, which gives "30min" / "15min" jitter — sane defaults
+/// across the typical user-set range (5min ... daily).
+fn interval_period_seconds(interval: &Interval) -> u64 {
+    match interval {
+        Interval::UnitActive { seconds, .. } => *seconds,
+        Interval::Calendar { .. } => 3600,
+    }
+}
+
+/// Pick `(AccuracySec, RandomizedDelaySec)` for a given cadence.
+///
+/// Rule of thumb: AccuracySec is wide enough to blur cross-host
+/// wallclock alignment, RandomizedDelaySec adds per-host non-predictability
+/// on top, both scaled so the jitter window is a meaningful fraction of
+/// the cadence without ever pushing the jitter bigger than the cadence
+/// itself (which would let a tick swallow another tick). The shipped
+/// unit-file defaults (rotate: 45min/30min on a 2h cadence; check:
+/// 2min/2min on a 5min cadence) sit in this band, and a `proteus timer
+/// set rotate --interval 2h` drop-in lands on the same numbers.
+///
+/// Shared with `crate::init::systemd::render_periodic_timer` so
+/// generated artifacts inherit the same anti-fingerprint shape.
+pub(crate) fn pick_jitter(period_seconds: u64) -> (&'static str, &'static str) {
+    match period_seconds {
+        // <=60s: tight — anything wider misses scheduling intent.
+        0..=60 => ("10s", "5s"),
+        // 1–4 min: 30s/30s.
+        61..=240 => ("30s", "30s"),
+        // 4–30 min: 2min/2min — matches the shipped check timer (5min).
+        241..=1800 => ("2min", "2min"),
+        // 30 min – 1.5 h: 15min/15min.
+        1801..=5400 => ("15min", "15min"),
+        // 1.5–6 h: 45min/30min — matches the shipped rotate timer (2h).
+        5401..=21600 => ("45min", "30min"),
+        // 6–24 h: 1h/30min.
+        21601..=86400 => ("1h", "30min"),
+        // > 1 day: 2h/1h.
+        _ => ("2h", "1h"),
+    }
 }
 
 /// Path to the drop-in directory for the given timer.
@@ -536,6 +595,47 @@ mod tests {
         let interval = parse_interval("hourly").unwrap();
         let body = render_dropin(&interval);
         assert!(body.contains("OnCalendar=\nOnCalendar=hourly\n"));
+    }
+
+    /// Issue #303: every drop-in we render must include both
+    /// `AccuracySec=` and `RandomizedDelaySec=` so user-set cadences
+    /// inherit the same anti-fingerprint jitter the shipped unit-file
+    /// defaults already have.
+    #[test]
+    fn render_dropin_emits_jitter_directives() {
+        for spec in ["30s", "5m", "30m", "2h", "8h", "1d", "hourly", "daily"] {
+            let interval = parse_interval(spec).unwrap();
+            let body = render_dropin(&interval);
+            assert!(
+                body.lines().any(|l| l.starts_with("AccuracySec=")),
+                "drop-in for {spec:?} missing AccuracySec= (issue #303):\n{body}"
+            );
+            assert!(
+                body.lines().any(|l| l.starts_with("RandomizedDelaySec=")),
+                "drop-in for {spec:?} missing RandomizedDelaySec= (issue #303):\n{body}"
+            );
+        }
+    }
+
+    /// Issue #303: a 2h drop-in (the new default) must render with at
+    /// least 30 min of accuracy slack — matching the shipped unit-file
+    /// shape — so the user-set form does not regress to the v0.3.x
+    /// 5-min cluster.
+    #[test]
+    fn render_dropin_2h_carries_wide_jitter() {
+        let interval = parse_interval("2h").unwrap();
+        let body = render_dropin(&interval);
+        // 2h falls in the 4–24h jitter band (45min / 30min). Pre-#303 this
+        // would have rendered with no AccuracySec line at all and
+        // inherited systemd's 1-min default — recognizable.
+        assert!(
+            body.contains("AccuracySec=45min"),
+            "2h drop-in must use 45min accuracy (issue #303); got:\n{body}"
+        );
+        assert!(
+            body.contains("RandomizedDelaySec=30min"),
+            "2h drop-in must use 30min randomized delay (issue #303); got:\n{body}"
+        );
     }
 
     #[test]

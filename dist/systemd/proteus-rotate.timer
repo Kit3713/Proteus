@@ -1,13 +1,43 @@
 [Unit]
-Description=Proteus scheduled MAC rotation (every 2h by default)
+Description=Proteus scheduled MAC rotation (~ every 2h by default, jittered)
 
 [Timer]
 # Default cadence; override via [rotation] interval in /etc/proteus/config.toml.
+#
+# Issue #303: the prior shape (`OnCalendar=*-*-* 00/2:00:00` +
+# `AccuracySec=5min`) was itself a Proteus fingerprint observable at the
+# WLAN-controller layer — every Proteus host rotated every 2h on the
+# wallclock hour ±5 min. A passive multi-AP observer could spot the
+# cluster of rotation events at :00/:02/:04/... and fingerprint Proteus
+# users by scheduling pattern alone.
+#
+# Defence: keep the 2-hour cadence intent (`OnCalendar=*-*-* 00/2:00:00`)
+# but widen `AccuracySec` to 45 minutes. systemd is then free to fire
+# anywhere inside a 45-minute window after the 2h boundary, so the
+# cluster of rotations is smeared across most of the hour. Different
+# hosts pick different offsets (driven by systemd's own randomization +
+# system-load batching), which breaks the "everyone rotates at HH:00" tell
+# without giving up the "rotate roughly every 2h" semantics.
+#
+# Trade-off: a single attacker watching one host now sees more variance
+# in *when* a rotation lands (up to ~45 min of jitter). That is
+# acceptable — fingerprintability across hosts matters more than
+# wallclock predictability for any one host. Documented in
+# wiki/threat-model.md and wiki/rotation.md.
 OnCalendar=*-*-* 00/2:00:00
 # Catch up if the laptop was suspended or powered off across a tick.
 Persistent=true
-# Allow systemd to batch this with other timers within the window.
-AccuracySec=5min
+# Wide jitter window so the cadence is not a Proteus signature (issue #303).
+# 45 min smears the 2h cluster across most of the hour without changing
+# the "roughly every 2h" intent.
+AccuracySec=45min
+# Belt-and-suspenders: explicitly randomize the start delay each time
+# the timer arms. systemd already applies AccuracySec-based jitter, but
+# RandomizedDelaySec= adds a second independent uniformly-distributed
+# offset that runs *before* AccuracySec batching, so two hosts whose
+# AccuracySec windows happen to align still don't fire at the same
+# moment.
+RandomizedDelaySec=30min
 Unit=proteus-rotate.service
 
 [Install]

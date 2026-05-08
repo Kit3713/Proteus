@@ -162,12 +162,17 @@ in
       });
 
     systemd.timers.proteus-rotate = lib.mkIf cfg.timer.rotate.enable {
-      description = "Proteus scheduled MAC rotation (every 2h by default)";
+      description = "Proteus scheduled MAC rotation (~ every 2h by default, jittered)";
       wantedBy = [ "timers.target" ];
+      # Issue #303: widen AccuracySec + add RandomizedDelaySec so the
+      # default rotation cadence is not itself a Proteus fingerprint
+      # observable across hosts at the WLAN-controller layer. See
+      # dist/systemd/proteus-rotate.timer for the long-form rationale.
       timerConfig = {
         OnCalendar = "*-*-* 00/2:00:00";
         Persistent = true;
-        AccuracySec = "5min";
+        AccuracySec = "45min";
+        RandomizedDelaySec = "30min";
         Unit = "proteus-rotate.service";
       };
     };
@@ -179,11 +184,14 @@ in
       });
 
     systemd.timers.proteus-check = lib.mkIf cfg.timer.check.enable {
-      description = "Proteus probe-driven rotation check (every 5 min by default)";
+      description = "Proteus probe-driven rotation check (~ every 5 min by default, jittered)";
       wantedBy = [ "timers.target" ];
+      # Issue #303: see proteus-rotate above; same anti-fingerprint
+      # rationale, scaled to the 5-min cadence.
       timerConfig = {
         OnCalendar = "*-*-* *:00/5:00";
-        AccuracySec = "30s";
+        AccuracySec = "2min";
+        RandomizedDelaySec = "2min";
         Unit = "proteus-check.service";
       };
     };
