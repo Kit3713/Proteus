@@ -150,6 +150,21 @@ pub(crate) fn classify_response(
     let expected_trimmed = expected_body.trim();
     let body_trimmed = resp.body.trim();
 
+    // NEV2.2: empty expected_body paired with empty body is treated
+    // as Unknown rather than Clear. Without this guard, an operator
+    // who left `expected_response = ""` in their config could
+    // mis-classify any blank response (e.g. a portal that returned a
+    // bare 200 with no body) as a clean network. Treat the
+    // both-empty case as inconclusive so the operator's misconfig
+    // surfaces at the next read instead of as a false-positive.
+    if expected_trimmed.is_empty() && body_trimmed.is_empty() && resp.status == 200 {
+        return (
+            Classification::Unknown,
+            "empty expected_response paired with empty body — config likely missing".to_string(),
+            None,
+        );
+    }
+
     // 200 with the exact expected body.
     if resp.status == 200 && body_trimmed == expected_trimmed {
         // Some authed walled gardens leave portal-shaped headers in flight.
@@ -305,16 +320,60 @@ fn parse_port_suffix(after: &str) -> Option<u16> {
     port_str.parse::<u16>().ok()
 }
 
+/// N12.7: build the `Host:` header value for an HTTP/1.0 request.
+/// IPv6 literals MUST be bracketed per RFC 7230 §5.4 (`[::1]`,
+/// `[fe80::1]:8080`); a bare colon-bearing host trips the
+/// downstream parser at every well-behaved server. The default
+/// port (80) is omitted to match the canonical Host shape.
+///
+/// `host` here is the raw host extracted in `parse_http_url`
+/// (brackets already stripped); we re-add brackets when it parses
+/// as an `Ipv6Addr`.
+fn format_host_header(host: &str, port: u16) -> String {
+    use std::net::Ipv6Addr;
+    use std::str::FromStr;
+    let bracketed = if Ipv6Addr::from_str(host).is_ok() {
+        format!("[{host}]")
+    } else {
+        host.to_string()
+    };
+    if port == 80 {
+        bracketed
+    } else {
+        format!("{bracketed}:{port}")
+    }
+}
+
 fn http_get(parts: &UrlParts, timeout: Duration) -> std::io::Result<HttpResponse> {
     let started = Instant::now();
-    let addr_iter = (parts.host.as_str(), parts.port).to_socket_addrs()?;
+    let addrs: Vec<std::net::SocketAddr> = (parts.host.as_str(), parts.port)
+        .to_socket_addrs()?
+        .collect();
+    // N10: prefer IPv4 addresses first when the resolver returns a
+    // mix. Many captive portals' `nmcheck` endpoints have v6 records
+    // that route into a black hole on portals that only NAT v4; the
+    // detector wastes its connect-budget on the v6 addr first under
+    // the default kernel ordering. Stable-sort so within each family
+    // the resolver's order is preserved.
+    let mut ordered = addrs;
+    ordered.sort_by_key(|a| if a.is_ipv4() { 0 } else { 1 });
+    let addr_iter = ordered.into_iter();
     let mut last_err: Option<std::io::Error> = None;
     for addr in addr_iter {
         match TcpStream::connect_timeout(&addr, remaining_budget(started, timeout)?) {
             Ok(mut stream) => {
+                // N12.7: per RFC 7230 §5.4, the `Host:` header for
+                // an IPv6 literal must be bracketed
+                // (`Host: [::1]:8080`). We can't tell from `parts`
+                // alone whether the host was a literal — the bracket
+                // strip happens in `parse_http_url` — so re-derive
+                // from the address kind: when the connected peer
+                // socket is IPv6 *and* the host string parses as an
+                // `Ipv6Addr`, wrap. Cheap and only runs once.
+                let host_for_header = format_host_header(&parts.host, parts.port);
                 let req = format!(
                     "GET {} HTTP/1.0\r\nHost: {}\r\nUser-Agent: proteus-portal-detect/1.0\r\nAccept: */*\r\nConnection: close\r\n\r\n",
-                    parts.path, parts.host
+                    parts.path, host_for_header
                 );
                 stream.set_write_timeout(Some(remaining_budget(started, timeout)?))?;
                 stream.write_all(req.as_bytes())?;
@@ -608,5 +667,58 @@ mod tests {
         let r = remaining_budget(Instant::now(), Duration::from_secs(5)).unwrap();
         assert!(r > Duration::from_millis(100), "got {r:?}");
         assert!(r <= Duration::from_secs(5), "got {r:?}");
+    }
+
+    /// N12.7: bare IPv4 / hostname Host header passes through
+    /// unchanged. The default port (80) is omitted to match the
+    /// canonical Host header shape.
+    #[test]
+    fn host_header_for_ipv4_and_hostname_is_unchanged() {
+        assert_eq!(
+            format_host_header("nmcheck.gnome.org", 80),
+            "nmcheck.gnome.org"
+        );
+        assert_eq!(
+            format_host_header("nmcheck.gnome.org", 8080),
+            "nmcheck.gnome.org:8080"
+        );
+        assert_eq!(format_host_header("203.0.113.5", 80), "203.0.113.5");
+    }
+
+    /// N12.7: IPv6 literals in the Host header MUST be bracketed
+    /// per RFC 7230 §5.4. Without the brackets, a server's URL
+    /// parser rejects the request line with a 400.
+    #[test]
+    fn host_header_for_ipv6_literal_is_bracketed() {
+        assert_eq!(format_host_header("::1", 80), "[::1]");
+        assert_eq!(format_host_header("::1", 8080), "[::1]:8080");
+        assert_eq!(format_host_header("fe80::1", 80), "[fe80::1]");
+        assert_eq!(format_host_header("2001:db8::1", 443), "[2001:db8::1]:443");
+    }
+
+    /// NEV2.2: an empty `expected_body` paired with an empty
+    /// response body must classify as `Unknown` rather than `Clear`
+    /// (which is what the previous code did because `"".trim() ==
+    /// "".trim()` always wins). Pin so an operator who forgot to
+    /// configure `expected_response` sees the misconfig instead of
+    /// a false-positive clean signal.
+    #[test]
+    fn empty_expected_body_with_empty_body_is_unknown() {
+        let r = mk_resp(200, &[], "");
+        let (c, _, _) = classify_response(&r, "");
+        assert_eq!(c, Classification::Unknown);
+    }
+
+    /// NEV2.2 mirror: a non-empty body still goes through the
+    /// normal classifier even when `expected_body` is empty —
+    /// avoids regressing the clear path for users who wired the
+    /// config correctly.
+    #[test]
+    fn empty_expected_body_with_real_body_still_classifies() {
+        let r = mk_resp(200, &[], "anything");
+        let (c, _, _) = classify_response(&r, "");
+        // 200 with body that doesn't match the (empty) expected ->
+        // PortalRequired (existing splash-page rule), not Clear.
+        assert_eq!(c, Classification::PortalRequired);
     }
 }

@@ -250,6 +250,17 @@ impl NetworkBackend for MockBackend {
         device: &'a BackendDevice,
         mac: Mac,
     ) -> BoxFuture<'a, Result<()>> {
+        // NBE.6: validate the MAC at the boundary so unit tests catch
+        // validator-edge-case bugs (multicast, all-zero) the same way
+        // production NM would reject the write. Production NM hard-rejects
+        // a non-assignable mac on `Settings.Connection.Update` with
+        // `InvalidArgument`; the mock previously accepted any value, so
+        // a regression in the rotate path could silently land an
+        // un-assignable address in unit tests without surfacing.
+        if let Err(e) = mac.validate_assignable() {
+            let err = anyhow::anyhow!("MockBackend::set_cloned_mac refused {mac}: {e}");
+            return Box::pin(async move { Err(err) });
+        }
         let mut inner = self.inner.lock().unwrap();
         inner.calls.push(MockCall::SetClonedMac {
             iface: device.iface.clone(),

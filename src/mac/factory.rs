@@ -304,19 +304,35 @@ fn is_well_formed_mac(s: &str) -> bool {
 /// Issue #271: also reject multicast addresses (first-octet bit 0 set).
 /// A buggy ethernet driver could otherwise have its multicast permanent
 /// address cached as the factory original and restored on revert.
+///
+/// NBE.10: Linux 6.3+ Intel iwlwifi (and a few related drivers) print
+/// `Permanent MAC address: xx:xx:xx:xx:xx:xx` instead of the legacy
+/// `Permanent address:`. Match both header shapes so factory-MAC capture
+/// keeps working on those drivers; without this, the parser silently
+/// fell back to the live-address sysfs reader which post-rotation would
+/// be the cloned MAC (a known issue dating to Linux 6.3).
 fn parse_ethtool_permanent(stdout: &str) -> Option<String> {
     for line in stdout.lines() {
         let lower = line.trim().to_ascii_lowercase();
-        if let Some(rest) = lower.strip_prefix("permanent address:") {
-            let mac = rest.trim();
-            if mac.is_empty() || mac == "00:00:00:00:00:00" {
-                return None;
-            }
-            if !is_unicast_well_formed_mac(mac) {
-                return None;
-            }
-            return Some(mac.to_string());
+        // Try the canonical legacy shape first, then the
+        // Linux-6.3-and-Intel variant. The two-prefix loop keeps
+        // the parser tolerant of future header tweaks (we accept
+        // anything ending in `address:` after a `permanent` token).
+        let rest = if let Some(r) = lower.strip_prefix("permanent address:") {
+            r
+        } else if let Some(r) = lower.strip_prefix("permanent mac address:") {
+            r
+        } else {
+            continue;
+        };
+        let mac = rest.trim();
+        if mac.is_empty() || mac == "00:00:00:00:00:00" {
+            return None;
         }
+        if !is_unicast_well_formed_mac(mac) {
+            return None;
+        }
+        return Some(mac.to_string());
     }
     None
 }
@@ -713,6 +729,38 @@ mod tests {
         let s = TestSysfs::new("factory-legacy-unavail");
         let got = permanent_address_under(s.root(), "ghost0", &no_ethtool());
         assert!(got.is_none(), "legacy API: Unavailable -> None");
+    }
+
+    /// NBE.10: Linux 6.3+ Intel iwlwifi prints
+    /// `Permanent MAC address:` instead of the legacy
+    /// `Permanent address:`. Pin the new fixture so the parser
+    /// keeps working on those drivers — without this the
+    /// factory-MAC capture silently fell back to the live address.
+    #[test]
+    fn parse_ethtool_permanent_accepts_linux_6_3_mac_header() {
+        let stdout = "Permanent MAC address: aa:bb:cc:dd:ee:ff\n";
+        assert_eq!(
+            parse_ethtool_permanent(stdout).as_deref(),
+            Some("aa:bb:cc:dd:ee:ff")
+        );
+        // Case-insensitive on the header, like the legacy variant.
+        let stdout = "PERMANENT MAC ADDRESS: AA:BB:CC:DD:EE:FF\n";
+        assert_eq!(
+            parse_ethtool_permanent(stdout).as_deref(),
+            Some("aa:bb:cc:dd:ee:ff")
+        );
+    }
+
+    /// NBE.10 sanity: the legacy `Permanent address:` header still
+    /// parses too. The parser must accept both — many distros still
+    /// run pre-6.3 kernels.
+    #[test]
+    fn parse_ethtool_permanent_legacy_header_still_works() {
+        let stdout = "Permanent address: 00:11:22:33:44:55\n";
+        assert_eq!(
+            parse_ethtool_permanent(stdout).as_deref(),
+            Some("00:11:22:33:44:55")
+        );
     }
 
     /// N7: full end-to-end through `permanent_address_result_under` with
