@@ -430,6 +430,14 @@ fn check_other_resolvers<P: RuntimeProbe>(paths: &Paths, probe: &P) -> Option<De
     None
 }
 
+// Roadmap Stream 7 / E10 audit: every `.unwrap()` and `.expect()` in
+// `src/dns/mod.rs` lives inside this `#[cfg(test)]` module (or its
+// `pub mod tempdir` test helper). None are reachable from the production
+// `detect_defer*` / `parse_ss_for_foreign_listener` paths above. The
+// `tempdir::TempRoot::new()` helper is test-only and is not re-exported
+// outside `cfg(test)`, so a `getrandom` / `create_dir_all` failure can
+// only fail tests — never a production caller. No prod-vs-test sharing
+// exists today; this audit is the documented cross-check.
 #[cfg(test)]
 mod tests {
     use super::*;
