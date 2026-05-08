@@ -16,7 +16,7 @@ use anyhow::{Context, Result};
 use serde::Serialize;
 
 use crate::cli::SsidAction;
-use crate::config::{self, Config, PerSsidPolicy};
+use crate::config::{self, Config};
 use crate::exit;
 use crate::mac::Mac;
 use crate::per_ssid::{self, EffectivePolicy, display_ssid, validate_ssid};
@@ -373,10 +373,6 @@ fn drop_block(path: &Path, ssid: &str) -> Result<bool> {
     super::write_atomic(path, doc.to_string().as_bytes())?;
     Ok(true)
 }
-
-// Used to silence the unused-import warning when only tests reference it.
-#[allow(dead_code)]
-fn _expose_per_ssid_policy_type(_: &PerSsidPolicy) {}
 
 #[cfg(test)]
 mod tests {

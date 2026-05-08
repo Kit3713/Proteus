@@ -47,7 +47,7 @@ pub const TIMERS: &[TimerSpec] = &[
         unit: "proteus-resume.timer",
         kind: TimerKind::Timer,
         default: "off",
-        description: "Rotate on resume from suspend (lands phase C).",
+        description: "Rotate on resume from suspend.",
     },
     TimerSpec {
         short: "boot",

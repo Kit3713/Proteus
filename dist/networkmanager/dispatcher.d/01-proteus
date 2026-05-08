@@ -191,7 +191,7 @@ case "$action" in
 
     connectivity-change)
         # Don't rotate behind a portal — that just loops. When connectivity
-        # is restored ('full'), Phase C's --if-needed predicate will decide
+        # is restored ('full'), the --if-needed predicate will decide
         # whether to opportunistically rotate. For now we just log.
         log "connectivity-change state=${conn_state:-unknown} iface=$iface (no action)"
         ;;

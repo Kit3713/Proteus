@@ -19,7 +19,7 @@ depends=('networkmanager' 'systemd' 'glibc')
 makedepends=('git' 'rust' 'cargo')
 optdepends=(
   'bluez: Bluetooth alias + RPA support'
-  'nftables: discovery silencing rules (Phase E)'
+  'nftables: discovery silencing rules'
   'firewalld: alternative to nftables-direct'
   'polkit: desktop GUI integration'
 )
