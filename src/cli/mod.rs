@@ -182,6 +182,11 @@ fn validate_config_override(
 /// specifically to write the config file qualify. Read commands and
 /// commands that consume the config (apply, rotate, etc.) still fail when
 /// `--config <path>` points at a missing file.
+///
+/// Issue #302: `persona use`, `persona clear`, `ssid set`, `ssid clear`
+/// also write to the config file (their handlers do `read_to_string ||
+/// default; modify; atomic_write` with `toml_edit`), so a missing
+/// `--config <path>` should NOT abort them — same model as `config edit`.
 fn command_writes_config(cmd: &Command) -> bool {
     use Command::*;
     matches!(
@@ -194,6 +199,12 @@ fn command_writes_config(cmd: &Command) -> bool {
                     | ConfigAction::SetProfile { .. }
                     | ConfigAction::Enable { .. }
                     | ConfigAction::Disable { .. },
+            }
+            | Persona {
+                action: PersonaAction::Use { .. } | PersonaAction::Clear { .. },
+            }
+            | Ssid {
+                action: SsidAction::Set { .. } | SsidAction::Clear { .. },
             }
     )
 }
@@ -262,6 +273,92 @@ mod tests {
             action: ConfigAction::Edit,
         };
         assert!(validate_config_override(Some(bogus), &cmd).is_ok());
+    }
+
+    /// Issue #302: `persona use --config <missing>` must not abort in
+    /// the pre-flight; the handler creates the file on its first write
+    /// (same shape as `config edit`).
+    #[test]
+    fn missing_explicit_override_is_ok_for_persona_use() {
+        let bogus = Path::new("/nonexistent/proteus/about-to-be-created.toml");
+        let cmd = Command::Persona {
+            action: PersonaAction::Use {
+                id: "randomizer-med".into(),
+                apply: false,
+                yes: true,
+            },
+        };
+        assert!(validate_config_override(Some(bogus), &cmd).is_ok());
+    }
+
+    /// Issue #302: same exemption for `persona clear` — also a writer.
+    #[test]
+    fn missing_explicit_override_is_ok_for_persona_clear() {
+        let bogus = Path::new("/nonexistent/proteus/about-to-be-created.toml");
+        let cmd = Command::Persona {
+            action: PersonaAction::Clear { yes: true },
+        };
+        assert!(validate_config_override(Some(bogus), &cmd).is_ok());
+    }
+
+    /// Issue #302: `ssid set --config <missing>` is a writer; same
+    /// rationale as `persona use`.
+    #[test]
+    fn missing_explicit_override_is_ok_for_ssid_set() {
+        let bogus = Path::new("/nonexistent/proteus/about-to-be-created.toml");
+        let cmd = Command::Ssid {
+            action: SsidAction::Set {
+                ssid: "my-wifi".into(),
+                key: "persona".into(),
+                value: "iphone-15".into(),
+                yes: true,
+            },
+        };
+        assert!(validate_config_override(Some(bogus), &cmd).is_ok());
+    }
+
+    /// Issue #302: same exemption for `ssid clear`.
+    #[test]
+    fn missing_explicit_override_is_ok_for_ssid_clear() {
+        let bogus = Path::new("/nonexistent/proteus/about-to-be-created.toml");
+        let cmd = Command::Ssid {
+            action: SsidAction::Clear {
+                ssid: "my-wifi".into(),
+                yes: true,
+            },
+        };
+        assert!(validate_config_override(Some(bogus), &cmd).is_ok());
+    }
+
+    /// Read-only persona / ssid commands are NOT writers and must still
+    /// abort on a missing `--config` path (this is the intended trap-
+    /// catcher for typos).
+    #[test]
+    fn missing_explicit_override_still_aborts_for_persona_list() {
+        let bogus = Path::new("/nonexistent/proteus/config-does-not-exist.toml");
+        let cmd = Command::Persona {
+            action: PersonaAction::List {
+                kind: None,
+                category: None,
+                json: false,
+            },
+        };
+        assert_eq!(
+            validate_config_override(Some(bogus), &cmd),
+            Err(exit::CONFIG_ERROR)
+        );
+    }
+
+    #[test]
+    fn missing_explicit_override_still_aborts_for_ssid_list() {
+        let bogus = Path::new("/nonexistent/proteus/config-does-not-exist.toml");
+        let cmd = Command::Ssid {
+            action: SsidAction::List { json: false },
+        };
+        assert_eq!(
+            validate_config_override(Some(bogus), &cmd),
+            Err(exit::CONFIG_ERROR)
+        );
     }
 
     #[test]
