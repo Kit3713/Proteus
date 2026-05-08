@@ -52,12 +52,26 @@ anonymise() {
   # Conservative: replace strings that look like public IPv4 / IPv6.
   # Skip RFC 1918 / loopback / link-local — those are uninteresting and
   # leaving them helps debugging.
+  #
+  # IPv4 strategy (issue #263): tag private/loopback/link-local IPs with a
+  # sentinel marker before the public-IP catch-all runs, then untag.
+  # The previous one-liner replaced every IP and tried to "preserve"
+  # privates by re-replacing tagged-but-already-overwritten strings —
+  # which is a no-op once the original text is gone.
+  #
+  # IPv6 strategy (issue #264): require at least one `:` separator in
+  # the match so a 64-hex-char SHA256 string can't trip it.
+  #
+  # SSID/secret strategy (issue #264): use explicit `[Ss][Ss][Ii][Dd]`
+  # instead of GNU sed's non-POSIX `I` flag so the script runs under
+  # any POSIX `sed -E`.
   sed -i -E '
-    s/[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/203.0.113.X/g;
-    /^(10|127|169\.254|172\.(1[6-9]|2[0-9]|3[01])|192\.168)\./! s/203\.0\.113\.X/203.0.113.X/g;
-    s/[0-9a-fA-F:]{19,}/2001:db8::X/g;
-    s/(ssid=|"ssid": ")[^",]*/\1<REDACTED>/Ig;
-    s/(passkey=|psk=|password=|"password": ")[^",]*/\1<REDACTED>/Ig;
+    s/\b(10|127|169\.254|172\.(1[6-9]|2[0-9]|3[01])|192\.168)\.([0-9]+\.[0-9]+\.[0-9]+|[0-9]+\.[0-9]+|[0-9]+)\b/__PROTEUS_KEEP__&__PROTEUS_KEEP_END__/g;
+    s/\b[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+\b/203.0.113.X/g;
+    s/__PROTEUS_KEEP__([^_]+)__PROTEUS_KEEP_END__/\1/g;
+    s/[0-9a-fA-F]{0,4}(:[0-9a-fA-F]{0,4}){2,}/2001:db8::X/g;
+    s/([Ss][Ss][Ii][Dd]="?|"[Ss][Ss][Ii][Dd]": "?)[^",]*/\1<REDACTED>/g;
+    s/([Pp][Aa][Ss][Ss][Kk][Ee][Yy]="?|[Pp][Ss][Kk]="?|[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]="?|"[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]": "?)[^",]*/\1<REDACTED>/g;
   ' "$f" 2>/dev/null || true
 }
 

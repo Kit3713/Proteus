@@ -94,8 +94,8 @@ mod tests {
     }
 
     #[test]
-    fn version_phase_is_b() {
-        assert_eq!(version::PHASE, 'B');
+    fn version_phase_is_g() {
+        assert_eq!(version::PHASE, 'G');
     }
 
     /// Polkit `exec.path` must point at `/usr/bin/proteus`. Issue #120.
@@ -220,7 +220,10 @@ mod tests {
         assert!(checked > 0, "no .service files checked under dist/systemd");
     }
 
-    /// Issue #135: CI must use the pinned toolchain.
+    /// Issue #135: CI must use the pinned toolchain. Issue #260: every
+    /// third-party action is SHA-pinned with the floating tag in a comment
+    /// after the SHA, so a hostile tag-move can't substitute a malicious
+    /// commit.
     #[test]
     fn ci_workflow_does_not_use_floating_stable_toolchain() {
         let path =
@@ -231,9 +234,32 @@ mod tests {
             "ci.yml still references dtolnay/rust-toolchain (issue #135)"
         );
         assert!(
-            body.contains("actions-rust-lang/setup-rust-toolchain@v1"),
-            "ci.yml should use actions-rust-lang/setup-rust-toolchain@v1"
+            body.contains("actions-rust-lang/setup-rust-toolchain@"),
+            "ci.yml should use actions-rust-lang/setup-rust-toolchain"
         );
+        // Issue #260: every `uses:` line must reference an immutable SHA, not
+        // a floating tag. Anchored on `@v` to catch the floating-tag form
+        // without false-positives on commit messages or comments that happen
+        // to contain `v1`/`v2`/etc.
+        for (lineno, line) in body.lines().enumerate() {
+            let stripped = line.trim_start();
+            if !stripped.starts_with("- uses:") && !stripped.starts_with("uses:") {
+                continue;
+            }
+            let after_uses = stripped.split_once("uses:").unwrap().1.trim();
+            // The `at` must be followed by hex (SHA), not a `v<digit>`
+            // (floating tag).
+            let Some((_, rest)) = after_uses.split_once('@') else {
+                panic!("ci.yml line {} has `uses:` without `@`: {line}", lineno + 1);
+            };
+            let first_char = rest.chars().next().unwrap_or(' ');
+            assert!(
+                first_char != 'v',
+                "ci.yml line {} pins to a floating tag instead of a SHA (issue #260): {}",
+                lineno + 1,
+                line
+            );
+        }
     }
 
     /// Issue #136: makepkg must not run with --skipchecksums.
@@ -249,6 +275,34 @@ mod tests {
                 "release.yml line {} passes --skipchecksums to makepkg (issue #136): {}",
                 lineno + 1,
                 line,
+            );
+        }
+    }
+
+    /// Issue #260: release.yml must SHA-pin every third-party action so a
+    /// hostile tag-move can't substitute a malicious commit during a
+    /// release build.
+    #[test]
+    fn release_workflow_pins_actions_to_sha() {
+        const RELEASE_WORKFLOW: &str = include_str!("../.github/workflows/release.yml");
+        for (lineno, line) in RELEASE_WORKFLOW.lines().enumerate() {
+            let stripped = line.trim_start();
+            if !stripped.starts_with("- uses:") && !stripped.starts_with("uses:") {
+                continue;
+            }
+            let after_uses = stripped.split_once("uses:").unwrap().1.trim();
+            let Some((_, rest)) = after_uses.split_once('@') else {
+                panic!(
+                    "release.yml line {} has `uses:` without `@`: {line}",
+                    lineno + 1
+                );
+            };
+            let first_char = rest.chars().next().unwrap_or(' ');
+            assert!(
+                first_char != 'v',
+                "release.yml line {} pins to a floating tag instead of a SHA (issue #260): {}",
+                lineno + 1,
+                line
             );
         }
     }
