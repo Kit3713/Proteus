@@ -11,6 +11,7 @@
 //! by roadmap Milestone 2 "Integration"; today `use`/`clear` only flip
 //! `[persona] active` in the config file.
 
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -20,6 +21,11 @@ use crate::cli::PersonaAction;
 use crate::config::Config;
 use crate::exit;
 use crate::persona::{Persona, PersonaCategory, PersonaKind, PersonaSource, PersonaSummary, load};
+
+/// Default editor used when `$EDITOR` and `$VISUAL` are unset; matches
+/// `proteus config edit` so the two commands have identical fallback
+/// ordering (#244).
+const DEFAULT_EDITOR: &str = "vi";
 
 /// Top-level dispatch for `proteus persona ...`.
 pub fn run(action: PersonaAction, config_override: Option<&Path>) -> Result<u8> {
@@ -79,8 +85,9 @@ fn list(kind: Option<&str>, category: Option<&str>, json: bool, user_root: &Path
         return Ok(exit::SUCCESS);
     }
     for s in &all {
+        let marker = if s.valid { "" } else { " [INVALID]" };
         println!(
-            "{:<28} {:<10} {:<8} {:<7}  {}",
+            "{:<28} {:<10} {:<8} {:<7}  {}{marker}",
             s.id,
             s.kind.name(),
             s.category.name(),
@@ -292,6 +299,9 @@ fn random(kind: Option<&str>, category: Option<&str>, json: bool, user_root: &Pa
     let kind_filter = parse_kind_filter(kind)?;
     let cat_filter = parse_category_filter(category)?;
     let mut pool: Vec<PersonaSummary> = load::list_all(user_root);
+    // Skip personas that fail schema check so `random` never picks one
+    // that `use` would then refuse to load (#232 / #253 interaction).
+    pool.retain(|p| p.valid);
     pool.retain(|p| kind_filter.is_none_or(|k| p.kind == k));
     pool.retain(|p| cat_filter.is_none_or(|c| p.category == c));
     if pool.is_empty() {
@@ -351,11 +361,6 @@ fn edit(id: &str, user_root: &Path) -> Result<u8> {
         eprintln!("proteus: {e}");
         return Ok(exit::PERMISSION_ERROR);
     }
-    let editor = std::env::var("EDITOR").unwrap_or_default();
-    if editor.is_empty() {
-        eprintln!("proteus: $EDITOR is not set; cannot edit persona '{id}'");
-        return Ok(exit::CONFIG_ERROR);
-    }
     let path = load::user_path(user_root, id);
     if !path.exists() {
         eprintln!(
@@ -364,10 +369,28 @@ fn edit(id: &str, user_root: &Path) -> Result<u8> {
         );
         return Ok(exit::CONFIG_ERROR);
     }
+    // Issues #230 / #244: same HOME-not-/root warning as `proteus config
+    // edit`. `sudo -E` (or env_keep) preserves HOME, which makes the
+    // editor's plugins / autoloads run as root from the user's HOME — an
+    // arbitrary-code-as-root path from a malicious dotfile. Surface the
+    // risk so the operator can choose `sudo -H proteus persona edit`.
+    if std::env::var_os("HOME").is_some_and(|h| h != *"/root") {
+        eprintln!(
+            "proteus: warning: $HOME is not /root — your editor's plugins / autoloads will run as root"
+        );
+        eprintln!(
+            "proteus: prefer `sudo -H proteus persona edit` (drops HOME) or edit the file manually"
+        );
+    }
+    // Issue #244: $VISUAL beats $EDITOR; fall back to vi when neither is
+    // set. Same precedence as `proteus config edit`.
+    let editor = std::env::var_os("VISUAL")
+        .or_else(|| std::env::var_os("EDITOR"))
+        .unwrap_or_else(|| OsString::from(DEFAULT_EDITOR));
     let status = std::process::Command::new(&editor)
         .arg(&path)
         .status()
-        .with_context(|| format!("spawning {editor}"))?;
+        .with_context(|| format!("spawning editor {editor:?}"))?;
     if !status.success() {
         eprintln!("proteus: editor exited non-zero ({status})");
         return Ok(exit::GENERIC_ERROR);
@@ -415,7 +438,14 @@ fn import(path: &Path, yes: bool, user_root: &Path) -> Result<u8> {
     ) {
         return Ok(code);
     }
-    let p = load::validate(path).context("source file failed schema check")?;
+    // Issue #231: read once, validate the bytes we read, write the same
+    // bytes. The previous flow called validate(path) (which re-read the
+    // file) and then std::fs::read(path) again — a swapped source file
+    // between the two reads landed bytes that had never been validated.
+    let bytes = std::fs::read(path)
+        .with_context(|| format!("reading source persona {}", path.display()))?;
+    let p = load::validate_bytes(&bytes, &path.display().to_string())
+        .context("source file failed schema check")?;
     let dest = load::user_path(user_root, &p.id);
     if dest.exists() {
         eprintln!(
@@ -424,7 +454,6 @@ fn import(path: &Path, yes: bool, user_root: &Path) -> Result<u8> {
         );
         return Ok(exit::CONFIG_ERROR);
     }
-    let bytes = std::fs::read(path)?;
     super::write_atomic(&dest, &bytes)?;
     println!("imported '{}' to {}", p.id, dest.display());
     Ok(exit::SUCCESS)

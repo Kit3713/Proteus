@@ -27,7 +27,8 @@ pub const DEFAULT_USER_ROOT: &str = "/etc/proteus/personas";
 
 /// Try to load a built-in persona by id. Returns `None` when the id is
 /// unknown so callers can fall through to user personas; errors during
-/// parse propagate as `Err`.
+/// parse or schema check propagate as `Err`. Issue #232: every load path
+/// now schema-checks so `persona use` cannot land a malformed persona.
 pub fn load_builtin(id: &str) -> Result<Option<Persona>> {
     let path = format!("{id}.toml");
     let Some(file) = BUILTIN.get_file(&path) else {
@@ -44,10 +45,12 @@ pub fn load_builtin(id: &str) -> Result<Option<Persona>> {
             p.id
         );
     }
+    schema_check(&p)?;
     Ok(Some(p))
 }
 
-/// Load a user-authored persona from `<root>/<id>.toml`.
+/// Load a user-authored persona from `<root>/<id>.toml`. Schema-checks
+/// before returning (#232).
 pub fn load_user(id: &str, root: &Path) -> Result<Option<Persona>> {
     let path = root.join(format!("{id}.toml"));
     if !path.exists() {
@@ -61,6 +64,7 @@ pub fn load_user(id: &str, root: &Path) -> Result<Option<Persona>> {
             p.id
         );
     }
+    schema_check(&p)?;
     Ok(Some(p))
 }
 
@@ -78,7 +82,9 @@ pub fn load(id: &str, user_root: &Path) -> Result<Option<(Persona, PersonaSource
 
 /// Enumerate every persona Proteus knows about — both built-in and the
 /// user's `/etc/proteus/personas/`. Sorted by id for determinism. Returns
-/// summaries; full bodies load on demand via `load`.
+/// summaries; full bodies load on demand via `load`. Issue #253: schema
+/// failures are surfaced via `valid: false` + a stderr warning instead of
+/// being silently dropped.
 pub fn list_all(user_root: &Path) -> Vec<PersonaSummary> {
     let mut out: Vec<PersonaSummary> = Vec::new();
     let mut seen_ids: std::collections::BTreeSet<String> = Default::default();
@@ -91,7 +97,13 @@ pub fn list_all(user_root: &Path) -> Vec<PersonaSummary> {
             if path.extension().and_then(|s| s.to_str()) != Some("toml") {
                 continue;
             }
-            let Ok(p) = parse_file(&path) else { continue };
+            let Ok(p) = parse_file(&path) else {
+                eprintln!(
+                    "proteus: warning: failed to parse user persona {}",
+                    path.display()
+                );
+                continue;
+            };
             seen_ids.insert(p.id.clone());
             out.push(summary_for(&p, PersonaSource::User));
         }
@@ -118,19 +130,45 @@ pub fn list_all(user_root: &Path) -> Vec<PersonaSummary> {
 }
 
 fn summary_for(p: &Persona, source: PersonaSource) -> PersonaSummary {
+    let (valid, schema_error) = match schema_check(p) {
+        Ok(()) => (true, None),
+        Err(e) => {
+            let msg = format!("{e:#}");
+            eprintln!(
+                "proteus: warning: persona '{}' failed schema check: {msg}",
+                p.id
+            );
+            (false, Some(msg))
+        }
+    };
     PersonaSummary {
         id: p.id.clone(),
         display_name: p.display_name.clone(),
         kind: p.kind,
         category: p.category,
         source,
+        valid,
+        schema_error,
     }
 }
 
 /// Parse + schema-check a single persona file. Used by `proteus persona
-/// validate <path>` and shared with the CLI import path.
+/// validate <path>`.
 pub fn validate(path: &Path) -> Result<Persona> {
     let p = parse_file(path)?;
+    schema_check(&p)?;
+    Ok(p)
+}
+
+/// Parse + schema-check a persona from in-memory bytes. Used by the
+/// `proteus persona import` flow so the same bytes that pass validation
+/// are the bytes that get written — closes the TOCTOU window where a
+/// swapped source file landed different bytes than were validated (#231).
+pub fn validate_bytes(bytes: &[u8], origin: &str) -> Result<Persona> {
+    let raw = std::str::from_utf8(bytes).with_context(|| format!("{origin} is not valid UTF-8"))?;
+    let p: Persona = toml::from_str(raw).with_context(|| {
+        format!("parsing {origin} (see `proteus wiki personas` for the schema)")
+    })?;
     schema_check(&p)?;
     Ok(p)
 }
@@ -149,6 +187,7 @@ fn parse_file(path: &Path) -> Result<Persona> {
 
 /// Schema-level invariants beyond what serde enforces. Wiki-linked errors
 /// so the user lands on the right page when a hand-edited file goes wrong.
+/// Issue #266: validates every field, not just id/display_name/hostname/cadence.
 fn schema_check(p: &Persona) -> Result<()> {
     if p.id.is_empty() || !is_kebab_case(&p.id) {
         anyhow::bail!(
@@ -177,6 +216,16 @@ fn schema_check(p: &Persona) -> Result<()> {
         }
         _ => {}
     }
+    if let Some(c) = p.rotate_cadence.as_deref() {
+        validate_rotate_cadence(&p.id, c)?;
+    }
+    for token in &p.oui_pool {
+        validate_oui_token(&p.id, token)?;
+    }
+    validate_dhcp_fingerprint(&p.id, &p.dhcp_fingerprint)?;
+    validate_tcp_stack(&p.id, &p.tcp_stack)?;
+    validate_ipv6_traits(&p.id, &p.ipv6_traits)?;
+    validate_rf_traits(&p.id, &p.rf_traits)?;
     Ok(())
 }
 
@@ -185,6 +234,174 @@ fn is_kebab_case(s: &str) -> bool {
         && !s.ends_with('-')
         && s.chars()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+}
+
+/// `rotate_cadence` accepts the literal `never` plus the duration grammar
+/// the rotation timer parser already handles (`30m`, `2h`, `4h`, ...).
+/// Reject anything else so a typo lands at the user, not silently in
+/// `state.json`.
+fn validate_rotate_cadence(id: &str, c: &str) -> Result<()> {
+    let trimmed = c.trim();
+    if trimmed.is_empty() {
+        anyhow::bail!(
+            "persona '{id}' has empty rotate_cadence; use 'never' or a duration like '30m' (see `proteus wiki personas`)"
+        );
+    }
+    if trimmed == "never" {
+        return Ok(());
+    }
+    // Duration: digits + unit (s/m/h/d).
+    let last = trimmed.chars().last().unwrap();
+    if !matches!(last, 's' | 'm' | 'h' | 'd') {
+        anyhow::bail!(
+            "persona '{id}' rotate_cadence '{c}' must end in s/m/h/d or be 'never' (see `proteus wiki personas`)"
+        );
+    }
+    let digits = &trimmed[..trimmed.len() - 1];
+    if digits.is_empty() || digits.parse::<u64>().is_err() {
+        anyhow::bail!(
+            "persona '{id}' rotate_cadence '{c}' has no numeric magnitude (see `proteus wiki personas`)"
+        );
+    }
+    Ok(())
+}
+
+/// OUI pool entries are either vendor tokens (e.g. `apple`, `intel`,
+/// `random-locally-administered`) or literal `aa:bb:cc` prefixes. Both
+/// forms are kebab-or-hex-shaped — reject empties and mixed garbage.
+fn validate_oui_token(id: &str, token: &str) -> Result<()> {
+    if token.is_empty() {
+        anyhow::bail!("persona '{id}' has empty oui_pool entry (see `proteus wiki personas`)");
+    }
+    let is_vendor_tag = token
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
+    let is_literal_prefix = is_oui_literal(token);
+    if !is_vendor_tag && !is_literal_prefix {
+        anyhow::bail!(
+            "persona '{id}' oui_pool entry '{token}' is neither a vendor tag (kebab-case) nor an OUI literal 'aa:bb:cc' (see `proteus wiki personas`)"
+        );
+    }
+    Ok(())
+}
+
+fn is_oui_literal(s: &str) -> bool {
+    let parts: Vec<&str> = s.split(':').collect();
+    parts.len() == 3
+        && parts
+            .iter()
+            .all(|p| p.len() == 2 && p.chars().all(|c| c.is_ascii_hexdigit()))
+}
+
+fn validate_dhcp_fingerprint(id: &str, dhcp: &super::DhcpFingerprint) -> Result<()> {
+    // Option 12 host_name: RFC 1123 label-shaped when set. Empty = "use
+    // template-rendered hostname", which is fine.
+    if !dhcp.host_name.is_empty() && !is_dhcp_string_safe(&dhcp.host_name) {
+        anyhow::bail!(
+            "persona '{id}' dhcp_fingerprint.host_name '{}' contains control bytes; ASCII printable only (see `proteus wiki personas`)",
+            dhcp.host_name
+        );
+    }
+    // Option 81 fqdn: same rule. Empty = "do not send".
+    if !dhcp.fqdn.is_empty() && !is_dhcp_string_safe(&dhcp.fqdn) {
+        anyhow::bail!(
+            "persona '{id}' dhcp_fingerprint.fqdn '{}' contains control bytes (see `proteus wiki personas`)",
+            dhcp.fqdn
+        );
+    }
+    // Option 60 vendor-class-identifier: same rule.
+    if !dhcp.vendor_class_identifier.is_empty()
+        && !is_dhcp_string_safe(&dhcp.vendor_class_identifier)
+    {
+        anyhow::bail!(
+            "persona '{id}' dhcp_fingerprint.vendor_class_identifier contains control bytes (see `proteus wiki personas`)"
+        );
+    }
+    // Option 55 parameter-request-list: each entry is a u8 DHCP option
+    // code; serde already enforces the type, but reject 0 (pad) which is
+    // invalid as a request-list entry.
+    for code in &dhcp.parameter_request_list {
+        if *code == 0 {
+            anyhow::bail!(
+                "persona '{id}' dhcp_fingerprint.parameter_request_list contains 0 (pad), which is not a valid request code (see `proteus wiki personas`)"
+            );
+        }
+    }
+    Ok(())
+}
+
+fn is_dhcp_string_safe(s: &str) -> bool {
+    s.chars().all(|c| c.is_ascii() && !c.is_ascii_control())
+}
+
+fn validate_tcp_stack(id: &str, t: &super::TcpStackProfile) -> Result<()> {
+    // window_scale: kernel accepts 0..=14.
+    if t.window_scale > 14 {
+        anyhow::bail!(
+            "persona '{id}' tcp_stack.window_scale {} exceeds kernel max 14 (see `proteus wiki personas`)",
+            t.window_scale
+        );
+    }
+    // mss: 0 = "leave at default" (allowed). When set, must fit in a
+    // standard Ethernet frame minus headers. 536 is the IPv4 minimum
+    // path-MTU; 9000 covers jumbo frames.
+    if t.mss != 0 && !(536..=9000).contains(&t.mss) {
+        anyhow::bail!(
+            "persona '{id}' tcp_stack.mss {} out of range 536..=9000 (see `proteus wiki personas`)",
+            t.mss
+        );
+    }
+    // default_ttl: 0 = "leave at kernel default". Anything > 0 must be a
+    // realistic TTL — 64 (Linux/macOS), 128 (Windows), 255 (some embedded).
+    if t.default_ttl != 0 && t.default_ttl < 32 {
+        anyhow::bail!(
+            "persona '{id}' tcp_stack.default_ttl {} is implausibly low (see `proteus wiki personas`)",
+            t.default_ttl
+        );
+    }
+    Ok(())
+}
+
+fn validate_ipv6_traits(id: &str, t: &super::Ipv6Traits) -> Result<()> {
+    // addr_gen_mode: empty = "do not set"; otherwise one of the documented
+    // modes. The kernel knob accepts these exact strings.
+    if !t.addr_gen_mode.is_empty()
+        && !matches!(
+            t.addr_gen_mode.as_str(),
+            "eui64" | "stable-privacy" | "random" | "none"
+        )
+    {
+        anyhow::bail!(
+            "persona '{id}' ipv6_traits.addr_gen_mode '{}' must be eui64/stable-privacy/random/none or empty (see `proteus wiki personas`)",
+            t.addr_gen_mode
+        );
+    }
+    Ok(())
+}
+
+fn validate_rf_traits(id: &str, t: &super::RfTraits) -> Result<()> {
+    // tx_power_dbm: 0 = "leave at regulatory max". Realistic ceiling is
+    // ~30 dBm (1 W); anything higher is operator error or confusion with
+    // mW. Floor is 0.
+    if t.tx_power_dbm > 30 {
+        anyhow::bail!(
+            "persona '{id}' rf_traits.tx_power_dbm {} exceeds 30 dBm (see `proteus wiki personas`)",
+            t.tx_power_dbm
+        );
+    }
+    if !t.scan_style.is_empty() && !matches!(t.scan_style.as_str(), "passive" | "active") {
+        anyhow::bail!(
+            "persona '{id}' rf_traits.scan_style '{}' must be 'passive' or 'active' (see `proteus wiki personas`)",
+            t.scan_style
+        );
+    }
+    if !t.power_save.is_empty() && !matches!(t.power_save.as_str(), "on" | "off" | "auto") {
+        anyhow::bail!(
+            "persona '{id}' rf_traits.power_save '{}' must be on/off/auto (see `proteus wiki personas`)",
+            t.power_save
+        );
+    }
+    Ok(())
 }
 
 /// Path inside `/etc/proteus/personas/<id>.toml` for write-side commands
@@ -353,5 +570,241 @@ notes = "test"
         let p = validate(&path).expect("validate must succeed");
         assert_eq!(p.id, "custom");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Issue #255: typo'd top-level field is rejected by serde rather
+    /// than silently falling back to the default.
+    #[test]
+    fn unknown_top_level_field_is_rejected() {
+        let body = r#"
+id = "ok"
+display_name = "OK"
+kind = "stealth"
+category = "phone"
+oui_pool = ["apple"]
+hostname_template = "{owner}s-iPhone"
+mdns_advertise = true
+bt_name_template = "x"
+notes = "test"
+typoed_filed = "value"
+"#;
+        let r: std::result::Result<Persona, _> = toml::from_str(body);
+        assert!(r.is_err(), "unknown field must be rejected");
+    }
+
+    /// Issue #255: typo'd nested field is rejected too.
+    #[test]
+    fn unknown_nested_field_is_rejected() {
+        let body = r#"
+id = "ok"
+display_name = "OK"
+kind = "stealth"
+category = "phone"
+oui_pool = ["apple"]
+hostname_template = "{owner}s-iPhone"
+mdns_advertise = true
+bt_name_template = "x"
+notes = "test"
+[rf_traits]
+tx_pwr_dbm = 14
+"#;
+        let r: std::result::Result<Persona, _> = toml::from_str(body);
+        assert!(r.is_err(), "unknown nested field must be rejected");
+    }
+
+    /// Issue #266: tx_power_dbm > 30 is rejected.
+    #[test]
+    fn schema_check_rejects_implausible_tx_power() {
+        let mut p = sample_stealth_persona();
+        p.rf_traits.tx_power_dbm = 50;
+        let err = schema_check(&p).unwrap_err();
+        assert!(err.to_string().contains("tx_power_dbm"));
+    }
+
+    /// Issue #266: bogus addr_gen_mode is rejected.
+    #[test]
+    fn schema_check_rejects_unknown_addr_gen_mode() {
+        let mut p = sample_stealth_persona();
+        p.ipv6_traits.addr_gen_mode = "definitely-not-a-mode".into();
+        let err = schema_check(&p).unwrap_err();
+        assert!(err.to_string().contains("addr_gen_mode"));
+    }
+
+    /// Issue #266: bogus scan_style is rejected.
+    #[test]
+    fn schema_check_rejects_unknown_scan_style() {
+        let mut p = sample_stealth_persona();
+        p.rf_traits.scan_style = "noisy".into();
+        let err = schema_check(&p).unwrap_err();
+        assert!(err.to_string().contains("scan_style"));
+    }
+
+    /// Issue #266: bogus power_save value is rejected.
+    #[test]
+    fn schema_check_rejects_unknown_power_save() {
+        let mut p = sample_stealth_persona();
+        p.rf_traits.power_save = "maybe".into();
+        let err = schema_check(&p).unwrap_err();
+        assert!(err.to_string().contains("power_save"));
+    }
+
+    /// Issue #266: TCP window scale > 14 is rejected.
+    #[test]
+    fn schema_check_rejects_window_scale_above_14() {
+        let mut p = sample_stealth_persona();
+        p.tcp_stack.window_scale = 20;
+        let err = schema_check(&p).unwrap_err();
+        assert!(err.to_string().contains("window_scale"));
+    }
+
+    /// Issue #266: option-55 entries can't be the pad code.
+    #[test]
+    fn schema_check_rejects_pad_in_parameter_request_list() {
+        let mut p = sample_stealth_persona();
+        p.dhcp_fingerprint.parameter_request_list = vec![1, 0, 6];
+        let err = schema_check(&p).unwrap_err();
+        assert!(err.to_string().contains("parameter_request_list"));
+    }
+
+    /// Issue #266: control bytes in DHCP strings are rejected.
+    #[test]
+    fn schema_check_rejects_control_bytes_in_dhcp_strings() {
+        let mut p = sample_stealth_persona();
+        p.dhcp_fingerprint.vendor_class_identifier = "iPhone\nfake".into();
+        let err = schema_check(&p).unwrap_err();
+        assert!(err.to_string().contains("vendor_class_identifier"));
+    }
+
+    /// Issue #266: bogus rotate_cadence string is rejected.
+    #[test]
+    fn schema_check_rejects_bogus_rotate_cadence() {
+        let mut p = sample_stealth_persona();
+        p.kind = super::super::PersonaKind::Randomizer;
+        p.rotate_cadence = Some("forever".into());
+        let err = schema_check(&p).unwrap_err();
+        assert!(err.to_string().contains("rotate_cadence"));
+    }
+
+    /// Issue #266: empty-string oui_pool entry is rejected.
+    #[test]
+    fn schema_check_rejects_empty_oui_token() {
+        let mut p = sample_stealth_persona();
+        p.oui_pool = vec!["apple".into(), String::new()];
+        let err = schema_check(&p).unwrap_err();
+        assert!(err.to_string().contains("oui_pool"));
+    }
+
+    /// Issue #253: list_all surfaces a malformed user persona with
+    /// `valid: false` rather than dropping it.
+    #[test]
+    fn list_all_marks_malformed_user_persona_as_invalid() {
+        let dir = std::env::temp_dir().join(format!(
+            "proteus-persona-listinvalid-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        // Schema-valid TOML but tx_power_dbm out of range.
+        let body = r#"
+id = "broken-pers"
+display_name = "Broken"
+kind = "stealth"
+category = "phone"
+oui_pool = ["apple"]
+hostname_template = "{owner}s-iPhone"
+mdns_advertise = true
+bt_name_template = "x"
+notes = "test"
+[rf_traits]
+tx_power_dbm = 99
+"#;
+        std::fs::write(dir.join("broken-pers.toml"), body).unwrap();
+        let all = list_all(&dir);
+        let entry = all
+            .iter()
+            .find(|s| s.id == "broken-pers")
+            .expect("broken-pers should still appear in list");
+        assert!(!entry.valid);
+        assert!(
+            entry
+                .schema_error
+                .as_deref()
+                .unwrap()
+                .contains("tx_power_dbm")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Issue #232: load_user refuses a malformed persona.
+    #[test]
+    fn load_user_rejects_persona_failing_schema_check() {
+        let dir = std::env::temp_dir().join(format!(
+            "proteus-persona-loaduser-bad-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let body = r#"
+id = "bad-pers"
+display_name = "Bad"
+kind = "stealth"
+category = "phone"
+oui_pool = ["apple"]
+hostname_template = "{owner}s-iPhone"
+mdns_advertise = true
+bt_name_template = "x"
+notes = "test"
+[rf_traits]
+scan_style = "noisy"
+"#;
+        std::fs::write(dir.join("bad-pers.toml"), body).unwrap();
+        let err = load_user("bad-pers", &dir).unwrap_err();
+        assert!(err.to_string().contains("scan_style"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Issue #231: validate_bytes parses the same bytes the caller
+    /// already holds, so the caller can write exactly those bytes
+    /// without re-reading the source.
+    #[test]
+    fn validate_bytes_succeeds_on_well_formed_toml() {
+        let body = br#"
+id = "from-bytes"
+display_name = "FromBytes"
+kind = "stealth"
+category = "phone"
+oui_pool = ["apple"]
+hostname_template = "{owner}s-iPhone"
+mdns_advertise = true
+bt_name_template = "x"
+notes = "test"
+"#;
+        let p = validate_bytes(body, "<test>").expect("must validate");
+        assert_eq!(p.id, "from-bytes");
+    }
+
+    /// Issue #231: validate_bytes rejects malformed bytes.
+    #[test]
+    fn validate_bytes_rejects_malformed_toml() {
+        let body = b"not = [valid";
+        assert!(validate_bytes(body, "<test>").is_err());
+    }
+
+    fn sample_stealth_persona() -> Persona {
+        Persona {
+            id: "sample".into(),
+            display_name: "Sample".into(),
+            kind: super::super::PersonaKind::Stealth,
+            category: super::super::PersonaCategory::Phone,
+            oui_pool: vec!["apple".into()],
+            mac_byte_pattern: None,
+            hostname_template: "{owner}s-iPhone".into(),
+            dhcp_fingerprint: Default::default(),
+            tcp_stack: Default::default(),
+            ipv6_traits: Default::default(),
+            mdns_advertise: false,
+            bt_name_template: String::new(),
+            rf_traits: Default::default(),
+            rotate_cadence: None,
+            notes: String::new(),
+        }
     }
 }
