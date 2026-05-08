@@ -1,9 +1,17 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Hand-rolled SHA-256 (FIPS 180-4) so `proteus diff` can verify managed-file
-//! integrity without pulling in a crypto crate. Single use site, ~70 lines, no
-//! constant-time concerns: this is for drift detection on local config files,
-//! not authentication.
+//! Hand-rolled SHA-256 (FIPS 180-4) so `proteus diff` can spot edits to
+//! managed files without pulling in a crypto crate.
+//!
+//! Issue #234: the `# sha256:` header is an edit-detection / tamper-hint
+//! primitive, not an integrity guarantee. Both header and body live in the
+//! same root-owned file; an active adversary with write access can always
+//! recompute the header to match a tampered body. The hash is for catching
+//! honest manual edits and other-tool drift, not for defending against an
+//! attacker who already has root.
+//!
+//! Single use site, ~70 lines, no constant-time concerns: this is for
+//! drift detection on local config files, not authentication.
 
 const K: [u32; 64] = [
     0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,

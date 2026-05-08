@@ -111,6 +111,8 @@ Every file Proteus writes under `/etc/` carries a 3-line header:
 
 `proteus diff` (phase G) reads the file, recomputes the sha256 over the body (everything after the header), and flags drift. Drift means someone edited the file by hand, or another tool did. The diff output names the file and the expected vs actual hash; the operator decides whether to re-apply, accept the local change by removing the file from Proteus management, or back the whole thing out with `proteus revert`.
 
+This is an edit-detection / tamper-hint signal, not an integrity guarantee. Header and body sit in the same root-owned file, so anyone with write access can recompute the header alongside the body and the check will pass. Treat the SHA the same way you treat the `# do not edit` line: a discoverability marker for honest drift (manual edits, another tool stomping the file), not a defence against an active adversary who already has root.
+
 The same hashes are mirrored into `state.json` under `managed.drop_ins`, so a wrapper can spot drift without re-reading every managed file.
 
 ## NetworkManager connection metadata
@@ -187,7 +189,7 @@ The CLI is built to be wrapped. Keep these in mind:
 - Use `--json` on every read command. Parse the JSON, not the human output.
 - Trap exit codes. They are stable and documented in `proteus wiki cli`.
 - Don't shell-escape arguments. Subcommand args are positional or `--key value`; there are no eval-style flags.
-- Run mutating commands as root. `pkexec proteus apply` is the typical desktop way; `sudo proteus apply` is the typical terminal way. Both work.
+- Run mutating commands as root. `pkexec proteus apply` is the typical desktop way; `sudo proteus apply` is the typical terminal way. Both work. Note: the bundled `dist/polkit/` policy is a UX hint to `pkexec` and desktop tooling (dialog text, `auth_admin` defaults) — issue #238 — and not an authorization gate inside the Proteus binary. `proteus` itself only checks for root (EUID == 0) and refuses mutations otherwise; the real privilege gates are `sudo` and `pkexec`. Anyone with sudo can run `sudo proteus apply` directly without the polkit policy ever being consulted.
 - Mutating commands accept `--yes` to skip confirmation. A GUI should always pass `--yes` and provide its own confirmation dialog.
 - Watch `journalctl -t proteus -f -o json` for live status during long-running operations like `apply` and `rotate`. Each line is a structured event.
 - Cross-ref `proteus wiki cli` for the wrapper-friendly section, including the full exit-code table.

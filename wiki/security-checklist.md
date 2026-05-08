@@ -31,7 +31,7 @@ When to re-run something:
 
 Once a week, on a quiet morning.
 
-- Review drift: `proteus diff` (lands phase G). Flags any managed file whose SHA no longer matches the `# expected-sha256:` header. Treat drift as a manual-edit incident — decide whether to keep the edit or re-apply Proteus's version.
+- Review drift: `proteus diff` (lands phase G). Flags any managed file whose SHA no longer matches the `# expected-sha256:` header. The header is an edit-detection / tamper hint, not an integrity guarantee — anyone with write access can recompute it — so treat drift as a "something edited this file" signal: decide whether to keep the edit or re-apply Proteus's version.
 - Skim the log: `journalctl -t proteus -n 200 --no-pager`. Look for repeated errors, DBus glitches, unexpected rotations.
 - Verify timers: `proteus timer status`. The `rotate` timer should be active with a sane next-fire time; the `check` timer too.
 - Confirm probes still work: `proteus probe`. Should classify `clear` on a normal connection. If it returns `inconclusive` or `down` from your home network, your probe endpoints may need updating — see `proteus wiki probes`.

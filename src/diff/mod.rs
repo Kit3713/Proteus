@@ -8,7 +8,13 @@
 //!      report keys whose rendered values differ.
 //!   2. Managed-file drift — for each known Proteus-managed `/etc/` path that
 //!      exists, parse the `# sha256:...` header and recompute the body's
-//!      sha. Mismatches mean someone (or another tool) edited the file.
+//!      sha. Mismatches surface as an edit-detection / tamper-hint signal:
+//!      something (a manual edit, another tool's writer) changed the file.
+//!      Issue #234: this is *not* an integrity guarantee — both header and
+//!      body live in the same root-owned file, so anything with write
+//!      access can rewrite the header to match a tampered body. The check
+//!      catches honest drift; it is not a defence against an active
+//!      adversary who already has root.
 //!   3. State summary — light projection of `state.json` for the human + JSON
 //!      report (originals presence, managed connections, pinned interfaces,
 //!      most recent rotation).

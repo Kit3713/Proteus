@@ -48,7 +48,7 @@ The `dist/<distro>/` tree carries the layouts the project ships today.
 - **`dist/nix/`** — Nix derivation.
 - **`dist/systemd/`** — Canonical systemd unit shapes (rotate timer + service, boot oneshot, resume hook, check timer + service).
 - **`dist/networkmanager/`** — NetworkManager dispatcher script and drop-ins.
-- **`dist/polkit/`** — Polkit policy for the privileged actions.
+- **`dist/polkit/`** — Polkit policy hint for GUI wrappers that elevate via `pkexec`. Issue #238: this is a UX hint to PolicyKit (dialog text, `auth_admin` defaults), not a binary-side authorization gate — `proteus` itself does not consult polkit; the only real privilege gates are `sudo` and `pkexec`. Anyone with sudo can still bypass the policy entirely.
 - **`dist/man/`** — `proteus(8)` man page.
 - **`dist/completions/`** — bash, zsh, fish completion stubs.
 
