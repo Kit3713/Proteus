@@ -220,14 +220,15 @@ async fn poll_state_property(dev: &crate::nm::DeviceProxy<'_>, registry: Arc<Eve
 
 /// Read `Device.State` over DBus. Returns `None` on transient errors
 /// — the caller treats it as "skip this round, try again".
-async fn read_device_state(_dev: &crate::nm::DeviceProxy<'_>) -> Option<u32> {
-    // The current `DeviceProxy` in `crate::nm` doesn't declare
-    // `state` as a property (it would conflict with the existing
-    // method names if we added one without a refactor). Returning
-    // `None` here keeps the polling loop alive without false events;
-    // the wiring follow-up that adds `state` to the proxy will
-    // replace this body with `dev.state().await.ok()`.
-    None
+///
+/// Issue #217: previously this stub always returned `None` because the
+/// `DeviceProxy` in `crate::nm` did not declare a `state` property. The
+/// connection-up event source therefore never saw an Activated edge,
+/// so `proteus events run` silently never fired the `ConnectionUp`
+/// trigger in production. The proxy now carries a `state()` accessor
+/// (see `src/nm/mod.rs`); this body just delegates.
+async fn read_device_state(dev: &crate::nm::DeviceProxy<'_>) -> Option<u32> {
+    dev.state().await.ok()
 }
 
 /// Resolve the SSID for `iface` from `/proc/net/wireless`. Returns

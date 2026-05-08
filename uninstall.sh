@@ -102,24 +102,72 @@ fi
 
 # ---- fallback: manual cleanup ----------------------------------------------
 
-# Mirrors `proteus uninstall --purge`: stop and disable timers, remove unit
-# files, remove the binary, and (under --purge) wipe state and config.
-# Kept minimal because the binary path above is the canonical implementation.
+# Mirrors `proteus uninstall --purge` from `src/commands/uninstall.rs`. Issue
+# #219: the previous fallback only iterated three units and ignored every
+# external integration file (sysctl/ipv6/timesyncd drop-ins, NM dispatcher,
+# polkit policy, systemd-resolved drop-ins, SELinux fcontext). After a
+# binary-missing fallback the system was left with a stale dispatcher hook
+# firing on every connect and an orphan polkit action. The shell fallback
+# now mirrors the Rust UNITS + EXTERNAL_DROPINS + EXTERNAL_FILES lists.
 if [ "$USED_FALLBACK" -eq 1 ]; then
     info "manual cleanup"
 
-    for unit in proteus-rotate.timer proteus-check.timer proteus-boot.service; do
+    # Mirrors `UNITS` in src/commands/uninstall.rs (timers first so they
+    # stop firing before we tear down the services they trigger).
+    for unit in \
+        proteus-rotate.timer \
+        proteus-check.timer \
+        proteus-rotate.service \
+        proteus-check.service \
+        proteus-resume.service \
+        proteus-boot.service \
+        proteus-events.service \
+    ; do
         unit_path="$SYSTEMD_DIR/$unit"
-        [ -f "$unit_path" ] || continue
-        # disable --now stops + disables in one call; ignore failures since
-        # the unit may already be inactive.
         if [ "$DRY_RUN" -eq 1 ]; then
             printf 'would run: systemctl disable --now %s\n' "$unit"
-            printf 'would run: rm -f %s\n' "$unit_path"
-        else
-            systemctl disable --now "$unit" >/dev/null 2>&1 || true
-            rm -f "$unit_path"
+            [ -f "$unit_path" ] && printf 'would run: rm -f %s\n' "$unit_path"
+            continue
         fi
+        # disable --now stops + disables in one call; ignore failures since
+        # the unit may already be inactive or never have been installed.
+        systemctl disable --now "$unit" >/dev/null 2>&1 || true
+        [ -f "$unit_path" ] && rm -f "$unit_path"
+        # Drop-in directory written by some Proteus releases (e.g. timer
+        # drop-ins for PROTEUS_LOCK_TIMEOUT_MS); harmless when absent.
+        [ -d "${unit_path}.d" ] && rm -rf "${unit_path}.d"
+    done
+
+    # Mirrors `EXTERNAL_DROPINS` in src/commands/uninstall.rs.
+    for f in \
+        /etc/sysctl.d/95-proteus.conf \
+        /etc/sysctl.d/96-proteus-ipv6.conf \
+        /etc/systemd/timesyncd.conf.d/10-proteus.conf \
+    ; do
+        [ -f "$f" ] || continue
+        info "removing $f"
+        run rm -f "$f"
+    done
+
+    # systemd-resolved drop-ins (10-proteus-*.conf in resolved.conf.d).
+    if [ -d /etc/systemd/resolved.conf.d ]; then
+        for f in /etc/systemd/resolved.conf.d/10-proteus-*.conf; do
+            [ -f "$f" ] || continue
+            info "removing $f"
+            run rm -f "$f"
+        done
+    fi
+
+    # Mirrors `EXTERNAL_FILES` in src/commands/uninstall.rs (issue #216):
+    # NM dispatcher hook + polkit policy. Both are deployed by install.sh
+    # but were missing from both uninstall paths.
+    for f in \
+        /etc/NetworkManager/dispatcher.d/01-proteus \
+        /usr/share/polkit-1/actions/com.kit3713.proteus.policy \
+    ; do
+        [ -f "$f" ] || continue
+        info "removing $f"
+        run rm -f "$f"
     done
 
     if [ -f "$BINARY" ]; then
@@ -132,6 +180,15 @@ if [ "$USED_FALLBACK" -eq 1 ]; then
             else
                 semanage fcontext -d "$BINARY" >/dev/null 2>&1 || true
             fi
+        fi
+    fi
+
+    # nft table teardown — name matches src/nft (table inet proteus).
+    if command -v nft >/dev/null 2>&1; then
+        if [ "$DRY_RUN" -eq 1 ]; then
+            printf 'would run: nft delete table inet proteus\n'
+        else
+            nft delete table inet proteus >/dev/null 2>&1 || true
         fi
     fi
 

@@ -62,6 +62,65 @@ pub const LAYER_PERSONA: &str = "persona";
 pub const LAYER_PROFILE: &str = "profile";
 pub const LAYER_DEFAULTS: &str = "defaults";
 
+/// Issue #224: render an SSID for terminal/journald output without
+/// leaking attacker-controlled escape sequences.
+///
+/// SSIDs are 0-32 octets of arbitrary bytes per IEEE 802.11; a hostile
+/// AP can broadcast e.g. `\x1b[2J\x1b[31mPROTEUS ERROR\x1b[0m` and any
+/// unfiltered render of that string against the operator's terminal
+/// becomes a message-spoofing primitive (clear screen, repaint with
+/// fake error, OSC clipboard injection, etc.). Proteus runs as root in
+/// the dispatcher path and surfaces SSIDs in `proteus ssid list/show`,
+/// in tracing logs that journald renders, and in the dispatcher's own
+/// `logger -t proteus-dispatcher` calls.
+///
+/// Filter rules:
+/// - C0 controls (bytes < 0x20) other than space → `\xNN`.
+/// - DEL (0x7f) → `\x7f`.
+/// - C1 controls (0x80–0x9F, including the bare-byte CSI 0x9b some
+///   modern xterms still parse) → `\u{NNNN}`.
+/// - Backslash → `\\` so the escape form round-trips unambiguously.
+/// - Everything else passes through, including legitimate non-ASCII.
+///
+/// Apply at every print, log, and TOML-key-echo site that surfaces an
+/// SSID. The wire-side bytes in `state.json` / `config.toml` round-trip
+/// through serde unchanged — only the rendered-for-human form is
+/// sanitized.
+pub fn display_ssid(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        let cp = c as u32;
+        match c {
+            ' ' => out.push(' '),
+            '\\' => out.push_str("\\\\"),
+            _ if cp < 0x20 || cp == 0x7f => {
+                out.push_str(&format!("\\x{:02x}", cp));
+            }
+            _ if (0x80..=0x9f).contains(&cp) => {
+                out.push_str(&format!("\\u{{{:04x}}}", cp));
+            }
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+/// Issue #224: hard-reject SSIDs containing a NUL byte at the
+/// validation boundary. NUL is unconditionally either an SSID-encoding
+/// bug or hostile input — IEEE 802.11 doesn't reserve a meaning for it,
+/// most NM/wpa_supplicant code paths use NUL as a string terminator
+/// internally, and it has no display form that round-trips through
+/// shell editors. Used by `proteus ssid set` and `resolve_for_ssid`.
+pub fn validate_ssid(ssid: &str) -> Result<(), &'static str> {
+    if ssid.is_empty() {
+        return Err("ssid must not be empty");
+    }
+    if ssid.contains('\0') {
+        return Err("ssid contains a NUL byte (0x00); rejected");
+    }
+    Ok(())
+}
+
 /// Walk the four layers and produce the effective policy for `ssid`. The
 /// resolver is total: it always returns a value, even when no per-SSID
 /// block exists (the result then collapses to the global config). See the
@@ -141,6 +200,79 @@ fn parse_duration(s: &str) -> Option<Duration> {
         "h" => Some(Duration::from_secs(n * 3600)),
         "d" => Some(Duration::from_secs(n * 86_400)),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod display_tests {
+    use super::*;
+
+    /// Issue #224: ANSI escape (`\x1b`) and clear-screen / colour codes
+    /// land as `\xNN`. The repaint-attack payload from the issue body
+    /// renders inert.
+    #[test]
+    fn display_ssid_neuters_ansi_escape_payload() {
+        let raw = "\x1b[2J\x1b[H\x1b[31mPROTEUS ERROR: pay 1 BTC\x1b[0m";
+        let out = display_ssid(raw);
+        assert!(!out.contains('\x1b'), "ESC byte must be escaped: {out:?}");
+        assert!(out.starts_with("\\x1b"), "ESC renders as \\x1b: {out:?}");
+        assert!(out.contains("PROTEUS ERROR"), "literal text passes through: {out:?}");
+    }
+
+    /// OSC-style clipboard injection (`\x1b]52;c;<base64>\x07`) — every
+    /// control byte should escape; only the printable middle survives.
+    #[test]
+    fn display_ssid_neuters_osc_clipboard_injection() {
+        let raw = "\x1b]52;c;dGVzdA==\x07";
+        let out = display_ssid(raw);
+        assert!(!out.contains('\x1b'));
+        assert!(!out.contains('\x07'));
+    }
+
+    /// C1 controls (0x80-0x9F) get the `\u{NNNN}` form. CSI=0x9b is the
+    /// classic concern: some xterms still parse the bare 0x9b byte as
+    /// ESC[.
+    #[test]
+    fn display_ssid_escapes_c1_controls() {
+        let raw = "\u{009b}[31m";
+        let out = display_ssid(raw);
+        assert!(!out.contains('\u{009b}'));
+        assert!(out.contains("\\u{009b}"), "C1 CSI escapes: {out:?}");
+    }
+
+    /// Backslash itself round-trips so the operator can tell a real
+    /// `\x1b` in the SSID from one Proteus inserted while escaping.
+    #[test]
+    fn display_ssid_escapes_backslash() {
+        assert_eq!(display_ssid("a\\b"), "a\\\\b");
+    }
+
+    /// Common case: an ASCII-printable SSID survives untouched. Pin so
+    /// a future filter doesn't over-escape benign names.
+    #[test]
+    fn display_ssid_passes_through_printable_ascii() {
+        assert_eq!(display_ssid("Coffee Shop Wi-Fi"), "Coffee Shop Wi-Fi");
+    }
+
+    /// Legitimate non-ASCII (e.g. an emoji or accented character)
+    /// survives untouched. The filter targets controls, not text.
+    #[test]
+    fn display_ssid_passes_through_unicode() {
+        assert_eq!(display_ssid("café"), "café");
+        assert_eq!(display_ssid("café 📶"), "café 📶");
+    }
+
+    /// `validate_ssid` rejects empty and NUL-bearing SSIDs but accepts
+    /// arbitrary other UTF-8 text — sanitization is `display_ssid`'s
+    /// job.
+    #[test]
+    fn validate_ssid_boundary_rules() {
+        assert!(validate_ssid("").is_err());
+        assert!(validate_ssid("a\0b").is_err());
+        assert!(validate_ssid("Coffee Shop").is_ok());
+        // ESC byte alone is not a validation failure — the operator
+        // can store it; only the render is sanitized.
+        assert!(validate_ssid("\x1b[31m").is_ok());
     }
 }
 
