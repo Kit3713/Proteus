@@ -101,6 +101,24 @@ pub enum Interval {
     Calendar { expr: String },
 }
 
+/// Lower bound on a `proteus timer set` rotation cadence. Anything shorter
+/// is a DoS-amplification footgun: the rotation cycle (NM apply, RF down/up,
+/// DHCP renew) can take several seconds on its own, and a sub-minute cadence
+/// risks stacking rotation runs faster than the previous one finishes. Issue
+/// #293 picked 60 s — well below any realistic operator cadence while still
+/// rejecting garbage like `1s` or `0m`. The bound is enforced at the timer
+/// CLI surface only; non-rotation `parse_interval` callers (e.g. probe
+/// cooldowns) legitimately use sub-minute values.
+pub const MIN_TIMER_INTERVAL_SECONDS: u64 = 60;
+
+/// Upper bound on a `proteus timer set` rotation cadence. 30 days is two
+/// orders of magnitude past the slowest "monthly" use case anyone has cited;
+/// past it the value is almost certainly an off-by-an-order-of-magnitude user
+/// error (typing `300d` when `30d` was meant). Named calendar expressions
+/// (`hourly`, `weekly`, `monthly`, `yearly`) are exempt — those carry their
+/// semantics in the systemd grammar. Issue #293.
+pub const MAX_TIMER_INTERVAL_SECONDS: u64 = 60 * 60 * 24 * 30;
+
 /// Parse a user-friendly duration string into an `Interval`.
 ///
 /// Accepted shapes:
@@ -153,6 +171,35 @@ pub fn parse_interval(s: &str) -> Result<Interval> {
         seconds,
         original: trimmed.to_string(),
     })
+}
+
+/// Issue #293: a parsed `Interval` is bound-checked against the
+/// `MIN_TIMER_INTERVAL_SECONDS` / `MAX_TIMER_INTERVAL_SECONDS` window
+/// before being written as a `proteus timer set` drop-in. Calendar
+/// expressions (`hourly`, `*-*-*`) bypass the check because their grammar
+/// carries the cadence — there's no plain seconds value to bound. The check
+/// lives separate from `parse_interval` so non-rotation callers (e.g. probe
+/// cooldowns under `[probes].cooldown`) keep their existing sub-minute
+/// freedom.
+pub fn validate_timer_set_bounds(interval: &Interval) -> Result<()> {
+    let Interval::UnitActive { seconds, original } = interval else {
+        return Ok(());
+    };
+    if *seconds < MIN_TIMER_INTERVAL_SECONDS {
+        anyhow::bail!(
+            "interval '{original}' is too short ({seconds}s); minimum is \
+             {MIN_TIMER_INTERVAL_SECONDS}s (sub-minute rotation risks stacking runs \
+             and is a DoS-amp footgun)"
+        );
+    }
+    if *seconds > MAX_TIMER_INTERVAL_SECONDS {
+        anyhow::bail!(
+            "interval '{original}' is too long ({seconds}s); maximum is \
+             {MAX_TIMER_INTERVAL_SECONDS}s (~30 days; past this is almost certainly \
+             a user error — use a calendar expression like 'monthly' instead)"
+        );
+    }
+    Ok(())
 }
 
 fn is_named_cadence(s: &str) -> bool {
@@ -520,6 +567,68 @@ mod tests {
         assert!(parse_interval("").is_err());
         assert!(parse_interval("forever").is_err());
         assert!(parse_interval("5q").is_err());
+    }
+
+    /// Issue #293: the timer-set bound check rejects sub-minute cadences
+    /// with an error naming the floor. Lives separate from `parse_interval`
+    /// so non-rotation callers (probe cooldowns) keep sub-minute freedom.
+    #[test]
+    fn validate_bounds_rejects_below_min() {
+        for too_short in &["1s", "30s", "59s"] {
+            let interval = parse_interval(too_short).unwrap();
+            let err = validate_timer_set_bounds(&interval)
+                .expect_err("interval below MIN_TIMER_INTERVAL_SECONDS must reject");
+            let msg = format!("{err:#}");
+            assert!(
+                msg.contains(&format!("{MIN_TIMER_INTERVAL_SECONDS}s")),
+                "error must name the {MIN_TIMER_INTERVAL_SECONDS}s floor: {msg}"
+            );
+        }
+    }
+
+    /// Boundary: 60 s exactly is the smallest accepted timer-set cadence.
+    #[test]
+    fn validate_bounds_accepts_min() {
+        let interval = parse_interval("60s").unwrap();
+        assert!(validate_timer_set_bounds(&interval).is_ok());
+    }
+
+    /// Issue #293: a value past 30 days is almost certainly a user error
+    /// (typo / off-by-an-order-of-magnitude). Reject with an error pointing
+    /// at calendar expressions for the legitimate "rotate rarely" case.
+    #[test]
+    fn validate_bounds_rejects_above_max() {
+        // 31d directly.
+        let interval = parse_interval("31d").unwrap();
+        let err = validate_timer_set_bounds(&interval).expect_err("> 30d must reject");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("user error") || msg.contains("monthly"),
+            "error must point user at calendar expression: {msg}"
+        );
+        // 100d — extreme.
+        let interval = parse_interval("100d").unwrap();
+        assert!(validate_timer_set_bounds(&interval).is_err());
+    }
+
+    /// Boundary: 30 days exactly is the largest accepted timer-set cadence.
+    #[test]
+    fn validate_bounds_accepts_max() {
+        let interval = parse_interval("30d").unwrap();
+        assert!(validate_timer_set_bounds(&interval).is_ok());
+    }
+
+    /// Calendar expressions carry their cadence in systemd's grammar — no
+    /// seconds value to bound. The bound check is a no-op for them.
+    #[test]
+    fn validate_bounds_passes_calendar_expressions() {
+        for s in &["hourly", "yearly", "*-*-* 00/2:00:00"] {
+            let interval = parse_interval(s).unwrap();
+            assert!(
+                validate_timer_set_bounds(&interval).is_ok(),
+                "calendar expression {s} must bypass bounds"
+            );
+        }
     }
 
     #[test]

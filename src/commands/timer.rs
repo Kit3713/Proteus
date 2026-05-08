@@ -93,7 +93,17 @@ pub fn run_list(json: bool) -> Result<u8> {
     Ok(exit::SUCCESS)
 }
 
-pub fn run_enable(name: &str) -> Result<u8> {
+pub fn run_enable(name: &str, yes: bool) -> Result<u8> {
+    // Issue #293: gate every timer mutator on `--yes` before the root check
+    // so non-root callers also see the confirmation prompt. Mirrors the
+    // pattern used by `pin`, `apply`, and the rest of the mutating surface.
+    if let Err(code) = super::require_yes(
+        yes,
+        "'timer enable' is mutating (enables a systemd unit)",
+        "proteus help timer",
+    ) {
+        return Ok(code);
+    }
     if let Some(code) = require_root_or_exit() {
         return Ok(code);
     }
@@ -123,7 +133,14 @@ pub fn run_enable(name: &str) -> Result<u8> {
     }
 }
 
-pub fn run_disable(name: &str) -> Result<u8> {
+pub fn run_disable(name: &str, yes: bool) -> Result<u8> {
+    if let Err(code) = super::require_yes(
+        yes,
+        "'timer disable' is mutating (disables a systemd unit)",
+        "proteus help timer",
+    ) {
+        return Ok(code);
+    }
     if let Some(code) = require_root_or_exit() {
         return Ok(code);
     }
@@ -153,7 +170,16 @@ pub fn run_disable(name: &str) -> Result<u8> {
     }
 }
 
-pub fn run_set(name: &str, interval_str: &str) -> Result<u8> {
+pub fn run_set(name: &str, interval_str: &str, yes: bool) -> Result<u8> {
+    // Bound check on the interval lives inside `timer::parse_interval` so
+    // every caller (CLI, config validator, reconcile loop) inherits it.
+    if let Err(code) = super::require_yes(
+        yes,
+        "'timer set' is mutating (writes a drop-in to /etc/systemd/system/...)",
+        "proteus help timer",
+    ) {
+        return Ok(code);
+    }
     if let Some(code) = require_root_or_exit() {
         return Ok(code);
     }
@@ -182,6 +208,13 @@ pub fn run_set(name: &str, interval_str: &str) -> Result<u8> {
             return Ok(exit::CONFIG_ERROR);
         }
     };
+    // Issue #293: sanity-check the parsed interval against the rotation-set
+    // window. `parse_interval` is shared with non-rotation callers (probe
+    // cooldowns) so the bounds live separate; only `timer set` enforces them.
+    if let Err(e) = timer::validate_timer_set_bounds(&interval) {
+        eprintln!("proteus: {e:#}");
+        return Ok(exit::CONFIG_ERROR);
+    }
     if let Err(e) = write_dropin(spec, &interval) {
         eprintln!("proteus: writing drop-in failed: {e:#}");
         return Ok(exit::GENERIC_ERROR);
@@ -198,7 +231,14 @@ pub fn run_set(name: &str, interval_str: &str) -> Result<u8> {
     Ok(exit::SUCCESS)
 }
 
-pub fn run_reset(name: &str) -> Result<u8> {
+pub fn run_reset(name: &str, yes: bool) -> Result<u8> {
+    if let Err(code) = super::require_yes(
+        yes,
+        "'timer reset' is mutating (removes the drop-in under /etc/systemd/system/...)",
+        "proteus help timer",
+    ) {
+        return Ok(code);
+    }
     if let Some(code) = require_root_or_exit() {
         return Ok(code);
     }
@@ -450,4 +490,67 @@ fn print_status_human(r: &TimerStatusReport) {
     }
     println!();
     println!("(* = drop-in override under /etc/systemd/system/proteus-*.timer.d/)");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Issue #293 regression: every timer mutator now exits with
+    /// `CONFIRMATION_REQUIRED` before touching root, systemd, or systemctl
+    /// when `--yes` is missing. The gate is the first step in each handler.
+    #[test]
+    fn timer_enable_without_yes_returns_confirmation_required() {
+        let code = run_enable("rotate", false).unwrap();
+        assert_eq!(code, exit::CONFIRMATION_REQUIRED);
+    }
+
+    #[test]
+    fn timer_disable_without_yes_returns_confirmation_required() {
+        let code = run_disable("rotate", false).unwrap();
+        assert_eq!(code, exit::CONFIRMATION_REQUIRED);
+    }
+
+    #[test]
+    fn timer_set_without_yes_returns_confirmation_required() {
+        let code = run_set("rotate", "1h", false).unwrap();
+        assert_eq!(code, exit::CONFIRMATION_REQUIRED);
+    }
+
+    #[test]
+    fn timer_reset_without_yes_returns_confirmation_required() {
+        let code = run_reset("rotate", false).unwrap();
+        assert_eq!(code, exit::CONFIRMATION_REQUIRED);
+    }
+
+    /// Issue #293: `timer set --yes <out-of-bounds>` rejects with
+    /// `CONFIG_ERROR` before attempting the systemctl write. The root-skip
+    /// pattern is the project convention for handlers that gate on uid; on
+    /// non-root the test exits early because the parse error path is only
+    /// reachable past `require_root`. Also skip when /run/systemd/system is
+    /// absent (CI container case) — `require_systemd` short-circuits with
+    /// SYSTEM_NOT_SUPPORTED before the bounds check runs there.
+    #[test]
+    fn timer_set_with_yes_rejects_below_min_when_root() {
+        if super::super::read_uid() != Some(0) {
+            return;
+        }
+        if !Path::new(SYSTEMD_MARKER).is_dir() {
+            return;
+        }
+        let code = run_set("rotate", "5s", true).unwrap();
+        assert_eq!(code, exit::CONFIG_ERROR);
+    }
+
+    #[test]
+    fn timer_set_with_yes_rejects_above_max_when_root() {
+        if super::super::read_uid() != Some(0) {
+            return;
+        }
+        if !Path::new(SYSTEMD_MARKER).is_dir() {
+            return;
+        }
+        let code = run_set("rotate", "31d", true).unwrap();
+        assert_eq!(code, exit::CONFIG_ERROR);
+    }
 }
