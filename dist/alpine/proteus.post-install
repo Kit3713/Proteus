@@ -18,4 +18,9 @@ all detected correctly. Then:
 Periodic rotation is wired via /etc/periodic/hourly/proteus-rotate; the
 OpenRC `cron` provider must be running for it to fire (`rc-service crond
 start`). See `proteus wiki rotation` for tuning.
+
+NOTE (B5 / N12.8): Alpine ships only the OpenRC service tree. The
+event-driven rotation daemon (proteus-events.service) is a systemd unit
+and is NOT installed on Alpine — its closest analogue is the existing
+NetworkManager dispatcher hook under /etc/NetworkManager/dispatcher.d/.
 EOF

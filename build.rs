@@ -17,40 +17,63 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 fn main() {
-    let manifest_dir =
-        PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
+    let manifest_dir = PathBuf::from(
+        env::var_os("CARGO_MANIFEST_DIR")
+            .expect("CARGO_MANIFEST_DIR is unset; this build script requires cargo-driven build"),
+    );
     let wiki_dir = manifest_dir.join("wiki");
-    let out_dir = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR"));
+    let out_dir = PathBuf::from(
+        env::var_os("OUT_DIR")
+            .expect("OUT_DIR is unset; this build script requires cargo-driven build"),
+    );
     let dest = out_dir.join("wiki_index.rs");
 
-    // `cargo:rerun-if-changed=<dir>` only fires on directory-mtime changes
-    // (files added/removed), not on in-place edits to existing files.
-    // Emit one `rerun-if-changed` per file inside the loop so editing an
-    // existing wiki page also triggers a rebuild (issue #165).
+    // `cargo:rerun-if-changed=<dir>` fires when entries are added/removed
+    // (directory mtime), but historically NOT on in-place edits to existing
+    // files. NPKG.4: emit one `cargo:rerun-if-changed` per file inside the
+    // loop so editing AND deleting wiki pages both invalidate the index.
+    // Keep the directory entry too — it covers the edge case where a wiki
+    // page is added between two builds (the loop below sees the new file
+    // and emits its rerun-if-changed for the next build).
     println!("cargo:rerun-if-changed=wiki");
     println!("cargo:rerun-if-changed=build.rs");
 
     let mut entries: Vec<(String, PathBuf)> = Vec::new();
-    if let Ok(read_dir) = fs::read_dir(&wiki_dir) {
-        for entry in read_dir.flatten() {
-            let path = entry.path();
-            // Track every file we read so cargo invalidates this script when
-            // any wiki page is edited in place.
-            println!("cargo:rerun-if-changed={}", path.display());
-            if path.extension().and_then(OsStr::to_str) != Some("md") {
-                continue;
+    match fs::read_dir(&wiki_dir) {
+        Ok(read_dir) => {
+            for entry in read_dir.flatten() {
+                let path = entry.path();
+                // NPKG.4: track every file we read so cargo invalidates this
+                // script when any wiki page is edited in place.
+                println!("cargo:rerun-if-changed={}", path.display());
+                if path.extension().and_then(OsStr::to_str) != Some("md") {
+                    continue;
+                }
+                let Some(stem) = path.file_stem().and_then(OsStr::to_str) else {
+                    continue;
+                };
+                // `_index.md` is the curated TOC page; it mentions every other
+                // page by name, so leaving it in the search index would always
+                // outrank the actual content for broad queries. Skip at index
+                // build time and keep `wiki::CURATED_INDEX_PAGE` in sync.
+                if stem == "_index" {
+                    continue;
+                }
+                entries.push((stem.to_string(), path));
             }
-            let Some(stem) = path.file_stem().and_then(OsStr::to_str) else {
-                continue;
-            };
-            // `_index.md` is the curated TOC page; it mentions every other
-            // page by name, so leaving it in the search index would always
-            // outrank the actual content for broad queries. Skip at index
-            // build time and keep `wiki::CURATED_INDEX_PAGE` in sync.
-            if stem == "_index" {
-                continue;
-            }
-            entries.push((stem.to_string(), path));
+        }
+        Err(e) => {
+            // NPKG.3 / B12: never panic on a wiki-dir read failure. EACCES
+            // (read-restricted source tree) and ENOENT (wiki vendor stripped
+            // upstream) are both legitimate environments — emit a clear
+            // cargo:warning and ship an empty index. The runtime full-text
+            // search will report "no matches" rather than crashing the build.
+            println!(
+                "cargo:warning=proteus build.rs: cannot read wiki dir {}: {} \
+                 (continuing with empty wiki index — `proteus wiki` search will be empty)",
+                wiki_dir.display(),
+                e
+            );
         }
     }
     entries.sort_by(|a, b| a.0.cmp(&b.0));
@@ -67,8 +90,20 @@ fn main() {
     .unwrap();
 
     for (name, path) in &entries {
-        let content =
-            fs::read_to_string(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        // NPKG.3 / B12: use `expect` with a clear, actionable message
+        // rather than a bare panic!. Treat read errors as fatal here only
+        // because the file was discoverable a moment ago — failing to read
+        // a file we already saw in the dir listing means a real bug
+        // (concurrent delete, mid-build chmod) the operator needs to know
+        // about, not a packaging environment we can paper over.
+        let content = fs::read_to_string(path).unwrap_or_else(|e| {
+            panic!(
+                "proteus build.rs: cannot read wiki page {}: {e}\n\
+                 hint: this file appeared in fs::read_dir but read_to_string failed; \
+                 check filesystem permissions or concurrent-modification.",
+                path.display()
+            )
+        });
         let mut byte_offset: usize = 0;
         let mut line_no: u32 = 0;
         for line in content.split_inclusive('\n') {
@@ -124,5 +159,16 @@ fn write_if_changed(dest: &Path, bytes: &[u8]) {
     {
         return;
     }
-    fs::write(dest, bytes).unwrap_or_else(|e| panic!("write {}: {e}", dest.display()));
+    // NPKG.3 / B12: actionable failure message — OUT_DIR is cargo-managed,
+    // so a write failure here means the build environment is broken (read-
+    // only target dir, full disk, exotic filesystem). The panic is the
+    // right call: continuing would emit a stale wiki_index.rs.
+    fs::write(dest, bytes).unwrap_or_else(|e| {
+        panic!(
+            "proteus build.rs: cannot write generated wiki index {}: {e}\n\
+             hint: OUT_DIR is cargo-managed; check that target/ is writable \
+             and the filesystem has free space.",
+            dest.display()
+        )
+    });
 }

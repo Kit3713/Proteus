@@ -54,14 +54,18 @@ prepare() {
 
 build() {
 	cd "$builddir"
-	cargo build --release --frozen
+	# B8: --locked is the contract that Cargo.lock is the single source of
+	# truth for transitive dep versions. --frozen implies --locked plus
+	# offline; spell out --locked too so a future `--frozen` removal does
+	# not silently lose lockfile enforcement.
+	cargo build --release --frozen --locked
 }
 
 check() {
 	cd "$builddir"
 	# Library tests only — integration tests need a privileged systemd
 	# container. Matches the same boundary the Debian rules file uses.
-	cargo test --release --frozen --lib
+	cargo test --release --frozen --locked --lib
 }
 
 package() {
@@ -107,8 +111,34 @@ openrc() {
 	amove etc/periodic/15min/proteus-check
 }
 
-# sha512sum — placeholder; populated on first tagged release. Until then,
-# build with `abuild -F` from a local checkout (skips checksum verify).
+# sha512sum — populated by the release pipeline once a tarball is
+# tagged. Until then this is a placeholder.
+#
+# NPKG.7 supply-chain guard: the `sanitycheck` function below runs as
+# part of `abuild` and refuses to build when sha512sums still contains
+# the literal SKIP placeholder. This forces an early packager build to
+# either (a) run `abuild -F` (which deliberately bypasses checksum
+# verify, signaling intent) or (b) populate the real sha512 from the
+# release artifact via `abuild checksum`.
+#
+# TODO: replace SKIP with sha512 from release artifact (see
+# .github/workflows/release.yml — emit alongside the tarball).
 sha512sums="
 SKIP  $pkgname-$pkgver.tar.gz
 "
+
+sanitycheck() {
+	case "$sha512sums" in
+		*SKIP*)
+			# `abuild -F` sets the FORCE env to 1; honor that as the
+			# documented bypass for an early packager build.
+			if [ "${FORCE:-0}" != "1" ]; then
+				error "sha512sums contains SKIP placeholder (NPKG.7);"
+				error "either populate the real sha512 from the release"
+				error "artifact, or pass abuild -F to bypass deliberately."
+				return 1
+			fi
+			msg "sha512sums has SKIP placeholder; FORCE=1 set, bypassing (NPKG.7)."
+			;;
+	esac
+}

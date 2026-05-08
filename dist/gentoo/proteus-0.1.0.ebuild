@@ -58,9 +58,9 @@ src_unpack() {
 }
 
 src_configure() {
-	# Pass USE flags through as cargo features once the source supports
-	# them. Today's Cargo.toml has no [features] table, so this is a
-	# no-op that documents intent.
+	# B14: pass USE flags through as cargo features. Cargo.toml's [features]
+	# table now has matching entries (`bluetooth`, `enterprise-wifi`, `nft`)
+	# so the flags are wired end-to-end.
 	local myfeatures=()
 	use bluetooth       && myfeatures+=(bluetooth)
 	use enterprise-wifi && myfeatures+=(enterprise-wifi)
@@ -75,7 +75,10 @@ src_compile() {
 src_test() {
 	# Library tests only — see Alpine/Debian/Void recipes for the same
 	# rationale (integration tests need a privileged systemd container).
-	cargo test --release --frozen --lib || die "cargo test --lib failed"
+	# B8: --locked is implied by `cargo_src_*`, but we drop down to a raw
+	# cargo invocation here, so spell --locked out so the lockfile remains
+	# the single source of truth even on this code path.
+	cargo test --release --frozen --locked --lib || die "cargo test --lib failed"
 }
 
 src_install() {
@@ -96,6 +99,11 @@ src_install() {
 		systemd_dounit dist/systemd/proteus-check.timer
 		systemd_dounit dist/systemd/proteus-boot.service
 		systemd_dounit dist/systemd/proteus-resume.service
+		# B4 / N12.8: ship the events daemon unit on Gentoo systemd
+		# installs. Operators opt in via [events] enabled = true in
+		# /etc/proteus/config.toml; the unit file landing in
+		# /lib/systemd/system makes it reachable.
+		systemd_dounit dist/systemd/proteus-events.service
 	fi
 
 	if use openrc; then
@@ -126,6 +134,7 @@ pkg_postinst() {
 	elog ""
 	if use systemd; then
 		elog "  systemctl enable --now proteus-rotate.timer proteus-check.timer"
+		elog "  systemctl enable --now proteus-events.service  # opt-in; see [events] in config.toml"
 	fi
 	if use openrc; then
 		elog "  rc-update add proteus default"

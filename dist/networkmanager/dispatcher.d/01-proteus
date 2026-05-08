@@ -1,5 +1,11 @@
-#!/bin/bash
+#!/bin/sh
 # managed by proteus — NetworkManager dispatcher hook for event-driven rotation
+#
+# POSIX shell only (B6) — must run under dash. NM on Debian/Ubuntu invokes
+# dispatcher hooks via /bin/sh, which on those distros is dash; the previous
+# `#!/bin/bash` shebang silently failed to fire on dash-only systems and
+# also masked any future bashism we might have grown. No `local`, no `[[`,
+# no `${var//}` — those are checked in scripts/check.sh via `sh -n`.
 #
 # Drop into /etc/NetworkManager/dispatcher.d/ (or /usr/lib/NetworkManager/
 # dispatcher.d/). Owner root, mode 0755.
@@ -75,8 +81,10 @@ conn_state="${CONNECTIVITY_STATE:-}"
 #   - No shell metacharacters (despite using exec-form, this is the
 #     belt-and-suspenders bit).
 validate_cli_value() {
-    local val="$1"
-    local label="$2"
+    # Use positional parameters rather than `local` (not POSIX). The two
+    # values are stable for the duration of the function body.
+    val=$1
+    label=$2
     if [ -z "$val" ]; then
         return 1
     fi
@@ -105,12 +113,13 @@ validate_cli_value() {
     # `tr -d '[:cntrl:]'` is byte-stream-aware (unlike grep, which works
     # line-by-line and would never see embedded \n). We compare lengths;
     # a hostile string with any cntrl char drops bytes and trips the test.
-    local _stripped
-    _stripped="$(LC_ALL=C printf '%s' "$val" | LC_ALL=C tr -d '[:cntrl:]')"
+    _stripped=$(LC_ALL=C printf '%s' "$val" | LC_ALL=C tr -d '[:cntrl:]')
     if [ "${#val}" -ne "${#_stripped}" ]; then
         log "rejected $label: control character in value"
+        unset _stripped val label
         return 1
     fi
+    unset _stripped val label
     return 0
 }
 

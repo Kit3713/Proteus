@@ -27,10 +27,35 @@ maintainer="Kit3713 <noreply@example.com>"
 license="GPL-3.0-or-later"
 homepage="https://github.com/Kit3713/Proteus"
 distfiles="https://github.com/Kit3713/Proteus/archive/v${version}.tar.gz"
-checksum=SKIP  # placeholder until v0.1.0 is tagged; populate with `xgensum`.
+# NPKG.8 supply-chain guard: `checksum=SKIP` is a placeholder until the
+# release pipeline tags v0.1.0 and emits a sha256. The pre_fetch() hook
+# below refuses to proceed when the placeholder is still in place unless
+# XBPS_ALLOW_SKIP_CHECKSUM=1 is set deliberately.
+#
+# TODO: replace SKIP with sha256 from release artifact (xgensum or the
+# release.yml job will print it alongside the tarball upload).
+checksum=SKIP
 
 # musl + glibc both supported; arch list mirrors the CI cross-compile matrix.
 archs="x86_64 x86_64-musl aarch64 aarch64-musl armv7l armv7l-musl"
+
+pre_fetch() {
+	# NPKG.8: refuse to fetch when checksum= is still the SKIP placeholder
+	# unless the packager has explicitly opted into the bypass via
+	# XBPS_ALLOW_SKIP_CHECKSUM=1. Catches early-packager builds that would
+	# otherwise ship without integrity validation.
+	case "$checksum" in
+		SKIP|*SKIP*)
+			if [ "${XBPS_ALLOW_SKIP_CHECKSUM:-0}" != "1" ]; then
+				msg_error "checksum= is still 'SKIP' placeholder (NPKG.8). "
+				msg_error "Populate the real sha256 (xgensum) or set "
+				msg_error "XBPS_ALLOW_SKIP_CHECKSUM=1 to bypass deliberately.\n"
+				return 1
+			fi
+			msg_warn "checksum=SKIP placeholder, bypassed via XBPS_ALLOW_SKIP_CHECKSUM (NPKG.8)\n"
+			;;
+	esac
+}
 
 post_extract() {
 	mv ../Proteus-${version}/* . 2>/dev/null || true
@@ -39,7 +64,8 @@ post_extract() {
 do_check() {
 	# Library tests only — same boundary as the Alpine APKBUILD and the
 	# Debian rules. Integration tests need a privileged systemd container.
-	cargo test --release --frozen --lib
+	# B8: pin --locked alongside --frozen on the explicit cargo invocation.
+	cargo test --release --frozen --locked --lib
 }
 
 do_install() {

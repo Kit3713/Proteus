@@ -11,6 +11,7 @@ set -eu
 # ---- defaults ---------------------------------------------------------------
 
 BINARY="/usr/local/bin/proteus"
+USR_BIN_SYMLINK="/usr/bin/proteus"
 CONFIG_DIR="/etc/proteus"
 STATE_DIR="/var/lib/proteus"
 SYSTEMD_DIR="/etc/systemd/system"
@@ -172,7 +173,12 @@ if [ "$USED_FALLBACK" -eq 1 ]; then
 
     if [ -f "$BINARY" ]; then
         info "removing $BINARY"
-        run rm -f "$BINARY"
+        # B11: ${BINARY:?…} pattern guards against a sourced/edited copy of
+        # this script ever expanding $BINARY to empty and triggering `rm -f /`.
+        # Belt-and-suspenders: $BINARY is set at the top of this file, but if
+        # someone slices this fallback block into another script the guard
+        # makes the failure mode loud rather than catastrophic.
+        run rm -f "${BINARY:?BINARY must be set}"
         # Best-effort SELinux cleanup: remove the persistent fcontext rule.
         if command -v semanage >/dev/null 2>&1; then
             if [ "$DRY_RUN" -eq 1 ]; then
@@ -181,6 +187,14 @@ if [ "$USED_FALLBACK" -eq 1 ]; then
                 semanage fcontext -d "$BINARY" >/dev/null 2>&1 || true
             fi
         fi
+    fi
+
+    # Clean up the /usr/bin/proteus -> /usr/local/bin/proteus compat symlink
+    # install.sh creates (B10). Only remove if it's still a symlink — never
+    # touch a real file (that's a distro package's binary).
+    if [ -L "$USR_BIN_SYMLINK" ]; then
+        info "removing $USR_BIN_SYMLINK symlink"
+        run rm -f "${USR_BIN_SYMLINK:?USR_BIN_SYMLINK must be set}"
     fi
 
     # nft table teardown — name matches src/nft (table inet proteus).
@@ -193,13 +207,16 @@ if [ "$USED_FALLBACK" -eq 1 ]; then
     fi
 
     if [ "$PURGE" -eq 1 ]; then
+        # B11: the `${var:?…}` guard turns `rm -rf $UNSET_VAR` (== `rm -rf`)
+        # and `rm -rf "$UNSET_VAR"` (== `rm -rf ""`) into a hard error before
+        # rm runs, instead of a no-op or a silent-recursive-delete-from-cwd.
         if [ -d "$CONFIG_DIR" ]; then
             info "removing $CONFIG_DIR"
-            run rm -rf "$CONFIG_DIR"
+            run rm -rf "${CONFIG_DIR:?CONFIG_DIR must be set}"
         fi
         if [ -d "$STATE_DIR" ]; then
             info "removing $STATE_DIR"
-            run rm -rf "$STATE_DIR"
+            run rm -rf "${STATE_DIR:?STATE_DIR must be set}"
         fi
     else
         info "keeping $CONFIG_DIR and $STATE_DIR (--no-purge)"
