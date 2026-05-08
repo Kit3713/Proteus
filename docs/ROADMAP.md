@@ -652,22 +652,24 @@ Stream 7's E10 audit).
 
 **Work:**
 
-- ⏳ Close nft script stdin before `wait_with_output` (R1).
-- ⏳ Stream-parse `nft list table` instead of fully-buffered (R2); add max
+- ✅ Close nft script stdin before `wait_with_output` (R1).
+- ✅ Stream-parse `nft list table` instead of fully-buffered (R2); ✅ add max
   request-size cap to captive portal HTTP path (N12.14).
-- ⏳ Reuse a single DBus connection for DHCP status calls (R3); reduce
+- ✅ Reuse a single DBus connection for DHCP status calls (R3); ✅ reduce
   `RenewOutcome` allocations to `&'static str` (R7).
-- ⏳ Wiki search index — hash terms once, scan pages once (R6).
-- ⏳ Drop redundant `lossy().into_owned()` on known-ASCII paths (R5).
-- ⏳ Subprocess fd-close audit comments (R8); shell-metacharacter validators
+- ✅ Wiki search index — hash terms once, scan pages once (R6).
+- ✅ Drop redundant `lossy().into_owned()` on known-ASCII paths (R5).
+- ✅ Subprocess fd-close audit comments (R8); ✅ shell-metacharacter validators
   on iface names (M3 — coordinate with Stream 9).
 - ⏳ Cache an `Arc<Connection>` on `NmBackend` so trait methods share a
   single `zbus::Connection::system()` per command invocation rather than
   re-authenticating on every method call (NBE.1) — same family as R3 but
-  in a different file.
+  in a different file. **Deferred** to avoid Stream 4 overlap on
+  `src/backend/nm.rs` (NBE.3–NBE.10).
 - ⏳ Cache the last availability check on the backend struct so
   `select_auto()` and `availability_matrix()` don't double-probe networkd
-  via `/run/systemd/netif` syscalls (NBE.2).
+  via `/run/systemd/netif` syscalls (NBE.2). **Deferred** for the same
+  reason as NBE.1.
 
 **Acceptance:** `bench/` micro-benchmarks for nft-table parse and wiki search
 (p50 / p99 budget); soak test for DHCP fd accumulation.
