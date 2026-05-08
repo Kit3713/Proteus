@@ -170,19 +170,63 @@ fn try_open_netlink() -> std::io::Result<()> {
 /// Per-iface state ring used by the flap detector. A `LinkFlap` is
 /// emitted on the second `down→up` transition observed within
 /// `window`; tests drive it directly via [`MockLinkFlapSource`].
+///
+/// Issue #254: the previous implementation never evicted iface
+/// entries, so a dynamic VLAN/bridge/USB-tether stream that adds
+/// new iface names over time grew the HashMap unboundedly. The fix
+/// is two-pronged:
+///
+/// 1. On every `record`, prune any iface whose entries are entirely
+///    outside the current window — that's "no flap activity in the
+///    last window seconds". A pruned iface is reconstructed for free
+///    on the next event for it.
+/// 2. Cap the table at `MAX_TRACKED_IFACES` entries: if a hostile
+///    source spams `record(unique_iface, ...)` we evict the
+///    least-recently-touched entry rather than grow without bound.
+///    Eviction is O(N) but `MAX_TRACKED_IFACES` is small (32) and
+///    the path is only hit when the cap is reached, so the
+///    amortised cost is nil.
+const MAX_TRACKED_IFACES: usize = 32;
+
 #[derive(Debug, Default)]
 struct FlapTable {
-    /// `iface → vec of (instant, up_after_change)`. A "change"
-    /// records the post-change carrier state. Trimmed to the
+    /// `iface → (last_touched, vec of (instant, up_after_change))`.
+    /// `last_touched` is the most recent `record` call for this
+    /// iface and drives both the windowed prune and the LRU
+    /// eviction. The transition vector itself is trimmed to the
     /// configured window on every update.
-    inner: HashMap<String, Vec<(Instant, bool)>>,
+    inner: HashMap<String, (Instant, Vec<(Instant, bool)>)>,
 }
 
 impl FlapTable {
     fn record(&mut self, iface: &str, now: Instant, is_up: bool, window: Duration) -> bool {
-        let entry = self.inner.entry(iface.to_string()).or_default();
-        // Trim entries outside the window so the ring stays small.
+        // Step 1: prune iface entries whose `last_touched` is older
+        // than `window`. They've been silent across the entire
+        // detection window — we can rebuild on demand. This is the
+        // load-bearing eviction policy: the typical case (one or two
+        // active interfaces, no spam) keeps memory near zero.
         let cutoff = now.checked_sub(window).unwrap_or(now);
+        self.inner.retain(|_, (touched, _)| *touched >= cutoff);
+        // Step 2: if we're still at the cap, evict the
+        // least-recently-touched entry. The cap keeps memory bounded
+        // even under a hostile "fresh iface every event" pattern.
+        if !self.inner.contains_key(iface) && self.inner.len() >= MAX_TRACKED_IFACES {
+            if let Some(oldest_key) = self
+                .inner
+                .iter()
+                .min_by_key(|(_, (touched, _))| *touched)
+                .map(|(k, _)| k.clone())
+            {
+                self.inner.remove(&oldest_key);
+            }
+        }
+        let slot = self
+            .inner
+            .entry(iface.to_string())
+            .or_insert_with(|| (now, Vec::new()));
+        slot.0 = now;
+        let entry = &mut slot.1;
+        // Trim entries outside the window so the ring stays small.
         entry.retain(|(t, _)| *t >= cutoff);
         // Coalesce: if the most recent record already matches `is_up`,
         // the kernel sometimes emits duplicate RTM_NEWLINK in a row;
@@ -197,6 +241,13 @@ impl FlapTable {
         // bring-up is one. A flap is two.
         let ups = entry.iter().filter(|(_, u)| *u).count();
         ups >= 2
+    }
+
+    /// Test/inspection helper: number of distinct interfaces being
+    /// tracked. Used by eviction tests.
+    #[cfg(test)]
+    fn tracked_count(&self) -> usize {
+        self.inner.len()
     }
 }
 
@@ -416,5 +467,99 @@ mod tests {
     fn name_is_stable() {
         assert_eq!(LinkFlapSource::new().name(), "link-flap");
         assert_eq!(MockLinkFlapSource::new().name(), "link-flap");
+    }
+
+    /// Issue #254: the FlapTable evicts iface entries whose last
+    /// activity is outside the current window. Without this, a host
+    /// with churning VLAN / USB-tether ifaces grows the HashMap
+    /// unboundedly.
+    #[test]
+    fn flap_table_evicts_silent_ifaces_past_window() {
+        let mut table = FlapTable::default();
+        let window = Duration::from_secs(10);
+        let t0 = Instant::now();
+        // Record activity on three ifaces.
+        table.record("wlan0", t0, false, window);
+        table.record("eth0", t0 + Duration::from_millis(10), false, window);
+        table.record("usb0", t0 + Duration::from_millis(20), false, window);
+        assert_eq!(table.tracked_count(), 3);
+        // Long after the window: any new event prunes the silent ones.
+        let t_far = t0 + Duration::from_secs(120);
+        table.record("wlan0", t_far, false, window);
+        assert_eq!(
+            table.tracked_count(),
+            1,
+            "silent ifaces past the window should evict"
+        );
+    }
+
+    /// Issue #254: even if every iface stays inside the window
+    /// (e.g. a spammy event source rotates iface names every few
+    /// hundred ms), the LRU cap keeps memory bounded.
+    #[test]
+    fn flap_table_caps_tracked_ifaces_at_max() {
+        let mut table = FlapTable::default();
+        let window = Duration::from_secs(60);
+        let t0 = Instant::now();
+        for i in 0..(MAX_TRACKED_IFACES + 5) {
+            // Stagger timestamps so the LRU has a deterministic order.
+            let iface = format!("if{i}");
+            table.record(
+                &iface,
+                t0 + Duration::from_millis(i as u64 * 10),
+                false,
+                window,
+            );
+        }
+        assert!(
+            table.tracked_count() <= MAX_TRACKED_IFACES,
+            "LRU cap must bound tracked ifaces (got {})",
+            table.tracked_count()
+        );
+        // The five oldest ifaces (`if0..if4`) should have been evicted
+        // in favour of the most recent ones.
+        for i in 0..5 {
+            let iface = format!("if{i}");
+            assert!(
+                !table.inner.contains_key(&iface),
+                "expected eviction of oldest iface {iface}"
+            );
+        }
+        // The most recent iface should still be tracked.
+        let recent = format!("if{}", MAX_TRACKED_IFACES + 4);
+        assert!(
+            table.inner.contains_key(&recent),
+            "most recent iface should remain"
+        );
+    }
+
+    /// Eviction must not interfere with flap detection on a live
+    /// iface — even if other ifaces are evicted, the active one
+    /// continues to detect flaps as before.
+    #[test]
+    fn flap_detection_survives_eviction_pressure() {
+        let (reg, n) = rig();
+        let src = MockLinkFlapSource::with_window(Duration::from_secs(10));
+        let t0 = Instant::now();
+        // Real flap on wlan0.
+        src.push("wlan0", false, t0);
+        src.push("wlan0", true, t0 + Duration::from_millis(50));
+        src.push("wlan0", false, t0 + Duration::from_millis(100));
+        src.push("wlan0", true, t0 + Duration::from_millis(150));
+        // Spam other ifaces to push wlan0 toward eviction. Each is a
+        // single down event so they don't fire LinkFlap themselves;
+        // wlan0 is the youngest at the time of `start`, so eviction
+        // takes the older synthetic ifaces first.
+        for i in 0..(MAX_TRACKED_IFACES * 2) {
+            src.push(
+                format!("if{i}"),
+                false,
+                t0 + Duration::from_millis(200 + i as u64),
+            );
+        }
+        src.start(&reg).unwrap();
+        // Wlan0's flap was already recorded before the spam; it must
+        // have fired exactly once even under eviction pressure.
+        assert_eq!(n.load(Ordering::SeqCst), 1);
     }
 }

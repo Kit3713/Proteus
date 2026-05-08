@@ -44,10 +44,14 @@
 //! dispatcher doesn't expose (link-flap, reg-domain, portal-auth).
 
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use anyhow::Result;
 
+pub mod rate_limit;
 pub mod source;
+
+pub use rate_limit::{Decision, RateLimiter};
 
 /// The four reactive triggers the framework supports. Each variant
 /// carries enough payload for a handler to make a routing decision
@@ -116,14 +120,33 @@ pub trait EventHandler: Send + Sync {
 /// simple.
 pub struct EventRegistry {
     handlers: Mutex<Vec<Box<dyn EventHandler>>>,
+    /// Issue #254: per-kind rate limiter. Default budget (10/kind/60s)
+    /// is plenty for a real burst (NM emits up to 3 connection-up
+    /// events in a tight window when reactivating a profile) but
+    /// catches a runaway source. Test rigs override via
+    /// [`EventRegistry::with_limiter`].
+    limiter: RateLimiter,
 }
 
 impl EventRegistry {
-    /// Build an empty registry. Followed by zero or more `register`
-    /// calls before the source loop starts firing.
+    /// Build an empty registry with the default rate-limit budget.
+    /// Followed by zero or more `register` calls before the source
+    /// loop starts firing.
     pub fn new() -> Self {
         Self {
             handlers: Mutex::new(Vec::new()),
+            limiter: RateLimiter::new(),
+        }
+    }
+
+    /// Build a registry with an explicit rate limiter — used by
+    /// tests that need to assert dispatch is dropped at the Nth
+    /// trigger or by an orchestrator that wants to override the
+    /// default cap. Production wiring uses [`EventRegistry::new`].
+    pub fn with_limiter(limiter: RateLimiter) -> Self {
+        Self {
+            handlers: Mutex::new(Vec::new()),
+            limiter,
         }
     }
 
@@ -159,18 +182,47 @@ impl EventRegistry {
     /// order. Each handler's error is logged via `tracing::warn` and
     /// then suppressed — one failing handler must not silence the
     /// rest.
+    ///
+    /// Issue #254: every fire goes through the per-kind rate limiter
+    /// first. If the kind is over budget for the current window we
+    /// drop the trigger silently and bump a counter; one warn line
+    /// fires per overflow streak and is then coalesced for the
+    /// remainder of the window. This protects journald and
+    /// downstream rotation paths from a flapping source (a NIC that
+    /// down→up→down→ups every 200 ms). Returning `Ok(())` when
+    /// rate-limited is intentional: the source caller treats a fired
+    /// trigger as a fire-and-forget signal.
     pub fn fire(&self, trigger: RotationTrigger) -> Result<()> {
+        let kind = trigger.kind();
+        let now = Instant::now();
+        if let Decision::RateLimited(consecutive) = self.limiter.check_and_record(kind, now) {
+            if self.limiter.note_overflow(kind, now).is_some() {
+                tracing::warn!(
+                    kind = kind,
+                    consecutive_drops = consecutive,
+                    "event-trigger rate-limit exceeded; dropping further \
+                     triggers of this kind for the current window"
+                );
+            }
+            return Ok(());
+        }
         let handlers = match self.handlers.lock() {
             Ok(g) => g,
             Err(e) => anyhow::bail!("event registry mutex poisoned: {e}"),
         };
-        let kind = trigger.kind();
         for (idx, h) in handlers.iter().enumerate() {
             if let Err(e) = h.handle(&trigger) {
                 tracing::warn!(handler_index = idx, kind = kind, "handler error: {e:#}");
             }
         }
         Ok(())
+    }
+
+    /// Inspection helper — exposes the limiter so an orchestrator
+    /// (or tests) can query the current per-kind count or override
+    /// the budget at runtime. Read-only access via shared reference.
+    pub fn limiter(&self) -> &RateLimiter {
+        &self.limiter
     }
 }
 
@@ -356,5 +408,49 @@ mod tests {
         })
         .unwrap();
         assert_eq!(reg.handler_count(), 0);
+    }
+
+    /// Issue #254: the rate limiter wired into `fire` drops triggers
+    /// past the per-kind cap. Use a tight 3/window limiter so the
+    /// test doesn't have to fire ten triggers to prove the cap.
+    #[test]
+    fn fire_drops_triggers_past_per_kind_cap() {
+        use std::time::Duration;
+        let count = Arc::new(AtomicUsize::new(0));
+        let last = Arc::new(Mutex::new(None));
+        let reg =
+            EventRegistry::with_limiter(RateLimiter::with_capacity(3, Duration::from_secs(60)));
+        reg.register(Box::new(CountingHandler {
+            count: Arc::clone(&count),
+            last_kind: Arc::clone(&last),
+        }));
+        // First three fires of the same kind run.
+        for _ in 0..3 {
+            reg.fire(RotationTrigger::LinkFlap {
+                iface: "wlan0".into(),
+            })
+            .unwrap();
+        }
+        assert_eq!(count.load(Ordering::SeqCst), 3);
+        // Fourth and fifth: dropped by the limiter, handler not run.
+        reg.fire(RotationTrigger::LinkFlap {
+            iface: "wlan0".into(),
+        })
+        .unwrap();
+        reg.fire(RotationTrigger::LinkFlap {
+            iface: "wlan0".into(),
+        })
+        .unwrap();
+        assert_eq!(
+            count.load(Ordering::SeqCst),
+            3,
+            "limiter must drop the 4th+ trigger"
+        );
+        // A different kind has its own budget.
+        reg.fire(RotationTrigger::PortalAuth {
+            ssid: "Cafe".into(),
+        })
+        .unwrap();
+        assert_eq!(count.load(Ordering::SeqCst), 4);
     }
 }

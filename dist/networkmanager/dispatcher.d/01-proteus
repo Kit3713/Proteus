@@ -56,8 +56,73 @@ fi
 # NM exports CONNECTIVITY_STATE in newer versions.
 conn_state="${CONNECTIVITY_STATE:-}"
 
+# Issue #225: defense-in-depth validation of NM-exported strings used as
+# CLI arguments. NM_DISPATCHER_ACTION ($action), $iface, and
+# $CONNECTION_ID are all populated from values that may be attacker-
+# controlled (a probe-response SSID or a malicious connection profile
+# pushed through NM). Even though clap parses argv (not a shell), we
+# still enforce a strict allow-list before invoking proteus so a future
+# refactor can't accidentally re-introduce a shell-eval path. Reject
+# (don't escape) on failure: the cost of a missed rotation is far less
+# than mishandling a hostile string.
+#
+# Rules:
+#   - Length 1..=128 bytes (NM hard-caps SSID at 32 chars but allow some
+#     headroom for connection-id which can be longer).
+#   - Must be printable ASCII or valid UTF-8 above 0x7f.
+#   - No NUL, no control chars (0x00–0x1F or 0x7F).
+#   - No leading dash (would be parsed as a flag without `--`).
+#   - No shell metacharacters (despite using exec-form, this is the
+#     belt-and-suspenders bit).
+validate_cli_value() {
+    local val="$1"
+    local label="$2"
+    if [ -z "$val" ]; then
+        return 1
+    fi
+    # Length cap: 128 bytes leaves margin for UTF-8 multibyte chars.
+    if [ "${#val}" -gt 128 ]; then
+        log "rejected $label: too long (${#val} bytes)"
+        return 1
+    fi
+    # Leading dash means clap would treat it as a flag (mitigated by the
+    # `--flag=VALUE` form below, but reject anyway as defense-in-depth).
+    case "$val" in
+        -*)
+            log "rejected $label: leading dash"
+            return 1
+            ;;
+    esac
+    # Reject shell metacharacters as a belt-and-suspenders safety net even
+    # though we use exec form (no `eval`, no `sh -c`).
+    case "$val" in
+        *[\\\&\;\|\\\`\$\(\)\<\>\"\']*)
+            log "rejected $label: shell metacharacter in value"
+            return 1
+            ;;
+    esac
+    # Reject ASCII control characters (incl. NUL, newline, tab, CR, DEL).
+    # `tr -d '[:cntrl:]'` is byte-stream-aware (unlike grep, which works
+    # line-by-line and would never see embedded \n). We compare lengths;
+    # a hostile string with any cntrl char drops bytes and trips the test.
+    local _stripped
+    _stripped="$(LC_ALL=C printf '%s' "$val" | LC_ALL=C tr -d '[:cntrl:]')"
+    if [ "${#val}" -ne "${#_stripped}" ]; then
+        log "rejected $label: control character in value"
+        return 1
+    fi
+    return 0
+}
+
 case "$action" in
     up)
+        # Validate $iface before anything else — it ends up as the value
+        # of `--iface`. Linux iface names are <=15 bytes and a strict
+        # subset of ASCII; the validate fn is plenty.
+        if ! validate_cli_value "$iface" "iface"; then
+            log "iface=$iface up: rejected — invalid iface string; skipping rotation"
+            exit 0
+        fi
         # Interface came up. Roadmap Milestone 1 (issue #206-C): the
         # cooldown decision now lives behind the typed
         # `proteus rotate-if-needed` subcommand, which returns a
@@ -77,14 +142,40 @@ case "$action" in
         # (the connection profile's id, which on Wi-Fi defaults to
         # the SSID). Pass it through so rotate-if-needed can resolve
         # `[per_ssid."<ssid>"]` overrides (pin_mac, rotate_interval).
-        ssid_arg=""
+        #
+        # Issue #225: $CONNECTION_ID is attacker-controlled (an SSID
+        # broadcasted by a hostile AP, or a connection profile pushed
+        # through nmcli by a malicious tool). Validate it; if it fails,
+        # drop the --ssid bit but still rotate (defense-in-depth — do
+        # not break the rotation path because of a weird SSID). Use
+        # the `--` separator so anything that survives validation but
+        # happens to start with a dash still parses as a value.
+        pass_ssid=0
+        ssid_val=""
         if [ -n "${CONNECTION_ID:-}" ]; then
-            ssid_arg="--ssid"
+            if validate_cli_value "$CONNECTION_ID" "connection-id"; then
+                pass_ssid=1
+                ssid_val="$CONNECTION_ID"
+            else
+                log "iface=$iface up: dropping CONNECTION_ID; rotating without per-SSID override"
+            fi
         fi
-        if [ -n "$ssid_arg" ]; then
-            out="$("$proteus_bin" rotate-if-needed --iface "$iface" --cooldown "$cooldown_secs" "$ssid_arg" "$CONNECTION_ID" --yes 2>/dev/null)"
+        # Capture stderr (issue #254): redirecting to /dev/null hides
+        # real failures (binary segfault, missing capabilities, lock
+        # contention). Merge into stdout so `out` carries both, and
+        # log the combined output via journald.
+        #
+        # Issue #225: bind every NM-sourced string to its flag with
+        # `--flag=VALUE` form. Even though validate_cli_value already
+        # rejected a leading dash, the equals form is structurally
+        # immune to clap mis-parsing the value as another flag — clap
+        # treats `--ssid=foo` as one token, so `foo` cannot ever be
+        # confused for a flag. This belt-and-suspenders pairing matches
+        # the standing security review note in docs/PLAN.md (#225).
+        if [ "$pass_ssid" -eq 1 ]; then
+            out="$("$proteus_bin" rotate-if-needed --iface="$iface" --cooldown="$cooldown_secs" --ssid="$ssid_val" --yes 2>&1)"
         else
-            out="$("$proteus_bin" rotate-if-needed --iface "$iface" --cooldown "$cooldown_secs" --yes 2>/dev/null)"
+            out="$("$proteus_bin" rotate-if-needed --iface="$iface" --cooldown="$cooldown_secs" --yes 2>&1)"
         fi
         rc=$?
         if [ "$rc" -eq 0 ]; then
