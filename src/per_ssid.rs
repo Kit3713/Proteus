@@ -188,12 +188,31 @@ fn per_block_has_any_field(p: &PerSsidPolicy) -> bool {
 /// grammar that makes sense for an SSID-scoped knob: bare seconds /
 /// minutes / hours / days. Returns `None` on anything off-format so the
 /// resolver can transparently fall through to the global timer.
+///
+/// Issue #272: previously this used `s.split_at(s.len() - 1)` which slices
+/// on a byte boundary. A multi-byte UTF-8 trailing character (e.g. `5µ`,
+/// where `µ` is a 2-byte sequence) would land mid-codepoint and panic.
+/// `panic = abort` is set crate-wide, so a hostile or buggy config value
+/// would abort the events daemon. We now split on the last *character*
+/// boundary via `char_indices` and reject any non-ASCII suffix as
+/// off-format (returning `None`), which causes the resolver to transparently
+/// fall through to the global timer rather than abort.
 fn parse_duration(s: &str) -> Option<Duration> {
     let s = s.trim();
     if s.is_empty() {
         return None;
     }
-    let (num, unit) = s.split_at(s.len() - 1);
+    // Find the last character's byte offset. `char_indices` yields
+    // `(byte_offset, char)` for each code point; the last entry's offset
+    // is where the final char starts, which is the only safe split point.
+    let last_idx = s.char_indices().next_back()?.0;
+    let (num, unit) = s.split_at(last_idx);
+    // Reject anything where the unit isn't a single ASCII byte — `µ`,
+    // emoji, etc. can't be one of our four units, so the parse fails
+    // cleanly rather than panicking.
+    if unit.len() != 1 || !unit.is_ascii() {
+        return None;
+    }
     let n: u64 = num.parse().ok()?;
     match unit {
         "s" => Some(Duration::from_secs(n)),
@@ -458,6 +477,40 @@ mod tests {
         assert!(parse_duration("").is_none());
         assert!(parse_duration("xx").is_none());
         assert!(parse_duration("3w").is_none());
+    }
+
+    /// Issue #272 regression: the previous implementation used
+    /// `split_at(s.len() - 1)`, which slices on a byte boundary. The
+    /// trailing `µ` (U+00B5) is two UTF-8 bytes, so the byte-boundary split
+    /// landed mid-codepoint and panicked. With `panic = abort` set
+    /// crate-wide, this aborted the events daemon every time a per-SSID
+    /// config carried an unusual suffix. The fix splits on the last *char*
+    /// boundary via `char_indices` and rejects non-ASCII suffixes as
+    /// off-format. This test must exit cleanly — never panic — and return
+    /// `None` for the bad input.
+    #[test]
+    fn parse_duration_handles_multibyte_utf8_without_panic() {
+        // Two-byte UTF-8 (`µ` = U+00B5, encoded as 0xC2 0xB5)
+        assert!(parse_duration("5µ").is_none());
+        // Four-byte UTF-8 (emoji, encoded as 4 bytes)
+        assert!(parse_duration("5🦀").is_none());
+        // Three-byte UTF-8 (CJK ideograph)
+        assert!(parse_duration("5日").is_none());
+        // Bare multi-byte sequence with no leading number
+        assert!(parse_duration("µ").is_none());
+        // Multi-byte interior char with ASCII suffix is also rejected — the
+        // numeric part of `1µs` ("1µ") fails to parse as u64.
+        assert!(parse_duration("1µs").is_none());
+    }
+
+    /// Companion to the multibyte test: the standard ASCII suffixes still
+    /// work after the char_indices fix. Pin the happy path so the regression
+    /// fix doesn't regress the regression fix.
+    #[test]
+    fn parse_duration_ascii_suffixes_still_parse_after_utf8_fix() {
+        assert_eq!(parse_duration("1s"), Some(Duration::from_secs(1)));
+        assert_eq!(parse_duration("60s"), Some(Duration::from_secs(60)));
+        assert_eq!(parse_duration("0s"), Some(Duration::from_secs(0)));
     }
 
     /// Empty per-SSID block (`[per_ssid."x"]` with no fields) is treated
