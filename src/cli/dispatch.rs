@@ -216,10 +216,14 @@ pub(super) fn dispatch(cli: Cli) -> Result<u8> {
         Command::Timer { action } => match action {
             TimerAction::Status { json } => commands::timer::run_status(json),
             TimerAction::List { json } => commands::timer::run_list(json),
-            TimerAction::Enable(a) => commands::timer::run_enable(&a.name),
-            TimerAction::Disable(a) => commands::timer::run_disable(&a.name),
-            TimerAction::Set { name, interval } => commands::timer::run_set(&name, &interval),
-            TimerAction::Reset(a) => commands::timer::run_reset(&a.name),
+            TimerAction::Enable(a) => commands::timer::run_enable(&a.name, a.yes),
+            TimerAction::Disable(a) => commands::timer::run_disable(&a.name, a.yes),
+            TimerAction::Set {
+                name,
+                interval,
+                yes,
+            } => commands::timer::run_set(&name, &interval, yes),
+            TimerAction::Reset(a) => commands::timer::run_reset(&a.name, a.yes),
             TimerAction::Logs { name, lines } => commands::timer::run_logs(&name, lines),
         },
         Command::Config { action } => dispatch_config(action, cli.config.as_deref()),

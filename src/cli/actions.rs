@@ -29,9 +29,13 @@ pub enum TimerAction {
     Set {
         /// Timer name (`rotate`, `check`, ...).
         name: String,
-        /// Cadence: `30s`, `5m`, `2h`, `1d`, or `hourly` / `daily`.
+        /// Cadence: `5m`, `2h`, `1d`, or `hourly` / `daily`. Plain durations
+        /// must be in the [60s, 30d] window; calendar expressions are exempt.
         #[arg(long)]
         interval: String,
+        /// Confirm this mutating change. Issue #293: required, no default.
+        #[arg(long)]
+        yes: bool,
     },
     /// Reset a timer's cadence back to its default (removes the drop-in).
     Reset(TimerNameArgs),
@@ -49,6 +53,9 @@ pub enum TimerAction {
 pub struct TimerNameArgs {
     /// Timer name (`rotate`, `check`, `resume`, `boot`).
     pub name: String,
+    /// Confirm this mutating change. Issue #293: required, no default.
+    #[arg(long)]
+    pub yes: bool,
 }
 
 #[derive(Subcommand, Debug)]
