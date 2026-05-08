@@ -849,3 +849,187 @@ Ranked by impact × likelihood. Each links to the section with full detail.
 - **Description**: The pinned toolchain (1.93.0) is well above MSRV (1.85). Edition 2024 is supported in both. The note is here only to pre-empt the easy-to-make false positive that "edition 2024 doesn't work on stable" — it does, since 1.85.
 - **Fix**: None — both pins are correct; flagging so future audits don't repeat the mistake.
 
+---
+
+## Section 12 — Second-pass findings (2026-05-08)
+
+This section captures additional bugs found in a second focused sweep on top of
+the original 85-issue queue. New prefixes (`N*`) reduce collisions with the
+existing numbering. Each finding was personally verified against the current
+source.
+
+### N12.1. `unpin` subcommand has NO `--yes` field at all
+- **Severity**: critical
+- **Area**: cli / dispatch / mutator-confirmation
+- **File**: `src/cli/command.rs:126-129` (`Unpin { target: String }` — no `yes` field), `src/commands/unpin.rs:10` (no `yes` parameter)
+- **Description**: Compare to `Pin` at `src/cli/command.rs:120-124` which carries `yes: bool`. `Unpin` is the asymmetric exception: clap cannot accept `--yes` because the field is absent, and `commands::unpin::run` never calls `require_yes()`. The function does call `acquire_state_lock_or_print` and `state.save(...)` — so the path *is* mutating — but the safety gate is wholly missing. Different from CL2/M1: those drop a present field at dispatch; this one never declared the field at all.
+- **Impact**: `proteus unpin <target>` mutates `state.json` (sets `pinned = None` on a managed interface or connection record) without any `--yes` confirmation. Wrappers cannot enforce the "mutators need `--yes`" contract on this path. A misclick / typo'd target with `unpin` paired with shell completion is a vector for a state corruption that downstream apply runs will then "respect" until the user notices.
+- **Fix**: Add `yes: bool` to the `Unpin` clap action, thread it through `dispatch.rs`, and call `require_yes(yes, "is mutating (clears MAC pin)", "proteus help unpin")?` before `acquire_state_lock_or_print`. Add an integration test: `proteus unpin wlan0` without `--yes` must exit `CONFIRMATION_REQUIRED` (65) without writing state.
+
+### N12.2. `dhcp apply` and `dhcp revert` drop `--yes` (extension of CL2/M1)
+- **Severity**: critical
+- **Area**: cli / dispatch
+- **File**: `src/cli/dispatch.rs` (DHCP arms), `src/commands/dhcp.rs:85, 125` (function signatures lack `yes`)
+- **Description**: Mirror of CL2/M1. `DhcpAction::Apply { yes }` and `Revert { yes }` parse the flag but the dispatch destructures with `{ .. }`, dropping the bool; downstream functions take no `yes` parameter. Note: `dhcp renew` does pass `yes` correctly, so this is genuinely an apply/revert oversight (M1 in the existing list mentioned the pattern but specifically targeted apply only and was tagged "extension of CL2"). Re-recording here so the fix list is complete and clean.
+- **Impact**: Same as CL2/M1 — `proteus dhcp apply` and `proteus dhcp revert` proceed without confirmation. Wrapping scripts cannot enforce the contract.
+- **Fix**: Pass `yes` through dispatch; call `require_yes(yes, …)?` at the top of both functions before any state-lock acquire.
+
+### N12.3. `portal mark`, `portal unmark`, `portal open` drop `--yes`
+- **Severity**: critical
+- **Area**: cli / dispatch
+- **File**: `src/cli/dispatch.rs` (Portal arms), `src/commands/portal.rs:158, 184, 206`
+- **Description**: `PortalAction::Mark { ssid, yes }`, `Unmark { ssid, yes }`, `Open { yes }` declare the field; dispatch destructures with `{ ssid, .. }` / `{ .. }` and drops it. `run_mark`, `run_unmark`, `run_open` take no `yes` parameter. Mutates `state.known_portal_ssids` (mark/unmark) or shells out to `xdg-open` style helpers (open) without the gate.
+- **Impact**: Three more mutators bypassing `--yes`. Combined with N12.2 and the existing CL2/M1, every action in the dhcp + portal namespaces silently lacks confirmation enforcement.
+- **Fix**: Identical pattern: pass `yes` through, gate with `require_yes(yes, …)?`. Add integration tests for each action (currently in the CL4 gap).
+
+### N12.4. Per-SSID `parse_duration` multiplication overflow
+- **Severity**: high
+- **Area**: per_ssid / duration parsing
+- **File**: `src/per_ssid.rs:218-221`
+- **Description**: `match unit { "m" => Some(Duration::from_secs(n * 60)), "h" => ... n * 3600, "d" => ... n * 86_400, ... }`. The `n: u64` value is unchecked-multiplied. For e.g. `n = u64::MAX / 60 + 1` and unit `"m"`, the multiply wraps in release (silent — produces a `Duration::from_secs` of a wildly wrong number) and panics in debug. With `panic = abort` set crate-wide (Cargo.toml:14), a panic here aborts the events daemon. `is_valid_per_ssid_duration` (#N12.5 below) does not bound the magnitude either, so a per-SSID config with `rotate_interval = "999999999999999999d"` survives load-time validation and lands at this multiply.
+- **Impact**: A hostile or buggy per-SSID config overflow-wraps the rotation cadence (returns a tiny Duration from a giant input) — turning a configured "do not rotate often" into "rotate continuously". With debug builds or future strict overflow settings, the events daemon aborts.
+- **Fix**: Use `n.checked_mul(factor).and_then(|s| ... )` and return `None` on overflow so the resolver transparently falls back to the global timer. Alternatively `n.saturating_mul(factor)` if "very large means very long" is the desired semantic.
+
+### N12.5. `is_valid_per_ssid_duration` panics on multibyte trailing char (regression of #272)
+- **Severity**: high
+- **Area**: config / per_ssid validator
+- **File**: `src/config.rs:940-953`
+- **Description**: Issue #272 fixed `per_ssid::parse_duration` (`src/per_ssid.rs:200-224`) to use `char_indices().next_back()` instead of `s.split_at(s.len() - 1)`, because the byte-boundary split panics on multibyte UTF-8 trailing characters. The companion validator `is_valid_per_ssid_duration` in `src/config.rs:945` was NOT updated and still uses `s.split_at(s.len() - 1)`. With `s = "µ"` (length-2 UTF-8 sequence: 0xC2 0xB5), `s.len() - 1 == 1`, and `split_at(1)` lands mid-codepoint → panic. With `panic = abort`, this aborts the binary on any config-load path that calls `validate_ranges()` (which is called from `Config::load`/`default_or_loaded`). Trigger: a per-SSID block with `rotate_interval = "µ"` (or any 2-byte-min UTF-8 string).
+- **Impact**: A hostile or accidentally-pasted per-SSID `rotate_interval` aborts every command that loads config, including read-only `proteus status`, `proteus current`, `proteus diff`, etc. Same root cause as #272, only re-introduced because the validator was a copy of the old shape.
+- **Fix**: Mirror the #272 fix: switch to `char_indices().next_back()` for the split point, reject non-ASCII unit suffixes as "off-format". Better: have `validate_ranges` call `parse_duration` directly so the two functions share one definition.
+
+### N12.6. `display_string` length-clamp counts input characters, not output
+- **Severity**: medium
+- **Area**: display / output sanitization
+- **File**: `src/display.rs:36-77`
+- **Description**: The clamp logic increments `emitted` once per input character regardless of how many output characters that produced. `\\` outputs 2, `\xNN` outputs 4, `\u{NNNN}` outputs 6+. A pathological input of 1024 backslashes hits `emitted == MAX_DISPLAY_LEN` after consuming all input — but the output string is now 2048 characters long. The contract documented at module top ("Output is clamped to `MAX_DISPLAY_LEN` characters; … the operator can spot the clamp") is violated. The existing tests at `src/display.rs:162` only exercise plain `'A'`, never escape-expanding chars, so the bug is not caught.
+- **Impact**: A hostile peer (captive-portal `Location:` header, NM SSID, etc.) can plant 4 KiB of `\` characters and produce ~8 KiB of output that wraps the operator's terminal — defeating the wrap-prevention guarantee `display_string` was authored for. Not a security boundary, but the function is the boundary's enforcement, so the regression matters.
+- **Fix**: Change the loop to track output length: increment by the size of what was just appended (`out.len()` delta or an explicit count of chars pushed). Add a regression test using `"\\".repeat(MAX_DISPLAY_LEN + 100)` and assert the result is clamped.
+
+### N12.7. Captive portal sends RFC-7230-malformed `Host:` header for IPv6 literal URLs
+- **Severity**: medium
+- **Area**: captive_portal / HTTP
+- **File**: `src/captive_portal/mod.rs:253-262, 314-318`
+- **Description**: `parse_http_url` strips IPv6 literal brackets (`[::1]` → `::1`) when storing `host` in `UrlParts`. `http_get` then formats `format!("Host: {}", parts.host)`, producing `Host: ::1` on the wire. RFC 7230 §5.4 requires IPv6 literals in the Host header to remain bracketed: `Host: [::1]`. A spec-compliant server (and many CDNs / portal redirectors that proxy through compliant front-ends) responds to the malformed header with `400 Bad Request`, which the classifier currently treats as `Classification::Unknown`. The detector then misreports the path's portal status.
+- **Impact**: Captive portal detection silently fails on IPv6-literal `detect_url` configurations. Defaults to `nmcheck.gnome.org` which is not a literal, so the bug only fires when an operator points at an IPv6 literal — but IPv6-only test rigs and on-LAN portal probes are exactly that case.
+- **Fix**: Track whether the URL's host was bracketed (an `Option<bool> bracketed` flag on `UrlParts` or a separate `host_for_header: String` field). Format `Host: [{}]` when bracketed; `Host: {}` otherwise. `(parts.host.as_str(), parts.port).to_socket_addrs()` in line 313 already accepts the unbracketed form for resolution, so only the format string needs to change.
+
+### N12.8. `proteus-events.service` `ExecStart` path conflicts with install.sh default
+- **Severity**: high
+- **Area**: install.sh / packaging / systemd unit consistency
+- **File**: `dist/systemd/proteus-events.service:15` (uses `/usr/bin/proteus`), vs `dist/systemd/proteus-{boot,check,rotate,resume}.service` (use `/usr/local/bin/proteus`), vs `install.sh:19` (`BINARY_DST="/usr/local/bin/proteus"`)
+- **Description**: Verified by `grep ExecStart dist/systemd/*.service`:
+  - `proteus-events.service:ExecStart=/usr/bin/proteus events run` — distro path
+  - All four other unit files use `/usr/local/bin/proteus` — install.sh path
+  install.sh's `sed` rewrite (lines 167-189) only patches the polkit policy; nothing rewrites systemd unit `ExecStart` lines. Result on install.sh-deployed systems: 4 of 5 units start, but `proteus-events.service` starts→fails→restarts every 5 s with exit 200 ("binary not found at /usr/bin/proteus"). Systemd's `Restart=on-failure` then thrashes.
+  This is a more specific instance of the cross-cutting B10, with the additional twist that `proteus-events.service` is the ONLY unit using the distro path — every other unit follows the install.sh convention. Likely a copy-paste oversight when the events unit landed.
+- **Impact**: install.sh-installed events daemon never runs; user sees `[events] enabled = true` honored at config-parse time but no triggers fire. Mirror of N1 in the existing list (handler doesn't actually rotate) — but for an entirely different reason: the daemon never even starts.
+- **Fix**: Either (a) change `proteus-events.service` to use `/usr/local/bin/proteus` to match siblings (cheapest); or (b) extend install.sh's polkit-rewrite logic to `sed` `ExecStart=` paths in every unit it copies; or (c) standardize on `/usr/bin/proteus` everywhere and have install.sh symlink it from `/usr/local/bin/proteus`. (c) is the cleanest long-term but most invasive.
+
+### N12.9. `proteus-events.service` lacks `KillMode` / `TimeoutStopSec`
+- **Severity**: medium
+- **Area**: systemd unit hardening / shutdown
+- **File**: `dist/systemd/proteus-events.service`
+- **Description**: The unit is `Type=simple` with `Restart=on-failure` but specifies no `KillMode` (default `control-group`), `KillSignal` (default `SIGTERM`), or `TimeoutStopSec` (default 90 s). Pairs with C4 in the existing list (no `tokio::signal` SIGTERM handler in `src/commands/events.rs:240`). On `systemctl stop proteus-events.service`, systemd sends SIGTERM to the entire control group; the daemon process exits without draining `EventSource::stop()` or flushing tracing — covered, but the unit defaults give the daemon a 90 s window to do nothing. After SIGKILL, in-flight DBus subscriptions and netlink sockets drop without graceful close.
+- **Impact**: Resource churn on rapid restart (typical when an operator edits config and reloads). Log lines may be lost. systemd journal shows a 90 s delay between `systemctl stop` and the next `systemctl start` succeeding.
+- **Fix**: Add `KillMode=mixed` (SIGTERM the main process; SIGKILL stragglers) and `TimeoutStopSec=10s` (a long-running daemon doesn't need 90 s to flush). Pair with C4's runtime fix to actually catch SIGTERM and call `shutdown_tasks(...)` cleanly.
+
+### N12.10. `proteus diff` reads target files unbounded
+- **Severity**: medium
+- **Area**: diff / OOM
+- **File**: `src/diff/mod.rs` (`std::fs::read(&path)` site)
+- **Description**: The diff pass enumerates managed paths and `std::fs::read`s each into a `Vec<u8>` for SHA256 hashing and pretty-print. There's no upstream size cap. Managed paths today are small (state.json, config.toml, systemd drop-ins) but the SHA-verification loop in `src/commands/mod.rs:360` is reachable from `proteus apply` and operates on whatever the path enumerator surfaces. A dropped-in unit file at `/etc/systemd/system/proteus-rotate.timer.d/override.conf` could be replaced (root operator typo, or future feature gap) with a multi-GiB file and `proteus diff` / `proteus apply` would OOM.
+- **Impact**: Local DoS via misconfiguration. Not security-critical (the path is root-only), but `proteus apply` failing to OOM is unhelpful — better a clear "managed file too large; investigate" error.
+- **Fix**: Cap `read` at e.g. 10 MiB via a size check on `metadata().len()` first. For SHA verification, stream via `Read` chunks rather than reading the whole file (the `crypto/sha256` helper supports incremental hashing).
+
+### N12.11. NM connection-up SSID stub always returns `None`
+- **Severity**: medium
+- **Area**: events / connection-up source
+- **File**: `src/events/source/nm_connection_up.rs:312-323` (function `read_active_ssid_via_proc` or similar)
+- **Description**: The function probes `/proc/net/wireless` to confirm a wireless interface is present, then unconditionally returns `None`. The comment says "deliberately stop here" (TODO) and the dispatcher path uses `CONNECTION_ID` for SSID instead — but the events-daemon path on networkd / raw backends has no CONNECTION_ID and silently can't resolve the SSID. Per-SSID policy (the `[per_ssid."<ssid>"]` block — the entire roadmap-M3 feature) cannot resolve at trigger time on those backends.
+- **Impact**: Per-SSID overrides documented in the wiki silently no-op on non-NM hosts. This is a documentation-vs-code mismatch with security implications (a user thinks they enabled `pin_mac` for a specific SSID; they didn't).
+- **Fix**: Either implement the sysfs SSID read (`/sys/class/net/<iface>/wireless/...` is not authoritative; `iw dev <iface> link` or NL80211 `NL80211_CMD_GET_INTERFACE` is the right source), or rename the function to `is_wireless_iface()` and document in the wiki that per-SSID resolution requires the NM backend.
+
+### N12.12. `clap` `u32` flags accept implicit-positive of negative input
+- **Severity**: medium
+- **Area**: cli / clap parsing
+- **File**: `src/cli/actions.rs:47` (`TimerAction::Logs { lines: u32 }` and similar `u32`/`u64` fields)
+- **Description**: Plain clap `u32`/`u64` `value_parser` does not reject leading `-`; if the user types `--lines -50`, clap parses the next token as an `OsStr`, which fails u32 parse — but if a downstream caller uses `default_value_t = 0` and a custom converter, the contract is fragile. More directly: `--lines=18446744073709551566` (u64::MAX - 50) is accepted on a u64 field with no upper bound, and any `Vec`/`String` allocation that scales with that count is an OOM vector. Today: counter scans through `journalctl -n` which itself caps but the binary trusts the value.
+- **Impact**: An unprivileged user with shell access (no root) can `proteus timer logs rotate --lines 18446744073709551566` and journalctl receives that. journalctl tolerates large `-n` values but the audit pattern (read-only command turning into resource amplifier) is worth tightening.
+- **Fix**: For numeric flags, use `value_parser!(u32).range(0..=1_000_000)` or similar at every clap-typed integer site. Audit `src/cli/actions.rs` and `src/cli/command.rs` for unbounded `u32`/`u64` fields.
+
+### N12.13. `state_lock::HELD` mutex held across `acquire_inner` retry sleep loop (still present)
+- **Severity**: high (already C1 in existing list — re-confirmed in this pass)
+- **Area**: state_lock
+- **File**: `src/state_lock.rs:155-170` (current)
+- **Description**: This was already filed as C1. Re-verified: `acquire_for_state_path` takes `HELD.lock()` at line 156, then calls `acquire_inner(&path)` at line 163, which executes the up-to-50× retry loop with `std::thread::sleep(RETRY_DELAY)` while still holding the `HELD` mutex. Concurrent acquirers from the same process serialize on this mutex even when the on-disk flock is the contention point. Also worth noting: `acquire_inner` now (after #275) also performs `ensure_state_dir_secure` + `set_permissions` on the `.lock` file — additional work that runs holding the in-process mutex. Nested calls correctly observe `held.is_some()` and return a no-op guard, so the issue only bites when *multiple* fresh outer-acquires race. Today this is most likely on the events daemon where four sources can simultaneously try to invoke a rotate.
+- **Fix**: As C1 said — release the mutex before the retry sleep, re-acquire at the top of each iteration. Or rework the type to hold the file outside the mutex with the mutex only guarding the slot.
+
+### N12.14. Captive portal detect: no maximum total request size before TLS would be needed
+- **Severity**: low
+- **Area**: captive_portal / HTTP
+- **File**: `src/captive_portal/mod.rs:316-318`
+- **Description**: The request line builder does `format!("GET {path} HTTP/1.0\r\nHost: {host}\r\n…")`. `parts.path` is from `parse_http_url`, which doesn't bound length. A `detect_url` like `http://example.com/aaaaaa…` (1 MiB of `a`'s) builds a 1 MiB request. `is_request_safe` checks character classes but not length. Today the operator owns `detect_url`, so this is benign — but if `detect_url` ever flows from a less-trusted source (e.g. an NM connection profile field), the unbounded `format!` allocates without ceiling.
+- **Impact**: None today; future-proofing only.
+- **Fix**: Cap `path.len()` at e.g. 4096 in `parse_http_url`; reject longer with `None`. Add a unit test pinning the cap.
+
+### N12.15. `lock_path_for(state_path)`: `parent()` of bare filename returns `Path::new(".")`
+- **Severity**: low
+- **Area**: state_lock / fallback
+- **File**: `src/state_lock.rs:172-175`
+- **Description**: `state_path.parent().unwrap_or_else(|| Path::new("."))` — if a caller passes a state path with no parent (e.g. a bare `"state.json"`), the lock lands at `./.lock`. With `--state` flag, this is reachable. Combined with `O_NOFOLLOW` (good — already there) it's safe, but the lock then sits in $CWD which is operator-surprising.
+- **Impact**: A `proteus apply --state state.json` invocation creates `.lock` in CWD; subsequent runs from a different CWD don't see it as held. Cross-process serialization fails for this exotic invocation.
+- **Fix**: Either canonicalize `state_path` before extracting parent, or `bail!` when the input has no parent.
+
+### N12.16. `state.save` chmod after `write_atomic` is racy under concurrent reader
+- **Severity**: low
+- **Area**: state.rs / file mode
+- **File**: `src/state.rs:390-401`
+- **Description**: After `write_atomic` lands `state.json` at 0o600, `state.save` calls `fs::set_permissions(path, 0o600)` belt-and-braces (line 394). Between the rename inside `write_atomic` and the explicit `set_permissions`, the file briefly exists at 0o600 (good — `write_atomic` opens with `.mode(0o600)`), so there's no window where it's wider. But the second `set_permissions` is essentially a no-op. If a future maintainer ever changes `write_atomic`'s mode and forgets to update `STATE_FILE_MODE`, the second call silently corrects only on platforms that honor it. Not exploitable today, but the redundancy is a foot-gun and mis-suggests "this is the authoritative chmod".
+- **Fix**: Drop the second `set_permissions` and rely on `write_atomic`'s `.mode()`. Or, if defense-in-depth is intended, add a comment that explicitly documents the assertion semantics ("this fchmod is a defensive belt; `write_atomic` is the actual setter").
+
+### N12.17. `is_uuid_shape` accepts uppercase hex; NM emits lowercase
+- **Severity**: low
+- **Area**: state migration
+- **File**: `src/state.rs:457-473`
+- **Description**: The shape check uses `b.is_ascii_hexdigit()` which matches both `[0-9a-f]` and `[0-9A-F]`. Real NM uuids are lowercase RFC-4122. A state file with uppercase uuids (manual edit, restored from a tool that uppercases hex) passes shape check but later string comparisons against fresh NM uuids (which are lowercase) miss → entries silently abandoned during migration / lookup.
+- **Impact**: Edge-case data loss when a state file has uppercase uuids — `proteus revert` fails to find originals for those connections.
+- **Fix**: Either (a) lowercase the key on load if it passes `is_uuid_shape`, or (b) tighten `is_uuid_shape` to reject uppercase. (a) is more permissive and recovers from the wild edit.
+
+### N12.18. `unix_to_ymdhms` `t as i64` cast of u64 days
+- **Severity**: info
+- **Area**: commands / time formatting
+- **File**: `src/commands/mod.rs:136`
+- **Description**: `let mut days = t as i64;` after `t /= 24`. For any `SystemTime` post-2106 (when `u32` epoch overflows), `t > i64::MAX / 86400` becomes possible — but in practice we'd need `t` to exceed ~2.6e8 days (year 1970+700,000), so this is a "year 700,000 problem". Not a bug. Flagging so future audits don't re-flag the cast.
+- **Fix**: None.
+
+### N12.19. `factory::permanent_address` returns `Option<String>` — already filed as N2
+- **Severity**: high (re-confirmed)
+- **Area**: backend / mac factory
+- **File**: `src/backend/nm.rs:178-182`, `src/mac/factory.rs:50-58`
+- **Description**: Re-confirmed in this pass; same as N2 in the existing queue. Worth re-flagging because two different agents independently surfaced it, indicating it's a high-impact bug on the production path. The Option collapses I/O failure with structural absence.
+- **Fix**: As N2 — change to `Result<Option<String>>`.
+
+### N12.20. Subprocess interface-name validators allow ASCII shell metacharacters — duplicate of M3
+- **Severity**: info (duplicate of M3)
+- **Area**: kill_switch / iface validation
+- **File**: `src/kill_switch/mod.rs:174-180`
+- **Description**: Already M3. Re-confirmed.
+- **Fix**: As M3.
+
+---
+
+### Summary of section-12 additions
+
+20 entries. Severity distribution:
+- 4 critical (`N12.1`–`N12.3` + part of `N12.8`'s functional impact)
+- 6 high (`N12.4`, `N12.5`, `N12.8`, `N12.13`, `N12.19`)
+- 5 medium (`N12.6`, `N12.7`, `N12.9`, `N12.10`, `N12.11`, `N12.12`)
+- 4 low (`N12.14`, `N12.15`, `N12.16`, `N12.17`)
+- 2 info (`N12.18`, `N12.20`)
+
+Top three to fix first (impact × likelihood):
+1. **N12.1** — `unpin` has no `--yes` field at all. Asymmetric vs `pin`. Trivial fix.
+2. **N12.5** — `is_valid_per_ssid_duration` panic on multibyte trailing char. Same root cause as already-fixed #272 but in the validator. With `panic = abort`, every load path can be aborted by a malicious / fat-fingered SSID config.
+3. **N12.4** — `parse_duration` overflow on multiply. Combined with the missing magnitude bound in `is_valid_per_ssid_duration`, an operator typo of `999999999999d` silently turns into a continuous-rotation footgun.
+
