@@ -15,7 +15,7 @@ use serde::Serialize;
 
 use crate::captive_portal::{self, Classification, DetectionOutcome};
 use crate::config::Config;
-use crate::display::display_string;
+use crate::display::{display_safe, display_string};
 use crate::exit;
 use crate::state::{PortalCheckRecord, State};
 
@@ -148,8 +148,14 @@ pub fn run_list(json: bool, state_path: Option<&Path>) -> Result<u8> {
     } else if report.known_portal_ssids.is_empty() {
         println!("(no known portal SSIDs)");
     } else {
+        // Issues #357/#365/#373: SSIDs come from `state.json` which is
+        // populated by `proteus portal mark <ssid>` and originally from
+        // NetworkManager — i.e. ultimately AP-controlled. Sanitize before
+        // echoing so a hostile AP can't paint ANSI through a privileged
+        // print site (e.g. when an operator runs `proteus portal list`
+        // under root + journald).
         for s in &report.known_portal_ssids {
-            println!("{s}");
+            println!("{}", display_safe(s));
         }
     }
     Ok(exit::SUCCESS)
@@ -170,14 +176,18 @@ pub fn run_mark(ssid: &str, state_path: Option<&Path>) -> Result<u8> {
     };
     let state_path = super::state_path(state_path);
     let mut state = State::load_or_default(&state_path)?;
+    let ssid_safe = display_safe(ssid);
     if state.known_portal_ssids.iter().any(|s| s == ssid) {
-        println!("'{ssid}' already in known-portal list");
+        println!("'{ssid_safe}' already in known-portal list");
         return Ok(exit::SUCCESS);
     }
     state.known_portal_ssids.push(ssid.to_string());
     state.known_portal_ssids.sort();
     state.save(&state_path)?;
-    println!("marked '{ssid}' as a known portal SSID");
+    // Issue #365 (terminal-injection cluster): sanitize the SSID for the
+    // human echo path. Storage uses the raw bytes so subsequent matching
+    // (`proteus portal unmark`) round-trips exactly.
+    println!("marked '{ssid_safe}' as a known portal SSID");
     Ok(exit::SUCCESS)
 }
 
@@ -194,12 +204,13 @@ pub fn run_unmark(ssid: &str, state_path: Option<&Path>) -> Result<u8> {
     let mut state = State::load_or_default(&state_path)?;
     let before = state.known_portal_ssids.len();
     state.known_portal_ssids.retain(|s| s != ssid);
+    let ssid_safe = display_safe(ssid);
     if state.known_portal_ssids.len() == before {
-        println!("'{ssid}' was not in the known-portal list");
+        println!("'{ssid_safe}' was not in the known-portal list");
         return Ok(exit::SUCCESS);
     }
     state.save(&state_path)?;
-    println!("removed '{ssid}' from known-portal list");
+    println!("removed '{ssid_safe}' from known-portal list");
     Ok(exit::SUCCESS)
 }
 

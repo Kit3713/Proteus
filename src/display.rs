@@ -9,6 +9,14 @@
 //! site without trusted shaping. The companion [`per_ssid::display_ssid`]
 //! handles SSIDs specifically; this module is the catch-all for the rest.
 //!
+//! Stream 9 (security surface hardening) widened the call-site set: the
+//! cluster of issues #357, #365, #367, #373, #374, #380, #389 all share
+//! one root cause — display layer doesn't sanitize AP-controlled strings
+//! (SSIDs, iface names from NM, persona display_name / notes). Rather
+//! than a point-fix per issue, we ship the central [`display_safe`]
+//! helper here and call it at every print site that surfaces such a
+//! value.
+//!
 //! The render rules — repeated here so the call sites don't need to read
 //! the implementation:
 //!
@@ -24,6 +32,8 @@
 //! - Output is clamped to [`MAX_DISPLAY_LEN`] characters; anything longer
 //!   is truncated and a `…` marker appended so the operator can spot the
 //!   clamp.
+
+use std::borrow::Cow;
 
 /// Maximum number of characters [`display_string`] will emit before
 /// truncating with a trailing `…`. Picked so a typical terminal line does
@@ -85,6 +95,55 @@ fn is_bidi_override(cp: u32) -> bool {
         cp,
         0x200E | 0x200F | 0x202A..=0x202E | 0x2066..=0x2069
     )
+}
+
+/// Stream 9 central helper — sanitize attacker-controlled strings *only when
+/// they need it*. Returns `Cow::Borrowed(s)` when the input is already safe
+/// (the common case for plain-ASCII iface names, persona display names with
+/// printable content, etc.) so the hot path allocates nothing; falls back
+/// to the full [`display_string`] escaping only when an unsafe character is
+/// present.
+///
+/// This is the helper every print site should use when surfacing values
+/// that originated from an AP / NM dict / persona file: SSIDs, iface
+/// names, persona ids, display_names, and notes. It centralises the rules
+/// so a future widening of the unsafe-codepoint set lands once, not at
+/// every call site (the cluster #357/#365/#367/#373/#374/#380/#389).
+///
+/// The truncation contract is identical to [`display_string`]: anything
+/// longer than [`MAX_DISPLAY_LEN`] characters is escaped + clamped, even
+/// when the input was otherwise safe — uncapped echo of an attacker-sized
+/// SSID is itself a soft DoS on the operator's terminal.
+pub fn display_safe(s: &str) -> Cow<'_, str> {
+    let needs_escape = s.chars().any(needs_escaping);
+    let too_long = s.chars().count() > MAX_DISPLAY_LEN;
+    if !needs_escape && !too_long {
+        Cow::Borrowed(s)
+    } else {
+        Cow::Owned(display_string(s))
+    }
+}
+
+/// Predicate matching the same set [`display_string`] escapes. Kept private
+/// so the rule list lives in exactly one place.
+fn needs_escaping(c: char) -> bool {
+    let cp = c as u32;
+    if c == ' ' {
+        return false;
+    }
+    if c == '\\' {
+        return true;
+    }
+    if cp < 0x20 || cp == 0x7f {
+        return true;
+    }
+    if (0x80..=0x9f).contains(&cp) {
+        return true;
+    }
+    if is_bidi_override(cp) {
+        return true;
+    }
+    false
 }
 
 #[cfg(test)]
@@ -187,5 +246,93 @@ mod tests {
         assert!(out.contains(' '));
         assert!(out.contains("\\x09"));
         assert!(out.contains("\\x0a"));
+    }
+
+    // ---- display_safe (Cow wrapper, Stream 9 cluster fix) --------------
+
+    #[test]
+    fn display_safe_borrows_when_input_is_already_safe() {
+        // The hot path: plain-ASCII iface names and SSIDs allocate nothing.
+        let s = "wlan0";
+        let out = display_safe(s);
+        assert!(matches!(out, Cow::Borrowed(_)));
+        assert_eq!(out, "wlan0");
+
+        let s = "Coffee Shop Wi-Fi";
+        let out = display_safe(s);
+        assert!(matches!(out, Cow::Borrowed(_)));
+
+        // Legitimate non-ASCII passes through borrowed too.
+        let s = "café";
+        let out = display_safe(s);
+        assert!(matches!(out, Cow::Borrowed(_)));
+    }
+
+    #[test]
+    fn display_safe_escapes_ansi_csi_in_ssid() {
+        // Issue #357 / #365 — hostile SSID with raw CSI must not paint.
+        let raw = "EvilAP\x1b[31m";
+        let out = display_safe(raw);
+        assert!(matches!(out, Cow::Owned(_)));
+        assert!(!out.contains('\x1b'));
+        assert!(out.contains("\\x1b"));
+    }
+
+    #[test]
+    fn display_safe_escapes_bidi_override_in_persona_display_name() {
+        // Issue #374 / #380 — persona display_name with U+202E reorders
+        // anything printed after it. The cluster fix is to escape, not
+        // strip, so the operator sees the marker and the line layout is
+        // preserved.
+        let raw = "MyPhone\u{202e}gnp.gpj";
+        let out = display_safe(raw);
+        assert!(matches!(out, Cow::Owned(_)));
+        assert!(!out.contains('\u{202e}'));
+        assert!(out.contains("\\u{202e}"));
+    }
+
+    #[test]
+    fn display_safe_escapes_cr_lf_nul() {
+        // Issue #367 — iface name surfaced from NM with embedded LF /
+        // NUL. NUL kills journald lines; LF/CR can let the attacker
+        // emit fake log entries below the legitimate one.
+        for raw in ["wlan\n0", "wlan\r0", "wlan\0attack"] {
+            let out = display_safe(raw);
+            assert!(matches!(out, Cow::Owned(_)));
+            assert!(!out.contains('\n') || !raw.contains('\n'));
+            assert!(!out.contains('\r') || !raw.contains('\r'));
+            assert!(!out.contains('\0'));
+        }
+    }
+
+    #[test]
+    fn display_safe_clamps_oversize_input() {
+        let raw = "A".repeat(MAX_DISPLAY_LEN + 100);
+        let out = display_safe(&raw);
+        assert!(matches!(out, Cow::Owned(_)));
+        assert!(out.ends_with('…'));
+    }
+
+    #[test]
+    fn display_safe_does_not_clamp_at_threshold() {
+        let raw = "A".repeat(MAX_DISPLAY_LEN);
+        let out = display_safe(&raw);
+        assert!(matches!(out, Cow::Borrowed(_)));
+    }
+
+    #[test]
+    fn display_safe_round_trips_with_display_string_when_unsafe() {
+        // When escaping kicks in, display_safe must produce the identical
+        // bytes display_string would. This is what lets the helper drop
+        // in at every call site without behaviour drift.
+        for raw in ["x\x1b[2J", "ssid\x07", "name\u{202e}rev", "with\\backslash"] {
+            assert_eq!(display_safe(raw), display_string(raw));
+        }
+    }
+
+    #[test]
+    fn display_safe_handles_empty_input() {
+        let out = display_safe("");
+        assert_eq!(out, "");
     }
 }
