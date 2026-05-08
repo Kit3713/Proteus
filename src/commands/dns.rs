@@ -52,7 +52,13 @@ pub fn status(json: bool, config_path: Option<&Path>) -> Result<u8> {
     Ok(exit::SUCCESS)
 }
 
-pub fn apply(config_path: Option<&Path>) -> Result<u8> {
+pub fn apply(yes: bool, config_path: Option<&Path>) -> Result<u8> {
+    // Issue #242: gate behind --yes so a stray invocation can't restart
+    // systemd-resolved without confirmation. `commands::apply` clears its
+    // own gate first and passes `yes=true` here.
+    if let Err(code) = super::require_yes(yes, "'dns apply' is mutating", "proteus help dns") {
+        return Ok(code);
+    }
     if let Err(e) = super::require_root() {
         eprintln!("proteus: {e}");
         return Ok(exit::PERMISSION_ERROR);
@@ -113,7 +119,11 @@ pub fn apply(config_path: Option<&Path>) -> Result<u8> {
     Ok(exit::SUCCESS)
 }
 
-pub fn revert() -> Result<u8> {
+pub fn revert(yes: bool) -> Result<u8> {
+    // Issue #242: gate behind --yes for symmetry with `proteus revert`.
+    if let Err(code) = super::require_yes(yes, "'dns revert' is mutating", "proteus help dns") {
+        return Ok(code);
+    }
     if let Err(e) = super::require_root() {
         eprintln!("proteus: {e}");
         return Ok(exit::PERMISSION_ERROR);

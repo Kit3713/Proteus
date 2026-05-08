@@ -78,7 +78,17 @@ pub fn status(json: bool, state_path: Option<&Path>, config_path: Option<&Path>)
     Ok(exit::SUCCESS)
 }
 
-pub fn rotate(state_path: Option<&Path>, config_path: Option<&Path>) -> Result<u8> {
+pub fn rotate(yes: bool, state_path: Option<&Path>, config_path: Option<&Path>) -> Result<u8> {
+    // Issue #242: gate behind --yes so a stray invocation can't change
+    // the kernel hostname without confirmation. `commands::apply` clears
+    // its own gate first and passes `yes=true` here.
+    if let Err(code) = super::require_yes(
+        yes,
+        "'hostname rotate' is mutating",
+        "proteus help hostname",
+    ) {
+        return Ok(code);
+    }
     if let Err(e) = super::require_root() {
         eprintln!("proteus: {e}");
         return Ok(exit::PERMISSION_ERROR);
@@ -149,7 +159,19 @@ pub fn rotate(state_path: Option<&Path>, config_path: Option<&Path>) -> Result<u
     }
 }
 
-pub fn pin(name: &str, state_path: Option<&Path>, config_path: Option<&Path>) -> Result<u8> {
+pub fn pin(
+    name: &str,
+    yes: bool,
+    state_path: Option<&Path>,
+    config_path: Option<&Path>,
+) -> Result<u8> {
+    // Issue #242: gate behind --yes so an operator can't accidentally
+    // lock in a typo'd hostname.
+    if let Err(code) =
+        super::require_yes(yes, "'hostname pin' is mutating", "proteus help hostname")
+    {
+        return Ok(code);
+    }
     if let Err(e) = super::require_root() {
         eprintln!("proteus: {e}");
         return Ok(exit::PERMISSION_ERROR);
@@ -214,7 +236,17 @@ pub fn pin(name: &str, state_path: Option<&Path>, config_path: Option<&Path>) ->
     }
 }
 
-pub fn revert(state_path: Option<&Path>) -> Result<u8> {
+pub fn revert(yes: bool, state_path: Option<&Path>) -> Result<u8> {
+    // Issue #242: gate behind --yes for symmetry with `proteus revert`.
+    // `commands::revert::revert_best_effort` passes `yes=true` once the
+    // parent gate has cleared.
+    if let Err(code) = super::require_yes(
+        yes,
+        "'hostname revert' is mutating",
+        "proteus help hostname",
+    ) {
+        return Ok(code);
+    }
     if let Err(e) = super::require_root() {
         eprintln!("proteus: {e}");
         return Ok(exit::PERMISSION_ERROR);

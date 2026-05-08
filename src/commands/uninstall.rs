@@ -31,30 +31,21 @@ pub(crate) const UNITS: &[&str] = &[
     "proteus-events.service",
 ];
 
-/// Drop-ins Proteus writes outside `/etc/proteus/`. Mirrors `wiki/uninstall.md`.
-pub(crate) const EXTERNAL_DROPINS: &[&str] = &[
-    "/etc/sysctl.d/95-proteus.conf",
-    "/etc/sysctl.d/96-proteus-ipv6.conf",
-    "/etc/systemd/timesyncd.conf.d/10-proteus.conf",
-];
-
-/// Issue #216: `install.sh` deploys these two integration files outside
-/// `/etc/proteus/` and they were missing from the uninstall path. Each
-/// uninstall run removes them best-effort so `proteus uninstall` (with
-/// or without `--purge`) actually returns the system to a pre-Proteus
+/// Issue #216: `install.sh` deploys integration files outside
+/// `/etc/proteus/` that the canonical `revert` path doesn't touch
+/// (because they're install-time artifacts, not runtime side-effects).
+/// Each uninstall run removes them best-effort so `proteus uninstall`
+/// (with or without `--purge`) returns the system to a pre-Proteus
 /// state. Mirrored in `uninstall.sh`'s shell fallback (issue #219).
 ///
-/// - The NM dispatcher hook fires on every connection event; left on
-///   disk it would call a removed binary on every connect.
 /// - The polkit policy registers actions for a binary that no longer
 ///   exists; left on disk it surfaces ghost prompts.
-pub(crate) const EXTERNAL_FILES: &[&str] = &[
-    "/etc/NetworkManager/dispatcher.d/01-proteus",
-    "/usr/share/polkit-1/actions/com.kit3713.proteus.policy",
-];
-
-const RESOLVED_DROPIN_DIR: &str = "/etc/systemd/resolved.conf.d";
-const RESOLVED_DROPIN_PREFIX: &str = "10-proteus-";
+///
+/// The NM dispatcher hook fires on every connection event so it
+/// belongs in the network-layer revert path, not here.
+/// `revert::revert_best_effort` already removes it.
+pub(crate) const EXTERNAL_FILES: &[&str] =
+    &["/usr/share/polkit-1/actions/com.kit3713.proteus.policy"];
 
 /// Public entry point invoked from `cli::run`.
 pub fn run(purge: bool, yes: bool) -> Result<u8> {
@@ -73,12 +64,23 @@ pub fn run(purge: bool, yes: bool) -> Result<u8> {
     // Issue #126: hold the state lock during revert so a concurrent
     // mutating run can't race us. Released before the (optional) purge step
     // since purge wipes the lock-file directory itself.
+    //
+    // Issue #265: delegate to the canonical revert path so we pick up
+    // dhcp::revert + rf::revert + the NM dispatcher cleanup that the old
+    // duplicate dropped.
     {
         let _lock = match super::acquire_state_lock_or_print(None) {
             Ok(g) => g,
             Err(code) => return Ok(code),
         };
-        revert_best_effort(&mut warns);
+        crate::commands::revert::revert_best_effort(&mut warns);
+        // Polkit policy is an install-time artifact (deployed by
+        // `install.sh`/distro packaging), not a runtime side-effect, so
+        // it's wiped here rather than in the shared revert path.
+        for p in EXTERNAL_FILES {
+            let path = Path::new(p);
+            note(path, remove_file_opt(path), &mut warns);
+        }
     }
     teardown_units(&layout, &mut warns);
     let _ = run_quiet("systemctl", &["daemon-reload"]);
@@ -184,87 +186,6 @@ fn note(p: &Path, outcome: Outcome, warns: &mut Vec<String>) {
         Ok(false) => {}
         Err(e) => warns.push(format!("{d}: {e}")),
     }
-}
-
-fn revert_best_effort(warns: &mut Vec<String>) {
-    let mut sysctl_dropin_removed = false;
-    let mut timesyncd_dropin_removed = false;
-
-    if let Err(e) = super::hostname::revert(None) {
-        warns.push(format!("hostname: {e:#}"));
-    }
-    if let Err(e) = super::bluetooth_cmd::revert(None) {
-        warns.push(format!("bluetooth: {e:#}"));
-    }
-    if let Err(e) = super::ipv6::revert(true, None) {
-        warns.push(format!("ipv6: {e:#}"));
-    }
-    for p in EXTERNAL_DROPINS {
-        let path = Path::new(p);
-        let outcome = remove_file_opt(path);
-        if matches!(outcome, Ok(true)) {
-            // Track whether we actually removed the per-daemon drop-in so
-            // we can skip the matching reload (issues #153/#155). Re-runs
-            // of `proteus uninstall` would otherwise restart resolved/
-            // timesyncd every time even after the files are long gone.
-            if path.starts_with("/etc/sysctl.d/") {
-                sysctl_dropin_removed = true;
-            } else if path.starts_with("/etc/systemd/timesyncd.conf.d/") {
-                timesyncd_dropin_removed = true;
-            }
-        }
-        note(path, outcome, warns);
-    }
-    // Issue #216: NM dispatcher hook + polkit policy. Best-effort —
-    // `note` silently skips missing files, so this is safe to run on
-    // partial installs.
-    for p in EXTERNAL_FILES {
-        let path = Path::new(p);
-        note(path, remove_file_opt(path), warns);
-    }
-    let resolved_dropin_removed = remove_resolved_dropins(warns);
-    let _ = run_quiet("nft", &["delete", "table", "inet", "proteus"]);
-    if sysctl_dropin_removed {
-        let _ = run_quiet("sysctl", &["--system"]);
-    }
-    let mut to_restart: Vec<&str> = Vec::new();
-    if resolved_dropin_removed {
-        to_restart.push("systemd-resolved");
-    }
-    if timesyncd_dropin_removed {
-        to_restart.push("systemd-timesyncd");
-    }
-    if !to_restart.is_empty() {
-        let mut args = vec!["restart"];
-        args.extend(to_restart);
-        let _ = run_quiet("systemctl", &args);
-    }
-}
-
-fn remove_resolved_dropins(warns: &mut Vec<String>) -> bool {
-    let dir = Path::new(RESOLVED_DROPIN_DIR);
-    let entries = match std::fs::read_dir(dir) {
-        Ok(e) => e,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return false,
-        Err(e) => {
-            warns.push(format!("{}: {e}", dir.display()));
-            return false;
-        }
-    };
-    let mut removed_any = false;
-    for entry in entries.flatten() {
-        let name = entry.file_name();
-        let s = name.to_string_lossy();
-        if s.starts_with(RESOLVED_DROPIN_PREFIX) && s.ends_with(".conf") {
-            let path = entry.path();
-            let outcome = remove_file_opt(&path);
-            if matches!(outcome, Ok(true)) {
-                removed_any = true;
-            }
-            note(&path, outcome, warns);
-        }
-    }
-    removed_any
 }
 
 fn teardown_units(layout: &Layout, warns: &mut Vec<String>) {

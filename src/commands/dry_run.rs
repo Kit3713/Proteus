@@ -335,7 +335,7 @@ fn plan_reset(config_path: &Path) -> Plan {
 fn plan_uninstall(purge: bool) -> Plan {
     let mut plan = Plan::new("uninstall");
 
-    plan.note("would best-effort revert (mac, hostname, bluetooth)");
+    plan.note("would best-effort revert (mac, hostname, bluetooth, ipv6, dhcp, rf)");
 
     for unit in super::uninstall::UNITS {
         plan.push(PlanStep {
@@ -350,7 +350,25 @@ fn plan_uninstall(purge: bool) -> Plan {
         detail: None,
     });
 
-    for path in super::uninstall::EXTERNAL_DROPINS {
+    // Network-side drop-ins (sysctl, timesyncd, NM dispatcher) plus the
+    // ipv6 sysctl drop-in handled inside `ipv6::revert`. Issue #265: these
+    // come from the canonical revert path's `EXTERNAL_DROPINS` so the
+    // preview tracks the real teardown.
+    for path in super::revert::EXTERNAL_DROPINS {
+        plan.push(PlanStep {
+            kind: StepKind::FileRemove,
+            message: format!("would remove {path}"),
+            detail: None,
+        });
+    }
+    plan.push(PlanStep {
+        kind: StepKind::FileRemove,
+        message: format!("would remove {}", crate::ipv6::DROPIN_PATH),
+        detail: Some("removed by `ipv6::revert` as part of best-effort revert".into()),
+    });
+    // Install-time files (polkit policy etc.) that uninstall handles
+    // directly — they're not network side-effects.
+    for path in super::uninstall::EXTERNAL_FILES {
         plan.push(PlanStep {
             kind: StepKind::FileRemove,
             message: format!("would remove {path}"),

@@ -143,7 +143,17 @@ fn bool_str(b: Option<bool>) -> &'static str {
     }
 }
 
-pub fn apply(state_path: Option<&Path>, config_path: Option<&Path>) -> Result<u8> {
+pub fn apply(yes: bool, state_path: Option<&Path>, config_path: Option<&Path>) -> Result<u8> {
+    // Issue #242: gate behind --yes so a stray invocation can't reshape
+    // the adapter alias without confirmation. `commands::apply` clears
+    // its own gate first and passes `yes=true` here.
+    if let Err(code) = super::require_yes(
+        yes,
+        "'bluetooth apply' is mutating",
+        "proteus help bluetooth",
+    ) {
+        return Ok(code);
+    }
     if let Err(e) = super::require_root() {
         eprintln!("proteus: {e}");
         return Ok(exit::PERMISSION_ERROR);
@@ -237,7 +247,17 @@ pub fn apply(state_path: Option<&Path>, config_path: Option<&Path>) -> Result<u8
     }
 }
 
-pub fn revert(state_path: Option<&Path>) -> Result<u8> {
+pub fn revert(yes: bool, state_path: Option<&Path>) -> Result<u8> {
+    // Issue #242: gate behind --yes for symmetry with `proteus revert`.
+    // `commands::revert::revert_best_effort` passes `yes=true` once the
+    // parent gate has cleared.
+    if let Err(code) = super::require_yes(
+        yes,
+        "'bluetooth revert' is mutating",
+        "proteus help bluetooth",
+    ) {
+        return Ok(code);
+    }
     if let Err(e) = super::require_root() {
         eprintln!("proteus: {e}");
         return Ok(exit::PERMISSION_ERROR);
