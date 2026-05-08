@@ -14,14 +14,13 @@
 #
 # schema reference: proteus wiki config
 
+profile = "agr"
+
 # MAC: 5 minute rotation for fast feedback during development.
 [mac]
 enabled = true
 rotation_interval = "5m"
 oui_pool = ["apple", "intel", "samsung", "dell", "random-locally-administered"]
-exclude_gateways = true
-exclude_arp_table = true
-per_connection = true
 
 # Hostname: every code path. Wordlist + rotate with MAC so the
 # hostname mutator runs every 5m alongside the MAC rotation.
@@ -32,6 +31,7 @@ rotate_with_mac = true
 
 # DHCP: every option suppressed. Exercises the NM-settings code path.
 [dhcp]
+enabled = true
 suppress_hostname = true
 suppress_vendor_class = true
 rotate_client_id = true
@@ -46,14 +46,10 @@ ndp_hardening = true
 # Discovery: every code path. SSDP/WSD blocks force the
 # firewalld/nftables backend to run.
 [discovery]
-mdns_responder = false
-mdns_resolve = true
-llmnr = false
-netbios = false
+mdns_silence = true
+llmnr_silence = true
 ssdp_block = true
 wsd_block = true
-wpad = false
-ntp_normalize = true
 
 # Stack fingerprint: every code path. Includes opt-in gratuitous ARP
 # suppression so the nft rule runs.
@@ -67,21 +63,20 @@ suppress_gratuitous_arp = true
 # (2-of-4) makes single-endpoint failures trigger rotation, which is
 # useful for testing the probe-driven rotation path.
 [probes]
-enabled = true
 quorum_n = 2
 quorum_total = 4
 interval = "1m"
 cooldown = "15s"
 endpoints = ["1.1.1.1:443", "8.8.8.8:443", "9.9.9.9:443", "142.250.190.78:443"]
 
-# Captive portals: every code path on. Use `proteus portal mark` to
-# add a test SSID.
+# Captive portals: every code path on.
 [captive_portal]
 enabled = true
 detect_url = "http://nmcheck.gnome.org/check_network_status.txt"
 expected_response = "NetworkManager is online"
 policy = "rotate-before-auth"
 fresh_mac_per_visit = true
+timeout_secs = 5
 
 # Bluetooth: every BlueZ code path on.
 [bluetooth]
@@ -94,7 +89,7 @@ ble_rpa = true
 # runs in tests with a stub auth server.
 [enterprise_wifi]
 anonymous_outer_identity = true
-realm_strip_strategy = "auto"
+realm_strip_strategy = "manual"
 anonymous_realm = "example.com"
 
 # DNS: ECS strip on. Hard guard runs even in dev so test for both
@@ -107,10 +102,17 @@ strip_edns_client_subnet = true
 [rf]
 tx_power_reduce = true
 tx_power_reduction_db = 3
+scan_random_mac = true
 
-# Rotation: every trigger on, fast cadence.
-[rotation]
+# Events: turn on the long-lived daemon so every event path runs.
+[events]
+enabled = true
+portal_poll_secs = 30
+link_flap_window_secs = 10
+
+# Rotation cadence: every trigger fast.
+[timers.rotate]
 interval = "5m"
-on_probe_fail = true
-on_link_change = true
-on_ssid_change = true
+
+[timers.check]
+interval = "1m"

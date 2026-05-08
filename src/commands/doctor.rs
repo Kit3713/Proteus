@@ -580,12 +580,21 @@ fn check_config_file(override_path: Option<&Path>) -> Check {
     let path = super::config_path(override_path);
     match std::fs::read_to_string(&path) {
         Ok(s) => match toml::from_str::<crate::config::RawConfig>(&s) {
-            Ok(_) => Check {
-                category: "files",
-                name: "config_file",
-                status: Status::Ok,
-                message: format!("{} exists, parses", path.display()),
-                remediation: None,
+            Ok(raw) => match raw.validate_ranges() {
+                Ok(()) => Check {
+                    category: "files",
+                    name: "config_file",
+                    status: Status::Ok,
+                    message: format!("{} exists, parses", path.display()),
+                    remediation: None,
+                },
+                Err(e) => Check {
+                    category: "files",
+                    name: "config_file",
+                    status: Status::Fail,
+                    message: format!("{} validation error: {e}", path.display()),
+                    remediation: Some("proteus show-defaults".into()),
+                },
             },
             Err(e) => Check {
                 category: "files",

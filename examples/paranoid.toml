@@ -28,6 +28,8 @@
 # schema reference: proteus wiki config
 # threat model: proteus wiki threat-model
 
+profile = "agr"
+
 # MAC: 30m rotation for faster churn.
 # WARNING: some networks throttle DHCP renewal at sub-30m cadence;
 # see the risk table in `proteus wiki config`.
@@ -35,9 +37,6 @@
 enabled = true
 rotation_interval = "30m"
 oui_pool = ["apple", "intel", "samsung", "dell", "random-locally-administered"]
-exclude_gateways = true
-exclude_arp_table = true
-per_connection = true
 
 # Hostname: rotate from wordlist AND with MAC.
 # WARNING: shell prompt and per-host bash history change every 30m.
@@ -48,6 +47,7 @@ rotate_with_mac = true
 
 # DHCP: suppress everything that fingerprints.
 [dhcp]
+enabled = true
 suppress_hostname = true
 suppress_vendor_class = true
 rotate_client_id = true
@@ -64,14 +64,10 @@ ndp_hardening = true
 # discovery.
 # WARNING: wsd_block = true breaks WSD-only printers.
 [discovery]
-mdns_responder = false
-mdns_resolve = true
-llmnr = false
-netbios = false
+mdns_silence = true
+llmnr_silence = true
 ssdp_block = true
 wsd_block = true
-wpad = false
-ntp_normalize = true
 
 # Stack fingerprint: drop the leaks plus suppress gratuitous ARP.
 # WARNING: suppress_gratuitous_arp = true slows failover detection
@@ -87,7 +83,6 @@ suppress_gratuitous_arp = true
 # more false positives — single-endpoint flakiness may now trigger
 # rotation. If you see unwanted rotations, raise quorum_n back to 3.
 [probes]
-enabled = true
 quorum_n = 2
 quorum_total = 4
 interval = "2m"
@@ -101,6 +96,7 @@ detect_url = "http://nmcheck.gnome.org/check_network_status.txt"
 expected_response = "NetworkManager is online"
 policy = "rotate-before-auth"
 fresh_mac_per_visit = true
+timeout_secs = 5
 
 # Bluetooth: full hygiene.
 [bluetooth]
@@ -129,10 +125,11 @@ strip_edns_client_subnet = true
 [rf]
 tx_power_reduce = true
 tx_power_reduction_db = 9
+scan_random_mac = true
 
-# Rotation: matches MAC cadence.
-[rotation]
+# Rotation cadence: matches MAC.
+[timers.rotate]
 interval = "30m"
-on_probe_fail = true
-on_link_change = true
-on_ssid_change = true
+
+[timers.check]
+interval = "2m"

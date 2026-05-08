@@ -4,10 +4,10 @@
 #
 # Enables: MAC rotation, hostname rotation (wordlist), DHCP option
 # suppression (12/60/61/81), IPv6 stable-privacy + temp addresses +
-# DUID coupling, mDNS responder off + LLMNR off + NetBIOS off, TCP
-# timestamps off, ICMP info-replies dropped, EDNS Client Subnet
-# stripped (with the hard guard that defers to dnscrypt-proxy / Pi-hole
-# / AdGuard Home / custom resolv.conf), Bluetooth alias + RPA.
+# DUID coupling, mDNS responder off + LLMNR off, TCP timestamps off,
+# ICMP info-replies dropped, EDNS Client Subnet stripped (with the
+# hard guard that defers to dnscrypt-proxy / Pi-hole / AdGuard Home /
+# custom resolv.conf), Bluetooth alias + RPA.
 #
 # Leaves alone: SSDP and WSD (so KDE Connect and WSD printers keep
 # working), enterprise 802.1X anonymous outer identity, TX power
@@ -20,6 +20,8 @@
 #
 # schema reference: proteus wiki config
 
+profile = "med"
+
 # MAC: rotate Wi-Fi/Ethernet MACs every 2h. Default OUI pool covers
 # Apple, Intel, Samsung, Dell plus locally-administered randoms so the
 # new MAC blends in.
@@ -27,9 +29,6 @@
 enabled = true
 rotation_interval = "2h"
 oui_pool = ["apple", "intel", "samsung", "dell", "random-locally-administered"]
-exclude_gateways = true
-exclude_arp_table = true
-per_connection = true
 
 # Hostname: rotate from the embedded ~500-word router-flavored list.
 # rotate_with_mac = false because rotating hostname mid-session splits
@@ -44,6 +43,7 @@ rotate_with_mac = false
 # rotate_client_id couples the DHCPv6 DUID to the MAC so DUID does not
 # defeat MAC rotation.
 [dhcp]
+enabled = true
 suppress_hostname = true
 suppress_vendor_class = true
 rotate_client_id = true
@@ -56,20 +56,14 @@ use_temp_addresses = true
 addr_gen_mode = "stable-privacy"
 ndp_hardening = true
 
-# Discovery: silence the noisy ones (mDNS announcements, LLMNR,
-# NetBIOS, WPAD). Keep mDNS resolution on so .local lookups work.
-# SSDP and WSD stay off because blocking them breaks KDE Connect and
-# WSD-only printers; see aggressive.toml if you accept that.
-# ntp_normalize defers to chrony / ntpd if either is installed.
+# Discovery: silence mDNS announcements + LLMNR responses. SSDP and
+# WSD stay off because blocking them breaks KDE Connect and WSD-only
+# printers; see aggressive.toml if you accept that.
 [discovery]
-mdns_responder = false
-mdns_resolve = true
-llmnr = false
-netbios = false
+mdns_silence = true
+llmnr_silence = true
 ssdp_block = false
 wsd_block = false
-wpad = false
-ntp_normalize = true
 
 # Stack fingerprint: drop the easy leaks. TCP timestamps leak system
 # uptime (RFC 7323 §7.1). ICMP types 15/16/17/18 are old OS-fingerprint
@@ -85,7 +79,6 @@ suppress_gratuitous_arp = false
 # Probes: 3-of-4 quorum, 5m interval, 60s cooldown. Defaults are tuned
 # for typical home / café / office connectivity.
 [probes]
-enabled = true
 quorum_n = 3
 quorum_total = 4
 interval = "5m"
@@ -93,14 +86,15 @@ cooldown = "60s"
 endpoints = ["1.1.1.1:443", "8.8.8.8:443", "9.9.9.9:443", "142.250.190.78:443"]
 
 # Captive portals: rotate-before-auth so the portal cannot correlate
-# this visit to past visits. fresh_mac_per_visit applies to the
-# known-portal SSID list (managed via `proteus portal mark`).
+# this visit to past visits. fresh_mac_per_visit triggers a fresh MAC
+# on every portal visit (subject to per-SSID overrides).
 [captive_portal]
 enabled = true
 detect_url = "http://nmcheck.gnome.org/check_network_status.txt"
 expected_response = "NetworkManager is online"
 policy = "rotate-before-auth"
 fresh_mac_per_visit = true
+timeout_secs = 5
 
 # Bluetooth: generic adapter alias, discoverable off, BLE Resolvable
 # Private Address mode where the controller supports it. BR/EDR
@@ -117,6 +111,7 @@ ble_rpa = true
 # IT department supports it.
 [enterprise_wifi]
 anonymous_outer_identity = false
+realm_strip_strategy = "auto"
 
 # DNS: strip EDNS Client Subnet from systemd-resolved. The hard guard
 # refuses to apply if dnscrypt-proxy / Pi-hole / AdGuard Home / custom
@@ -129,11 +124,13 @@ strip_edns_client_subnet = true
 # range from your APs.
 [rf]
 tx_power_reduce = false
+tx_power_reduction_db = 6
+scan_random_mac = true
 
-# Rotation policy surface (mirrors mac.rotation_interval; if the two
-# disagree, [rotation] wins).
-[rotation]
+# Rotation cadence: rotate every 2h, probe every 5m. The two timers
+# are wired by `proteus apply` into systemd-managed unit drop-ins.
+[timers.rotate]
 interval = "2h"
-on_probe_fail = true
-on_link_change = true
-on_ssid_change = true
+
+[timers.check]
+interval = "5m"
