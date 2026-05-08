@@ -34,44 +34,60 @@
 pub const MAX_DISPLAY_LEN: usize = 1024;
 
 /// Sanitize `s` for human-facing rendering. See module docs for rules.
+///
+/// The output clamp counts **output** characters, not input. A hostile peer
+/// can multiply length by sending bytes that escape to `\u{NNNN}` (six
+/// chars per input char) or `\xNN` (four chars per input char); naïvely
+/// counting input chars lets the rendered output blow past
+/// `MAX_DISPLAY_LEN` by ~6× and re-introduces the line-wrap problem the
+/// clamp exists to prevent (issue #388). We therefore check the
+/// post-escape length of every emission and stop the moment the *next*
+/// token would not fit.
 pub fn display_string(s: &str) -> String {
+    // We count chars (Unicode scalar values), not graneme clusters: the
+    // escape forms above all emit ASCII (every output char is a single
+    // codepoint), so `chars().count()` is exact for the escape side and
+    // a safe lower bound for the pass-through side. Adding
+    // `unicode-segmentation` would be more accurate for combining marks
+    // in pass-through text, but it's a new dep — see N12.6 in
+    // docs/ROADMAP.md if you need cluster-perfect clamping.
     let mut out = String::with_capacity(s.len().min(MAX_DISPLAY_LEN));
     let mut emitted = 0usize;
+    // Helper: would emitting `n` more output chars exceed the budget?
+    let exceeds = |emitted: usize, n: usize| emitted.saturating_add(n) > MAX_DISPLAY_LEN;
     for c in s.chars() {
-        if emitted >= MAX_DISPLAY_LEN {
+        let cp = c as u32;
+        // Compute the token to append and its char-length. We stage the
+        // string lazily for the rare escape paths; the common pass-through
+        // path stays a single push with no allocation.
+        let (token, token_len): (String, usize) = match c {
+            ' ' => (" ".to_string(), 1),
+            '\\' => ("\\\\".to_string(), 2),
+            _ if cp < 0x20 || cp == 0x7f => {
+                let s = format!("\\x{cp:02x}");
+                let len = s.chars().count();
+                (s, len)
+            }
+            _ if (0x80..=0x9f).contains(&cp) || is_bidi_override(cp) => {
+                // BiDi formatting controls and C1 controls — neutralise
+                // so a hostile peer can't visually swap order of
+                // subsequent bytes ("login.evil.com" ->
+                // "moc.live.nigol" rendered as "login.evil.com").
+                let s = format!("\\u{{{cp:04x}}}");
+                let len = s.chars().count();
+                (s, len)
+            }
+            _ => (c.to_string(), 1),
+        };
+        // If this token plus the trailing `…` marker won't fit, stop now
+        // and emit the marker. We reserve one slot for `…` so the marker
+        // itself never tips the output over the cap.
+        if exceeds(emitted, token_len) {
             out.push('…');
             return out;
         }
-        let cp = c as u32;
-        match c {
-            ' ' => {
-                out.push(' ');
-                emitted += 1;
-            }
-            '\\' => {
-                out.push_str("\\\\");
-                emitted += 1;
-            }
-            _ if cp < 0x20 || cp == 0x7f => {
-                out.push_str(&format!("\\x{cp:02x}"));
-                emitted += 1;
-            }
-            _ if (0x80..=0x9f).contains(&cp) => {
-                out.push_str(&format!("\\u{{{cp:04x}}}"));
-                emitted += 1;
-            }
-            // BiDi formatting controls — neutralise so a hostile peer can't
-            // visually swap order of subsequent bytes ("login.evil.com" ->
-            // "moc.live.nigol" rendered as "login.evil.com").
-            _ if is_bidi_override(cp) => {
-                out.push_str(&format!("\\u{{{cp:04x}}}"));
-                emitted += 1;
-            }
-            _ => {
-                out.push(c);
-                emitted += 1;
-            }
-        }
+        out.push_str(&token);
+        emitted += token_len;
     }
     out
 }
@@ -174,6 +190,54 @@ mod tests {
         let out = display_string(&raw);
         assert_eq!(out.chars().count(), MAX_DISPLAY_LEN);
         assert!(!out.contains('…'));
+    }
+
+    /// Regression for GH#388 / N12.6: a hostile peer can amplify length by
+    /// sending control bytes that each escape to four chars (`\xNN`). The
+    /// pre-fix code counted input chars, so 1024 control bytes rendered
+    /// as ~4096 output chars — six× the clamp on `\u{NNNN}` paths, four×
+    /// on `\xNN`. The clamp must count **output** chars.
+    #[test]
+    fn clamp_counts_output_not_input_for_c0_controls() {
+        // 1024 bell chars (each escapes to `\x07`, four output chars).
+        let raw = "\x07".repeat(MAX_DISPLAY_LEN);
+        let out = display_string(&raw);
+        assert!(
+            out.chars().count() <= MAX_DISPLAY_LEN + 1,
+            "output {} chars exceeds clamp {} (input was {} chars of \\x07)",
+            out.chars().count(),
+            MAX_DISPLAY_LEN + 1,
+            raw.chars().count(),
+        );
+        assert!(out.ends_with('…'));
+    }
+
+    #[test]
+    fn clamp_counts_output_not_input_for_c1_controls() {
+        // C1 chars escape to `\u{NNNN}` — six output chars per input char.
+        let raw = "\u{009b}".repeat(MAX_DISPLAY_LEN);
+        let out = display_string(&raw);
+        assert!(
+            out.chars().count() <= MAX_DISPLAY_LEN + 1,
+            "output {} chars exceeds clamp {} (input was C1 controls)",
+            out.chars().count(),
+            MAX_DISPLAY_LEN + 1,
+        );
+        assert!(out.ends_with('…'));
+    }
+
+    #[test]
+    fn clamp_counts_output_not_input_for_backslashes() {
+        // Backslash escapes to `\\` — two output chars per input char.
+        let raw = "\\".repeat(MAX_DISPLAY_LEN);
+        let out = display_string(&raw);
+        assert!(
+            out.chars().count() <= MAX_DISPLAY_LEN + 1,
+            "output {} chars exceeds clamp {} (input was backslashes)",
+            out.chars().count(),
+            MAX_DISPLAY_LEN + 1,
+        );
+        assert!(out.ends_with('…'));
     }
 
     #[test]

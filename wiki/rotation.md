@@ -29,19 +29,28 @@ If you want a tighter wallclock predictability for some reason (debugging, sched
 
 ## Configuration
 
-Rotation cadence and triggers live under `[rotation]` in `/etc/proteus/config.toml`:
+Rotation cadence is split across three real schema sections — there is no top-level `[rotation]` table. Older versions of this page documented one; that was a docs bug (issue D2 in `docs/ISSUES.md`). The keys you actually want are:
 
 ```toml
-[rotation]
-interval = "2h"          # scheduled rotation cadence
-on_probe_fail = true     # rotate when probe quorum says "down"
-on_link_change = true    # rotate when an interface comes up after being down (e.g., re-plugged Ethernet)
-on_ssid_change = true    # rotate when joining a new Wi-Fi SSID
+# scheduled-cadence cap on MAC rotations (also feeds DUID coupling).
+[mac]
+enabled = true
+rotation_interval = "2h"
+
+# the systemd timer that drives the scheduled rotation. Same syntax as
+# `proteus timer set rotate --interval <DURATION>`.
+[timers.rotate]
+interval = "2h"
+
+# the probe-quorum timer that drives reactive rotation when "the network
+# is down".
+[timers.check]
+interval = "5m"
 ```
 
-`interval` accepts any systemd duration (`30m`, `1h`, `4h`, `8h`). Setting it to `0` disables the scheduled timer; the probe-driven and link-change triggers still apply unless you turn them off too.
+`rotation_interval` and `[timers.rotate].interval` both accept compact durations (`30m`, `1h`, `4h`, `8h`), the named systemd cadences, or full calendar expressions. Setting either to the sentinel `"never"` disables the scheduled timer; the probe-driven, link-change, and SSID-change triggers still apply on top.
 
-The three boolean triggers are independent. Disabling `on_probe_fail` keeps the check timer running for status reporting but stops it from rotating. Disabling `on_link_change` or `on_ssid_change` is uncommon; the defaults are conservative.
+The reactive triggers are not configurable per-trigger today — they're always-on, gated by `[mac].enabled` and `[probes]`. If you need to suppress probe-driven rotation specifically, raise `[probes].quorum_n` to `[probes].quorum_total` (every endpoint must fail) or pin the relevant interface with `proteus pin <iface>`.
 
 ## Per-feature triggers
 
@@ -152,7 +161,7 @@ sudo systemctl disable --now proteus-rotate.timer proteus-check.timer
 
 The boot oneshot still runs at boot unless you also disable `proteus-boot.service`. The CLI continues to work for one-off rotations regardless. Re-enable with `enable --now` when you want the timers back.
 
-A lighter option: leave the timers running and set `interval = "0"` plus `on_probe_fail = false` in `[rotation]`. The units stay enabled and visible in `systemctl list-timers`, but they don't rotate. This is closer to "paused" than "disabled".
+A lighter option: leave the timers running and set `[timers.rotate].interval = "never"` plus disable the rotate timer (`sudo systemctl disable --now proteus-rotate.timer`). The units stay visible in `systemctl list-timers` but they don't rotate. This is closer to "paused" than "disabled".
 
 ## Tuning rotation cadence
 
@@ -163,6 +172,40 @@ The default of 2h is a balance. The trade-offs:
 - **Default 2h** — short enough that no single observer sees a stable identity for a full work session, long enough that DHCP and NM aren't constantly churning.
 
 The reactive triggers (`on_probe_fail`, `on_link_change`, `on_ssid_change`) matter more than the cadence in practice. A laptop that moves between networks rotates on every join regardless of `interval`. The scheduled cadence mostly matters for stationary use.
+
+### Effective jitter on the default `proteus-rotate.timer` (±~75 min)
+
+The default packaging unit (`dist/systemd/proteus-rotate.timer`) sets
+`OnCalendar=*-*-* 00/2:00:00` plus `RandomizedDelaySec=30min` plus
+`AccuracySec=45min`. systemd combines those two knobs additively into a
+single firing window: it picks a random offset between `0s` and
+`RandomizedDelaySec` *and* may further smear the firing point by up to
+`AccuracySec` to coalesce wakeups. The practical upper bound on the wall-
+clock fire delay after each `00/2:00:00` boundary is therefore **30 min +
+45 min = 75 min**, so a `proteus-rotate.timer` you would naïvely expect
+at `14:00` may actually fire any time up to `15:15`.
+
+This is intentional (see "Rotation jitter" at the top of this page —
+issue #303). If you are tuning rotation cadence and observe a 75-minute
+gap between `systemctl list-timers`' "next fire" and the real journald
+entry, **that is the timer working as designed, not a bug**. Operators
+have refiled this twice as scheduling drift; it is jitter, not drift.
+
+If you need a tighter wallclock window (e.g. for a maintenance-window
+correlation), drop a `/etc/systemd/system/proteus-rotate.timer.d/jitter.conf`
+override that lowers both knobs:
+
+```ini
+[Timer]
+RandomizedDelaySec=2min
+AccuracySec=2min
+```
+
+Note that this trades the privacy property documented in
+`proteus wiki threat-model` ("Rotation cadence as a fingerprint") for
+predictability — a multi-AP observer can re-cluster Proteus rotations
+across hosts if every install has the same tight timer. Only do this on
+single-host deployments where the cross-host signature does not matter.
 
 ## Event-driven triggers
 

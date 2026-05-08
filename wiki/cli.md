@@ -49,6 +49,7 @@ Sub-subcommands:
 - `show [--json]` — print active config; alias for `proteus show-config`. Exit `0` success · `65` parse failure · `66` permission denied.
 - `get <key> [--json]` — print a single dotted key, e.g. `mac.enabled`. Falls back to the built-in default when the user config doesn't set the key. Exit `0` success · `65` unknown key.
 - `set <key> <value> --yes` — coerce `<value>` to the existing key's type (bool/int/string/array) and write atomically. Exit `0` success · `65` unknown key or invalid value · `66` not root.
+- `set-profile <name> --yes` — write `profile = "<name>"` at the top of `/etc/proteus/config.toml`. Per-knob overrides already in the file are preserved (the override-only-if-present model); switching to `"off"` keeps overrides on disk and resolution simply ignores them until the profile changes back. `<name>` must be one of `off`, `min`, `low`, `med`, `high`, `agr`. Exit `0` success · `65` unknown profile or missing `--yes` · `66` not root.
 - `enable <component> --yes` — set `<component>.enabled = true`. Exit `0` · `65` component has no `enabled` toggle · `66` not root.
 - `disable <component> [--reason <text>] --yes` — set `<component>.enabled = false`. With `--reason`, writes a `# Proteus: disabled at <iso8601> - reason: <text>` comment above the section so `proteus status` can surface it. Exit `0` · `65` · `66`.
 - `edit` — spawn `$VISUAL` or `$EDITOR` (default `vi`) on `/etc/proteus/config.toml`; validate on save and report errors without rolling back. Exit `0` valid · `65` invalid (file saved as-is) · `66` not root.
@@ -65,6 +66,7 @@ proteus config keys | head -10
 sudo proteus config disable dns --reason "using dnscrypt-proxy" --yes
 sudo proteus config enable bluetooth --yes
 sudo proteus config set mac.rotation_interval 1h --yes
+sudo proteus config set-profile high --yes
 sudo proteus config reset dns --yes
 sudo proteus config edit
 ```
