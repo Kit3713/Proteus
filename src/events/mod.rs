@@ -143,26 +143,57 @@ impl EventRegistry {
     /// `Arc<EventRegistry>` without juggling `Arc::get_mut`. The inner
     /// `Mutex` serialises pushes; in practice every register call
     /// happens before the first source starts, so contention is nil.
-    pub fn register(&self, handler: Box<dyn EventHandler>) {
-        if let Ok(mut h) = self.handlers.lock() {
-            h.push(handler);
+    ///
+    /// Issue #252: when the inner mutex is poisoned (an earlier
+    /// handler panicked while holding the guard), recover via
+    /// `into_inner()` and log a warning instead of silently dropping
+    /// the new handler. Returning `Err` rather than swallowing keeps
+    /// the orchestrator's "every handler is wired" invariant honest.
+    pub fn register(&self, handler: Box<dyn EventHandler>) -> Result<()> {
+        match self.handlers.lock() {
+            Ok(mut h) => {
+                h.push(handler);
+                Ok(())
+            }
+            Err(poisoned) => {
+                tracing::warn!("registry mutex was poisoned; recovered");
+                let mut h = poisoned.into_inner();
+                h.push(handler);
+                Ok(())
+            }
         }
     }
 
     /// Number of registered handlers. Mostly for tests; the live
     /// dispatch path doesn't care.
+    ///
+    /// Issue #252 mirror: a poisoned inner mutex is recovered via
+    /// `into_inner` so this read stays useful for diagnostics even
+    /// after a handler panicked.
     pub fn handler_count(&self) -> usize {
-        self.handlers.lock().map(|h| h.len()).unwrap_or(0)
+        match self.handlers.lock() {
+            Ok(h) => h.len(),
+            Err(poisoned) => poisoned.into_inner().len(),
+        }
     }
 
     /// Fire a trigger to every registered handler in registration
     /// order. Each handler's error is logged via `tracing::warn` and
     /// then suppressed — one failing handler must not silence the
     /// rest.
+    ///
+    /// Issue #252: a poisoned inner mutex is recovered via
+    /// `into_inner` rather than aborting dispatch. A handler panic
+    /// must not silently disable the registry for the rest of the
+    /// daemon's life — it would silently swallow every subsequent
+    /// rotation trigger.
     pub fn fire(&self, trigger: RotationTrigger) -> Result<()> {
         let handlers = match self.handlers.lock() {
             Ok(g) => g,
-            Err(e) => anyhow::bail!("event registry mutex poisoned: {e}"),
+            Err(poisoned) => {
+                tracing::warn!("registry mutex was poisoned; recovered");
+                poisoned.into_inner()
+            }
         };
         let kind = trigger.kind();
         for (idx, h) in handlers.iter().enumerate() {
@@ -213,7 +244,8 @@ mod tests {
         reg.register(Box::new(CountingHandler {
             count: Arc::clone(&count),
             last_kind: Arc::clone(&last),
-        }));
+        }))
+        .unwrap();
         assert_eq!(reg.handler_count(), 1);
         reg.fire(RotationTrigger::ConnectionUp {
             iface: "wlan0".into(),
@@ -236,11 +268,13 @@ mod tests {
         reg.register(Box::new(CountingHandler {
             count: Arc::clone(&c1),
             last_kind: Arc::clone(&last1),
-        }));
+        }))
+        .unwrap();
         reg.register(Box::new(CountingHandler {
             count: Arc::clone(&c2),
             last_kind: Arc::clone(&last2),
-        }));
+        }))
+        .unwrap();
         reg.fire(RotationTrigger::LinkFlap {
             iface: "wlan0".into(),
         })
@@ -268,11 +302,12 @@ mod tests {
         let count = Arc::new(AtomicUsize::new(0));
         let last = Arc::new(Mutex::new(None));
         let reg = EventRegistry::new();
-        reg.register(Box::new(AlwaysFails));
+        reg.register(Box::new(AlwaysFails)).unwrap();
         reg.register(Box::new(CountingHandler {
             count: Arc::clone(&count),
             last_kind: Arc::clone(&last),
-        }));
+        }))
+        .unwrap();
         reg.fire(RotationTrigger::RegDomainChange {
             from: "00".into(),
             to: "US".into(),
@@ -356,5 +391,77 @@ mod tests {
         })
         .unwrap();
         assert_eq!(reg.handler_count(), 0);
+    }
+
+    /// Issue #252: a poisoned inner mutex must not silently drop
+    /// `register` calls. The fix recovers via `into_inner()` and
+    /// continues; we deliberately poison the mutex by panicking
+    /// inside a closure that holds the guard, then assert that a
+    /// later `register` still lands and the registered handler runs
+    /// when the registry fires.
+    #[test]
+    fn register_recovers_from_poisoned_mutex() {
+        let reg = Arc::new(EventRegistry::new());
+        // Poison the inner mutex by panicking while holding the
+        // guard. We do this on a worker thread so the test process
+        // survives the panic.
+        let reg_for_thread = Arc::clone(&reg);
+        let _ = std::thread::spawn(move || {
+            let _g = reg_for_thread.handlers.lock().unwrap();
+            panic!("synthetic poison");
+        })
+        .join();
+        assert!(reg.handlers.is_poisoned());
+
+        // Register after poison: must succeed (recovered) and the
+        // handler must be observable via `handler_count`.
+        let count = Arc::new(AtomicUsize::new(0));
+        let last = Arc::new(Mutex::new(None));
+        reg.register(Box::new(CountingHandler {
+            count: Arc::clone(&count),
+            last_kind: Arc::clone(&last),
+        }))
+        .expect("register on a poisoned registry must recover, not silently drop");
+        assert_eq!(reg.handler_count(), 1);
+
+        // And the registered handler still runs on `fire`.
+        reg.fire(RotationTrigger::LinkFlap {
+            iface: "wlan0".into(),
+        })
+        .unwrap();
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+    }
+
+    /// Issue #252 mirror: `fire` on a poisoned mutex must dispatch
+    /// to the recovered handler list rather than abort. This pins
+    /// the "a handler panic does not silently disable the registry"
+    /// invariant.
+    #[test]
+    fn fire_recovers_from_poisoned_mutex() {
+        let reg = Arc::new(EventRegistry::new());
+        let count = Arc::new(AtomicUsize::new(0));
+        let last = Arc::new(Mutex::new(None));
+        reg.register(Box::new(CountingHandler {
+            count: Arc::clone(&count),
+            last_kind: Arc::clone(&last),
+        }))
+        .unwrap();
+
+        // Poison the inner mutex.
+        let reg_for_thread = Arc::clone(&reg);
+        let _ = std::thread::spawn(move || {
+            let _g = reg_for_thread.handlers.lock().unwrap();
+            panic!("synthetic poison");
+        })
+        .join();
+        assert!(reg.handlers.is_poisoned());
+
+        // Fire after poison: handler must still run (registry
+        // recovered).
+        reg.fire(RotationTrigger::LinkFlap {
+            iface: "wlan0".into(),
+        })
+        .expect("fire on a poisoned registry must recover and dispatch");
+        assert_eq!(count.load(Ordering::SeqCst), 1);
     }
 }
