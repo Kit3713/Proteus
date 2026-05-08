@@ -370,8 +370,21 @@ mod write_atomic_tests {
         let path = tmp.0.join("payload");
         let a = tmp_path_for(&path).unwrap();
         let b = tmp_path_for(&path).unwrap();
-        let a_name = a.file_name().unwrap().to_string_lossy().into_owned();
-        let b_name = b.file_name().unwrap().to_string_lossy().into_owned();
+        // Roadmap P4: `Path::file_name()` returns `None` for `..` /
+        // trailing-slash inputs. Use `expect` with a descriptive message
+        // here (the test's input is a concrete leaf, so `None` would be a
+        // test-setup bug, not a runtime path) rather than the bare
+        // `.unwrap()` whose panic message hid the cause.
+        let a_name = a
+            .file_name()
+            .expect("test path should have a file-name component")
+            .to_string_lossy()
+            .into_owned();
+        let b_name = b
+            .file_name()
+            .expect("test path should have a file-name component")
+            .to_string_lossy()
+            .into_owned();
         assert!(
             a_name.starts_with("payload.proteus-") && a_name.ends_with(".tmp"),
             "unexpected temp name: {a_name}"
@@ -418,6 +431,34 @@ mod write_atomic_tests {
             "parallel writes leaked .tmp under {}",
             tmp.0.display()
         );
+    }
+
+    /// Roadmap P4: `tmp_path_for` must structured-error rather than panic
+    /// when the destination has no file-name component. Cover the three
+    /// shapes that `Path::file_name()` returns `None` for: `..`, the
+    /// current dir `.`, and a path ending in a trailing separator.
+    /// `write_atomic` should never see these in practice, but a future
+    /// SHA-verify caller forwarding a user-supplied path must not panic.
+    #[test]
+    fn tmp_path_for_rejects_paths_without_file_name() {
+        // `Path::file_name()` returns `None` for `..`, `.`, and `/`. Note
+        // that a trailing slash on a non-empty path (`/etc/proteus/`)
+        // still has a file-name component (`proteus`), per Rust's Path
+        // semantics — those reach the rename safely.
+        for raw in &[
+            Path::new(".."),
+            Path::new("/.."),
+            Path::new("/etc/proteus/.."),
+            Path::new("/"),
+            Path::new("."),
+        ] {
+            let r = tmp_path_for(raw);
+            assert!(
+                r.is_err(),
+                "tmp_path_for({raw:?}) must return Err, got {:?}",
+                r.as_ref().map(|p| p.display().to_string())
+            );
+        }
     }
 
     #[test]
