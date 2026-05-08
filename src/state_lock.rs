@@ -190,6 +190,17 @@ fn acquire_inner(path: &Path) -> Result<File, LockError> {
         // 0o600 matches state.json (the file the lock guards) — no other
         // user has any reason to read or take this flock.
         .mode(STATE_FILE_MODE)
+        // Security audit N-3: `O_NOFOLLOW` so a symlink planted at the
+        // lock-file path errors out instead of being followed. The
+        // state directory is 0o700 (root-only), but a stale symlink
+        // could be left behind by a buggy revert or test fixture; if a
+        // local attacker had any window where the dir was world-
+        // writable (or a different user briefly owned it), a symlink
+        // there would otherwise let them steer where Proteus took its
+        // flock. `errno = ELOOP` if the path resolves to a symlink at
+        // the final component; the surrounding `with_context` carries
+        // that through to the operator.
+        .custom_flags(libc::O_NOFOLLOW)
         .open(path)
         .with_context(|| format!("opening lock file {}", path.display()))?;
     // OpenOptions::mode() only takes effect when the file is freshly
@@ -461,6 +472,48 @@ mod tests {
             "lock file must be 0o600, got 0o{lock_mode:o}"
         );
         drop(g);
+        let _ = std::fs::remove_dir_all(&parent);
+    }
+
+    /// Security audit N-3: a symlink planted at the lock-file path must
+    /// cause the open to fail with `ELOOP` rather than be followed. We
+    /// pre-create the lock path as a symlink to a sibling file and
+    /// verify `acquire_inner` returns an IO error instead of locking
+    /// the symlink target.
+    #[test]
+    fn open_refuses_to_follow_symlink_at_lock_path() {
+        let _serial = serial_guard();
+        let parent = std::env::temp_dir().join(format!(
+            "proteus-lock-nofollow-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        let _ = std::fs::remove_dir_all(&parent);
+        std::fs::create_dir_all(&parent).unwrap();
+        let dir = parent.join("state");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let state = dir.join("state.json");
+        let lock = lock_path_for(&state);
+        let target = parent.join("attacker-target");
+        std::fs::write(&target, b"steered").unwrap();
+        // Replace the (potential) lock file with a symlink to the
+        // attacker-controlled target; without `O_NOFOLLOW` the open
+        // would land on `target` and Proteus would happily flock it.
+        let _ = std::fs::remove_file(&lock);
+        std::os::unix::fs::symlink(&target, &lock).unwrap();
+        let result = acquire_inner(&lock);
+        assert!(
+            matches!(result, Err(LockError::Other(_)) | Err(LockError::Io(_))),
+            "expected open() to fail with ELOOP; got {result:?}"
+        );
+        // And the target file must NOT have been touched (still the
+        // sentinel content we wrote).
+        let target_bytes = std::fs::read(&target).unwrap();
+        assert_eq!(
+            target_bytes, b"steered",
+            "open should not have followed the symlink"
+        );
         let _ = std::fs::remove_dir_all(&parent);
     }
 }

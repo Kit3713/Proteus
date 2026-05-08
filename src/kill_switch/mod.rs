@@ -177,7 +177,14 @@ fn is_safe_iface(iface: &str) -> bool {
 }
 
 fn run_ip(args: &[&str]) -> Result<bool, String> {
-    let output = match Command::new("ip").args(args).output() {
+    // Security audit L-3 (defense-in-depth): pass `--` immediately after
+    // the program so any later positional argument that happens to begin
+    // with `-` cannot be reparsed as an `ip` global option. `is_safe_iface`
+    // already rejects leading-`-` iface names, so this is belt-and-
+    // suspenders against a future call site that forwards user-shaped
+    // input. `ip(8)` accepts `--` as a flag terminator before its
+    // OBJECT/COMMAND grammar.
+    let output = match Command::new("ip").arg("--").args(args).output() {
         Ok(o) => o,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
         Err(e) => return Err(format!("spawning ip: {e}")),
@@ -214,6 +221,19 @@ mod tests {
         assert!(!should_manage("tailscale0"));
         assert!(!should_manage("wg0"));
         assert!(!should_manage(""));
+    }
+
+    /// Security audit L-3: leading-dash iface names must be refused
+    /// before they can reach `ip(8)`. Today the iface comes from a
+    /// kernel-validated sysfs walk so this is defense-in-depth, but a
+    /// future call site that forwards user-shaped input must not be able
+    /// to slip a `-Vroot:1`-style argument through.
+    #[test]
+    fn link_helpers_refuse_leading_dash_and_unsafe_chars() {
+        for bad in ["-attacker", "-x", "with/slash", "with space", ""] {
+            assert!(link_down(bad).is_err(), "link_down({bad:?}) must refuse");
+            assert!(link_up(bad).is_err(), "link_up({bad:?}) must refuse");
+        }
     }
 
     #[test]

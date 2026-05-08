@@ -127,6 +127,14 @@ pub(crate) struct EthtoolBin;
 
 impl EthtoolRunner for EthtoolBin {
     fn permanent(&self, iface: &str) -> Option<String> {
+        // Security audit N-1: validate before spawning. A leading `-`
+        // would let `ethtool` parse the value as an option; the kernel
+        // would reject the rest, but the boundary check doubles as
+        // defense-in-depth against a future caller forwarding
+        // attacker-shaped input.
+        if !is_valid_iface_name(iface) {
+            return None;
+        }
         let bin = if Path::new(ETHTOOL_ABS_PATH).exists() {
             ETHTOOL_ABS_PATH
         } else {
@@ -138,6 +146,34 @@ impl EthtoolRunner for EthtoolBin {
         }
         parse_ethtool_permanent(&String::from_utf8_lossy(&out.stdout))
     }
+}
+
+/// Security audit N-1: iface-name allow-list mirroring the kernel's
+/// `dev_valid_name()` rules (`net/core/dev.c`). The constraints are:
+///
+/// - non-empty and `<= 15` bytes (`IFNAMSIZ - 1` excluding the NUL)
+/// - no leading `-` so `ethtool` cannot parse it as a flag
+/// - the special names `.` and `..` are forbidden
+/// - bytes are restricted to `[A-Za-z0-9_.-]` — ASCII alphanumerics
+///   plus the three punctuation characters real iface names use
+///   (`enp48s0`, `wlp3s0f3u2`, `eth0.10`, `enx00e04c360033`).
+///
+/// Anything outside this set is refused. The function is intentionally
+/// stricter than `is_safe_iface` elsewhere in the tree because the
+/// audit explicitly called out the regex `[A-Za-z0-9_.-]+` shape.
+fn is_valid_iface_name(iface: &str) -> bool {
+    if iface.is_empty() || iface.len() > 15 {
+        return false;
+    }
+    if iface == "." || iface == ".." {
+        return false;
+    }
+    if iface.starts_with('-') {
+        return false;
+    }
+    iface
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'.' || b == b'-')
 }
 
 /// Issue #206-E: validate that a candidate string is a colon-formatted MAC
@@ -462,5 +498,75 @@ mod tests {
             got.is_none(),
             "sysfs multicast must be refused, got {got:?}"
         );
+    }
+
+    /// Security audit N-1: `is_valid_iface_name` accepts the iface
+    /// shapes Linux drivers actually expose and refuses everything
+    /// else. Documented allow-list: ASCII alphanumerics plus `_`, `.`,
+    /// `-`; max 15 bytes; non-empty; no leading `-`; not `.` or `..`.
+    #[test]
+    fn is_valid_iface_name_accepts_real_kernel_names() {
+        for ok in [
+            "eth0",
+            "wlan0",
+            "enp48s0",
+            "wlp3s0f3u2",
+            "eth0.10",
+            "enx00e04c360033",
+            "lo",
+            "br0",
+            "tun0",
+            "tap0",
+            "wg0",
+            // 15 bytes is the kernel's IFNAMSIZ-1 ceiling.
+            "abcdefghijklmno",
+            // Underscores show up in some out-of-tree drivers.
+            "wlan_dev_0",
+        ] {
+            assert!(is_valid_iface_name(ok), "expected {ok:?} to be valid");
+        }
+    }
+
+    #[test]
+    fn is_valid_iface_name_rejects_attacker_shapes() {
+        for bad in [
+            "",
+            "-attacker",
+            "-x",
+            "--help",
+            ".",
+            "..",
+            "../passwd",
+            "with/slash",
+            "with space",
+            "with\nnewline",
+            "with\0nul",
+            "iface;rm-rf",
+            "iface$evil",
+            "iface\"quote",
+            "iface'quote",
+            // Over 15 bytes.
+            "abcdefghijklmnop",
+            "this-name-is-way-too-long-for-ifnamsiz",
+            // Non-ASCII.
+            "wlan\u{00ff}",
+        ] {
+            assert!(!is_valid_iface_name(bad), "expected {bad:?} to be refused");
+        }
+    }
+
+    /// End-to-end: an `EthtoolBin` invocation with a hostile iface name
+    /// must short-circuit before spawning the subprocess. We don't need
+    /// the real ethtool binary on the test host — the validation gate
+    /// runs first.
+    #[test]
+    fn ethtool_bin_refuses_unsafe_iface_without_spawning() {
+        let bin = EthtoolBin;
+        // Leading `-` would let ethtool parse the value as an option.
+        assert!(bin.permanent("-Vroot:1").is_none());
+        // Embedded NUL would terminate the C string passed to execve.
+        assert!(bin.permanent("eth0\0").is_none());
+        // Empty name has no kernel meaning.
+        assert!(bin.permanent("").is_none());
     }
 }
