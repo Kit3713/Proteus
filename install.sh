@@ -106,6 +106,23 @@ fi
 info "installing binary to $BINARY_DST"
 run install -m 0755 "$BINARY_SRC" "$BINARY_DST"
 
+# B10 / N12.8: the systemd units (including proteus-events.service) ship
+# with `ExecStart=/usr/bin/proteus` so distro packages (RPM, Debian, Gentoo,
+# Alpine, Void) work unmodified. install.sh lays the real binary down at
+# /usr/local/bin/proteus to avoid clashing with a future distro package, so
+# we maintain a /usr/bin/proteus -> /usr/local/bin/proteus symlink. If
+# /usr/bin/proteus already exists as a real file (i.e. a distro package is
+# installed), leave it alone — that's the package's binary and it must win.
+USR_BIN_SYMLINK="/usr/bin/proteus"
+if [ "$BINARY_DST" != "$USR_BIN_SYMLINK" ]; then
+    if [ -L "$USR_BIN_SYMLINK" ] || [ ! -e "$USR_BIN_SYMLINK" ]; then
+        info "ensuring $USR_BIN_SYMLINK -> $BINARY_DST symlink (so systemd units resolve)"
+        run ln -sfn "$BINARY_DST" "$USR_BIN_SYMLINK"
+    else
+        warn "$USR_BIN_SYMLINK exists as a real file; leaving alone (distro package?)"
+    fi
+fi
+
 # ---- install dirs -----------------------------------------------------------
 
 # Config dir is world-readable (0755): config is non-sensitive by design.
@@ -175,7 +192,13 @@ if [ -f "$POLKIT_SRC" ]; then
         else
             tmp_policy=$(mktemp)
             trap 'rm -f "$tmp_policy"' EXIT
-            sed "s|${annotate}/usr/bin/proteus</annotate>|${annotate}${BINARY_DST}</annotate>|g" \
+            # NPKG.14: use `#` as the sed delimiter (rather than `|`) so a
+            # `BINARY_DST` that contains `|` does not split the s/// command.
+            # Quote the variable expansion so a space in the path (deeply
+            # cursed, but possible) does not split the sed expression. The
+            # annotate string itself is a constant; only $BINARY_DST is
+            # operator-controllable.
+            sed "s#${annotate}/usr/bin/proteus</annotate>#${annotate}${BINARY_DST}</annotate>#g" \
                 "$POLKIT_SRC" >"$tmp_policy"
             install -m 0644 "$tmp_policy" "$polkit_dst"
             rm -f "$tmp_policy"
@@ -246,7 +269,16 @@ if [ "$UNITS_INSTALLED" -eq 1 ]; then
     # Idempotent: enable --now is a no-op when already enabled and active.
     # Under --dry-run we trust the just-printed copy step rather than re-checking
     # the destination (which we didn't actually write to).
-    for unit in proteus-rotate.timer proteus-check.timer proteus-boot.service proteus-resume.service; do
+    #
+    # B1 / N12.8: proteus-events.service is the long-running event daemon
+    # (NM StateChanged, RTNETLINK link-flap, reg-domain, captive portal).
+    # It is opt-in via `[events] enabled = true` in /etc/proteus/config.toml,
+    # but enabling the unit itself is harmless when the daemon's main loop
+    # short-circuits on the disabled flag. Enable + start so operators only
+    # need to flip the config flag to start receiving events. Keep RPM/.deb
+    # packagers in charge of their own enable preset (see proteus.spec %post
+    # and dh_installsystemd) rather than gating on package vs install.sh.
+    for unit in proteus-rotate.timer proteus-check.timer proteus-boot.service proteus-resume.service proteus-events.service; do
         if [ "$DRY_RUN" -eq 1 ] || [ -f "$SYSTEMD_DIR/$unit" ]; then
             run systemctl enable --now "$unit" || warn "failed to enable $unit"
         fi

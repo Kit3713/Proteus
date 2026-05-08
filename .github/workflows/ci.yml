@@ -25,6 +25,14 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# B7: top-level permissions block following the principle of least privilege
+# (see https://docs.github.com/en/actions/using-jobs/assigning-permissions-to-jobs).
+# CI only needs to read the repository tree to run fmt/clippy/test/build —
+# no PR comments, no release writes, no token exfil surface. Individual jobs
+# below can override these to grant a strictly smaller set if needed.
+permissions:
+  contents: read
+
 # Cancel in-progress runs for the same PR/branch, except on main where every
 # push to the protected branch must complete (release tagging, history).
 concurrency:
@@ -205,3 +213,75 @@ jobs:
           else
             echo "OK: stripped ${{ matrix.target }} proteus binary is ${SIZE} bytes (under 4.75 MB target)"
           fi
+
+  # Stream 3 acceptance: lint packaging files and shell scripts so
+  # lockstep coherence regressions (e.g. install.sh enabling proteus-events
+  # but the RPM spec leaving it out) surface in CI rather than in a
+  # post-install bug report. This is a best-effort matrix — full distro
+  # container installs (Fedora 43 / Debian 13 / Gentoo / Alpine 3.20) are
+  # the long-term acceptance gate (see docs/ROADMAP.md Stream 3) but they
+  # require privileged systemd containers and are tracked separately.
+  packaging-lint:
+    name: packaging lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - name: Install lint tools
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends shellcheck dash systemd
+      - name: sh -n install.sh / uninstall.sh / dispatcher (B13)
+        run: |
+          set -euo pipefail
+          # B13: validate POSIX shell syntax via dash, the strictest /bin/sh
+          # in the wild. `sh -n` does parse-only — does not execute.
+          for f in install.sh uninstall.sh dist/networkmanager/dispatcher.d/01-proteus; do
+            echo "=== dash -n $f ==="
+            dash -n "$f"
+          done
+      - name: shellcheck install.sh / uninstall.sh / dispatcher
+        run: |
+          set -euo pipefail
+          # shellcheck supplements `sh -n` with semantic checks (unquoted
+          # vars, fork-spawning idioms, etc.). Run with --shell=sh so it
+          # flags bashisms.
+          shellcheck --shell=sh install.sh uninstall.sh \
+            dist/networkmanager/dispatcher.d/01-proteus
+      - name: systemd-analyze verify proteus-events.service
+        run: |
+          set -euo pipefail
+          # systemd-analyze verify runs the same parser systemctl uses,
+          # but offline and against a single file. Catches typos in
+          # KillMode= / ExecStart= / Restart= before a release ships.
+          systemd-analyze verify dist/systemd/proteus-events.service \
+            || echo "WARN: systemd-analyze verify reported issues — review above"
+      - name: Spec / packaging consistency
+        run: |
+          set -euo pipefail
+          # Stream 3 invariant: every packaging recipe must enable / install
+          # proteus-events.service. Grep for the unit name in each file.
+          fail=0
+          for f in dist/rpm/proteus.spec dist/debian/rules \
+                   dist/gentoo/proteus-0.1.0.ebuild install.sh; do
+            if ! grep -q 'proteus-events' "$f"; then
+              echo "FAIL: $f does not reference proteus-events" >&2
+              fail=1
+            else
+              echo "OK: $f references proteus-events"
+            fi
+          done
+          # Cargo.toml description must be < 256 chars (M4 / crates.io cap).
+          desc_len=$(python3 -c '
+          import re
+          for line in open("Cargo.toml"):
+              m = re.match(r"description = \"(.*)\"\s*$", line)
+              if m:
+                  print(len(m.group(1))); break
+          ')
+          echo "Cargo.toml description length: ${desc_len}"
+          if [ "${desc_len}" -ge 256 ]; then
+            echo "FAIL: description must be < 256 chars (M4)" >&2
+            fail=1
+          fi
+          exit "$fail"

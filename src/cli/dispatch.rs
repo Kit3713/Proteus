@@ -47,7 +47,17 @@ pub(super) fn dispatch(cli: Cli) -> Result<u8> {
             let state_path = cli.state.clone();
             let config_path = cli.config.clone();
             if watch {
-                let delay = commands::watch::parse_interval(&interval)?;
+                // Issue #349 / CL1: surface a friendly diagnostic and a
+                // CONFIG_ERROR (== 65) exit instead of bubbling the parse
+                // error up to a generic-1 exit. Same shape for the two
+                // siblings below.
+                let delay = match commands::watch::parse_interval(&interval) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        eprintln!("proteus: invalid --interval: {e:#}");
+                        return Ok(crate::exit::CONFIG_ERROR);
+                    }
+                };
                 commands::watch::run(delay, no_color, move || {
                     commands::status::run(json, state_path.as_deref(), config_path.as_deref())
                 })
@@ -63,7 +73,13 @@ pub(super) fn dispatch(cli: Cli) -> Result<u8> {
             let state_path = cli.state.clone();
             let config_path = cli.config.clone();
             if watch {
-                let delay = commands::watch::parse_interval(&interval)?;
+                let delay = match commands::watch::parse_interval(&interval) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        eprintln!("proteus: invalid --interval: {e:#}");
+                        return Ok(crate::exit::CONFIG_ERROR);
+                    }
+                };
                 commands::watch::run(delay, no_color, move || {
                     commands::session::run(json, state_path.as_deref(), config_path.as_deref())
                 })
@@ -80,7 +96,13 @@ pub(super) fn dispatch(cli: Cli) -> Result<u8> {
             let state_path = cli.state.clone();
             let iface_owned = iface.clone();
             if watch {
-                let delay = commands::watch::parse_interval(&interval)?;
+                let delay = match commands::watch::parse_interval(&interval) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        eprintln!("proteus: invalid --interval: {e:#}");
+                        return Ok(crate::exit::CONFIG_ERROR);
+                    }
+                };
                 commands::watch::run(delay, no_color, move || {
                     commands::current::run(json, iface_owned.as_deref(), state_path.as_deref())
                 })
@@ -94,7 +116,10 @@ pub(super) fn dispatch(cli: Cli) -> Result<u8> {
         Command::Apply { yes } => {
             commands::apply::run(yes, cli.state.as_deref(), cli.config.as_deref())
         }
-        Command::Revert { yes } => commands::revert::run(yes),
+        // Issue #386: thread the global `--state <path>` through revert
+        // so the nested per-component reverts honour the operator's
+        // override instead of all hardcoding the default state path.
+        Command::Revert { yes } => commands::revert::run(yes, cli.state.as_deref()),
         Command::Rotate {
             iface,
             yes,
@@ -111,18 +136,20 @@ pub(super) fn dispatch(cli: Cli) -> Result<u8> {
             cooldown,
             ssid,
             yes,
+            explain,
         } => commands::rotate::run_if_needed(
             iface.as_deref(),
             cooldown,
             ssid.as_deref(),
             yes,
+            explain,
             cli.state.as_deref(),
             cli.config.as_deref(),
         ),
         Command::Pin { target, mac, yes } => {
             commands::pin::run(&target, mac.as_deref(), yes, cli.state.as_deref())
         }
-        Command::Unpin { target } => commands::unpin::run(&target, cli.state.as_deref()),
+        Command::Unpin { target, yes } => commands::unpin::run(&target, yes, cli.state.as_deref()),
         Command::Diff { json } => {
             commands::diff::run(json, cli.state.as_deref(), cli.config.as_deref())
         }
@@ -205,10 +232,13 @@ pub(super) fn dispatch(cli: Cli) -> Result<u8> {
         },
         Command::Dhcp { action } => match action {
             DhcpAction::Status { json } => commands::dhcp::status(json),
-            DhcpAction::Apply { .. } => {
-                commands::dhcp::apply(cli.state.as_deref(), cli.config.as_deref())
+            // Issue #348/#375/M1/N12.2: --yes was previously dropped by the
+            // `..` rest-pattern which let dhcp apply/revert mutate without
+            // the operator's explicit confirmation. Plumb the flag through.
+            DhcpAction::Apply { yes } => {
+                commands::dhcp::apply(yes, cli.state.as_deref(), cli.config.as_deref())
             }
-            DhcpAction::Revert { .. } => commands::dhcp::revert(cli.state.as_deref()),
+            DhcpAction::Revert { yes } => commands::dhcp::revert(yes, cli.state.as_deref()),
             DhcpAction::Renew { iface, yes } => {
                 commands::dhcp::renew(iface.as_deref(), yes, cli.state.as_deref())
             }
@@ -232,21 +262,24 @@ pub(super) fn dispatch(cli: Cli) -> Result<u8> {
                 commands::portal::run_status(json, cli.state.as_deref(), cli.config.as_deref())
             }
             PortalAction::List { json } => commands::portal::run_list(json, cli.state.as_deref()),
-            PortalAction::Mark { ssid, .. } => {
-                commands::portal::run_mark(&ssid, cli.state.as_deref())
+            // Issue #348/N12.3: portal mark/unmark/open are mutators (mark
+            // and unmark write state.json, open emits a network probe). The
+            // `--yes` flag was being dropped via `..` — plumb it through.
+            PortalAction::Mark { ssid, yes } => {
+                commands::portal::run_mark(&ssid, yes, cli.state.as_deref())
             }
-            PortalAction::Unmark { ssid, .. } => {
-                commands::portal::run_unmark(&ssid, cli.state.as_deref())
+            PortalAction::Unmark { ssid, yes } => {
+                commands::portal::run_unmark(&ssid, yes, cli.state.as_deref())
             }
-            PortalAction::Open { .. } => {
-                commands::portal::run_open(cli.state.as_deref(), cli.config.as_deref())
+            PortalAction::Open { yes } => {
+                commands::portal::run_open(yes, cli.state.as_deref(), cli.config.as_deref())
             }
         },
-        Command::Wiki { action, page } => match action {
+        Command::Wiki { action, page, json } => match action {
             Some(WikiAction::Search { query, json, limit }) => {
                 commands::wiki_cmd::run_search(&query, json, limit)
             }
-            None => commands::wiki_cmd::run(page.as_deref(), cli.no_color),
+            None => commands::wiki_cmd::run(page.as_deref(), json, cli.no_color),
         },
         Command::Help { feature } => commands::wiki_cmd::run_help(feature.as_deref(), cli.no_color),
         Command::Doctor { json, quick } => commands::doctor::run(commands::doctor::Options {
@@ -264,7 +297,9 @@ pub(super) fn dispatch(cli: Cli) -> Result<u8> {
             }
             None => commands::kill::kill_run(yes, cli.state.as_deref()),
         },
-        Command::Resume { yes } => commands::kill::resume_run(yes, cli.state.as_deref()),
+        Command::Resume { yes, json } => {
+            commands::kill::resume_run(yes, json, cli.state.as_deref())
+        }
         Command::Nft { action } => match action {
             NftAction::Status { json } => commands::nft::status(json, cli.config.as_deref()),
             NftAction::Apply { yes } => commands::nft::apply(yes, cli.config.as_deref()),
@@ -380,6 +415,13 @@ fn apply_json_to_command(cmd: &mut Command) {
             action: Some(WikiAction::Search { json, .. }),
             ..
         }
+        // CL6: top-level `proteus wiki [page] --json` (no subcommand).
+        | Command::Wiki {
+            action: None,
+            json,
+            ..
+        }
+        | Command::Resume { json, .. }
         | Command::Config {
             action:
                 ConfigAction::Show { json }

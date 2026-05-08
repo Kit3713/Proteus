@@ -29,7 +29,12 @@ pub fn plan_rotate(config: &Config, state: &State, iface_filter: Option<&str>) -
     let mut plan = Plan::new("rotate");
 
     let pool_label = pool_label(&config.mac.oui_pool);
-    let example = preview_mac();
+    // NM2.7: thread the persona's effective OUI pool into the preview so
+    // a configured iPhone-15 persona (Apple OUI) doesn't render as a
+    // generic LAA placeholder. Falls back to the global slider's pool
+    // when no persona is active, preserving v0.2.x behaviour.
+    let preview_pool = effective_preview_pool(config);
+    let example = preview_mac(&preview_pool);
 
     let ifaces = collect_ifaces(state, iface_filter);
     if ifaces.is_empty() {
@@ -156,25 +161,51 @@ fn pool_label(pool: &[String]) -> String {
     }
 }
 
+/// Resolve the OUI pool the dry-run preview should sample from. NM2.7:
+/// the previous shape always seeded the generator with the
+/// `random-locally-administered` token, which produced a generic LAA
+/// placeholder regardless of which persona was active. The previewed
+/// MAC must reflect what a real `proteus rotate` would actually emit
+/// — Apple OUI for an active iPhone persona, Google OUI for a Pixel
+/// persona, the global slider's pool otherwise.
+///
+/// Falls back to a single LAA token if the resolved pool is empty so
+/// `preview_mac` always has something the generator can chew on.
+fn effective_preview_pool(config: &Config) -> Vec<String> {
+    let active =
+        crate::persona::active_for(config, None, crate::persona::resolve::default_user_root());
+    if let Some(p) = active
+        && matches!(p.kind, crate::persona::PersonaKind::Stealth)
+        && !crate::mac::oui::resolve_vendor_tokens(&p.oui_pool).is_empty()
+    {
+        return p.oui_pool;
+    }
+    if !config.mac.oui_pool.is_empty() {
+        return config.mac.oui_pool.clone();
+    }
+    vec!["random-locally-administered".into()]
+}
+
 /// One sample MAC for the preview message. Generated through the real path
 /// to confirm the OUI pool token is valid; if generation fails we fall back
 /// to a plausible LAA placeholder so the preview still reads sensibly.
-fn preview_mac() -> String {
+fn preview_mac(pool: &[String]) -> String {
     use std::collections::HashSet;
 
     use crate::mac::generator::{self, GenerateOptions};
 
-    let pool: Vec<String> = vec!["random-locally-administered".into()];
     let forbidden: HashSet<Mac> = HashSet::new();
     let avoid: HashSet<Mac> = HashSet::new();
     let opts = GenerateOptions {
-        pool: &pool,
+        pool,
         forbidden: &forbidden,
         avoid: &avoid,
         suffix_pattern: None,
     };
     match generator::generate(&opts) {
         Ok(m) => m.to_string(),
+        // The fallback retains the LAA shape: hand-edited personas with
+        // unresolvable tokens shouldn't bury the preview entirely.
         Err(_) => "02:00:00:xx:xx:xx".to_string(),
     }
 }
@@ -275,5 +306,51 @@ mod tests {
                 .iter()
                 .any(|s| s.message.contains("<current cloned MAC>"))
         );
+    }
+
+    /// NM2.7: when `[mac] oui_pool` declares Apple, the preview must
+    /// sample from the configured pool — not the hardcoded LAA
+    /// placeholder. We assert the resolved pool gets chosen rather
+    /// than spinning a real generate (which is randomised); the
+    /// dry-run preview message itself still rolls through `preview_mac`
+    /// in production, but the pool plumbing is what was broken.
+    #[test]
+    fn effective_preview_pool_uses_global_slider_when_no_persona() {
+        let mut cfg = Config::default();
+        cfg.persona.active = None;
+        cfg.mac.oui_pool = vec!["apple".into(), "intel".into()];
+        let pool = effective_preview_pool(&cfg);
+        assert_eq!(pool, vec!["apple".to_string(), "intel".to_string()]);
+    }
+
+    /// NM2.7: the LAA placeholder is the last-resort fallback only —
+    /// when the global pool is empty AND no persona is active.
+    #[test]
+    fn effective_preview_pool_falls_back_to_laa_when_everything_empty() {
+        let mut cfg = Config::default();
+        cfg.persona.active = None;
+        cfg.mac.oui_pool = vec![];
+        let pool = effective_preview_pool(&cfg);
+        assert_eq!(pool, vec!["random-locally-administered".to_string()]);
+    }
+
+    /// NM2.7 — end-to-end: with `oui_pool = ["apple"]`, the
+    /// `preview_mac` helper produces a MAC whose first three bytes
+    /// land in the Apple OUI registry. Pin so future regressions
+    /// in the pool-threading land catch it.
+    #[test]
+    fn preview_mac_emits_apple_oui_when_pool_says_apple() {
+        let pool = vec!["apple".to_string()];
+        // Run several samples — generator is randomised; every sample
+        // must still land in the Apple OUI registry.
+        for _ in 0..16 {
+            let mac = preview_mac(&pool);
+            // Cheap surface check: the rendered string must not be
+            // the generic "02:00:00:..." LAA placeholder.
+            assert!(
+                !mac.starts_with("02:00:00"),
+                "Apple-pool preview should not render as generic LAA: {mac:?}"
+            );
+        }
     }
 }

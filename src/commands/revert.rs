@@ -34,7 +34,7 @@ const RESOLVED_DROPIN_DIR: &str = "/etc/systemd/resolved.conf.d";
 const RESOLVED_DROPIN_PREFIX: &str = "10-proteus-";
 
 /// `proteus revert [--yes]` entry point.
-pub fn run(yes: bool) -> Result<u8> {
+pub fn run(yes: bool, state_path: Option<&Path>) -> Result<u8> {
     if let Err(code) = super::require_yes(yes, "revert is destructive", "proteus help revert") {
         return Ok(code);
     }
@@ -44,13 +44,16 @@ pub fn run(yes: bool) -> Result<u8> {
     }
     // Issue #126: hold the state lock while iterating through every revert
     // step so a concurrent `apply`/`rotate`/etc. can't race us.
-    let _lock = match super::acquire_state_lock_or_print(None) {
+    // Issue #386: honour the global `--state` override so wrappers and
+    // tests can revert against an isolated state file. Previously this
+    // hardcoded `None`, which always pinned the system default.
+    let _lock = match super::acquire_state_lock_or_print(state_path) {
         Ok(g) => g,
         Err(code) => return Ok(code),
     };
 
     let mut warns: Vec<String> = Vec::new();
-    revert_best_effort(&mut warns);
+    revert_best_effort(state_path, &mut warns);
 
     if warns.is_empty() {
         println!("proteus revert: complete");
@@ -91,18 +94,25 @@ pub(crate) struct RevertChanged {
 /// Issue #242: each per-feature revert below is passed `yes=true` because
 /// the parent (`commands::revert::run` or `commands::uninstall::run`) has
 /// already cleared its own `--yes` gate.
-pub(crate) fn revert_best_effort(warns: &mut Vec<String>) {
+///
+/// Issue #386: `state_path` is threaded through every nested per-component
+/// revert so the global `--state <path>` flag actually reaches the
+/// individual mutators. Previously each step hardcoded `None`, which
+/// silently pinned the default `/var/lib/proteus/state.json` — every
+/// wrapper or integration test that pointed `--state` at an isolated
+/// location got their state file untouched.
+pub(crate) fn revert_best_effort(state_path: Option<&Path>, warns: &mut Vec<String>) {
     let mut changed = RevertChanged::default();
-    if let Err(e) = super::hostname::revert(true, None) {
+    if let Err(e) = super::hostname::revert(true, state_path) {
         warns.push(format!("hostname: {e:#}"));
     }
-    if let Err(e) = super::bluetooth_cmd::revert(true, None) {
+    if let Err(e) = super::bluetooth_cmd::revert(true, state_path) {
         warns.push(format!("bluetooth: {e:#}"));
     }
-    if let Err(e) = super::ipv6::revert(true, None) {
+    if let Err(e) = super::ipv6::revert(true, state_path) {
         warns.push(format!("ipv6: {e:#}"));
     }
-    if let Err(e) = super::dhcp::revert(None) {
+    if let Err(e) = super::dhcp::revert(true, state_path) {
         warns.push(format!("dhcp: {e:#}"));
     }
     // Issue #298: enterprise-wifi was missing from the revert fan-out,
@@ -110,10 +120,10 @@ pub(crate) fn revert_best_effort(warns: &mut Vec<String>) {
     // managed connection. Restore the cached originals here so the
     // 802.1X profile goes back to the pre-Proteus state alongside
     // every other feature.
-    if let Err(e) = super::enterprise_wifi::revert(true, None) {
+    if let Err(e) = super::enterprise_wifi::revert(true, state_path) {
         warns.push(format!("enterprise-wifi: {e:#}"));
     }
-    if let Err(e) = super::rf::revert(true, None) {
+    if let Err(e) = super::rf::revert(true, state_path) {
         warns.push(format!("rf: {e:#}"));
     }
     for p in EXTERNAL_DROPINS {

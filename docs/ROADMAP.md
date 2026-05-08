@@ -279,7 +279,7 @@ out-of-cycle as the existing release flow already permits.
 
 ## Stream details
 
-### Stream 1 — CLI Safety & Confirmation Gates ⏳
+### Stream 1 — CLI Safety & Confirmation Gates 🚧
 
 **Why critical:** four mutators run state-changing operations without honouring
 `--yes`. Wrapping scripts that depend on the confirmation contract are silently
@@ -295,79 +295,101 @@ NM2.7, NCMD2.1, NCMD2.5, NEV2.7.
 
 **Work:**
 
-- ⏳ Add `--yes` field to `unpin` action (N12.1) and to every mutator action
+- ✅ Add `--yes` field to `unpin` action (N12.1) and to every mutator action
   that declares a `yes: bool` field today (CL3 — currently dead code).
-- ⏳ Wire `--yes` through dispatch for Bluetooth / Hostname / DNS / Resolved /
+- ✅ Wire `--yes` through dispatch for Bluetooth / Hostname / DNS / Resolved /
   NTP / Portal (CL2), DHCP apply / revert (M1, N12.2), Portal mark / unmark /
   open (N12.3).
-- ⏳ Reject `--interval 0s` in watch mode (CL1) and `<1ms` sleep granularities
+- ✅ Reject `--interval 0s` in watch mode (CL1) and `<1ms` sleep granularities
   (CL7).
 - ⏳ Add integration scenarios for the 24 untested subcommands (CL4).
-- ⏳ Add `--json` flag to `resume` and `wiki` (non-search) for parity (CL6).
+- ✅ Add `--json` flag to `resume` and `wiki` (non-search) for parity (CL6).
 - ⏳ Document the prefix-collision risk in CLI changelog (CL5).
-- ⏳ `proteus rotate --dry-run` preview: thread the configured OUI pool into
+- ✅ `proteus rotate --dry-run` preview: thread the configured OUI pool into
   `mac::plan::preview_mac` so the previewed MAC reflects the persona, not a
   hardcoded LAA placeholder (NM2.7).
-- ⏳ `proteus doctor` exit code: split warn-only vs fail; reserve exit 1 for
+- ✅ `proteus doctor` exit code: split warn-only vs fail; reserve exit 1 for
   `fail > 0`, map warn-only to exit 0 (or a distinct code) so CI wrappers
   don't block on warnings (NCMD2.1).
-- ⏳ `proteus status --json`: skip non-UTF-8 sysfs entries with a `debug!`
+- ✅ `proteus status --json`: skip non-UTF-8 sysfs entries with a `debug!`
   line, or include them with explicit `valid_utf8: false` (NCMD2.5).
-- ⏳ NM dispatcher `rc=70` branch: log captured stderr at `info!` (or split
+- ✅ NM dispatcher `rc=70` branch: log captured stderr at `info!` (or split
   the exit code) so "backend unavailable" doesn't mask "missing nft / nl80211
   / CAP_NET_ADMIN" (NEV2.7).
+- ✅ `rotate-if-needed --explain` to surface policy + cooldown math the
+  dispatcher hot path is making (GH#378).
+- ✅ `proteus revert` honours global `--state` flag (GH#386).
+- ✅ `timer resume` short-name maps to the actual shipped artifact
+  `proteus-resume.service` (GH#352).
+- 🚧 `rotate-if-needed --state` plumbed at CLI but the backend trait
+  hardcodes the read-back path; full fix needs a Stream 5 trait
+  signature change (GH#381 — partial / TODO).
 
 **Acceptance:** end-to-end script that calls every mutator without `--yes` and
 asserts exit code 64 (`CONFIRMATION_REQUIRED`); run watch with `--interval 0s`
 and assert exit 64 (rejection) instead of CPU burn.
 
-### Stream 2 — Config Schema Validation ⏳
+### Stream 2 — Config Schema Validation 🟢 (mostly landed)
 
 **Why high-impact:** silent acceptance of nonsense config (zero-interval
 rotates, unknown profile names, multibyte panic in duration parser) gives users
 a posture they did not ask for.
 
-**Files:** `src/config.rs`, `src/per_ssid.rs`, `src/persona/load.rs`.
+**Files:** `src/config.rs`, `src/per_ssid.rs`, `src/persona/load.rs`,
+`src/persona/template.rs`, `data/personas/lg-tv-2023.toml`.
 
 **Issues:** V1–V12 (V8, V9 added explicitly above), N12.4, N12.5, N12.12,
 P1, P7, NMOD.4, NTEST.1.
 
 **Work:**
 
-- ⏳ Reject zero / empty rotation intervals at config-load time (V1).
-- ⏳ Validate profile names and persona IDs against the known catalogue at
-  load time (V2, V6) with closest-match suggestions.
-- ⏳ Validate `quorum_n <= quorum_total` (V3).
-- ⏳ Bound second-precision durations (V4); bound `tx_power_reduction_db` (V5).
-- ⏳ Validate `pin_mac` format at load (V7); validate persona OUI pool (V11).
-- ⏳ Fix `parse_duration` overflow (N12.4) and the multibyte-trailing-char
-  panic in `is_valid_per_ssid_duration` (N12.5) — ship together.
-- ⏳ Constrain `clap` `u32` flags to a sane range (N12.12).
-- ⏳ Replace `split_at` on potentially-empty duration strings (P1) and the
-  `get_mut("mac").unwrap()` test path (P7).
-- ⏳ Distinguish "no value" from "out of range" in `parse_duration`; emit a
-  `warn!` on overflow rather than silent fallback to global timer (V8 —
-  pairs naturally with N12.4).
-- ⏳ Rename `persona_contributed` → `global_persona_contributed` and add a
-  short comment in `src/per_ssid.rs:86-93` so the 4-layer resolver
-  source-trace doesn't read as "persona never affected this SSID" when it
-  actually layered (V9 — cosmetic enhancement, no-brainer).
-- ⏳ Round-trip test coverage expansion for arrays, numerics, enums (V10).
-- ⏳ SSID-key TOML-special-character coverage (V12).
-- ⏳ Persona `schema_check` now also renders the template through
-  `validate_hostname` (and equivalents) so unusable personas like
-  `lg-tv-2023` are caught at load (NTEST.1, **High**). Fix the existing
-  `data/personas/lg-tv-2023.toml` template (`[LG]_webOS_TV_{word}` →
-  `lg-webos-tv-{word}` or similar) and add a regression test that exercises
-  every shipped persona's `hostname_template` through the validator.
-- ⏳ Defensive guard / assert that `OWNER_POOL` is non-empty before indexing
-  in `persona::template::pick_owner` (NMOD.4).
+- ✅ Reject zero / empty rotation intervals at config-load time (V1) —
+  enforced via `parse_interval` for every rotate-shaped field; pinned
+  with `config::validation_tests::v1_*` regression tests.
+- ✅ Validate profile names and persona IDs against the known catalogue at
+  load time (V2, V6) with closest-match suggestions; built-in catalogue
+  exposed via new `persona::load::builtin_ids()`.
+- ✅ Validate `quorum_n <= quorum_total` (V3).
+- ✅ Bound second-precision durations (V4); bound `tx_power_reduction_db` (V5).
+- ✅ Validate `pin_mac` format at load (V7) via `Mac::from_str`.
+- 🟡 Validate persona OUI pool (V11). User personas now hard-fail on an
+  unknown vendor token; built-in `iot-generic` keeps its `espressif` /
+  `realtek` shape-only tokens until the OUI-catalogue extension (Stream
+  owning `src/mac/oui.rs`) lands. Tracked separately as a follow-up so
+  Stream 2 doesn't widen scope into the MAC stream.
+- ✅ Fix `parse_duration` overflow (N12.4) and the multibyte-trailing-char
+  panic in `is_valid_per_ssid_duration` (N12.5) — shipped together.
+- ⏳ Constrain `clap` `u32` flags to a sane range (N12.12) — deferred:
+  CLI lives in `src/cli/`, owned by another stream's worktree.
+- ✅ Replace `split_at` on potentially-empty duration strings (P1).
+- ⏳ Replace `get_mut("mac").unwrap()` test path (P7) — deferred:
+  `src/commands/config_cmd.rs` is owned by another stream.
+- ✅ Distinguish "no value" from "out of range" in `parse_duration`; emit
+  a `warn!` on overflow rather than silent fallback to global timer
+  (V8 — paired with N12.4 via `checked_mul`).
+- ✅ Rename `persona_contributed` → `global_persona_contributed` and add
+  a short comment so the 4-layer resolver source-trace reads correctly
+  (V9).
+- ✅ Round-trip test coverage expansion for arrays, numerics, enums (V10).
+- ✅ SSID-key TOML-special-character coverage (V12) — spaces, dots,
+  brackets, unicode, backslash escapes.
+- ✅ Persona `schema_check` now renders the template through
+  `validate_hostname` so unusable personas like `lg-tv-2023` are caught
+  at load (NTEST.1, **High**). Template fixed:
+  `[LG]_webOS_TV_{word}` → `lg-webos-tv-{word}`. Regression test
+  `every_embedded_persona_hostname_template_renders_validly` exercises
+  every shipped persona.
+- ✅ Defensive guard + const-assert that `OWNER_POOL` is non-empty before
+  indexing in `persona::template::pick_owner` (NMOD.4).
+- ⏳ GH#340 (`ByteSuffixPattern::parse` multibyte panic) — deferred:
+  fix lives in `src/mac/generator.rs` which is out of Stream 2's
+  worktree scope.
 
 **Acceptance:** new test module `config::validation_tests` loads each malformed
 example and asserts the specific error variant; full `cargo test --release`
 passes (catches `panic = abort` regressions immediately).
 
-### Stream 3 — Packaging & Build / CI Coherence ⏳
+### Stream 3 — Packaging & Build / CI Coherence (mostly ✅)
 
 **Why high-impact:** `proteus-events.service` ships disabled or wrong-pathed in
 **every** package (RPM, Debian, Gentoo, Alpine, install.sh). The events daemon
@@ -386,41 +408,49 @@ NPKG.7, NPKG.8, NPKG.9, NPKG.14.
 
 **Work:**
 
-- ⏳ Wire `proteus-events.service` into install.sh `enable / start` ladder
+- ✅ Wire `proteus-events.service` into install.sh `enable / start` ladder
   (B1); add `%post` / `%preun` hooks in RPM (B2), `dh_installsystemd` in
   Debian (B3), `systemd_dounit` in Gentoo (B4), Alpine post-install
-  trigger (B5).
-- ⏳ Reconcile `/usr/local/bin` (install.sh) vs `/usr/bin` (distro
+  trigger (B5 — Alpine ships OpenRC only; the post-install nudges
+  operators to the NM dispatcher hook instead).
+- ✅ Reconcile `/usr/local/bin` (install.sh) vs `/usr/bin` (distro
   packages) so the unit's `ExecStart=` resolves on every path (B10, N12.8).
-- ⏳ Add `KillMode=mixed` and `TimeoutStopSec=10s` to
+  install.sh now creates `/usr/bin/proteus → /usr/local/bin/proteus`
+  symlink when no real file is there.
+- ✅ Add `KillMode=mixed` and `TimeoutStopSec=10s` to
   `proteus-events.service` (N12.9).
-- ⏳ POSIX-ify NM dispatcher shebang (B6); validate install.sh with `sh -n`
-  (B13).
-- ⏳ Add top-level `permissions:` block to `ci.yml` (B7).
-- ⏳ Pin `softprops/action-gh-release@v2` to commit SHA (B9).
-- ⏳ Add `--locked` to Alpine / Void / Gentoo cargo invocations (B8).
-- ⏳ Wire a real `[features]` table in `Cargo.toml` to back the Gentoo USE
-  flags (B14); restrict polkit policy (B15 — coordinate with Stream 9).
-- ⏳ Replace `build.rs::panic!` with actionable errors (B12); add `:?`-guard
+- ✅ POSIX-ify NM dispatcher shebang (B6); validate install.sh with `sh -n`
+  (B13). `scripts/check.sh` and the new `packaging-lint` CI job both run
+  `dash -n` over `install.sh` / `uninstall.sh` / dispatcher.
+- ✅ Add top-level `permissions: contents: read` block to `ci.yml` (B7).
+- ✅ Pin `softprops/action-gh-release@v2` to commit SHA (B9 — already
+  pinned at `3bb12739…`, which is `v2.6.2` / current `v2`).
+- ✅ Add `--locked` to Alpine / Void / Gentoo cargo invocations (B8).
+- ✅ Wire a real `[features]` table in `Cargo.toml` to back the Gentoo USE
+  flags (B14). ⏳ Restrict polkit policy (B15 — already
+  `auth_admin` / `allow_inactive=no`; further tightening deferred to
+  coordinate with Stream 9 runtime check).
+- ✅ Replace `build.rs::panic!` with actionable errors (B12); add `:?`-guard
   pattern to `uninstall.sh` (B11); shorten `Cargo.toml` description below
-  256 chars (M4).
-- ⏳ Wire `cargo audit` into the release workflow with `Cargo.lock` as the
+  256 chars (M4 — now 248 chars).
+- ✅ Wire `cargo audit` into the release workflow with `Cargo.lock` as the
   target; fail the release on any open advisory in `zbus`, `clap`, `tokio`,
   `toml`, `toml_edit`, `serde`, `tracing`, `getrandom` (audit I‑2).
-- ⏳ Populate `sha512sums` in `dist/alpine/APKBUILD` (NPKG.7) and `checksum`
+- ✅ Populate `sha512sums` in `dist/alpine/APKBUILD` (NPKG.7) and `checksum`
   in `dist/void/template` (NPKG.8); add a guard rejecting the literal
   `"SKIP"` placeholder so an early packager-build cannot ship without
-  integrity validation. **Supply-chain gap.**
-- ⏳ Replace `build.rs` `panic!` on wiki-file read errors with an actionable
+  integrity validation. **Supply-chain gap closed via `sanitycheck()` (Alpine)
+  and `pre_fetch()` (Void); real hashes still TODO once v0.1.0 is tagged.**
+- ✅ Replace `build.rs` `panic!` on wiki-file read errors with an actionable
   `expect("…")` message and `cargo:warning=` line (NPKG.3); emit
   `cargo:rerun-if-changed` per file rather than per directory so deletions
   invalidate correctly (NPKG.4).
-- ⏳ Bump `dist/debian/control` `debhelper-compat` to 14 once `release.yml`
-  passes (NPKG.6).
-- ⏳ Document the `rpmbuild --without check` bypass risk in
-  `dist/rpm/README.md` (NPKG.9); add a `%global _without_check 0` guard.
-- ⏳ Fix `install.sh` polkit `sed` rewrite: use a defensive delimiter
-  (e.g. `#`) and pin the annotate string in a `read -r` heredoc (NPKG.14).
+- ✅ Bump `dist/debian/control` `debhelper-compat` to 14 (NPKG.6).
+- ✅ Document the `rpmbuild --without check` bypass risk in
+  `dist/rpm/README.md` (NPKG.9); add a `%bcond_without check` guard so
+  enabling check is the default and skipping it requires intent.
+- ✅ Fix `install.sh` polkit `sed` rewrite: use `#` delimiter and quoted
+  variable so a `BINARY_DST` containing `|` does not split the s/// (NPKG.14).
 
 **Acceptance:** spin up Fedora 43, Debian 13, Gentoo, Alpine 3.20 in CI
 containers; `install` the package; assert `systemctl is-enabled
@@ -578,7 +608,7 @@ Stream 9), S1, audit N‑3 (residual), NEV2.3, NMOD.1, NMOD.2, NBE.6.
 assert no thread blocks more than 5 s; assert no `panic = abort` is
 triggered.
 
-### Stream 6 — Panic Hardening ⏳
+### Stream 6 — Panic Hardening ✅
 
 **Files (disjoint from all other streams):** `src/hostname/mod.rs`,
 `src/diff/mod.rs`, `src/commands/mod.rs` (SHA verification path only),
@@ -589,20 +619,20 @@ Stream 4 does not touch this function).
 
 **Work:**
 
-- ⏳ Empty-label hostname validator: replace bounds-panic with structured
+- ✅ Empty-label hostname validator: replace bounds-panic with structured
   error (P2).
-- ⏳ `.file_name().unwrap()` sites in diff and SHA verify: handle `..` /
+- ✅ `.file_name().unwrap()` sites in diff and SHA verify: handle `..` /
   trailing-slash paths (P3, P4).
-- ⏳ Off-by-one in CRLF body slice (P5); probe `as u8` truncation guard
+- ✅ Off-by-one in CRLF body slice (P5); probe `as u8` truncation guard
   (P6).
-- ⏳ `proteus diff` reads target files unbounded → cap to 64 MiB and
+- ✅ `proteus diff` reads target files unbounded → cap to 64 MiB and
   surface a clear error past that (N12.10).
-- ⏳ `proteus diff`: cross-reference `state.json`'s tracked-paths set
+- ✅ `proteus diff`: cross-reference `state.json`'s tracked-paths set
   against the filesystem and emit a "missing" entry per absent file in the
   diff report (NMOD.3). Currently `compute_managed_file_drift` only walks
   the filesystem, so files Proteus once managed but the operator deleted
   are silently invisible.
-- ⏳ `tests/realworld/probe.sh`: pre-check `[ -d /sys/class/net ]` and skip
+- ✅ `tests/realworld/probe.sh`: pre-check `[ -d /sys/class/net ]` and skip
   with a clear message when `/sys` is not mounted (NTEST.3) — currently the
   loop runs zero times and the script "passes" with no probing.
 
@@ -744,34 +774,82 @@ silent-deception class.
 from [`ROADMAP-v0.3.md`](ROADMAP-v0.3.md):
 
 - ⏳ Audit pass: every error string in `src/error.rs` and every `bail!` /
-  `anyhow!` callsite carries a `wiki <page>` hint.
-- ⏳ Bypass hardening pass: review every place we shell out.
+  `anyhow!` callsite carries a `wiki <page>` hint. Stream 10 sweep
+  enumerated 208 `bail!`/`anyhow!` sites across 40 files (sweep can't
+  edit non-error.rs source files in this stream — see `Wiki-hint
+  follow-up checklist` below).
+- ✅ Bypass hardening pass: review every place we shell out — 33
+  `Command::new` sites enumerated and pattern-classified in
+  `docs/security/external-review.md`.
 - ⏳ Real-world testing on diverse Wi-Fi (coffee shops, hotels,
-  conferences, airports).
+  conferences, airports). Living-doc scaffold landed at
+  `docs/realworld-test-log.md`; entries accumulate as Proteus is taken
+  on the road.
 - ⏳ Independent security review against `docs/security/dbus-surface.md`.
+  Soliciting scaffold landed at `docs/security/external-review.md`;
+  awaits engagement.
 
 **Work:**
 
-- ⏳ Fix `[discovery]`, `[rotation]`, `[mac]`, `[probes]` sections in every
-  example to use real schema field names (D1, D2, D3, D4) — single sweep.
-- ⏳ Document exit code 75 in `wiki/cli.md` (D5); correct doctor exit code
-  reference (D6); recount wiki pages (D7); add `config set-profile`
-  section (D8).
-- ⏳ Fix `display_string` length-clamp to count output graphemes, not input
-  chars (N12.6).
+- ✅ Fix `[discovery]`, `[rotation]`, `[mac]`, `[probes]` sections in every
+  example to use real schema field names (D1, D2, D3, D4) — verified
+  every key in `examples/*.toml` against the `Raw*Config` structs in
+  `src/config.rs`. All 7 example files round-trip cleanly against the
+  current schema; no edits needed.
+- ✅ Document exit code 75 in `wiki/cli.md` (D5) — already present in
+  the global Exit codes table and in every per-subcommand exit row.
+- ✅ Correct doctor exit code reference (D6) — verified against
+  `src/commands/doctor.rs::run` (returns `SUCCESS` or `GENERIC_ERROR`);
+  cli.md and troubleshooting.md already say `0 / 1`.
+- ✅ Recount wiki pages (D7) — `ls wiki/*.md | wc -l` is 45,
+  README.md says "45-page embedded wiki"; no edit needed.
+- ✅ Add `config set-profile` section to `wiki/cli.md` (D8).
+- ✅ Fix `display_string` length-clamp to count output graphemes, not
+  input chars (N12.6). Three regression tests added covering C0
+  controls (`\x07`), C1 controls (`\u{009b}`), and backslash —
+  previously each amplified output by 4×, 6×, and 2× respectively
+  past the clamp.
 - ⏳ Wiki-hint audit pass on every `bail!` / `anyhow!` site (frontier item).
-- ⏳ Bypass-hardening pass: enumerate every `Command::new` site and confirm
-  argument-array form (no shell interpolation) (frontier item).
-- ⏳ Real-world testing log: maintain `docs/realworld-test-log.md` with one
-  entry per network type tested, pulling bugs into Streams 1–9 as they
-  surface (frontier item).
-- ⏳ Solicit independent review against `docs/security/dbus-surface.md`;
-  track responses in a new `docs/security/external-review.md` (frontier
-  item).
-- ⏳ Document the `proteus-rotate.timer` ±75 min effective jitter
+  Stream 10 sweep enumerated 208 sites; see follow-up checklist below.
+- ✅ Bypass-hardening pass: enumerate every `Command::new` site and confirm
+  argument-array form (no shell interpolation). Done in
+  `docs/security/external-review.md`.
+- ✅ Real-world testing log scaffold (frontier item) —
+  `docs/realworld-test-log.md`.
+- ✅ External-review scaffold (frontier item) —
+  `docs/security/external-review.md`.
+- ✅ Document the `proteus-rotate.timer` ±75 min effective jitter
   (`RandomizedDelaySec=30min` + `AccuracySec=45min`) in
   `wiki/rotation.md`'s tuning section (NPKG.13) so operators tuning rotation
   cadence don't refile this as a bug. Info-only.
+
+**Wiki-hint follow-up checklist (frontier item, deferred to owners of
+the listed files because Stream 10 only owns `src/error.rs`):**
+
+The 208 `bail!` / `anyhow!` sites live across 40 files. Stream 10
+cannot edit them (file ownership is split across other streams) and
+this repo has no `src/error.rs` — every error message is constructed
+inline at the bail/anyhow callsite. The follow-up is to sweep each
+file below and confirm every error string ends with a `; see proteus
+wiki <page>` hint where relevant. Files (in callsite-count order):
+
+- `src/backend/networkd.rs`, `src/backend/nm.rs`, `src/backend/raw.rs`,
+  `src/backend/select.rs` (Stream 1 owns)
+- `src/bluetooth/alias.rs` (Stream 6 owns)
+- `src/cli/mod.rs`, `src/commands/apply.rs`, `src/commands/config_cmd.rs`,
+  `src/commands/dns.rs`, `src/commands/enterprise_wifi.rs`,
+  `src/commands/mod.rs`, `src/commands/ntp.rs`, `src/commands/pin.rs`,
+  `src/commands/resolved.rs`, `src/commands/rf.rs`,
+  `src/commands/rotate.rs`, `src/commands/stack.rs`,
+  `src/commands/timer.rs`, `src/commands/watch.rs` (Streams 1/2/3/6 own)
+- `src/config.rs` (other stream owns; load-time validators)
+- `src/enterprise_wifi/mod.rs`, `src/events/mod.rs`,
+  `src/hostname/mod.rs`, `src/init/mod.rs`, `src/init/openrc.rs`,
+  `src/init/runit.rs`, `src/init/systemd.rs`, `src/init/sysvinit.rs`
+- `src/ipv6/mod.rs`, `src/mac/generator.rs`, `src/mac/probe.rs`,
+  `src/nft/mod.rs`, `src/nm/apply.rs`, `src/nm/mod.rs`,
+  `src/persona/load.rs`, `src/persona/template.rs`, `src/rand/mod.rs`,
+  `src/rf/mod.rs`, `src/state.rs`, `src/timer/mod.rs`
 
 **Acceptance:** `examples/` files round-trip through the loader without
 warnings; CI step that runs `proteus config validate examples/*.toml` and

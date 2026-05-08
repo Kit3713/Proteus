@@ -49,9 +49,20 @@ cargo build --release --locked
 %check
 # Library tests only — integration tests need a privileged systemd
 # container (Phase G) and aren't `cargo test --lib` clean. Matches the
-# Alpine APKBUILD, Void template, and Debian rules. Disable with
-# `--without check` if Copr hits a flake we haven't reproduced locally.
+# Alpine APKBUILD, Void template, and Debian rules.
+#
+# NPKG.9: `--without check` is *available* (rpmbuild honors `%bcond_without
+# check` automatically) but a packager who reaches for it should know they
+# are skipping the only build-time test gate this spec offers. The
+# documented bypass risk lives in dist/rpm/README.md. The default below
+# leaves `check` ON; setting `--without check` on the rpmbuild command line
+# expands the conditional to a no-op.
+%bcond_without check
+%if %{with check}
 cargo test --release --locked --lib
+%else
+echo "WARNING: %check skipped via --without check (NPKG.9). Validate the build elsewhere."
+%endif
 
 %install
 install -Dm755 target/release/proteus %{buildroot}%{_bindir}/proteus
@@ -96,19 +107,23 @@ install -dm700 %{buildroot}%{_sharedstatedir}/proteus
 %dir %attr(0700,root,root) %{_sharedstatedir}/proteus
 
 %post
-# Issue #279: proteus-events.service is intentionally NOT listed — it is
-# opt-in via `[events] enabled = true` in /etc/proteus/config.toml and is
-# enabled by the operator rather than the package.
-%systemd_post proteus-rotate.timer proteus-check.timer proteus-boot.service proteus-resume.service
+# B1 / B2 / N12.8: include proteus-events.service so RPM's preset machinery
+# wires it up like every other unit the package installs. The daemon itself
+# short-circuits when `[events] enabled = false` in /etc/proteus/config.toml,
+# so enabling the unit is harmless when the operator hasn't opted in. This
+# closes the "events daemon is unreachable on every install path" bug
+# (issue #279 superseded by Stream 3 acceptance).
+%systemd_post proteus-rotate.timer proteus-check.timer proteus-boot.service proteus-resume.service proteus-events.service
 
 %preun
-%systemd_preun proteus-rotate.timer proteus-check.timer proteus-boot.service proteus-resume.service
+%systemd_preun proteus-rotate.timer proteus-check.timer proteus-boot.service proteus-resume.service proteus-events.service
 
 %postun
-# Restart-on-upgrade only really matters for the timers (long-lived); the
-# oneshots (boot, resume) are listed for symmetry with %post/%preun, and
-# %systemd_postun_with_restart is a no-op for already-exited oneshots.
-%systemd_postun_with_restart proteus-rotate.timer proteus-check.timer proteus-boot.service proteus-resume.service
+# Restart-on-upgrade only really matters for the timers (long-lived) and
+# the events daemon (long-lived); the oneshots (boot, resume) are listed
+# for symmetry with %post/%preun, and %systemd_postun_with_restart is a
+# no-op for already-exited oneshots.
+%systemd_postun_with_restart proteus-rotate.timer proteus-check.timer proteus-boot.service proteus-resume.service proteus-events.service
 
 %changelog
 * Fri May 08 2026 Kit3713 <noreply@example.com> - 0.4.2~beta-1

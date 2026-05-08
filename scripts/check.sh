@@ -150,10 +150,17 @@ run_step "binary size <= 4 MB" size_check
 # --- step 7: install / uninstall shell syntax ------------------------------
 shell_check() {
     rc=0
-    for f in install.sh uninstall.sh; do
+    # B13: validate install.sh / uninstall.sh under POSIX sh, not bash. Both
+    # scripts declare `#!/bin/sh` and document themselves as POSIX-only;
+    # using `bash -n` here let bashisms slip through silently because bash
+    # accepts a strict superset of dash. `sh -n` runs the system /bin/sh
+    # in noexec mode — on Debian/Ubuntu CI runners that's dash, which is
+    # the same shell distro packagers will see when they invoke the script.
+    # Also covers the NM dispatcher hook (POSIX-ified per B6).
+    for f in install.sh uninstall.sh dist/networkmanager/dispatcher.d/01-proteus; do
         if [ -f "$f" ]; then
-            printf 'bash -n %s\n' "$f"
-            if ! bash -n "$f"; then
+            printf 'sh -n %s\n' "$f"
+            if ! sh -n "$f"; then
                 rc=1
             fi
         else

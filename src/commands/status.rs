@@ -112,7 +112,20 @@ pub fn enumerate_interfaces() -> Vec<Iface> {
         }
     };
     for entry in entries.flatten() {
-        let name = entry.file_name().to_string_lossy().into_owned();
+        // NCMD2.5: sysfs entries with non-UTF-8 names previously slipped
+        // through `to_string_lossy` with U+FFFD substitutions, which then
+        // landed in the JSON output as bogus `name = "\u{FFFD}..."`
+        // values. Skip those entries entirely with a `debug!` line so
+        // log-level=debug operators still see the drop. UTF-8 names go
+        // through unchanged.
+        let raw_name = entry.file_name();
+        let Some(name) = raw_name.to_str().map(str::to_string) else {
+            tracing::debug!(
+                "skipping non-UTF-8 sysfs entry under /sys/class/net: {:?}",
+                raw_name
+            );
+            continue;
+        };
         if name == "lo" {
             continue;
         }

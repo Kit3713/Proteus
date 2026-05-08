@@ -361,14 +361,12 @@ fn remaining_budget(started: Instant, total: Duration) -> std::io::Result<Durati
 }
 
 fn parse_http_response(buf: &[u8]) -> std::io::Result<HttpResponse> {
-    let split = find_double_crlf(buf).ok_or_else(|| {
+    let (head, body) = body_slice(buf).ok_or_else(|| {
         std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             "no header/body separator in response",
         )
     })?;
-    let (head, body) = buf.split_at(split);
-    let body = &body[4.min(body.len())..]; // skip the \r\n\r\n
     let head_str = std::str::from_utf8(head).map_err(|_| {
         std::io::Error::new(std::io::ErrorKind::InvalidData, "non-utf8 response headers")
     })?;
@@ -411,6 +409,35 @@ fn parse_status_line(line: &str) -> std::io::Result<u16> {
 
 fn find_double_crlf(buf: &[u8]) -> Option<usize> {
     buf.windows(4).position(|w| w == b"\r\n\r\n")
+}
+
+/// Split an HTTP/1.x response buffer into `(headers, body)` at the first
+/// `\r\n\r\n` boundary. Returns `None` if the buffer does not contain a
+/// terminator — the caller surfaces that as a parse error.
+///
+/// Roadmap P5: the previous inline form was
+///
+/// ```ignore
+/// let (head, body) = buf.split_at(split);
+/// let body = &body[4.min(body.len())..]; // skip the \r\n\r\n
+/// ```
+///
+/// which silently truncated the body when the buffer ended exactly at the
+/// separator (no body bytes) instead of returning an empty slice cleanly,
+/// and which used the slightly-confusing `4.min(body.len())` pattern that
+/// invited an off-by-one if a future maintainer ever adjusted it.
+/// Hoisting the slice into its own function lets us test the boundary
+/// shapes — empty body, separator at start, separator at end of buffer,
+/// no separator — directly without driving the whole HTTP parser.
+fn body_slice(buf: &[u8]) -> Option<(&[u8], &[u8])> {
+    let split = find_double_crlf(buf)?;
+    let head = &buf[..split];
+    // `find_double_crlf` matched 4 bytes starting at `split`, so
+    // `split + 4 <= buf.len()`. No `min` needed; an explicit slice index
+    // also makes the off-by-one impossible: body is "everything after the
+    // 4-byte separator", which may be the empty slice.
+    let body = &buf[split + 4..];
+    Some((head, body))
 }
 
 #[cfg(test)]
@@ -588,6 +615,58 @@ mod tests {
             elapsed < Duration::from_millis(500),
             "watchdog must release within the deadline, took {elapsed:?}"
         );
+    }
+
+    /// Roadmap P5: cover every CRLF-boundary shape `body_slice` can
+    /// encounter so a future tweak to `find_double_crlf` or the slice
+    /// index can't reintroduce the off-by-one.
+    #[test]
+    fn body_slice_handles_crlf_boundaries() {
+        // Normal: headers, separator, body.
+        let (h, b) = body_slice(b"HTTP/1.0 200 OK\r\nFoo: bar\r\n\r\nhello").unwrap();
+        assert_eq!(h, b"HTTP/1.0 200 OK\r\nFoo: bar");
+        assert_eq!(b, b"hello");
+
+        // Buffer ends exactly at the separator — body is empty, not truncated.
+        let (h, b) = body_slice(b"HTTP/1.0 204 No Content\r\n\r\n").unwrap();
+        assert_eq!(h, b"HTTP/1.0 204 No Content");
+        assert_eq!(b, b"");
+
+        // Buffer starts with the separator (degenerate but valid input).
+        let (h, b) = body_slice(b"\r\n\r\nbody").unwrap();
+        assert_eq!(h, b"");
+        assert_eq!(b, b"body");
+
+        // Buffer is exactly the separator and nothing else.
+        let (h, b) = body_slice(b"\r\n\r\n").unwrap();
+        assert_eq!(h, b"");
+        assert_eq!(b, b"");
+
+        // Buffer with body containing later \r\n\r\n is preserved (we
+        // split on the first occurrence only).
+        let (h, b) = body_slice(b"H\r\n\r\nx\r\n\r\ny").unwrap();
+        assert_eq!(h, b"H");
+        assert_eq!(b, b"x\r\n\r\ny");
+
+        // Trailing partial separator — no full CRLFCRLF, must be None.
+        assert!(body_slice(b"H\r\n\r").is_none());
+        assert!(body_slice(b"H\r\n").is_none());
+        assert!(body_slice(b"\r").is_none());
+        assert!(body_slice(b"").is_none());
+
+        // Body containing a single byte right after the separator.
+        let (_, b) = body_slice(b"a\r\n\r\nz").unwrap();
+        assert_eq!(b, b"z");
+    }
+
+    /// Roadmap P5: drive the full parser at the same boundaries to prove
+    /// the body_slice extraction didn't break anything downstream.
+    #[test]
+    fn parse_http_response_handles_empty_body() {
+        let resp = parse_http_response(b"HTTP/1.0 204 No Content\r\nFoo: bar\r\n\r\n").unwrap();
+        assert_eq!(resp.status, 204);
+        assert_eq!(resp.body, "");
+        assert_eq!(resp.header("Foo"), Some("bar"));
     }
 
     #[test]

@@ -157,6 +157,13 @@ fn summary_for(p: &Persona, source: PersonaSource) -> PersonaSummary {
 pub fn validate(path: &Path) -> Result<Persona> {
     let p = parse_file(path)?;
     schema_check(&p)?;
+    // V11 / GH#382: extra semantic checks reserved for user-authored
+    // personas. The built-in `iot-generic` ships with `espressif` /
+    // `realtek` tokens that `Vendor::from_pool_token` doesn't (yet)
+    // know — silently downgrading to LAA on apply. We don't want a
+    // user-authored persona to take the same silent-degrade path, so
+    // anything that lands here is held to the stricter standard.
+    validate_user_only(&p)?;
     Ok(p)
 }
 
@@ -170,7 +177,34 @@ pub fn validate_bytes(bytes: &[u8], origin: &str) -> Result<Persona> {
         format!("parsing {origin} (see `proteus wiki personas` for the schema)")
     })?;
     schema_check(&p)?;
+    validate_user_only(&p)?;
     Ok(p)
+}
+
+/// V11 / GH#382: user-persona-only semantic checks. Built-ins ship with
+/// known shape-quirks (e.g. `iot-generic` carrying `espressif`/`realtek`
+/// tokens that aren't in `Vendor::from_pool_token`); fixing those
+/// requires an OUI catalogue extension that's tracked separately and
+/// owned by the MAC stream. Until that lands, we hold user-authored
+/// personas to the stricter "every vendor token must resolve" standard
+/// so a fresh hand-edited persona doesn't silently degrade to LAA at
+/// apply time.
+fn validate_user_only(p: &Persona) -> Result<()> {
+    for token in &p.oui_pool {
+        // Literal `aa:bb:cc` prefixes pass through unchanged.
+        if is_oui_literal(token) {
+            continue;
+        }
+        if crate::mac::oui::Vendor::from_pool_token(token).is_none() {
+            anyhow::bail!(
+                "persona '{}' oui_pool entry '{token}' is not a known vendor name and not an OUI literal 'aa:bb:cc'; \
+                 known vendors include apple, intel, samsung, dell, google, microsoft, lg, tplink, asus, roku, amazon, sony, nintendo, hp, iot-generic, random-locally-administered \
+                 (see `proteus wiki personas`)",
+                p.id
+            );
+        }
+    }
+    Ok(())
 }
 
 fn parse_file(path: &Path) -> Result<Persona> {
@@ -207,6 +241,34 @@ fn schema_check(p: &Persona) -> Result<()> {
             p.id
         );
     }
+    // NTEST.1: render the template through the deterministic validator
+    // renderer and feed the result through `validate_hostname` after the
+    // same lowercasing step the production renderer
+    // (`hostname::render_template`) applies. Catches unusable persona
+    // templates (underscores, square brackets — anything
+    // `validate_hostname` rejects under RFC 1123 even *after* lowercasing)
+    // at load time so a hand-edited persona never gets accepted by the
+    // catalogue. The previous schema check only required the field to be
+    // non-empty; the actual hostname rejection landed deep inside the
+    // apply path, where the user saw a generic "render failed" rather
+    // than the persona-id error they need to fix the template.
+    let rendered = crate::persona::template::render_for_validation(
+        &p.hostname_template,
+        // `fedora` survives `validate_hostname` (RFC 1123 lowercase-a-z)
+        // and is from the embedded wordlist — a representative entry.
+        "fedora",
+    );
+    let lowered = rendered.to_ascii_lowercase();
+    crate::hostname::validate_hostname(&lowered).map_err(|e| {
+        anyhow!(
+            "persona '{}' hostname_template '{}' renders to an invalid hostname: {} \
+             (RFC 1123: lowercase a-z, digits, hyphens; no underscores or brackets) \
+             (see `proteus wiki personas`)",
+            p.id,
+            p.hostname_template,
+            e
+        )
+    })?;
     match p.kind {
         super::PersonaKind::Randomizer if p.rotate_cadence.is_none() => {
             anyhow::bail!(
@@ -471,6 +533,34 @@ pub fn user_path(root: &Path, id: &str) -> PathBuf {
     root.join(format!("{id}.toml"))
 }
 
+/// V6 / GH#345 / #339: enumerate every shipped built-in persona id (the
+/// kebab-case file stem under `data/personas/`). Used by config-load
+/// validation so a typo'd `[persona] active = "iphone-1"` lands a clear
+/// error with a closest-match suggestion at load time, instead of silently
+/// degrading later when `active_for` falls through to "no persona".
+///
+/// User personas under `/etc/proteus/personas/` are deliberately *not*
+/// included here — config validation runs in contexts where the user-root
+/// may not be readable (early boot, a foreign rootfs in CI), and
+/// requiring filesystem I/O at validation time invites flakiness. The
+/// validator therefore accepts any kebab-case id and only suggests against
+/// the deterministic built-in catalogue. A user-authored persona with an
+/// unfamiliar id passes validation; if it is genuinely missing the
+/// downstream `load()` call surfaces the not-found error.
+pub fn builtin_ids() -> Vec<&'static str> {
+    let mut ids: Vec<&'static str> = BUILTIN
+        .files()
+        .filter_map(|f| {
+            if f.path().extension().and_then(|s| s.to_str()) != Some("toml") {
+                return None;
+            }
+            f.path().file_stem().and_then(|s| s.to_str())
+        })
+        .collect();
+    ids.sort_unstable();
+    ids
+}
+
 /// Iterator over every embedded built-in persona's TOML body. Used by the
 /// `every embedded persona validates` test; not part of the public API.
 #[cfg(test)]
@@ -506,6 +596,124 @@ mod tests {
             count >= 15,
             "expected at least 15 built-in personas, found {count}"
         );
+    }
+
+    /// NTEST.1: every shipped persona's `hostname_template` must render
+    /// to an RFC 1123 hostname after the production lowercasing step.
+    /// This is the regression guard that catches the lg-tv-2023
+    /// `[LG]_webOS_TV_{word}` shape (square brackets and underscores
+    /// land in the rendered string and `validate_hostname` rejects them
+    /// even after `to_ascii_lowercase`). Adding a fresh persona that
+    /// reintroduces uppercase-via-bracket / underscore noise will trip
+    /// this test, not silently ship.
+    #[test]
+    fn every_embedded_persona_hostname_template_renders_validly() {
+        let mut count = 0usize;
+        for (stem, raw) in builtin_raw_bodies() {
+            let p: Persona = toml::from_str(raw)
+                .unwrap_or_else(|e| panic!("builtin {stem} failed to parse: {e}"));
+            // Mirror schema_check's logic: render with the validation
+            // helper, lowercase, then run through validate_hostname.
+            let rendered =
+                crate::persona::template::render_for_validation(&p.hostname_template, "fedora");
+            let lowered = rendered.to_ascii_lowercase();
+            crate::hostname::validate_hostname(&lowered).unwrap_or_else(|e| {
+                panic!(
+                    "builtin {stem} hostname_template '{}' renders to '{lowered}' which fails validate_hostname: {e}",
+                    p.hostname_template
+                )
+            });
+            count += 1;
+        }
+        assert!(
+            count >= 15,
+            "expected at least 15 built-in personas, found {count}"
+        );
+    }
+
+    /// NTEST.1 regression: the historical pre-fix lg-tv-2023 template
+    /// shape (`[LG]_webOS_TV_{word}`) is the canonical example of a
+    /// hand-edited template that the apply path would reject deep in
+    /// the DBus layer. The schema_check must catch this at load time
+    /// with a clear error — not let it ship.
+    #[test]
+    fn schema_check_rejects_unrenderable_lg_tv_style_template() {
+        let mut p = sample_stealth_persona();
+        p.hostname_template = "[LG]_webOS_TV_{word}".into();
+        let err = schema_check(&p).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("hostname_template") && msg.contains("invalid hostname"),
+            "expected hostname_template / invalid hostname in error, got: {msg}"
+        );
+    }
+
+    /// NTEST.1 happy path: a kebab-case template renders cleanly and
+    /// passes schema_check. Pin so the regression fix doesn't over-
+    /// reject benign templates.
+    #[test]
+    fn schema_check_accepts_kebab_case_lg_tv_template() {
+        let mut p = sample_stealth_persona();
+        p.hostname_template = "lg-webos-tv-{word}".into();
+        schema_check(&p).expect("kebab-case template must validate");
+    }
+
+    /// NMOD.4: indirect coverage of the OWNER_POOL non-empty guard via
+    /// a const-asserted constant. The compile-time `const _: () =
+    /// assert!(...)` would have already failed the build if the pool
+    /// were ever empty; this test gives the invariant a runtime witness
+    /// so a code-review reader sees it spelled out, not just buried in
+    /// a `const _`.
+    #[test]
+    fn owner_pool_is_non_empty() {
+        assert!(
+            !crate::persona::template::OWNER_POOL.is_empty(),
+            "OWNER_POOL must contain at least one entry; pick_owner would index OOB and abort the daemon"
+        );
+    }
+
+    /// V11 / GH#382: a user-authored persona that lists an unknown
+    /// vendor token (the GH#382 case is `espressif` / `realtek`)
+    /// must hard-fail at validate time, not silently degrade to LAA
+    /// at apply time. Built-ins go through `schema_check` only —
+    /// `validate_user_only` is layered on top in `validate` /
+    /// `validate_bytes`, the user-import paths.
+    #[test]
+    fn user_persona_with_unknown_vendor_token_is_rejected() {
+        let body = r#"
+id = "rogue-iot"
+display_name = "Rogue IoT"
+kind = "stealth"
+category = "iot"
+oui_pool = ["espressif"]
+hostname_template = "esp-{n}"
+mdns_advertise = false
+bt_name_template = ""
+notes = "user persona that should fail"
+"#;
+        let err = validate_bytes(body.as_bytes(), "<test>").unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("oui_pool") && msg.contains("espressif"),
+            "expected unknown-vendor reject, got: {msg}"
+        );
+    }
+
+    /// V11 happy path: a known vendor + an OUI literal both validate.
+    #[test]
+    fn user_persona_with_known_vendor_and_literal_validates() {
+        let body = r#"
+id = "user-ok"
+display_name = "User OK"
+kind = "stealth"
+category = "phone"
+oui_pool = ["apple", "aa:bb:cc"]
+hostname_template = "{owner}s-iphone"
+mdns_advertise = true
+bt_name_template = "x"
+notes = "test"
+"#;
+        validate_bytes(body.as_bytes(), "<test>").expect("known vendors must pass");
     }
 
     /// Issue #305: every brand stealth persona must carry a non-default

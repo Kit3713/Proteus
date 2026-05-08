@@ -73,7 +73,10 @@ pub fn run(purge: bool, yes: bool) -> Result<u8> {
             Ok(g) => g,
             Err(code) => return Ok(code),
         };
-        crate::commands::revert::revert_best_effort(&mut warns);
+        // Issue #386: uninstall doesn't expose `--state` itself (purge
+        // wipes the state dir entirely), so pass `None` here — the
+        // signature change is purely about the explicit-state branch.
+        crate::commands::revert::revert_best_effort(None, &mut warns);
         // Polkit policy is an install-time artifact (deployed by
         // `install.sh`/distro packaging), not a runtime side-effect, so
         // it's wiped here rather than in the shared revert path.

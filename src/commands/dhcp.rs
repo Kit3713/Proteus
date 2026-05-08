@@ -82,7 +82,18 @@ pub fn status(json: bool) -> Result<u8> {
     Ok(exit::SUCCESS)
 }
 
-pub fn apply(state_path: Option<&Path>, config_path: Option<&Path>) -> Result<u8> {
+pub fn apply(yes: bool, state_path: Option<&Path>, config_path: Option<&Path>) -> Result<u8> {
+    // Issue #348/#375 / M1 / N12.2: dispatch was previously dropping
+    // `--yes` via the rest pattern, so wrappers that rely on the gate were
+    // silently mutating. Restore the contract here so apply refuses
+    // without explicit confirmation.
+    if let Err(code) = super::require_yes(
+        yes,
+        "'dhcp apply' is mutating (writes per-connection NM settings)",
+        "proteus help dhcp",
+    ) {
+        return Ok(code);
+    }
     if let Err(e) = super::require_root() {
         eprintln!("proteus: {e}");
         return Ok(exit::PERMISSION_ERROR);
@@ -122,7 +133,16 @@ pub fn apply(state_path: Option<&Path>, config_path: Option<&Path>) -> Result<u8
     Ok(exit::SUCCESS)
 }
 
-pub fn revert(state_path: Option<&Path>) -> Result<u8> {
+pub fn revert(yes: bool, state_path: Option<&Path>) -> Result<u8> {
+    // Issue #348/#375 / M1 / N12.2: same fix as `apply` above —
+    // confirmation was being dropped at dispatch time.
+    if let Err(code) = super::require_yes(
+        yes,
+        "'dhcp revert' is mutating (restores cached NM defaults)",
+        "proteus help dhcp",
+    ) {
+        return Ok(code);
+    }
     if let Err(e) = super::require_root() {
         eprintln!("proteus: {e}");
         return Ok(exit::PERMISSION_ERROR);

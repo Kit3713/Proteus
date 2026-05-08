@@ -69,6 +69,58 @@ permissions:
   contents: write
 
 jobs:
+  # audit I-2 (Stream 3): run `cargo audit` against Cargo.lock before any
+  # binary or package job ships. Fails the release on an open advisory in
+  # the dep set the wiki documents as security-load-bearing — zbus, clap,
+  # tokio, toml, toml_edit, serde, tracing, getrandom. Other crates surface
+  # as warnings; only the listed crates fail the gate, so a transitive
+  # advisory in something like `regex-syntax` does not block a release.
+  cargo-audit:
+    name: cargo audit (Cargo.lock)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - uses: actions-rust-lang/setup-rust-toolchain@2b1f5e9b395427c92ee4e3331786ca3c37afe2d7  # v1
+      - name: Install cargo-audit
+        run: cargo install --locked cargo-audit
+      - name: cargo audit
+        # `--json` so the gate can grep advisory.package_name precisely
+        # instead of regex-matching free-form output. The default `cargo
+        # audit` exits non-zero on any advisory; we soften that to "warn
+        # always, fail only on the load-bearing crate set" so a transitive
+        # advisory in a non-critical dep does not block a security release.
+        run: |
+          set -euo pipefail
+          cargo audit --json > audit.json || true
+          echo "=== cargo audit summary ==="
+          # Pretty-print every advisory for the release notes audit trail.
+          python3 -c '
+          import json, sys
+          a = json.load(open("audit.json"))
+          for v in a.get("vulnerabilities", {}).get("list", []):
+              p = v["package"]["name"]
+              i = v["advisory"]["id"]
+              t = v["advisory"]["title"]
+              print(f"ADVISORY {i} in {p}: {t}")
+          '
+          # Hard-fail on the load-bearing set. Keep this list in sync with
+          # docs/PLAN.md "audit I-2".
+          python3 - <<'PY'
+          import json, sys
+          GATED = {"zbus", "clap", "tokio", "toml", "toml_edit", "serde", "tracing", "getrandom"}
+          a = json.load(open("audit.json"))
+          bad = []
+          for v in a.get("vulnerabilities", {}).get("list", []):
+              if v["package"]["name"] in GATED:
+                  bad.append(f'{v["advisory"]["id"]}: {v["package"]["name"]} — {v["advisory"]["title"]}')
+          if bad:
+              print("FAIL: open advisories in load-bearing crates:", file=sys.stderr)
+              for b in bad:
+                  print("  " + b, file=sys.stderr)
+              sys.exit(1)
+          print("OK: no open advisories in zbus/clap/tokio/toml/toml_edit/serde/tracing/getrandom")
+          PY
+
   # Native x86_64 build inside Fedora 43 to match CI's primary target distro.
   #
   # Reproducibility: pinned toolchain (rust-toolchain.toml), --frozen --locked
@@ -439,7 +491,11 @@ jobs:
   # failed) should not abort the release.
   publish:
     name: publish release
-    needs: [build-x86_64, build-aarch64, build-rpm, build-deb, build-arch-pkg]
+    # audit I-2: cargo-audit gates the publish step. The build jobs run in
+    # parallel with cargo-audit (no needs: edge between them) so a regression
+    # is visible quickly, but the release artifact is never published when
+    # the audit gate fails.
+    needs: [cargo-audit, build-x86_64, build-aarch64, build-rpm, build-deb, build-arch-pkg]
     runs-on: ubuntu-latest
     steps:
       # No checkout needed: softprops/action-gh-release reads the tag/SHA from

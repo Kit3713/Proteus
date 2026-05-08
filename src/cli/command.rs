@@ -111,6 +111,13 @@ pub enum Command {
         ssid: Option<String>,
         #[arg(long)]
         yes: bool,
+        /// Issue #378: print the policy + cooldown math the dispatcher
+        /// hot path is making (effective cooldown, per-SSID pin/interval
+        /// overrides, the configured backend driver) before invoking
+        /// the backend. Triage tool — does NOT mutate; pairs with
+        /// `--cooldown` to surface the actual effective budget.
+        #[arg(long)]
+        explain: bool,
     },
     /// Pin an interface or NM connection to a specific MAC.
     Pin {
@@ -126,6 +133,12 @@ pub enum Command {
     Unpin {
         /// Interface name or NM connection profile.
         target: String,
+        /// Confirm this mutating change (issue #391 / N12.1):
+        /// `unpin` clears the persisted pin so the next rotation
+        /// drops the operator-chosen MAC. Without `--yes` the
+        /// command exits with `CONFIRMATION_REQUIRED`.
+        #[arg(long)]
+        yes: bool,
     },
     /// Show diff between config, defaults, and live state.
     Diff {
@@ -206,6 +219,12 @@ pub enum Command {
         action: Option<WikiAction>,
         /// Page name (e.g. `intro`); omit to list pages.
         page: Option<String>,
+        /// CL6: emit machine-readable JSON instead of the rendered
+        /// markdown / TOC. With a page name the payload is
+        /// `{ "page": ..., "content": ... }`; without one it's
+        /// `{ "pages": [...] }`.
+        #[arg(long)]
+        json: bool,
     },
     /// Show help for a feature (alias for `wiki <feature>` with friendly fallback).
     Help {
@@ -252,6 +271,12 @@ pub enum Command {
     Resume {
         #[arg(long)]
         yes: bool,
+        /// Emit a single-line JSON summary (`{ "resumed": [...], "warnings": [...] }`)
+        /// instead of the human-readable per-iface lines. CL6: parity with
+        /// `kill --status --json` so wrappers don't have to grep the
+        /// human output.
+        #[arg(long)]
+        json: bool,
     },
     /// Manage the Proteus nftables table (ICMP info-drops + optional discovery blocks).
     Nft {

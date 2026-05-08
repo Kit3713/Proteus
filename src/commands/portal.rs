@@ -155,7 +155,18 @@ pub fn run_list(json: bool, state_path: Option<&Path>) -> Result<u8> {
     Ok(exit::SUCCESS)
 }
 
-pub fn run_mark(ssid: &str, state_path: Option<&Path>) -> Result<u8> {
+pub fn run_mark(ssid: &str, yes: bool, state_path: Option<&Path>) -> Result<u8> {
+    // Issue #348 / N12.3: `portal mark` writes state.json (mutating) but
+    // dispatch was previously dropping `--yes` via `..`. Restore the
+    // confirmation contract so wrappers that depend on the gate can't be
+    // silently bypassed.
+    if let Err(code) = super::require_yes(
+        yes,
+        "'portal mark' is mutating (writes known-portal SSID to state.json)",
+        "proteus help portal",
+    ) {
+        return Ok(code);
+    }
     if let Err(e) = super::require_root() {
         eprintln!("proteus: {e}");
         return Ok(exit::PERMISSION_ERROR);
@@ -181,7 +192,16 @@ pub fn run_mark(ssid: &str, state_path: Option<&Path>) -> Result<u8> {
     Ok(exit::SUCCESS)
 }
 
-pub fn run_unmark(ssid: &str, state_path: Option<&Path>) -> Result<u8> {
+pub fn run_unmark(ssid: &str, yes: bool, state_path: Option<&Path>) -> Result<u8> {
+    // Issue #348 / N12.3: same fix as `run_mark` above — confirmation was
+    // being dropped at dispatch time.
+    if let Err(code) = super::require_yes(
+        yes,
+        "'portal unmark' is mutating (removes a known-portal SSID from state.json)",
+        "proteus help portal",
+    ) {
+        return Ok(code);
+    }
     if let Err(e) = super::require_root() {
         eprintln!("proteus: {e}");
         return Ok(exit::PERMISSION_ERROR);
@@ -203,7 +223,17 @@ pub fn run_unmark(ssid: &str, state_path: Option<&Path>) -> Result<u8> {
     Ok(exit::SUCCESS)
 }
 
-pub fn run_open(state_path: Option<&Path>, config_path: Option<&Path>) -> Result<u8> {
+pub fn run_open(yes: bool, state_path: Option<&Path>, config_path: Option<&Path>) -> Result<u8> {
+    // Issue #348 / N12.3: `portal open` triggers a network probe (and
+    // persists the result), so it's grouped with mark/unmark under the
+    // mutating contract. Confirmation was being dropped at dispatch.
+    if let Err(code) = super::require_yes(
+        yes,
+        "'portal open' is mutating (issues a captive-portal probe and persists the result)",
+        "proteus help portal",
+    ) {
+        return Ok(code);
+    }
     if let Err(e) = super::require_root() {
         eprintln!("proteus: {e}");
         return Ok(exit::PERMISSION_ERROR);
