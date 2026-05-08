@@ -102,6 +102,16 @@ Proteus has exactly one DNS knob — strip EDNS Client Subnet from systemd-resol
 - Someone with admin access to your network, or with the ability to actively probe your client, or with court-order access to your ISP, can deanonymize you regardless of what Proteus does. So can a skilled local attacker with the right hardware and time on their hands. Active fingerprinting (sending crafted packets and reading responses) is more powerful than the passive listener model Proteus assumes.
 - **What Proteus is for.** Passive-listener and casual-correlation defense. The goal is to make routine, automated tracking ineffective — not to stop a determined adversary who is specifically interested in you. If you are being personally targeted, you need operational security advice, a wider toolset (Tor, compartmentalization, an air gap), and probably a lawyer. Proteus is for everyone else: the people who don't want every coffee shop and conference Wi-Fi to recognize them across visits.
 
+## Rotation cadence as a fingerprint
+
+A second-order fingerprint that the v0.3.x defaults made worse than they should have: *when* a host rotates is itself a signal. If every Proteus install on the planet rotates every 2 hours on the wallclock hour ±5 minutes, a multi-AP observer (a chain WLAN-controller, a city-scale captive-portal aggregator, or an analytics platform that operates many networks) sees a recognizable cluster of L2-address-change events at the top of every other hour. Even with rotated MACs, "every Proteus user lights up at HH:00" is a Proteus-specific tell.
+
+What Proteus does about it (issue #303): the default `proteus-rotate.timer` keeps the every-2h cadence intent (`OnCalendar=*-*-* 00/2:00:00`) but widens `AccuracySec` to 45 minutes and adds `RandomizedDelaySec=30min`. systemd then fires the unit anywhere inside a 45-minute window after each 2h boundary, with an additional 0–30 min uniform offset on top. Across many hosts, the rotation events smear across most of the hour instead of clustering at HH:00; the "everyone-rotates-at-HH:00 ±5min" signature goes away. The 5-minute probe-check timer gets the same treatment, scaled down (`AccuracySec=2min`, `RandomizedDelaySec=2min`) so the 5-minute boundary cluster also blurs.
+
+The trade-off: a single attacker watching one host now sees more variance in *when* a rotation lands — up to ~45 minutes of jitter on the 2h cadence, ~2 minutes on the 5-minute probe cadence. That is the right side of the trade. Cross-host fingerprintability is the larger concern; per-host wallclock predictability buys a determined attacker very little once the MAC, DHCP banner, hostname, and IPv6 IID have all rotated. The "roughly every 2h" intent stays intact for users; only the cluster pattern across hosts goes away.
+
+If you tune `[rotation] interval` away from the default, `proteus timer set rotate --interval` writes a drop-in that uses `OnUnitActiveSec=` (relative-to-last-fire cadence) instead of `OnCalendar=`. That form is naturally non-clustering — every host's 0-of-2-hours starts at a different wall time — and inherits the same `AccuracySec` jitter window. So custom cadences also avoid the v0.3.x signature pattern.
+
 ## Deferred to a future version
 
 Things Proteus could plausibly do but does not in v1. Listed here so you do not assume they exist.

@@ -114,18 +114,23 @@ fn unit_path(suffix: &str, name: &str) -> PathBuf {
 
 /// `[Timer] OnUnitActiveSec=<n>` — fires every `n` seconds after the
 /// last activation. Mirrors the `dist/systemd/proteus-rotate.timer`
-/// shape: `Persistent=true`, `AccuracySec=` set so systemd can batch.
+/// shape: `Persistent=true`, `AccuracySec=` and `RandomizedDelaySec=`
+/// set so the cadence is not itself a Proteus fingerprint observable
+/// across hosts (issue #303). Reuses `crate::timer::pick_jitter` so
+/// generated artifacts share the same band table as the user-set
+/// drop-ins.
 fn render_periodic_timer(name: &str, interval_seconds: u64) -> String {
-    let accuracy = pick_accuracy(interval_seconds);
+    let (accuracy, randomized) = crate::timer::pick_jitter(interval_seconds);
     format!(
         "[Unit]\n\
-         Description=Proteus periodic check ({name}) every {interval_seconds}s\n\
+         Description=Proteus periodic check ({name}) ~ every {interval_seconds}s (jittered)\n\
          \n\
          [Timer]\n\
          OnUnitActiveSec={interval_seconds}\n\
          OnBootSec={interval_seconds}\n\
          Persistent=true\n\
          AccuracySec={accuracy}\n\
+         RandomizedDelaySec={randomized}\n\
          Unit=proteus-{name}.service\n\
          \n\
          [Install]\n\
@@ -194,18 +199,6 @@ fn render_resume_service(name: &str, exec: &str) -> String {
          [Install]\n\
          WantedBy=sleep.target\n",
     )
-}
-
-/// Choose a reasonable `AccuracySec` so systemd can batch nearby
-/// timers. Sub-minute intervals get tight accuracy; longer cadences
-/// can tolerate a few minutes of drift.
-fn pick_accuracy(interval_seconds: u64) -> &'static str {
-    match interval_seconds {
-        0..=60 => "10s",
-        61..=600 => "30s",
-        601..=3600 => "1min",
-        _ => "5min",
-    }
 }
 
 #[cfg(test)]
@@ -292,11 +285,27 @@ mod tests {
         assert!(s.hook_resume("ok", "x\ny").is_err());
     }
 
+    /// Issue #303: every periodic timer this generator emits must
+    /// carry both `AccuracySec=` and `RandomizedDelaySec=` so the
+    /// generated cadence is not itself a Proteus fingerprint
+    /// observable across hosts.
     #[test]
-    fn pick_accuracy_buckets_sane() {
-        assert_eq!(pick_accuracy(30), "10s");
-        assert_eq!(pick_accuracy(300), "30s");
-        assert_eq!(pick_accuracy(2_000), "1min");
-        assert_eq!(pick_accuracy(86_400), "5min");
+    fn schedule_periodic_emits_jitter_directives() {
+        let s = Systemd::new();
+        for interval in [60, 300, 3_600, 7_200, 86_400] {
+            let art = s.schedule_periodic("rotate", interval, "/x").unwrap();
+            assert!(
+                art.content.lines().any(|l| l.starts_with("AccuracySec=")),
+                "interval={interval}: missing AccuracySec= (issue #303):\n{}",
+                art.content
+            );
+            assert!(
+                art.content
+                    .lines()
+                    .any(|l| l.starts_with("RandomizedDelaySec=")),
+                "interval={interval}: missing RandomizedDelaySec= (issue #303):\n{}",
+                art.content
+            );
+        }
     }
 }

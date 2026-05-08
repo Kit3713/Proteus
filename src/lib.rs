@@ -317,4 +317,99 @@ mod tests {
             "polkit policy uses auth_admin_keep on a mutating action (issue #133)"
         );
     }
+
+    /// Helper: pull the active directive lines from a systemd unit body
+    /// (skips comments and blank lines). The negative assertions in the
+    /// #303 tests need to look at directives, not comments — the timer
+    /// files comment-document the v0.3.x shape they replaced.
+    fn unit_directives(body: &str) -> impl Iterator<Item = &str> {
+        body.lines()
+            .map(str::trim_start)
+            .filter(|l| !l.is_empty() && !l.starts_with('#') && !l.starts_with(';'))
+    }
+
+    /// Issue #303: the default rotation cadence cannot be the v0.3.x
+    /// recognizable shape (`OnCalendar=*-*-* 00/2:00:00` clustered with a
+    /// narrow `AccuracySec=5min` and no `RandomizedDelaySec=`). That
+    /// pattern was itself a Proteus fingerprint observable across hosts at
+    /// the WLAN-controller layer. The replacement keeps the every-2h
+    /// cadence intent but widens jitter so the rotation event no longer
+    /// clusters at HH:00 across the user base.
+    #[test]
+    fn rotation_timer_is_not_recognizable_v0_3_x_shape() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("dist/systemd");
+        let path = dir.join("proteus-rotate.timer");
+        let body = std::fs::read_to_string(&path).expect("proteus-rotate.timer should exist");
+
+        // The narrow accuracy that made the cluster recognizable — must
+        // be gone from the active directives. The comments in the file
+        // are allowed to *document* the prior shape for posterity; we
+        // only police the live key=value lines here.
+        let directives: Vec<&str> = unit_directives(&body).collect();
+        for forbidden in ["AccuracySec=5min", "AccuracySec=10min"] {
+            assert!(
+                !directives.contains(&forbidden),
+                "proteus-rotate.timer active directive `{forbidden}` is the recognizable v0.3.x shape (issue #303)"
+            );
+        }
+
+        // Affirmative: the new shape must specify a wide accuracy and a
+        // randomized delay. Reading-the-file checks here are coarse — we
+        // assert the directives exist with sane values rather than
+        // exact-string matching, so future tuning doesn't have to update
+        // this test.
+        let accuracy_line = directives
+            .iter()
+            .find(|l| l.starts_with("AccuracySec="))
+            .copied()
+            .expect("proteus-rotate.timer must set AccuracySec= (issue #303)");
+        assert!(
+            directives
+                .iter()
+                .any(|l| l.starts_with("RandomizedDelaySec=")),
+            "proteus-rotate.timer must set RandomizedDelaySec= to break the v0.3.x fingerprint (issue #303); got:\n{body}"
+        );
+
+        // AccuracySec must be at least 30 min — anything less leaves the
+        // ±cluster visible to a multi-AP observer.
+        let accuracy_value = accuracy_line.split('=').nth(1).unwrap_or("").trim();
+        let accepted = matches!(accuracy_value, "30min" | "45min" | "1h" | "1hr" | "1hour")
+            || accuracy_value
+                .strip_suffix("min")
+                .and_then(|n| n.parse::<u64>().ok())
+                .map(|n| n >= 30)
+                .unwrap_or(false)
+            || accuracy_value
+                .strip_suffix('h')
+                .and_then(|n| n.parse::<u64>().ok())
+                .map(|n| n >= 1)
+                .unwrap_or(false);
+        assert!(
+            accepted,
+            "proteus-rotate.timer AccuracySec={accuracy_value} is too tight; need >=30min to blur the v0.3.x cluster (issue #303)"
+        );
+    }
+
+    /// Issue #303: same anti-fingerprint treatment for the probe-check
+    /// timer. The v0.3.x default (`AccuracySec=30s`) made every Proteus
+    /// host wake every 5 min on the wallclock minute ±30s — also a
+    /// recognizable cluster.
+    #[test]
+    fn check_timer_is_not_recognizable_v0_3_x_shape() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("dist/systemd");
+        let path = dir.join("proteus-check.timer");
+        let body = std::fs::read_to_string(&path).expect("proteus-check.timer should exist");
+
+        let directives: Vec<&str> = unit_directives(&body).collect();
+        assert!(
+            !directives.contains(&"AccuracySec=30s"),
+            "proteus-check.timer active directive AccuracySec=30s is the recognizable v0.3.x shape (issue #303)"
+        );
+        assert!(
+            directives
+                .iter()
+                .any(|l| l.starts_with("RandomizedDelaySec=")),
+            "proteus-check.timer must set RandomizedDelaySec= to break the v0.3.x fingerprint (issue #303)"
+        );
+    }
 }

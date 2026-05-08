@@ -6,11 +6,26 @@ For the mental model behind rotation, see `proteus wiki concepts`. For the probe
 
 Three units do the work. They all shell out to the same `proteus` binary.
 
-- `proteus-rotate.timer` — fires every 2h by default. On each tick, runs `proteus rotate` on every managed interface. This is the scheduled cadence.
-- `proteus-check.timer` — fires every 5m. Runs the probe quorum (see `proteus wiki probes`). If quorum says "down" and the portal classifier says "not a portal", invokes a rotation. This is the reactive trigger.
+- `proteus-rotate.timer` — fires *roughly* every 2h by default. On each tick, runs `proteus rotate` on every managed interface. This is the scheduled cadence. The rotation does not land at HH:00 sharp on purpose — see "Rotation jitter" below.
+- `proteus-check.timer` — fires *roughly* every 5m. Runs the probe quorum (see `proteus wiki probes`). If quorum says "down" and the portal classifier says "not a portal", invokes a rotation. This is the reactive trigger.
 - `proteus-boot.service` — oneshot, ordered after `network-online.target`. Applies the current config and does the first rotation of the session. This is what you want — fresh MAC at boot, before anything you do leaks the previous one.
 
 All three are installed and enabled by `proteus apply`. None of them is required for the CLI to work; you can disable both timers and still call `sudo proteus rotate` by hand.
+
+## Rotation jitter
+
+The default `proteus-rotate.timer` carries `AccuracySec=45min` plus `RandomizedDelaySec=30min` on top of an `OnCalendar=*-*-* 00/2:00:00` base. The probe-check timer has the same shape scaled down (`AccuracySec=2min` + `RandomizedDelaySec=2min`). systemd is then free to fire the unit anywhere inside that combined window after the calendar boundary, which means **the actual rotation event lands somewhere in the 0–~75 minute window after each 2h tick**, not at HH:00 sharp.
+
+This is on purpose. Issue #303: every Proteus install before this change rotated every 2 hours on the wallclock hour ±5 minutes. A multi-AP observer (chain WLAN controller, citywide captive-portal aggregator, analytics platform that operates many networks) could spot the cluster of L2-address-change events at the top of every other hour and fingerprint Proteus users by scheduling pattern alone, even with rotated MACs. Wide jitter smears the cluster across most of the hour and the cross-host signature goes away. See `proteus wiki threat-model` ("Rotation cadence as a fingerprint") for the full rationale and trade-offs.
+
+What this means in practice:
+
+- You will not see "rotation lands at 14:00:00 sharp" in `proteus timer status` or `journalctl -u proteus-rotate`. It might land at 14:18, or 14:43, or 14:55. That is correct behavior.
+- The "next fire" time `systemctl list-timers` reports for `proteus-rotate.timer` is the *earliest* possible fire — the actual fire happens somewhere inside the jitter window.
+- The 2h-on-average semantics are unchanged. Across a day, you still get ~12 rotations on a continuously-up host.
+- Custom cadences set via `proteus timer set rotate --interval <n>` use `OnUnitActiveSec=<n>` (relative-to-last-fire), which is naturally non-clustering across hosts. Custom cadences also avoid the v0.3.x signature pattern.
+
+If you want a tighter wallclock predictability for some reason (debugging, scheduled-window correlation with a maintenance job), drop in your own override under `/etc/systemd/system/proteus-rotate.timer.d/`. The defaults are tuned for the privacy threat model, not for wallclock determinism.
 
 ## Configuration
 

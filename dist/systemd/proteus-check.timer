@@ -1,11 +1,18 @@
 [Unit]
-Description=Proteus probe-driven rotation check (every 5 min by default)
+Description=Proteus probe-driven rotation check (~ every 5 min by default, jittered)
 
 [Timer]
 # Probe-driven check: if the probe quorum fails, rotate immediately. See the
 # `rotation` and `probes` wiki pages for tuning.
+#
+# Issue #303: the prior shape (`*:00/5:00` + `AccuracySec=30s`) made every
+# Proteus host wake every 5 min on the wallclock minute ±30 s — a
+# recognizable cluster across hosts. Widen `AccuracySec` to 2 min and
+# add a randomized delay so the check ticks no longer cluster on the
+# :00/:05/:10 boundaries shared by every Proteus install.
 OnCalendar=*-*-* *:00/5:00
-AccuracySec=30s
+AccuracySec=2min
+RandomizedDelaySec=2min
 Unit=proteus-check.service
 
 [Install]
