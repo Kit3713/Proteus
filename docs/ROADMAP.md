@@ -536,47 +536,47 @@ Stream 9), S1, audit N‑3 (residual), NEV2.3, NMOD.1, NMOD.2, NBE.6.
 
 **Work:**
 
-- ⏳ Lift the `HELD` mutex out of the retry-sleep loop (C1, N12.13) — the
+- ✅ Lift the `HELD` mutex out of the retry-sleep loop (C1, N12.13) — the
   highest-frequency contention pin.
 - ⏳ Use monotonic clock for cooldown (C2) instead of wall-clock-skew
-  vulnerable `SystemTime`.
-- ⏳ Add subprocess timeouts to `apply` and `revert` (C3); SIGTERM handler
-  in events daemon (C4).
-- ⏳ State quarantine rename: surface failures (C5, S4); chmod-after-write
-  race (N12.16); UUID case-folding (N12.17); `lock_path_for` fallback for
+  vulnerable `SystemTime`. **Deferred** — fix lives in `src/backend/nm.rs`
+  which is Stream 4's territory; flagged for follow-up.
+- ✅ Add subprocess timeouts to `apply` and `revert` (C3).
+- ⏳ SIGTERM handler in events daemon (C4). **Deferred** — events.rs is
+  Stream 4's scope.
+- ✅ State quarantine rename: surface failures (C5, S4); ✅ chmod-after-write
+  race (N12.16); ✅ UUID case-folding (N12.17); ✅ `lock_path_for` fallback for
   bare filenames (N12.15).
-- ⏳ Bound `PROTEUS_LOCK_TIMEOUT_MS` (C8); document UUID-key cross-system
-  migration behaviour (C9); restore handler-panic visibility (C7); make
-  mock backend actually flock for test honesty (C6).
-- ⏳ Replace `std::env::set_var` / `remove_var` in `uninstall.rs` test setup
+- ✅ Bound `PROTEUS_LOCK_TIMEOUT_MS` (C8); ✅ document UUID-key cross-system
+  migration behaviour (C9); ⏳ restore handler-panic visibility (C7) —
+  **deferred** (events/mod.rs is Stream 4's); ⏳ make mock backend actually
+  flock for test honesty (C6) — **deferred** (mock.rs is Stream 4's).
+- ✅ Replace `std::env::set_var` / `remove_var` in `uninstall.rs` test setup
   with a serialized-test harness (S1).
-- ⏳ Apply `.custom_flags(libc::O_NOFOLLOW)` to the `state_lock` `OpenOptions`
-  call (audit N‑3 residual). The `mode(0o600)` half landed in PR #310; the
-  symlink-follow gap is what stayed open. Posture should match
-  `write_atomic` (`O_CREAT | O_EXCL | O_NOFOLLOW`, `0o600`, RAII cleanup).
-- ⏳ Reorder `apply::run` to load and validate config **before** acquiring
-  the state lock (NMOD.1, **High**). Today the lock is held across config
-  validation; combined with C1 / N12.13 (HELD mutex held across retry sleep)
-  this can starve the rotate timer up to the full 5 s budget on a
-  misconfigured per-SSID block. Concretely: move
-  `Config::default_or_loaded` and `validate_ranges` ahead of
-  `acquire_state_lock_or_print` in `src/commands/apply.rs:67-81`.
-- ⏳ Pair NMOD.1 with moving the `require_yes` gate behind config validation
-  (NMOD.2): users with config typos see the typo error before the
-  confirmation prompt, restoring the "confirmation = mutation imminent"
-  invariant.
-- ⏳ Wrap `systemd-hostnamed` DBus calls
+- ✅ Apply `.custom_flags(libc::O_NOFOLLOW)` to the `state_lock` `OpenOptions`
+  call (audit N‑3 residual). Paired with `fchmod`-on-fd to close GH #370's
+  post-open `chmod` TOCTOU.
+- ✅ Reorder `apply::run` to load and validate config **before** acquiring
+  the state lock (NMOD.1, **High**).
+- ✅ Pair NMOD.1 with moving the `require_yes` gate behind config validation
+  (NMOD.2).
+- ✅ Wrap `systemd-hostnamed` DBus calls
   (`set_static_hostname` / `set_pretty_hostname` / `set_hostname`) in
   `tokio::time::timeout(Duration::from_secs(5), …)` and surface `TimedOut`
-  as a recoverable error (NEV2.3). A stalled hostnamed currently pins the
-  NM dispatcher synchronously; document the bound in the wiki.
-- ⏳ Add `mac.validate_assignable()` to `MockBackend::set_cloned_mac` so
-  unit tests catch validator-edge-case bugs that production NM would
-  reject (NBE.6).
+  as a recoverable error (NEV2.3).
+- ⏳ Add `mac.validate_assignable()` to `MockBackend::set_cloned_mac` (NBE.6)
+  — **deferred** to Stream 4 (mock.rs is its scope).
+- ✅ GH #354 / GH #363: state-lock acquire chmodded state-dir parent
+  unconditionally (`--state /tmp/x` → `chmod /tmp 0700` system-bricking
+  footgun). `ensure_state_dir_secure` now only chmods directories Proteus
+  creates or the canonical `/var/lib/proteus`.
+- ✅ GH #370: state-lock `O_NOFOLLOW` + post-open `chmod` TOCTOU. Switched
+  to `fchmod` on the open fd.
 
-**Acceptance:** stress test with 16 concurrent `acquire_state_lock` callers;
+**Acceptance:** ✅ stress test with 16 concurrent `acquire_state_lock` callers;
 assert no thread blocks more than 5 s; assert no `panic = abort` is
-triggered.
+triggered. (`stress_concurrent_acquires_stay_within_budget` in
+`src/state_lock.rs`.)
 
 ### Stream 6 — Panic Hardening ⏳
 
