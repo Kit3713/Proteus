@@ -260,8 +260,14 @@ mod tests {
     fn responds_false_returns_free() {
         let p = MockProbe::responds(false);
         let mac = "aa:bb:cc:dd:ee:ff".parse::<Mac>().unwrap();
-        assert_eq!(p.arp_probe("wlan0", mac, ARP_PROBE_TIMEOUT), ProbeOutcome::Free);
-        assert_eq!(p.nd_probe("wlan0", mac, ND_PROBE_TIMEOUT), ProbeOutcome::Free);
+        assert_eq!(
+            p.arp_probe("wlan0", mac, ARP_PROBE_TIMEOUT),
+            ProbeOutcome::Free
+        );
+        assert_eq!(
+            p.nd_probe("wlan0", mac, ND_PROBE_TIMEOUT),
+            ProbeOutcome::Free
+        );
     }
 
     #[test]

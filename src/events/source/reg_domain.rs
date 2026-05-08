@@ -47,9 +47,7 @@ impl RegDomainChangeSource {
                 })
             }
             Err(e) => {
-                tracing::debug!(
-                    "reg-domain-change: genetlink unavailable, source disabled: {e}"
-                );
+                tracing::debug!("reg-domain-change: genetlink unavailable, source disabled: {e}");
                 None
             }
         }
@@ -207,7 +205,11 @@ mod tests {
         }
     }
 
-    fn rig() -> (EventRegistry, Arc<AtomicUsize>, Arc<Mutex<Option<RotationTrigger>>>) {
+    fn rig() -> (
+        EventRegistry,
+        Arc<AtomicUsize>,
+        Arc<Mutex<Option<RotationTrigger>>>,
+    ) {
         let n = Arc::new(AtomicUsize::new(0));
         let last = Arc::new(Mutex::new(None));
         let reg = EventRegistry::new();

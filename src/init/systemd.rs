@@ -243,7 +243,10 @@ mod tests {
         assert!(art.content.contains("OnUnitActiveSec=7200"));
         assert!(art.content.contains("Unit=proteus-rotate.service"));
         // The service half is in the same blob.
-        assert!(art.content.contains("ExecStart=/usr/local/bin/proteus rotate --yes"));
+        assert!(
+            art.content
+                .contains("ExecStart=/usr/local/bin/proteus rotate --yes")
+        );
         assert!(art.content.contains("WantedBy=timers.target"));
     }
 

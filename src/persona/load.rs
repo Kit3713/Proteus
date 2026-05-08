@@ -36,9 +36,8 @@ pub fn load_builtin(id: &str) -> Result<Option<Persona>> {
     let raw = file
         .contents_utf8()
         .ok_or_else(|| anyhow!("builtin persona {id} is not valid UTF-8"))?;
-    let p: Persona = toml::from_str(raw).with_context(|| {
-        format!("parsing builtin persona '{id}' (see `proteus wiki personas`)")
-    })?;
+    let p: Persona = toml::from_str(raw)
+        .with_context(|| format!("parsing builtin persona '{id}' (see `proteus wiki personas`)"))?;
     if p.id != id {
         anyhow::bail!(
             "builtin persona file '{id}.toml' has mismatched id field '{}' (see wiki personas)",
@@ -137,8 +136,8 @@ pub fn validate(path: &Path) -> Result<Persona> {
 }
 
 fn parse_file(path: &Path) -> Result<Persona> {
-    let raw = std::fs::read_to_string(path)
-        .with_context(|| format!("reading {}", path.display()))?;
+    let raw =
+        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
     let p: Persona = toml::from_str(&raw).with_context(|| {
         format!(
             "parsing {} (see `proteus wiki personas` for the schema)",
@@ -222,8 +221,7 @@ mod tests {
                 p.id, stem,
                 "builtin {stem}.toml id field mismatches the file stem"
             );
-            schema_check(&p)
-                .unwrap_or_else(|e| panic!("builtin {stem} failed schema check: {e}"));
+            schema_check(&p).unwrap_or_else(|e| panic!("builtin {stem} failed schema check: {e}"));
             count += 1;
         }
         assert!(
@@ -267,10 +265,8 @@ mod tests {
 
     #[test]
     fn user_persona_shadows_builtin_on_collision() {
-        let dir = std::env::temp_dir().join(format!(
-            "proteus-persona-shadow-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("proteus-persona-shadow-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let body = r#"
 id = "iphone-15"
@@ -338,10 +334,8 @@ notes = "user override"
 
     #[test]
     fn validate_accepts_a_well_formed_user_file() {
-        let dir = std::env::temp_dir().join(format!(
-            "proteus-persona-validate-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("proteus-persona-validate-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("custom.toml");
         let body = r#"

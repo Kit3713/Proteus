@@ -222,10 +222,7 @@ pub trait NetworkBackend: Send + Sync {
 
     /// Trigger a DHCP lease renew on `device` without touching the
     /// cloned MAC. Roadmap Milestone 4c.
-    fn renew_lease<'a>(
-        &'a self,
-        device: &'a BackendDevice,
-    ) -> BoxFuture<'a, Result<RenewOutcome>>;
+    fn renew_lease<'a>(&'a self, device: &'a BackendDevice) -> BoxFuture<'a, Result<RenewOutcome>>;
 
     /// Write `value` into the connection's anonymous outer identity
     /// (`802-1x.anonymous-identity` on NM). An empty string clears

@@ -17,9 +17,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 
-use super::{
-    BackendDevice, BoxFuture, ConnectionRef, NetworkBackend, RenewOutcome, RotateOutcome,
-};
+use super::{BackendDevice, BoxFuture, ConnectionRef, NetworkBackend, RenewOutcome, RotateOutcome};
 use crate::ipv6::nm::Ipv6NmSettings;
 use crate::mac::Mac;
 use crate::state::DhcpSettingsSnapshot;
@@ -381,10 +379,7 @@ impl NetworkBackend for MockBackend {
         Box::pin(async move { Ok(()) })
     }
 
-    fn renew_lease<'a>(
-        &'a self,
-        device: &'a BackendDevice,
-    ) -> BoxFuture<'a, Result<RenewOutcome>> {
+    fn renew_lease<'a>(&'a self, device: &'a BackendDevice) -> BoxFuture<'a, Result<RenewOutcome>> {
         let mut inner = self.inner.lock().unwrap();
         inner.calls.push(MockCall::RenewLease {
             iface: device.iface.clone(),
@@ -606,10 +601,7 @@ mod tests {
                 backend.anonymous_identity_for(&cref).as_deref(),
                 Some("anonymous@example.edu")
             );
-            backend
-                .write_anonymous_identity(&cref, "")
-                .await
-                .unwrap();
+            backend.write_anonymous_identity(&cref, "").await.unwrap();
             assert!(backend.anonymous_identity_for(&cref).is_none());
         });
     }

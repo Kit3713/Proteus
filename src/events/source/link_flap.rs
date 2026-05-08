@@ -88,9 +88,7 @@ impl LinkFlapSource {
                 })
             }
             Err(e) => {
-                tracing::debug!(
-                    "link-flap: netlink socket unavailable, source disabled: {e}"
-                );
+                tracing::debug!("link-flap: netlink socket unavailable, source disabled: {e}");
                 None
             }
         }
@@ -341,7 +339,11 @@ mod tests {
         src.push("wlan0", true, t0 + Duration::from_millis(100));
         // Big gap — both prior records age out of the window.
         src.push("wlan0", false, t0 + Duration::from_secs(5));
-        src.push("wlan0", true, t0 + Duration::from_secs(5) + Duration::from_millis(100));
+        src.push(
+            "wlan0",
+            true,
+            t0 + Duration::from_secs(5) + Duration::from_millis(100),
+        );
         src.start(&reg).unwrap();
         assert_eq!(n.load(Ordering::SeqCst), 0);
     }

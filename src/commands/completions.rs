@@ -29,9 +29,7 @@ pub fn run(shell: &str) -> Result<u8> {
         "zsh" => ZSH,
         "fish" => FISH,
         other => {
-            eprintln!(
-                "proteus: unknown shell '{other}'; supported: bash, zsh, fish"
-            );
+            eprintln!("proteus: unknown shell '{other}'; supported: bash, zsh, fish");
             return Ok(exit::CONFIG_ERROR);
         }
     };

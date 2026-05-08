@@ -195,8 +195,8 @@ impl NetworkBackend for NmBackend {
             match res {
                 Ok(c) if c == crate::exit::SUCCESS => {
                     // Read back the new MAC the rotation just wrote.
-                    let new_state = crate::state::State::load_or_default(&state_path)
-                        .unwrap_or_default();
+                    let new_state =
+                        crate::state::State::load_or_default(&state_path).unwrap_or_default();
                     let new_mac = new_state
                         .managed
                         .interfaces
@@ -264,10 +264,7 @@ impl NetworkBackend for NmBackend {
         })
     }
 
-    fn renew_lease<'a>(
-        &'a self,
-        device: &'a BackendDevice,
-    ) -> BoxFuture<'a, Result<RenewOutcome>> {
+    fn renew_lease<'a>(&'a self, device: &'a BackendDevice) -> BoxFuture<'a, Result<RenewOutcome>> {
         Box::pin(async move {
             if device.identifier.is_empty() {
                 return Err(anyhow!(
@@ -324,8 +321,7 @@ fn parse_connection_ref(cref: &ConnectionRef) -> Result<OwnedObjectPath> {
             "backend::nm: connection has no NM dbus path (empty identifier)"
         ));
     }
-    let p = ObjectPath::try_from(s)
-        .with_context(|| format!("parsing NM connection path '{s}'"))?;
+    let p = ObjectPath::try_from(s).with_context(|| format!("parsing NM connection path '{s}'"))?;
     Ok(p.into())
 }
 
@@ -405,10 +401,7 @@ mod tests {
             "/org/freedesktop/NetworkManager/Settings/3",
         ))
         .expect("valid dbus path");
-        assert_eq!(
-            p.as_str(),
-            "/org/freedesktop/NetworkManager/Settings/3"
-        );
+        assert_eq!(p.as_str(), "/org/freedesktop/NetworkManager/Settings/3");
     }
 
     #[test]
@@ -431,9 +424,7 @@ mod tests {
         // epoch, then round trip back through the inverse.
         let secs: u64 = 1_710_000_000; // 2024-03-09 16:00 UTC
         let (y, mo, d, h, mi, s) = crate::commands::unix_to_ymdhms(secs);
-        let stamp = format!(
-            "{y:04}-{mo:02}-{d:02}T{h:02}:{mi:02}:{s:02}Z"
-        );
+        let stamp = format!("{y:04}-{mo:02}-{d:02}T{h:02}:{mi:02}:{s:02}Z");
         let parsed = parse_iso8601_z(&stamp).unwrap();
         assert_eq!(parsed, secs);
     }

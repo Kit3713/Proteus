@@ -12,7 +12,9 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use serde::Serialize;
 
-use crate::backend::{BackendDevice, BackendKind, NetworkBackend, RenewOutcome as BackendRenewOutcome};
+use crate::backend::{
+    BackendDevice, BackendKind, NetworkBackend, RenewOutcome as BackendRenewOutcome,
+};
 use crate::config::Config;
 use crate::exit;
 // Roadmap Milestone 1: keep `crate::nm::*` reachable for the deep
@@ -22,7 +24,7 @@ use crate::exit;
 // equivalents as they land. The high-level apply/revert/renew flows
 // route through `crate::backend::*` so the orchestrator can share a
 // single backend selection (Roadmap M1).
-use crate::nm::{self, ConnectionSettings, DeviceKind, DeviceInfo, dhcp as nmdhcp};
+use crate::nm::{self, ConnectionSettings, DeviceInfo, DeviceKind, dhcp as nmdhcp};
 use crate::state::{DhcpSettingsSnapshot, State};
 use crate::version;
 
@@ -205,14 +207,10 @@ pub fn renew(iface: Option<&str>, yes: bool, state_path: Option<&Path>) -> Resul
         // wrappers can distinguish "nothing to do" from "all good".
         match iface {
             Some(name) => {
-                eprintln!(
-                    "proteus: no NetworkManager-managed device for interface '{name}'"
-                );
+                eprintln!("proteus: no NetworkManager-managed device for interface '{name}'");
             }
             None => {
-                eprintln!(
-                    "proteus: no NetworkManager-managed wifi/ethernet interfaces found"
-                );
+                eprintln!("proteus: no NetworkManager-managed wifi/ethernet interfaces found");
             }
         }
         return Ok(exit::GENERIC_ERROR);
@@ -494,11 +492,8 @@ async fn do_apply(
         // AFTER suppression so persona slots fill exactly what the
         // suppression path would have left empty. The user's per-knob
         // suppression always wins (passed in here as the same bools).
-        let active_persona = crate::persona::active_for(
-            config,
-            None,
-            crate::persona::resolve::default_user_root(),
-        );
+        let active_persona =
+            crate::persona::active_for(config, None, crate::persona::resolve::default_user_root());
         let changed_persona = if let Some(p) = active_persona.as_ref() {
             nmdhcp::apply_persona_fingerprint(
                 &mut new_settings,
@@ -866,7 +861,10 @@ mod tests {
             interface: "wlan0".into(),
             kind: DeviceKind::Wifi,
             hw_address: None,
-            path: zbus::zvariant::OwnedObjectPath::try_from("/org/freedesktop/NetworkManager/Devices/1").unwrap(),
+            path: zbus::zvariant::OwnedObjectPath::try_from(
+                "/org/freedesktop/NetworkManager/Devices/1",
+            )
+            .unwrap(),
             managed: true,
             connections: vec![],
         };
@@ -874,7 +872,10 @@ mod tests {
             interface: "eth0".into(),
             kind: DeviceKind::Ethernet,
             hw_address: None,
-            path: zbus::zvariant::OwnedObjectPath::try_from("/org/freedesktop/NetworkManager/Devices/2").unwrap(),
+            path: zbus::zvariant::OwnedObjectPath::try_from(
+                "/org/freedesktop/NetworkManager/Devices/2",
+            )
+            .unwrap(),
             managed: false,
             connections: vec![],
         };
@@ -882,7 +883,10 @@ mod tests {
             interface: "tun0".into(),
             kind: DeviceKind::Other(16),
             hw_address: None,
-            path: zbus::zvariant::OwnedObjectPath::try_from("/org/freedesktop/NetworkManager/Devices/3").unwrap(),
+            path: zbus::zvariant::OwnedObjectPath::try_from(
+                "/org/freedesktop/NetworkManager/Devices/3",
+            )
+            .unwrap(),
             managed: true,
             connections: vec![],
         };
@@ -910,9 +914,9 @@ mod tests {
 
     // === Roadmap Milestone 1 — renew path routes through backend trait ===
 
+    use crate::backend::RenewOutcome as BackendRenewOutcome;
     use crate::backend::mock::{MockBackend, MockCall};
     use crate::backend::{BackendDevice, BackendKind, ConnectionRef};
-    use crate::backend::RenewOutcome as BackendRenewOutcome;
 
     fn rt() -> tokio::runtime::Runtime {
         tokio::runtime::Builder::new_current_thread()
@@ -942,9 +946,8 @@ mod tests {
         backend.insert_device(mock_dev("wlan0"), None);
         backend.set_renew_outcome("wlan0", BackendRenewOutcome::Reapplied);
 
-        let outcomes = rt().block_on(async {
-            do_renew_with_backend(&backend, None).await.unwrap()
-        });
+        let outcomes =
+            rt().block_on(async { do_renew_with_backend(&backend, None).await.unwrap() });
         assert_eq!(outcomes.len(), 1);
         assert_eq!(outcomes[0].iface, "wlan0");
         assert_eq!(outcomes[0].method, "reapply");
@@ -964,9 +967,8 @@ mod tests {
         let backend = MockBackend::new();
         backend.insert_device(mock_dev("wlan0"), None);
         backend.set_renew_outcome("wlan0", BackendRenewOutcome::Reapplied);
-        let outcomes = rt().block_on(async {
-            do_renew_with_backend(&backend, Some("eth9")).await.unwrap()
-        });
+        let outcomes =
+            rt().block_on(async { do_renew_with_backend(&backend, Some("eth9")).await.unwrap() });
         assert!(outcomes.is_empty());
         let log = backend.call_log();
         assert!(!log.iter().any(|c| matches!(c, MockCall::RenewLease { .. })));
@@ -979,9 +981,8 @@ mod tests {
         let backend = MockBackend::new();
         backend.insert_device(mock_dev("wlan0"), None);
         backend.set_renew_outcome("wlan0", BackendRenewOutcome::NoActiveConnection);
-        let outcomes = rt().block_on(async {
-            do_renew_with_backend(&backend, None).await.unwrap()
-        });
+        let outcomes =
+            rt().block_on(async { do_renew_with_backend(&backend, None).await.unwrap() });
         assert_eq!(outcomes.len(), 1);
         assert_eq!(outcomes[0].method, "skipped");
     }
@@ -994,9 +995,8 @@ mod tests {
         let backend = MockBackend::new();
         backend.insert_device(mock_dev("wlan0"), None);
         backend.set_renew_outcome("wlan0", BackendRenewOutcome::DisconnectActivated);
-        let outcomes = rt().block_on(async {
-            do_renew_with_backend(&backend, None).await.unwrap()
-        });
+        let outcomes =
+            rt().block_on(async { do_renew_with_backend(&backend, None).await.unwrap() });
         assert_eq!(outcomes[0].method, "disconnect+activate");
     }
 
@@ -1010,9 +1010,8 @@ mod tests {
         d.kind = BackendKind::Ethernet;
         d.managed = false;
         backend.insert_device(d, None);
-        let outcomes = rt().block_on(async {
-            do_renew_with_backend(&backend, None).await.unwrap()
-        });
+        let outcomes =
+            rt().block_on(async { do_renew_with_backend(&backend, None).await.unwrap() });
         assert!(outcomes.is_empty());
     }
 }

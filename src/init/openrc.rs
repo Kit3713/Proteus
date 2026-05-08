@@ -179,7 +179,10 @@ mod tests {
         assert!(art.path.starts_with("/etc/periodic/hourly"));
         assert_eq!(art.mode, 0o755);
         assert!(art.content.starts_with("#!/bin/sh\n"));
-        assert!(art.content.contains("exec /usr/local/bin/proteus rotate --yes"));
+        assert!(
+            art.content
+                .contains("exec /usr/local/bin/proteus rotate --yes")
+        );
     }
 
     #[test]
@@ -194,8 +197,7 @@ mod tests {
         let o = Openrc::new();
         let art = o.hook_boot("apply", "/x").unwrap();
         assert!(
-            art.path
-                .ends_with("proteus-apply-boot.start"),
+            art.path.ends_with("proteus-apply-boot.start"),
             "got {}",
             art.path.display()
         );

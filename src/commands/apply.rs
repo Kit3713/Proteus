@@ -342,7 +342,11 @@ fn merge_dhcp_with_renew(
     };
     ComponentReport {
         name: primary.name,
-        status: if renewed_ok { primary.status } else { Status::Failed },
+        status: if renewed_ok {
+            primary.status
+        } else {
+            Status::Failed
+        },
         note: format!("{}{suffix}", primary.note),
     }
 }

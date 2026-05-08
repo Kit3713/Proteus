@@ -1594,7 +1594,10 @@ portal_poll_secs = 60
 link_flap_window_secs = 5
 "#;
         let raw: RawConfig = toml::from_str(toml_str).unwrap();
-        assert!(raw.has_overrides(), "non-default events fields must trip has_overrides");
+        assert!(
+            raw.has_overrides(),
+            "non-default events fields must trip has_overrides"
+        );
         let cfg = raw.resolve();
         assert!(cfg.events.enabled);
         assert_eq!(cfg.events.portal_poll_secs, 60);
@@ -1696,7 +1699,10 @@ portal_policy = "fresh-mac-per-visit"
         let back = parsed.resolve();
         let entry_back = back.per_ssid.get("coffee-shop").unwrap();
         assert_eq!(entry_back.persona.as_deref(), Some("iphone-15"));
-        assert_eq!(entry_back.portal_policy.as_deref(), Some("fresh-mac-per-visit"));
+        assert_eq!(
+            entry_back.portal_policy.as_deref(),
+            Some("fresh-mac-per-visit")
+        );
     }
 
     #[test]

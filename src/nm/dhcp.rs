@@ -531,7 +531,9 @@ async fn renew_via_disconnect_activate(
         .path(device_path.clone())?
         .build()
         .await?;
-    dev.disconnect().await.context("calling Device.Disconnect")?;
+    dev.disconnect()
+        .await
+        .context("calling Device.Disconnect")?;
 
     let nm = NetworkManagerProxy::new(conn).await?;
     let conn_obj: ObjectPath<'_> = connection_path.as_ref();
@@ -670,11 +672,7 @@ mod tests {
 
     // === Roadmap M2 "Integration" — apply_persona_fingerprint ===
 
-    fn persona_with_dhcp(
-        vendor: &str,
-        host_name: &str,
-        fqdn: &str,
-    ) -> crate::persona::Persona {
+    fn persona_with_dhcp(vendor: &str, host_name: &str, fqdn: &str) -> crate::persona::Persona {
         crate::persona::Persona {
             id: "test".into(),
             display_name: "Test".into(),

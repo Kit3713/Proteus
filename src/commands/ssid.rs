@@ -18,7 +18,7 @@ use serde::Serialize;
 use crate::cli::SsidAction;
 use crate::config::{Config, PerSsidPolicy};
 use crate::exit;
-use crate::per_ssid::{self, display_ssid, validate_ssid, EffectivePolicy};
+use crate::per_ssid::{self, EffectivePolicy, display_ssid, validate_ssid};
 use crate::profile::Profile;
 
 /// Top-level dispatch for `proteus ssid ...`.
@@ -163,7 +163,13 @@ const KNOWN_KEYS: &[&str] = &[
     "portal_policy",
 ];
 
-fn set(ssid: &str, key: &str, value: &str, yes: bool, config_override: Option<&Path>) -> Result<u8> {
+fn set(
+    ssid: &str,
+    key: &str,
+    value: &str,
+    yes: bool,
+    config_override: Option<&Path>,
+) -> Result<u8> {
     if let Err(e) = super::require_root() {
         eprintln!("proteus: {e}");
         return Ok(exit::PERMISSION_ERROR);

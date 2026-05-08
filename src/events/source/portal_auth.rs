@@ -93,10 +93,7 @@ impl PortalAuthSource {
     /// orchestrator to wire `[events] portal_poll_secs` and the
     /// configured detector endpoint.
     pub fn new(sampler: Arc<dyn PortalSampler>, poll_secs: u64) -> Self {
-        Self {
-            sampler,
-            poll_secs,
-        }
+        Self { sampler, poll_secs }
     }
 
     /// Spawn the poll task. Always returns `Some` — the captive-
@@ -129,8 +126,8 @@ impl PortalAuthSource {
                 // `select!`). `oneshot::Receiver` is `Unpin`, so a
                 // `&mut Receiver<()>` is usable directly as a Future.
                 match tokio::time::timeout(poll, &mut stop_rx).await {
-                    Ok(_) => break,        // stop signaled (or sender dropped)
-                    Err(_) => continue,    // poll cadence elapsed
+                    Ok(_) => break,     // stop signaled (or sender dropped)
+                    Err(_) => continue, // poll cadence elapsed
                 }
             }
         });
@@ -258,8 +255,7 @@ impl EventSource for MockPortalAuthSource {
     }
 
     fn start(&self, registry: &EventRegistry) -> Result<()> {
-        let drain: Vec<Classification> =
-            std::mem::take(&mut *self.sampler.queue.lock().unwrap());
+        let drain: Vec<Classification> = std::mem::take(&mut *self.sampler.queue.lock().unwrap());
         let mut prev: Option<Classification> = None;
         for next in drain {
             if is_auth_edge(prev, next) {
@@ -292,7 +288,11 @@ mod tests {
         }
     }
 
-    fn rig() -> (EventRegistry, Arc<AtomicUsize>, Arc<Mutex<Option<RotationTrigger>>>) {
+    fn rig() -> (
+        EventRegistry,
+        Arc<AtomicUsize>,
+        Arc<Mutex<Option<RotationTrigger>>>,
+    ) {
         let n = Arc::new(AtomicUsize::new(0));
         let last = Arc::new(Mutex::new(None));
         let reg = EventRegistry::new();

@@ -51,16 +51,16 @@ pub fn servers_for_persona(p: &crate::persona::Persona) -> Option<(Vec<String>, 
     // Precise-id covers. Match by lowercase id stem; the catalogue
     // uses kebab-case ids so this is a stable lookup.
     let id_lc = p.id.to_ascii_lowercase();
-    if id_lc.starts_with("iphone-")
-        || id_lc.starts_with("ipad-")
-        || id_lc.starts_with("macbook-")
-    {
+    if id_lc.starts_with("iphone-") || id_lc.starts_with("ipad-") || id_lc.starts_with("macbook-") {
         return Some((
             vec!["time.apple.com".into()],
             vec!["time1.apple.com".into(), "time2.apple.com".into()],
         ));
     }
-    if id_lc.starts_with("pixel-") || id_lc.starts_with("galaxy-") || id_lc.starts_with("chromecast") {
+    if id_lc.starts_with("pixel-")
+        || id_lc.starts_with("galaxy-")
+        || id_lc.starts_with("chromecast")
+    {
         return Some((
             vec!["time.google.com".into()],
             vec!["time1.google.com".into(), "time2.google.com".into()],
@@ -85,11 +85,7 @@ const CHRONYD_BINS: &[&str] = &[
     "/usr/bin/chronyd",
     "/usr/local/sbin/chronyd",
 ];
-const NTPD_BINS: &[&str] = &[
-    "/usr/sbin/ntpd",
-    "/usr/bin/ntpd",
-    "/usr/local/sbin/ntpd",
-];
+const NTPD_BINS: &[&str] = &["/usr/sbin/ntpd", "/usr/bin/ntpd", "/usr/local/sbin/ntpd"];
 
 /// Reasons we might defer. Mirrors the shape of `dns::DeferReason` so the
 /// CLI can surface the same status vocabulary.

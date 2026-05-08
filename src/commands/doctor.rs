@@ -114,7 +114,8 @@ fn push_next_steps(checks: &mut Vec<Check>) {
     // Backend misconfiguration: nothing available at all, or the
     // pinned driver is missing on the host.
     let has_backend_fail = checks.iter().any(|c| {
-        c.category == "backend" && (c.name == "available" || c.name == "selected")
+        c.category == "backend"
+            && (c.name == "available" || c.name == "selected")
             && c.status == Status::Fail
     });
     let pinned_to_missing = checks.iter().any(|c| {
@@ -172,9 +173,9 @@ fn push_next_steps(checks: &mut Vec<Check>) {
     }
     // Quirky-setup warning: roll up the Pi-hole / dnscrypt-proxy /
     // openresolv / NM-l2tp warning into the next-steps block as well.
-    let quirky = checks.iter().any(|c| {
-        c.category == "system" && c.name == "quirky-setup" && c.status == Status::Warn
-    });
+    let quirky = checks
+        .iter()
+        .any(|c| c.category == "system" && c.name == "quirky-setup" && c.status == Status::Warn);
     if quirky {
         hints.push(
             "host has tools that overlap Proteus's surface — read \
@@ -805,8 +806,8 @@ fn push_backend(out: &mut Vec<Check>, config_path: Option<&Path>) {
 /// async selector. Synchronous because every probe is a path check;
 /// keeps the doctor entry-point off the tokio runtime.
 fn backend_matrix() -> Vec<(&'static str, bool)> {
-    let nm = Path::new("/run/NetworkManager").exists()
-        || Path::new("/var/run/NetworkManager").exists();
+    let nm =
+        Path::new("/run/NetworkManager").exists() || Path::new("/var/run/NetworkManager").exists();
     let networkd = Path::new("/run/systemd/network").is_dir();
     let raw = Path::new("/sbin/ip").exists() || Path::new("/usr/bin/ip").exists();
     vec![("nm", nm), ("networkd", networkd), ("raw", raw)]
@@ -845,9 +846,7 @@ fn check_backend_selected(driver: &str, available: &[&'static str]) -> Check {
             category: "backend",
             name: "selected",
             status: Status::Warn,
-            message: format!(
-                "[backend] driver = '{driver}' is invalid; falling back to 'auto'"
-            ),
+            message: format!("[backend] driver = '{driver}' is invalid; falling back to 'auto'"),
             remediation: Some("set driver = \"auto\" | \"nm\" | \"networkd\" | \"raw\"".into()),
         };
     }
@@ -915,10 +914,7 @@ fn push_init(out: &mut Vec<Check>) {
     out.push(check_init_selected(&detected));
 }
 
-fn check_init_available(
-    matrix: &[(&'static str, bool)],
-    detected: &[&'static str],
-) -> Check {
+fn check_init_available(matrix: &[(&'static str, bool)], detected: &[&'static str]) -> Check {
     let summary = matrix
         .iter()
         .map(|(n, ok)| format!("{n}={}", if *ok { "yes" } else { "no" }))
@@ -1414,7 +1410,10 @@ mod tests {
             remediation: None,
         }];
         push_next_steps(&mut checks);
-        let next: Vec<&Check> = checks.iter().filter(|c| c.category == "next_steps").collect();
+        let next: Vec<&Check> = checks
+            .iter()
+            .filter(|c| c.category == "next_steps")
+            .collect();
         assert!(!next.is_empty());
         let msg = &next[0].message;
         assert!(msg.contains("NetworkManager"));
@@ -1432,7 +1431,10 @@ mod tests {
             remediation: None,
         }];
         push_next_steps(&mut checks);
-        let next: Vec<&Check> = checks.iter().filter(|c| c.category == "next_steps").collect();
+        let next: Vec<&Check> = checks
+            .iter()
+            .filter(|c| c.category == "next_steps")
+            .collect();
         assert!(!next.is_empty());
         assert!(next[0].message.contains("driver pins"));
     }
@@ -1447,7 +1449,10 @@ mod tests {
             remediation: None,
         }];
         push_next_steps(&mut checks);
-        let next: Vec<&Check> = checks.iter().filter(|c| c.category == "next_steps").collect();
+        let next: Vec<&Check> = checks
+            .iter()
+            .filter(|c| c.category == "next_steps")
+            .collect();
         assert!(!next.is_empty());
         assert!(next[0].message.contains("iwd"));
         assert!(next[0].message.contains("raw"));
@@ -1466,7 +1471,10 @@ mod tests {
             remediation: None,
         }];
         push_next_steps(&mut checks);
-        let next: Vec<&Check> = checks.iter().filter(|c| c.category == "next_steps").collect();
+        let next: Vec<&Check> = checks
+            .iter()
+            .filter(|c| c.category == "next_steps")
+            .collect();
         assert!(next.is_empty());
     }
 
@@ -1480,7 +1488,10 @@ mod tests {
             remediation: None,
         }];
         push_next_steps(&mut checks);
-        let next: Vec<&Check> = checks.iter().filter(|c| c.category == "next_steps").collect();
+        let next: Vec<&Check> = checks
+            .iter()
+            .filter(|c| c.category == "next_steps")
+            .collect();
         assert!(!next.is_empty());
         assert!(next[0].message.contains("config validate"));
     }
