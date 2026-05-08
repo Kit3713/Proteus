@@ -543,7 +543,22 @@ pub fn run_if_needed(
         eprintln!("proteus: {e}");
         return Ok(exit::PERMISSION_ERROR);
     }
-    let _state_unused = state_path; // accepted for symmetry with `rotate::run`.
+    // Issue #381: the state-path threading from the CLI ends here. The
+    // backend trait's `rotate_if_needed` doesn't yet accept a state path,
+    // so the cooldown read-back inside `backend/nm.rs::rotate_if_needed_inner`
+    // hardcodes `crate::commands::DEFAULT_STATE_PATH`. Surface a warning
+    // when an explicit `--state` was passed so the operator at least
+    // sees that their override was dropped — the proper fix needs a
+    // trait-signature change (Stream 5 / state-lock work) and is
+    // tracked there. TODO(#381): remove this warning when the backend
+    // trait grows a `state_path` parameter.
+    if state_path.is_some() {
+        tracing::warn!(
+            "--state is currently ignored by `rotate-if-needed`; cooldown reads \
+             {} (see #381)",
+            crate::commands::DEFAULT_STATE_PATH
+        );
+    }
     let config_path = super::config_path(config_path);
     let config = Config::default_or_loaded(&config_path).unwrap_or_default();
 

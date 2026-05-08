@@ -116,7 +116,10 @@ pub(super) fn dispatch(cli: Cli) -> Result<u8> {
         Command::Apply { yes } => {
             commands::apply::run(yes, cli.state.as_deref(), cli.config.as_deref())
         }
-        Command::Revert { yes } => commands::revert::run(yes),
+        // Issue #386: thread the global `--state <path>` through revert
+        // so the nested per-component reverts honour the operator's
+        // override instead of all hardcoding the default state path.
+        Command::Revert { yes } => commands::revert::run(yes, cli.state.as_deref()),
         Command::Rotate {
             iface,
             yes,
