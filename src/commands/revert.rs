@@ -105,6 +105,14 @@ pub(crate) fn revert_best_effort(warns: &mut Vec<String>) {
     if let Err(e) = super::dhcp::revert(None) {
         warns.push(format!("dhcp: {e:#}"));
     }
+    // Issue #298: enterprise-wifi was missing from the revert fan-out,
+    // so `proteus revert` left `802-1x.anonymous-identity` on every
+    // managed connection. Restore the cached originals here so the
+    // 802.1X profile goes back to the pre-Proteus state alongside
+    // every other feature.
+    if let Err(e) = super::enterprise_wifi::revert(true, None) {
+        warns.push(format!("enterprise-wifi: {e:#}"));
+    }
     if let Err(e) = super::rf::revert(true, None) {
         warns.push(format!("rf: {e:#}"));
     }
