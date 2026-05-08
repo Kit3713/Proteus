@@ -96,13 +96,19 @@ install -dm700 %{buildroot}%{_sharedstatedir}/proteus
 %dir %attr(0700,root,root) %{_sharedstatedir}/proteus
 
 %post
-%systemd_post proteus-rotate.timer proteus-check.timer proteus-resume.service
+# Issue #279: proteus-events.service is intentionally NOT listed — it is
+# opt-in via `[events] enabled = true` in /etc/proteus/config.toml and is
+# enabled by the operator rather than the package.
+%systemd_post proteus-rotate.timer proteus-check.timer proteus-boot.service proteus-resume.service
 
 %preun
-%systemd_preun proteus-rotate.timer proteus-check.timer proteus-resume.service
+%systemd_preun proteus-rotate.timer proteus-check.timer proteus-boot.service proteus-resume.service
 
 %postun
-%systemd_postun_with_restart proteus-rotate.timer proteus-check.timer
+# Restart-on-upgrade only really matters for the timers (long-lived); the
+# oneshots (boot, resume) are listed for symmetry with %post/%preun, and
+# %systemd_postun_with_restart is a no-op for already-exited oneshots.
+%systemd_postun_with_restart proteus-rotate.timer proteus-check.timer proteus-boot.service proteus-resume.service
 
 %changelog
 * Fri May 08 2026 Kit3713 <noreply@example.com> - 0.4.0~beta1-1
