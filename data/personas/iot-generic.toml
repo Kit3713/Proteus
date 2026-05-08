@@ -32,6 +32,14 @@ use_temp_addresses = false
 addr_gen_mode = "eui64"
 send_rs = true
 
+[mdns]
+# Generic ESP-class IoT widgets typically do not run a full mDNS
+# responder — flash is precious and the device only needs to reach
+# the vendor cloud. Empty services matches the silent-on-LAN posture
+# of most Espressif/Realtek-based hardware.
+services = []
+txt_hints = []
+
 [rf_traits]
 tx_power_dbm = 0
 scan_style = "passive"

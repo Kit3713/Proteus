@@ -32,6 +32,18 @@ use_temp_addresses = true
 addr_gen_mode = "stable-privacy"
 send_rs = true
 
+[mdns]
+# Same Windows 11 mDNS posture as dell-xps-13 — narrow service set
+# (SMB sharing + IPP if printing roles installed). LLMNR/NBNS does the
+# heavier lifting on a Windows network.
+services = [
+    "_smb._tcp",
+    "_ipp._tcp",
+]
+txt_hints = [
+    "model=SurfacePro9",
+]
+
 [rf_traits]
 tx_power_dbm = 0
 scan_style = "active"

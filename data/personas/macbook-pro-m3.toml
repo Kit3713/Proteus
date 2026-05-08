@@ -32,6 +32,26 @@ use_temp_addresses = true
 addr_gen_mode = "stable-privacy"
 send_rs = true
 
+[mdns]
+# macOS Sonoma canonical Bonjour set: SSH, AFP/SMB sharing, AirDrop,
+# Continuity, the printer-discovery family. macOS announces every one
+# of these on join — silence is the giveaway for a Linux box wearing
+# the macOS L2 cover.
+services = [
+    "_ssh._tcp",
+    "_afpovertcp._tcp",
+    "_smb._tcp",
+    "_airdrop._tcp",
+    "_companion-link._tcp",
+    "_apple-mobdev2._tcp",
+    "_printer._tcp",
+    "_ipp._tcp",
+]
+txt_hints = [
+    "model=MacBookPro18,1",
+    "osxvers=23",
+]
+
 [rf_traits]
 tx_power_dbm = 0
 scan_style = "passive"

@@ -32,6 +32,12 @@ use_temp_addresses = true
 addr_gen_mode = "stable-privacy"
 send_rs = true
 
+[mdns]
+# Stock Android does not run avahi/Bonjour. Same posture as pixel-8 —
+# mdns.services empty matches what a real Pixel actually emits.
+services = []
+txt_hints = []
+
 [rf_traits]
 tx_power_dbm = 0
 scan_style = "active"

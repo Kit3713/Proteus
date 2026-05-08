@@ -226,6 +226,7 @@ fn schema_check(p: &Persona) -> Result<()> {
     validate_tcp_stack(&p.id, &p.tcp_stack)?;
     validate_ipv6_traits(&p.id, &p.ipv6_traits)?;
     validate_rf_traits(&p.id, &p.rf_traits)?;
+    validate_mdns_traits(&p.id, &p.mdns)?;
     Ok(())
 }
 
@@ -379,6 +380,66 @@ fn validate_ipv6_traits(id: &str, t: &super::Ipv6Traits) -> Result<()> {
     Ok(())
 }
 
+/// Issue #305: mDNS records must follow DNS-SD service-type form
+/// (`_<service>._<proto>` where proto is `_tcp` or `_udp`). Reject empty
+/// strings and obvious garbage so a hand-edit lands at the user, not in
+/// state.json. When `mdns_advertise = false` we still allow `services`
+/// to be populated (the apply path will skip emitting them); that lets
+/// a persona record the canonical service list for audit even when the
+/// cover is "this device exists but does not Bonjour".
+fn validate_mdns_traits(id: &str, t: &super::MdnsTraits) -> Result<()> {
+    for svc in &t.services {
+        if svc.is_empty() {
+            anyhow::bail!(
+                "persona '{id}' mdns.services contains an empty string (see `proteus wiki personas`)"
+            );
+        }
+        if !is_dns_sd_service_type(svc) {
+            anyhow::bail!(
+                "persona '{id}' mdns.services entry '{svc}' is not a DNS-SD service type (expected '_service._tcp' or '_service._udp'; see `proteus wiki personas`)"
+            );
+        }
+    }
+    for hint in &t.txt_hints {
+        if hint.is_empty() {
+            anyhow::bail!(
+                "persona '{id}' mdns.txt_hints contains an empty string (see `proteus wiki personas`)"
+            );
+        }
+        if !is_dhcp_string_safe(hint) {
+            anyhow::bail!(
+                "persona '{id}' mdns.txt_hints entry '{hint}' contains control bytes (see `proteus wiki personas`)"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// DNS-SD service types are `_<label>._tcp` or `_<label>._udp`. The label
+/// itself is RFC 6335-shaped (alphanumeric + hyphen, 1..15 chars). Real
+/// captures sometimes contain longer labels (`_apple-mobdev2`); we accept
+/// up to 31 chars so vendor extensions pass.
+fn is_dns_sd_service_type(s: &str) -> bool {
+    if !s.starts_with('_') {
+        return false;
+    }
+    let parts: Vec<&str> = s.split('.').collect();
+    if parts.len() != 2 {
+        return false;
+    }
+    let svc = parts[0];
+    let proto = parts[1];
+    if proto != "_tcp" && proto != "_udp" {
+        return false;
+    }
+    // Strip the leading underscore and check the label.
+    let label = svc.strip_prefix('_').unwrap_or(svc);
+    if label.is_empty() || label.len() > 31 {
+        return false;
+    }
+    label.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+}
+
 fn validate_rf_traits(id: &str, t: &super::RfTraits) -> Result<()> {
     // tx_power_dbm: 0 = "leave at regulatory max". Realistic ceiling is
     // ~30 dBm (1 W); anything higher is operator error or confusion with
@@ -445,6 +506,251 @@ mod tests {
             count >= 15,
             "expected at least 15 built-in personas, found {count}"
         );
+    }
+
+    /// Issue #305: every brand stealth persona must carry a non-default
+    /// option-55 list. A real iPhone never sends an empty option 55 — and
+    /// "Linux server defaults" (an empty list) applied to a brand persona
+    /// is the cross-layer mismatch the issue is closing. Randomizers are
+    /// allowed empty (their privacy goal is to disappear into noise, not
+    /// to mimic any particular device).
+    #[test]
+    fn every_brand_stealth_persona_has_a_dhcp_option_55() {
+        let mut checked = 0usize;
+        for (stem, raw) in builtin_raw_bodies() {
+            let p: Persona = toml::from_str(raw)
+                .unwrap_or_else(|e| panic!("builtin {stem} failed to parse: {e}"));
+            if p.kind != super::super::PersonaKind::Stealth {
+                continue;
+            }
+            assert!(
+                !p.dhcp_fingerprint.parameter_request_list.is_empty(),
+                "stealth persona '{stem}' has empty DHCP option 55 — that's the \
+                 cross-layer Linux-default mismatch issue #305 is fixing"
+            );
+            checked += 1;
+        }
+        assert!(
+            checked >= 13,
+            "expected at least 13 stealth personas to check option-55 against, found {checked}"
+        );
+    }
+
+    /// Issue #305: brand stealth personas declare a coherent mDNS posture.
+    /// Either the persona advertises (`mdns_advertise = true`) and lists
+    /// the canonical service set the real device emits, OR it does not
+    /// advertise (`mdns_advertise = false` AND `mdns.services` empty).
+    /// "Advertise on but services empty" is the cross-layer mismatch we
+    /// are fixing — a real iPhone with mDNS on always announces
+    /// `_apple-mobdev2._tcp` etc.
+    #[test]
+    fn brand_stealth_personas_have_coherent_mdns_posture() {
+        let mut chatty = 0usize;
+        let mut quiet = 0usize;
+        for (stem, raw) in builtin_raw_bodies() {
+            let p: Persona = toml::from_str(raw)
+                .unwrap_or_else(|e| panic!("builtin {stem} failed to parse: {e}"));
+            if p.kind != super::super::PersonaKind::Stealth {
+                continue;
+            }
+            if p.mdns_advertise {
+                assert!(
+                    !p.mdns.services.is_empty(),
+                    "stealth persona '{stem}' has mdns_advertise = true but no \
+                     mdns.services — that's the issue #305 cross-layer mismatch \
+                     (real chatty device with no announcements identifies the cover)"
+                );
+                chatty += 1;
+            } else {
+                quiet += 1;
+            }
+        }
+        // At least one of each posture in the catalogue.
+        assert!(
+            chatty >= 5,
+            "expected several chatty brand personas, got {chatty}"
+        );
+        assert!(
+            quiet >= 4,
+            "expected several quiet brand personas, got {quiet}"
+        );
+    }
+
+    /// Issue #305: brand stealth personas must carry a non-default
+    /// `tcp_stack` profile. An empty (all-zero) profile leaves Linux
+    /// defaults on the wire, which contradicts a brand cover (e.g.
+    /// Windows TTL 128 vs the Linux 64).
+    #[test]
+    fn every_brand_stealth_persona_has_non_default_tcp_stack() {
+        let mut checked = 0usize;
+        for (stem, raw) in builtin_raw_bodies() {
+            let p: Persona = toml::from_str(raw)
+                .unwrap_or_else(|e| panic!("builtin {stem} failed to parse: {e}"));
+            if p.kind != super::super::PersonaKind::Stealth {
+                continue;
+            }
+            // Default TcpStackProfile is window_scale=0, mss=0, ttl=0,
+            // both tcp flags false — nothing real ships that. Assert at
+            // least one of the meaningful fields is set.
+            let t = &p.tcp_stack;
+            let nondefault = t.window_scale != 0
+                || t.mss != 0
+                || t.default_ttl != 0
+                || t.tcp_timestamps
+                || t.tcp_sack;
+            assert!(
+                nondefault,
+                "stealth persona '{stem}' has all-default tcp_stack — issue #305 \
+                 cross-layer mismatch (Linux defaults on a brand cover)"
+            );
+            checked += 1;
+        }
+        assert!(
+            checked >= 13,
+            "expected to check at least 13 stealth personas, got {checked}"
+        );
+    }
+
+    /// Issue #305: per-OS-family coherence sanity. The canonical Apple
+    /// personas (iphone-13/15, ipad, macbook-air-m3, macbook-pro-m3)
+    /// must all set ttl=64 and timestamps=true (Darwin/XNU). Windows
+    /// personas (dell-xps-13, surface-pro-9, xbox-series-x) must all
+    /// set ttl=128 (Windows kernel default). A misconfigured persona
+    /// here is a single-pass classifier giveaway.
+    #[test]
+    fn apple_personas_carry_darwin_tcp_signature() {
+        for id in [
+            "iphone-13",
+            "iphone-15",
+            "ipad-air",
+            "macbook-air-m3",
+            "macbook-pro-m3",
+        ] {
+            let p = load_builtin(id)
+                .unwrap_or_else(|e| panic!("loading {id}: {e}"))
+                .unwrap_or_else(|| panic!("builtin {id} not found"));
+            assert_eq!(p.tcp_stack.default_ttl, 64, "{id} must use Darwin TTL 64");
+            assert!(
+                p.tcp_stack.tcp_timestamps,
+                "{id} must have timestamps on (iOS/macOS)"
+            );
+            assert_eq!(
+                p.tcp_stack.window_scale, 6,
+                "{id} must use Darwin window scale 6"
+            );
+        }
+    }
+
+    #[test]
+    fn windows_personas_carry_windows_tcp_signature() {
+        for id in ["dell-xps-13", "surface-pro-9", "xbox-series-x"] {
+            let p = load_builtin(id)
+                .unwrap_or_else(|e| panic!("loading {id}: {e}"))
+                .unwrap_or_else(|| panic!("builtin {id} not found"));
+            assert_eq!(
+                p.tcp_stack.default_ttl, 128,
+                "{id} must use Windows TTL 128"
+            );
+            assert!(
+                !p.tcp_stack.tcp_timestamps,
+                "{id} must have timestamps off (Windows default)"
+            );
+        }
+    }
+
+    /// Issue #305: the apple-mobdev2 service is the iOS Bonjour
+    /// fingerprint. Every iPhone/iPad persona must announce it — leaving
+    /// it out of the service set is the exact bug the issue describes.
+    #[test]
+    fn apple_phone_personas_announce_mobdev2() {
+        for id in ["iphone-13", "iphone-15", "ipad-air"] {
+            let p = load_builtin(id)
+                .unwrap_or_else(|e| panic!("loading {id}: {e}"))
+                .unwrap_or_else(|| panic!("builtin {id} not found"));
+            assert!(
+                p.mdns_advertise,
+                "{id} should advertise mDNS (real iOS does)"
+            );
+            assert!(
+                p.mdns.services.iter().any(|s| s == "_apple-mobdev2._tcp"),
+                "{id} must announce _apple-mobdev2._tcp (iOS Bonjour fingerprint); \
+                 services = {:?}",
+                p.mdns.services
+            );
+        }
+    }
+
+    /// Issue #305: googlecast personas (chromecast, nest-mini) must
+    /// announce `_googlecast._tcp`. That's the diagnostic service Cast
+    /// SDKs probe for when looking for receivers.
+    #[test]
+    fn cast_personas_announce_googlecast() {
+        for id in ["chromecast", "nest-mini"] {
+            let p = load_builtin(id)
+                .unwrap_or_else(|e| panic!("loading {id}: {e}"))
+                .unwrap_or_else(|| panic!("builtin {id} not found"));
+            assert!(
+                p.mdns_advertise,
+                "{id} should advertise (Cast hardware does)"
+            );
+            assert!(
+                p.mdns.services.iter().any(|s| s == "_googlecast._tcp"),
+                "{id} must announce _googlecast._tcp (Cast diagnostic service); \
+                 services = {:?}",
+                p.mdns.services
+            );
+        }
+    }
+
+    /// Issue #305: printer personas must announce the IPP discovery
+    /// stack. Network printers ARE their Bonjour announcements; a
+    /// printer persona that doesn't emit `_ipp._tcp` is observably not
+    /// a printer.
+    #[test]
+    fn printer_personas_announce_ipp() {
+        for id in ["printer-generic-canon", "printer-generic-hp"] {
+            let p = load_builtin(id)
+                .unwrap_or_else(|e| panic!("loading {id}: {e}"))
+                .unwrap_or_else(|| panic!("builtin {id} not found"));
+            assert!(
+                p.mdns_advertise,
+                "{id} should advertise (printers are chatty)"
+            );
+            assert!(
+                p.mdns.services.iter().any(|s| s == "_ipp._tcp"),
+                "{id} must announce _ipp._tcp; services = {:?}",
+                p.mdns.services
+            );
+        }
+    }
+
+    /// Issue #305: option-55 lists must be distinct between OS families.
+    /// iOS 1-3-6-15-119-252 and Android 1-3-6-15-26-28-51-58-59-43 are
+    /// the canonical signatures; Windows adds 31-33-43-44-46-47-121-249-252.
+    /// A bug-fix here is the persona list collapsing to one shape — guard
+    /// against that regression.
+    #[test]
+    fn option_55_lists_are_distinct_per_os_family() {
+        let iphone = load_builtin("iphone-15").unwrap().unwrap();
+        let pixel = load_builtin("pixel-8").unwrap().unwrap();
+        let dell = load_builtin("dell-xps-13").unwrap().unwrap();
+        let mac = load_builtin("macbook-pro-m3").unwrap().unwrap();
+        // Apple iOS distinct from Apple macOS distinct from Android distinct from Windows.
+        let lists = [
+            iphone.dhcp_fingerprint.parameter_request_list,
+            pixel.dhcp_fingerprint.parameter_request_list,
+            dell.dhcp_fingerprint.parameter_request_list,
+            mac.dhcp_fingerprint.parameter_request_list,
+        ];
+        for (i, a) in lists.iter().enumerate() {
+            for b in lists.iter().skip(i + 1) {
+                assert_ne!(
+                    a, b,
+                    "two OS families have identical option-55 lists — that's a \
+                     cross-layer collapse (issue #305): {a:?} vs {b:?}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -517,6 +823,7 @@ notes = "user override"
             tcp_stack: Default::default(),
             ipv6_traits: Default::default(),
             mdns_advertise: false,
+            mdns: Default::default(),
             bt_name_template: String::new(),
             rf_traits: Default::default(),
             rotate_cadence: None,
@@ -540,6 +847,7 @@ notes = "user override"
             tcp_stack: Default::default(),
             ipv6_traits: Default::default(),
             mdns_advertise: false,
+            mdns: Default::default(),
             bt_name_template: String::new(),
             rf_traits: Default::default(),
             rotate_cadence: None,
@@ -685,6 +993,66 @@ tx_pwr_dbm = 14
         assert!(err.to_string().contains("rotate_cadence"));
     }
 
+    /// Issue #305: malformed mDNS service-type strings are rejected at
+    /// load time so a hand-edit doesn't land bad data in state.json.
+    #[test]
+    fn schema_check_rejects_malformed_mdns_service_type() {
+        let mut p = sample_stealth_persona();
+        p.mdns.services = vec!["not-a-service-type".into()];
+        let err = schema_check(&p).unwrap_err();
+        assert!(err.to_string().contains("mdns.services"));
+    }
+
+    /// Issue #305: empty-string mDNS service entries are rejected.
+    #[test]
+    fn schema_check_rejects_empty_mdns_service() {
+        let mut p = sample_stealth_persona();
+        p.mdns.services = vec![String::new()];
+        let err = schema_check(&p).unwrap_err();
+        assert!(err.to_string().contains("mdns.services"));
+    }
+
+    /// Issue #305: well-formed DNS-SD strings are accepted.
+    #[test]
+    fn schema_check_accepts_well_formed_mdns_services() {
+        let mut p = sample_stealth_persona();
+        p.mdns.services = vec![
+            "_apple-mobdev2._tcp".into(),
+            "_googlecast._tcp".into(),
+            "_ipp._tcp".into(),
+            "_uscan._udp".into(),
+        ];
+        schema_check(&p).expect("well-formed DNS-SD strings must validate");
+    }
+
+    /// Issue #305: control bytes in TXT-record hints are rejected.
+    #[test]
+    fn schema_check_rejects_control_bytes_in_txt_hints() {
+        let mut p = sample_stealth_persona();
+        p.mdns.txt_hints = vec!["model=iPhone\nfake".into()];
+        let err = schema_check(&p).unwrap_err();
+        assert!(err.to_string().contains("mdns.txt_hints"));
+    }
+
+    /// Issue #305: bogus protocol part (not _tcp/_udp) is rejected.
+    #[test]
+    fn schema_check_rejects_unknown_mdns_protocol() {
+        let mut p = sample_stealth_persona();
+        p.mdns.services = vec!["_ipp._sctp".into()];
+        let err = schema_check(&p).unwrap_err();
+        assert!(err.to_string().contains("mdns.services"));
+    }
+
+    /// Issue #305: missing leading underscore on the service label is
+    /// rejected (DNS-SD requires the leading underscore).
+    #[test]
+    fn schema_check_rejects_mdns_label_without_underscore() {
+        let mut p = sample_stealth_persona();
+        p.mdns.services = vec!["ipp._tcp".into()];
+        let err = schema_check(&p).unwrap_err();
+        assert!(err.to_string().contains("mdns.services"));
+    }
+
     /// Issue #266: empty-string oui_pool entry is rejected.
     #[test]
     fn schema_check_rejects_empty_oui_token() {
@@ -801,6 +1169,7 @@ notes = "test"
             tcp_stack: Default::default(),
             ipv6_traits: Default::default(),
             mdns_advertise: false,
+            mdns: Default::default(),
             bt_name_template: String::new(),
             rf_traits: Default::default(),
             rotate_cadence: None,

@@ -64,6 +64,16 @@ use_temp_addresses = true
 addr_gen_mode = "stable-privacy"  # eui64|stable-privacy|random
 send_rs = true
 
+[mdns]
+# DNS-SD service types this persona's target device announces. iPhones
+# emit `_apple-mobdev2._tcp` + `_companion-link._tcp` + `_airdrop._tcp`;
+# Cast devices emit `_googlecast._tcp`; printers emit `_ipp._tcp`. An
+# Apple cover with mdns_advertise = true but mdns.services empty is the
+# cross-layer mismatch issue #305 closed — silence on multicast labels
+# a real device always emits identifies the persona.
+services = ["_apple-mobdev2._tcp", "_companion-link._tcp"]
+txt_hints = ["model=iPhone15,2"]
+
 [rf_traits]
 tx_power_dbm = 0           # 0 = leave at regulatory max
 scan_style = "passive"     # passive|active
@@ -83,6 +93,8 @@ power_save = "auto"        # on|off|auto
 - **`tcp_stack`** — abstract TCP/IP knobs the apply path translates to concrete `/proc/sys/net/...` writes. Window scale, MSS, timestamps, SACK, default TTL.
 - **`ipv6_traits`** — SLAAC and ND. `addr_gen_mode` mirrors NM's `ipv6.addr-gen-mode` setting (`eui64` / `stable-privacy` / `random`).
 - **`mdns_advertise`** — whether the persona advertises mDNS at all. Stealth personas for chatty devices (Apple, printers, TVs) leave this on; quiet personas (laptops in stealth mode) turn it off.
+- **`mdns.services`** — DNS-SD service types the persona's target device announces (issue #305). One entry per service in `_label._proto` form. Real iPhones always announce `_apple-mobdev2._tcp` and `_companion-link._tcp`; Cast devices always announce `_googlecast._tcp`; printers announce `_ipp._tcp` and `_pdl-datastream._tcp`. The avahi/Bonjour emission of these records is integration follow-up; today the field is captured for audit and surfaced under `proteus persona show <id>`.
+- **`mdns.txt_hints`** — `key=value` strings that real devices stuff into TXT records (`model=iPhone15,2`, `vendor=Apple`). Same audit-only status as `services`; the apply path consumes these in the integration follow-up.
 - **`bt_name_template`** — Bluetooth alias template; same token set as `hostname_template`.
 - **`rf_traits`** — `tx_power_dbm` (0 means "regulatory max"), `scan_style`, `power_save`.
 - **`rotate_cadence`** — only meaningful for `kind = "randomizer"`. Strings like `"30m"`, `"2h"`, `"never"`. The six built-in randomizer mirrors set this to match the existing `Profile` slider's cadences.

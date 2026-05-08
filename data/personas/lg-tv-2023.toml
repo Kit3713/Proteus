@@ -31,6 +31,20 @@ use_temp_addresses = false
 addr_gen_mode = "eui64"
 send_rs = true
 
+[mdns]
+# webOS 23 canonical service set. _lge-bridge is the LG-specific
+# magic-remote pairing service; _googlecast and _airplay are the two
+# casting protocols a 2023+ LG TV supports out of the box.
+services = [
+    "_lge-bridge._tcp",
+    "_googlecast._tcp",
+    "_airplay._tcp",
+    "_raop._tcp",
+]
+txt_hints = [
+    "model=OLED55C3PUA",
+]
+
 [rf_traits]
 tx_power_dbm = 0
 scan_style = "active"

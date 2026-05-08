@@ -32,6 +32,25 @@ use_temp_addresses = false
 addr_gen_mode = "eui64"
 send_rs = true
 
+[mdns]
+# Network printers are notoriously chatty on mDNS — that chatter IS the
+# persona. Canon firmware advertises the full IPP/AirPrint discovery
+# stack plus the legacy print-data-stream service so older drivers
+# resolve the printer too.
+services = [
+    "_ipp._tcp",
+    "_ipps._tcp",
+    "_printer._tcp",
+    "_pdl-datastream._tcp",
+    "_http._tcp",
+    "_uscan._tcp",
+]
+txt_hints = [
+    "ty=Canon PIXMA",
+    "rp=ipp/print",
+    "pdl=application/pdf,image/urf",
+]
+
 [rf_traits]
 tx_power_dbm = 0
 scan_style = "passive"

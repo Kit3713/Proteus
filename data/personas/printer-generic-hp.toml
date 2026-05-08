@@ -32,6 +32,27 @@ use_temp_addresses = false
 addr_gen_mode = "eui64"
 send_rs = true
 
+[mdns]
+# HP JetDirect / Futuresmart canonical service set. Same IPP/AirPrint
+# discovery stack as Canon plus _privet (Google Cloud Print legacy,
+# still announced by HP firmware in 2024) and _scanner.
+services = [
+    "_ipp._tcp",
+    "_ipps._tcp",
+    "_printer._tcp",
+    "_pdl-datastream._tcp",
+    "_http._tcp",
+    "_privet._tcp",
+    "_scanner._tcp",
+    "_uscan._tcp",
+]
+txt_hints = [
+    "ty=HP LaserJet Pro",
+    "product=(HP LaserJet Pro)",
+    "rp=ipp/print",
+    "pdl=application/pdf,image/urf,image/jpeg",
+]
+
 [rf_traits]
 tx_power_dbm = 0
 scan_style = "passive"

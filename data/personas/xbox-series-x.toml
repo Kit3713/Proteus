@@ -32,6 +32,13 @@ use_temp_addresses = true
 addr_gen_mode = "stable-privacy"
 send_rs = true
 
+[mdns]
+# Xbox uses SSDP and proprietary Microsoft discovery rather than
+# Bonjour/mDNS. The console is silent on the multicast-DNS layer in
+# practice. Empty services matches a real Xbox.
+services = []
+txt_hints = []
+
 [rf_traits]
 tx_power_dbm = 0
 scan_style = "active"

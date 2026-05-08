@@ -32,6 +32,14 @@ use_temp_addresses = false
 addr_gen_mode = "eui64"
 send_rs = true
 
+[mdns]
+# TP-Link consumer routers do not run a full mDNS responder by default
+# (the Tether mobile app uses HTTPS over the WAN/IGD discovery, not
+# Bonjour). OpenWrt / DD-WRT installs may flip this on. Empty matches
+# stock firmware.
+services = []
+txt_hints = []
+
 [rf_traits]
 tx_power_dbm = 0
 scan_style = "passive"

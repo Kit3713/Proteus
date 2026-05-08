@@ -31,6 +31,23 @@ use_temp_addresses = true
 addr_gen_mode = "stable-privacy"
 send_rs = true
 
+[mdns]
+# iPadOS canonical Bonjour set: AirDrop, Continuity, mobile-device sync,
+# and the rdlink remote-input service tablets use to talk to keyboards
+# / mice in setup. Same shape as iPhone but iPad adds _ipp-tls for the
+# AirPrint client.
+services = [
+    "_apple-mobdev2._tcp",
+    "_companion-link._tcp",
+    "_airdrop._tcp",
+    "_rdlink._tcp",
+    "_ipp-tls._tcp",
+]
+txt_hints = [
+    "model=iPad13,16",
+    "osxvers=23",
+]
+
 [rf_traits]
 tx_power_dbm = 0
 scan_style = "passive"

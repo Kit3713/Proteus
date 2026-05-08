@@ -32,6 +32,18 @@ use_temp_addresses = false
 addr_gen_mode = "eui64"
 send_rs = true
 
+[mdns]
+# Roku canonical Bonjour set. _roku-rcp is the Roku Remote Control
+# Protocol discovery — every Roku device announces it. The ECP API
+# also advertises over mDNS.
+services = [
+    "_roku-rcp._tcp",
+    "_ecp._tcp",
+]
+txt_hints = [
+    "ty=Roku Ultra",
+]
+
 [rf_traits]
 tx_power_dbm = 0
 scan_style = "passive"

@@ -31,6 +31,13 @@ use_temp_addresses = true
 addr_gen_mode = "random"
 send_rs = true
 
+[mdns]
+# One UI / Android: Samsung does not run Bonjour by default. The Galaxy
+# S24's "Smart View" feature uses SSDP, not mDNS. Empty services is the
+# accurate cover for a stock Galaxy phone.
+services = []
+txt_hints = []
+
 [rf_traits]
 tx_power_dbm = 0
 scan_style = "active"
