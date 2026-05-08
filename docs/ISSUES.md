@@ -1,8 +1,21 @@
-# Issues Log — Bug Hunt Session 2026-05-08
+# Issues Log — Bug Hunt Session 2026-05-08 (ARCHIVED)
 
-This file tracks issues discovered during a focused bug-hunt session against
+> **Archived 2026-05-08.** This file is preserved as the historical record of
+> the three bug-hunt sessions that fed the v0.4.x hardening cycle (85 + 20 + 36
+> = 141 findings across Sections 1–13). **Live tracking has moved to
+> [`docs/ROADMAP.md`](ROADMAP.md).** Every High and Critical finding here is
+> referenced by a stream there; medium / low / info findings are absorbed into
+> the same streams. See the "Source-of-truth migration" and "Section 13
+> absorption" tables at the top of the roadmap for the full mapping. Do not
+> update status against this file — resolve work against the roadmap streams.
+>
+> Section 13 was originally landed on `claude/find-hidden-bugs-RbE2H` and
+> brought forward into this branch as part of the audit-and-absorb pass.
+
+This file tracks issues discovered during three focused bug-hunt sessions against
 the `claude/bug-hunt-session-buqhU` branch (tip of `main` at the time:
-`1cc5cc5`). Severity follows the convention used in `CHANGELOG.md`:
+`1cc5cc5`) and the `claude/find-hidden-bugs-RbE2H` branch (Section 13 third
+pass). Severity follows the convention used in `CHANGELOG.md`:
 **critical / high / medium / low / info**.
 
 Each entry has:
@@ -1033,3 +1046,383 @@ Top three to fix first (impact × likelihood):
 2. **N12.5** — `is_valid_per_ssid_duration` panic on multibyte trailing char. Same root cause as already-fixed #272 but in the validator. With `panic = abort`, every load path can be aborted by a malicious / fat-fingered SSID config.
 3. **N12.4** — `parse_duration` overflow on multiply. Combined with the missing magnitude bound in `is_valid_per_ssid_duration`, an operator typo of `999999999999d` silently turns into a continuous-rotation footgun.
 
+---
+
+## Section 13 — Third-pass findings (2026-05-08, 6-agent sweep)
+
+This section captures findings from a six-agent parallel sweep covering
+subsystems not deeply audited in Sections 1–12: mac internals, commands
+orchestration, network protocol modules, events/captive-portal, packaging,
+and backend/NM integration. Two agents (cli/persona/diff/timer and
+tests/examples/data) were still running at write time; their findings
+will be added in a follow-up if they surface anything new.
+
+Each finding was verified against current source; suspect / unverified
+agent claims have been dropped. Duplicates of existing entries (B6/B13,
+N12.8, N12.9, N12.17, M4) have been removed.
+
+### Section 13.1 — `mac/` internals
+
+#### NM2.1. Generator livelock when `pool.len() == 1` and probes keep colliding
+- **Severity**: high
+- **Area**: mac generator / collision probe
+- **File**: `src/mac/generator.rs:297-307, 341-352`
+- **Description**: The adaptive-backoff `if consecutive_collisions >= COLLISIONS_BEFORE_OUI_FALLBACK && opts.pool.len() > 1 { ... }` skips the reset when the pool has one token. The counter then grows without bound inside the 64-attempt budget — every iteration rolls a new candidate against the same OUI, increments the counter, and continues. There is no escape until `MAX_GENERATION_ATTEMPTS` exhausts.
+- **Impact**: A single-token persona (`oui_pool = ["apple"]` is common) under network conditions that consistently collide spends the full retry budget on the same prefix instead of failing fast. Operator-visible as `proteus rotate` stalling for several seconds; in `proteus events run`-driven rotation the daemon also stalls.
+- **Fix**: Reset `consecutive_collisions = 0` after recording the collision regardless of pool size; drop the `&& opts.pool.len() > 1` guard. With `pool.len() == 1`, `(token_cursor + 1) % 1 == 0` makes the cursor advance a no-op, which is correct.
+
+#### NM2.5. `generate_for_vendor` returns un-validated MAC; relies on caller
+- **Severity**: low (defensive depth)
+- **Area**: mac generator
+- **File**: `src/mac/generator.rs:401-439`
+- **Description**: The function returns `Ok(Some(Mac))` without calling `validate_assignable()`. Both current callers (`generate` and `generate_with_probe`) do call validate, so today there's no leak. But the postcondition is undocumented; a future caller can introduce a regression.
+- **Fix**: Add a doc comment stating "caller must validate" or move the check inside.
+
+#### NM2.7. `mac::plan::preview_mac` ignores configured OUI pool
+- **Severity**: low (preview accuracy)
+- **Area**: mac plan / dry-run
+- **File**: `src/mac/plan.rs` (preview_mac site)
+- **Description**: The dry-run preview hardcodes `vec!["random-locally-administered".into()]` for the example MAC. When the user has a persona-shaped pool like `["apple"]`, the preview shows an `02:...` LAA MAC even though the actual rotate would land an Apple OUI. Confusing UX during `proteus rotate --dry-run`.
+- **Fix**: Pass the live pool into `preview_mac()` and best-effort generate from it; fall back to LAA if generation fails.
+
+(Agent's NM2.2, NM2.3, NM2.4, NM2.6 were defensive-only / cosmetic and not material; dropped.)
+
+### Section 13.2 — Commands orchestration
+
+#### NCMD2.1. `proteus doctor` exit code conflates Warn and Fail severities
+- **Severity**: medium
+- **Area**: doctor / CI integration
+- **File**: `src/commands/doctor.rs:75-79`
+- **Description**: The exit-code rule is `exit::GENERIC_ERROR` when `report.summary.fail > 0`. There's no distinction between hard failures (no kernel support) and Warn-level findings (distro outside the supported set). A wrapper shell using `proteus doctor || exit 1` blocks on warnings.
+- **Impact**: CI/CD scripts treating exit code as severity see false positives. A working host with a "distro not Fedora 43+" warn exits non-zero.
+- **Fix**: Reserve exit 1 for `fail > 0`; map warn-only states to exit 0. Or assign distinct codes (1 = fail, 2 = warn-only).
+
+#### NCMD2.3. `apply` writes systemd drop-ins but only timer-section reload runs
+- **Severity**: medium
+- **Area**: apply / systemd reload
+- **File**: `src/commands/apply.rs` (around timers section), plus dns/stack/resolved/ipv6 runners
+- **Description**: The timer reconcile path correctly calls `systemctl daemon-reload` and `systemctl restart <unit>` after writing drop-ins. Other apply phases (dns, stack, resolved, ipv6) write `/etc/systemd/*.conf.d/` overrides but never trigger a daemon-reload — silently relying on the operator (or the timer-phase reload) to refresh systemd's cache.
+- **Impact**: After `proteus apply`, systemd-resolved / sysctl / IPv6 / DNS drop-ins exist on disk but daemons don't observe them until a manual `systemctl daemon-reload` (or the next timer change). User believes config landed; operationally it didn't.
+- **Fix**: Run a single `systemctl daemon-reload` at the end of `apply::run()` after all submodules complete. Each submodule that wrote drop-ins should set a "needs reload" flag.
+
+#### NCMD2.4. Revert restore-for-deleted-NM-connections silently mishandled
+- **Severity**: medium
+- **Area**: revert / dhcp restoration
+- **File**: `src/commands/revert.rs:105` (dhcp::revert call) + `src/nm/dhcp.rs` revert path
+- **Description**: `state.originals.connections` is keyed by NM uuid. If an operator deletes a connection in NM (nmcli, GUI) outside Proteus, the uuid in state goes stale. Revert iterates and calls `Update` on a DBus path that no longer exists; some paths bubble the error, others silently skip. Worse: NM may recycle a uuid for a different connection — the revert would then write cached DHCP settings into the unrelated profile.
+- **Impact**: `proteus revert` either fails noisily on a benign deletion (UX problem) or silently mis-targets a recycled uuid (data corruption).
+- **Fix**: Validate each cached uuid against the live NM Settings list before invoking restore. Drop missing uuids from state with a `warn!` line. Reject restore when uuid is present but the SSID/id has changed (suggests recycle).
+
+#### NCMD2.5. `status --json` outputs U+FFFD replacement chars on non-UTF-8 iface names
+- **Severity**: low
+- **Area**: status / json serialization
+- **File**: `src/commands/status.rs:115-151`
+- **Description**: Sysfs interface names go through `to_string_lossy().into_owned()` before JSON serialization. Real-world sysfs is UTF-8 but a corrupted node or container-injected name with non-UTF-8 bytes lands `U+FFFD` characters in the JSON. Strict JSON consumers (e.g., `jq -e`) tolerate it, but downstream parsers expecting NIC names to be ASCII may misroute.
+- **Fix**: Skip non-UTF-8 entries with a `debug!` line, or include them with an explicit `valid_utf8: false` field.
+
+(Agent's NCMD2.2 — apply checking a non-existent kill-switch global — turned out to be unverified; the kill-switch knob lives elsewhere and IS checked. Dropped.)
+
+### Section 13.3 — Subsystems (dns/stack/etc.)
+
+#### NSUB.1. `[stack]` apply silently no-ops keys the kernel doesn't expose
+- **Severity**: medium
+- **Area**: stack / sysctl
+- **File**: `src/stack/mod.rs:167-172`, `src/commands/stack.rs:140-146`
+- **Description**: `read_sysctl(key)` returns `Option<None>` for absent keys; the apply path uses `.unwrap_or_default()` and stores an empty string as the "original". The drop-in is then written with the desired Proteus value, but `sysctl --system` silently ignores keys the running kernel doesn't recognize (e.g., `net.ipv6.*` on IPv6-disabled kernels). Operator believes hardening landed; nothing changed.
+- **Impact**: Silent feature gap. Threat-model claim ("ICMPv6 hardening on") not realized on the kernel actually running.
+- **Fix**: Surface a `warn!` when `read_sysctl(key)` returns `None` during apply (the key isn't supported on this kernel), and skip writing it to the drop-in. Document the kernel-support dependency.
+
+#### NSUB.2. `[stack]` revert leaves orphaned hardened sysctls when kernel changed
+- **Severity**: medium
+- **Area**: stack / revert
+- **File**: `src/commands/stack.rs:176-212`
+- **Description**: Revert removes the drop-in and runs `sysctl --system`. But cached originals captured during apply contain empty strings for keys that didn't exist on the apply-time kernel. If the operator later switched kernels (e.g., enabled IPv6 by config change), the kernel now exposes those keys but Proteus never restores them — they remain at whatever default the new kernel chose, which may differ from the pre-Proteus posture.
+- **Fix**: At revert time, re-probe each cached key; restore only those that exist now. Log orphans at `info!`.
+
+### Section 13.4 — Events / captive portal / dispatcher
+
+#### NEV2.1. `wiki::get_page(name)` lacks input validation
+- **Severity**: medium (information disclosure / footgun)
+- **Area**: wiki
+- **File**: `src/wiki.rs` (get_page site, ~line 34-36)
+- **Description**: `get_page(name)` constructs a path via `format!("{name}.md")` against the embedded directory without rejecting `..`, `/`, or absolute-path constructions. Today the input is constrained by the clap surface (subcommand parses a known page id), but if a wiki search query or a future API endpoint forwards user-supplied names, traversal is reachable. The embedded `include_dir` archive does not strictly enforce path canonicalization either.
+- **Fix**: Reject any `name` containing `/`, `\`, or `..`; require `^[a-zA-Z0-9_-]+$`. Add a regression test.
+
+#### NEV2.2. Captive portal misclassifies empty-body 200 as Clear when `expected_response` is empty
+- **Severity**: medium
+- **Area**: captive_portal / classifier
+- **File**: `src/captive_portal/mod.rs:150-168`
+- **Description**: `expected_trimmed` and `body_trimmed` are both `""` when the user has set `expected_response = ""` and the portal returns 200 with no body. The first match arm (`status == 200 && body_trimmed == expected_trimmed`) fires → `Classification::Clear`, even though an empty 200 from a "is the network captive?" check should classify as `PortalRequired` (a transparent proxy returning `200\r\n\r\n` is a textbook portal interception).
+- **Fix**: At config load, reject `expected_response = ""` with a clear error pointing to the wiki. Or in the classifier, treat empty `expected_body` paired with empty `body` as `Unknown` rather than `Clear`.
+
+#### NEV2.3. Hostname DBus calls have no timeout
+- **Severity**: medium
+- **Area**: hostname / dbus
+- **File**: `src/hostname/apply.rs:62-72`
+- **Description**: Three sequential `proxy.set_static_hostname(...).await`, `set_pretty_hostname`, and `set_hostname` calls run with no `tokio::time::timeout` wrap. If `systemd-hostnamed` hangs or its DBus socket stalls, the rotation blocks indefinitely. The dispatcher (`01-proteus`) runs `proteus rotate-if-needed` synchronously on every NM up event — a stalled hostnamed pins the dispatcher and through it any subsequent NM events.
+- **Fix**: Wrap each call in `tokio::time::timeout(Duration::from_secs(5), …)` and bubble `TimedOut` as a recoverable error. Document the bound in the wiki.
+
+#### NEV2.4. Bluetooth adapter-disappeared error logged at `error!` not `warn!`
+- **Severity**: low
+- **Area**: bluetooth / log level
+- **File**: `src/bluetooth/apply.rs:47-82`
+- **Description**: When `GetAdapters()` returned an adapter path but the adapter is gone by the time `Adapter1Proxy::builder().build()` runs (USB hot-unplug, dual-boot transition), the `.context("connecting to BlueZ Adapter1")?` fails the entire apply with an error log line. The case is benign — the adapter is just gone — and ought to skip with a warn.
+- **Fix**: Match on the underlying zbus error: if `NotFound` / `UnknownObject`, `tracing::warn!()` and continue; otherwise propagate.
+
+#### NEV2.5. Bluetooth name-length cap doesn't differentiate BR/EDR vs BLE
+- **Severity**: low
+- **Area**: bluetooth / advertising
+- **File**: `src/bluetooth/alias.rs:62-79`
+- **Description**: The 248-byte cap is correct for BR/EDR EIR. BLE adv frames have a much tighter ~31-byte AD-structure budget; a long alias is silently truncated by the controller. Operator-visible mismatch ("set the alias to X but BLE shows Y").
+- **Fix**: Query adapter capabilities; cap BLE-only adapters at ~30 bytes and emit a `warn!` if the configured alias would be truncated.
+
+#### NEV2.7. Dispatcher rc=70 branch conflates several "not supported" reasons
+- **Severity**: low
+- **Area**: dispatcher / exit codes
+- **File**: `dist/networkmanager/dispatcher.d/01-proteus:183-186`
+- **Description**: The dispatcher treats `rc=70` as "backend unavailable", but `lib.rs::exit::SYSTEM_NOT_SUPPORTED = 70` is also returned for missing `nft`, missing `systemd`, missing `CAP_NET_ADMIN`, or other system-level unsupported conditions. The dispatcher's logged message ("backend unavailable") is sometimes wrong.
+- **Fix**: Either split the exit code into distinct numbers per condition, or have the dispatcher log the captured stderr (already merged into `out`) at `info!` so the operator sees the actual reason.
+
+### Section 13.5 — Packaging & build
+
+#### NPKG.3. `build.rs` panics fatally on EACCES while reading wiki files
+- **Severity**: medium
+- **Area**: build / wiki embedding
+- **File**: `build.rs:71`
+- **Description**: `fs::read_to_string(path).unwrap_or_else(|e| panic!(...))` on every `wiki/*.md` file. A read-only mount, restrictive umask on a shared build tree, or a broken symlink kills the build with a stack trace instead of a clear "could not read wiki/<file>: EACCES; build is not in a writable working tree".
+- **Fix**: Map the error to a clear message via `expect("...")` or propagate via a `Result` with `cargo:warning=` and skip-or-fail policy.
+
+#### NPKG.4. `build.rs` `cargo:rerun-if-changed` not emitted for individual wiki files
+- **Severity**: low
+- **Area**: build / incremental
+- **File**: `build.rs:30-39` (and surrounding)
+- **Description**: The rerun directive uses `cargo:rerun-if-changed=wiki` (directory). Cargo's directory-level invalidation triggers only on direct child changes, not deep ones; deletion of a file inside `wiki/<subdir>/` may not invalidate. Re-emit per-file directives so the embedded index regenerates correctly.
+- **Fix**: For each file walked, emit `cargo:rerun-if-changed=<path>`.
+
+#### NPKG.7. Alpine APKBUILD ships `sha512sums="SKIP"` placeholder
+- **Severity**: medium (supply chain)
+- **Area**: alpine packaging
+- **File**: `dist/alpine/APKBUILD:113-114`
+- **Description**: `sha512sums="SKIP …"` skips integrity validation of the source tarball during `abuild -r`. A compromised mirror or man-in-the-middle on the GitHub archive download is undetected. Note says "populated on first tagged release" — but the file is committed today, and if a packager runs the recipe before the placeholder is replaced, builds proceed unverified.
+- **Fix**: Either populate the sha512 now (compute from a release tarball) or add an `abuild` precheck that refuses to build with literal `"SKIP"`.
+
+#### NPKG.8. Void template ships `checksum=SKIP` placeholder
+- **Severity**: medium (supply chain)
+- **Area**: void packaging
+- **File**: `dist/void/template:30`
+- **Description**: Same root-cause as NPKG.7 but for Void's `xbps-src`. `xbps-src` accepts `checksum=SKIP` silently — there's no warning. Builds proceed against any tarball.
+- **Fix**: Populate the SHA-2 checksum at release time. Add a comment explaining the population step.
+
+#### NPKG.6. Debian compat pinned at 13; future distros default to 14
+- **Severity**: low
+- **Area**: debian packaging
+- **File**: `dist/debian/control:6`
+- **Description**: `Build-Depends: debhelper-compat (= 13)` means Debian unstable / Ubuntu 25.04+ emit deprecation warnings during build. Not a current failure, but the queue.
+- **Fix**: Bump to 14 after verifying release.yml passes.
+
+#### NPKG.9. RPM spec `%check` runs `cargo test` but is bypassable
+- **Severity**: low
+- **Area**: rpm packaging / test enforcement
+- **File**: `dist/rpm/proteus.spec:49-54`
+- **Description**: `%check` runs the test suite. A downstream packager invoking `rpmbuild --without check` (e.g., COPR autobuilds short on time) silently ships a binary that wasn't tested in the spec's environment. Not a bug per se but worth documenting.
+- **Fix**: Mention the requirement in `dist/rpm/README.md`; consider adding a `%global _without_check 0` guard so the spec rejects an explicit bypass.
+
+#### NPKG.13. `proteus-rotate.timer` has 30min `RandomizedDelaySec` + 45min `AccuracySec` — total ±75min jitter
+- **Severity**: info (intentional tradeoff)
+- **Area**: systemd timer / fingerprint defense
+- **File**: `dist/systemd/proteus-rotate.timer:33,40`
+- **Description**: The two jitter directives stack: RandomizedDelaySec (independent uniformly-random offset) plus AccuracySec (batching window). Effective jitter is ~75 min within a 120-min cadence. Defended in the unit-file comments as a feature, but operators tuning rotation cadence may be surprised when "every 2h" lands anywhere in a 1.25h window.
+- **Fix**: None — flagging so future audits don't re-flag the design.
+
+#### NPKG.14. install.sh's polkit `sed` rewrite uses unquoted `$annotate`
+- **Severity**: low
+- **Area**: install.sh / polkit deploy
+- **File**: `install.sh:178`
+- **Description**: `sed "s|${annotate}/usr/bin/proteus</annotate>|${annotate}${BINARY_DST}</annotate>|g"` interpolates `$annotate` (a fixed XML opener) inside an unquoted sed pattern. Today the pattern can't contain sed-special chars, but a future rename of the polkit annotation key (or different polkit file format) could introduce them and silently break the rewrite — leaving the polkit policy pointing at the wrong path.
+- **Fix**: Use `sed -e` with a defensive delimiter (e.g., `#`) and pin the annotate string in a `read -r` heredoc rather than `printf`.
+
+(Agent's NPKG.1 trailing whitespace, NPKG.2 bash-vs-sh, NPKG.5 verify-build flock, NPKG.10 events ExecStart, NPKG.11 KillMode, NPKG.12 description length — already filed elsewhere or trivially cosmetic. Dropped.)
+
+### Section 13.6 — Backend / NM integration
+
+#### NBE.1. Every backend method opens a fresh `zbus::Connection::system()`
+- **Severity**: medium (perf / fd churn)
+- **Area**: backend / nm
+- **File**: `src/backend/nm.rs:35-39`
+- **Description**: `Self::connect()` is called inside every trait method (`set_cloned_mac`, `read_connection_uuid`, `set_dhcp_settings`, …). Each call creates a fresh DBus socket, authenticates, and tears down on drop. A single rotation traverses ~5 methods → 5 connect cycles. The events daemon multiplies this by trigger rate.
+- **Impact**: Wasted file descriptors, syscall overhead, and DBus auth cycles. Under heavy events-driven load (high-flap network), the kernel's per-process FD table ticks up briefly. Not a leak (drops correctly) but inefficient.
+- **Fix**: Cache an `Arc<Connection>` on the `NmBackend` struct. The backend is constructed once per command invocation; share the connection across methods.
+
+#### NBE.3. DHCP DUID/IAID asymmetry when `rotate_client_id = true`
+- **Severity**: medium
+- **Area**: nm dhcp / DHCPv6
+- **File**: `src/nm/dhcp.rs:146-150`
+- **Description**: With rotation enabled, the code sets `ipv6.dhcp-duid = "ll"` (link-local DUID, derived from the MAC) and `ipv6.dhcp-iaid = "mac"` (IAID derived from MAC). When the MAC rotates, the DUID *and* IAID both change — but the spec semantics differ. RFC 3315 §9 says DUID is the *client's* persistent identifier; rotating it is intentional for privacy here. RFC 8415 §13.1 says IAID is per-interface and persistent. The asymmetry means a DHCPv6 server treats every rotation as a new client *and* a new interface association — leading to duplicate-address detection, lease rejection, or address pool churn on tightly-bounded networks.
+- **Impact**: DHCPv6-only networks fall over after a rotation; IPv4 unaffected. Documented privacy posture is "rotate identity"; users may not realize this disrupts DHCPv6 reliability.
+- **Fix**: Document the tradeoff explicitly. Add a config knob to keep IAID persistent (operator chooses identity churn vs. lease-renewal continuity). Or pin DUID + IAID to the same derivation so the mode-1 mismatch goes away.
+
+#### NBE.4. `suppress_vendor_class` not sticky across persona application
+- **Severity**: low
+- **Area**: nm dhcp / fingerprint
+- **File**: `src/nm/dhcp.rs:127-152, 76-82`
+- **Description**: When the user sets `[dhcp] suppress_vendor_class = true`, vendor-class is set to empty. But a subsequent `apply_persona_fingerprint()` call writes the persona's `vendor_class_identifier` into the same field, undoing the suppression. The user's privacy intent loses to the persona's fingerprint goal.
+- **Fix**: Honor user suppression first; if `suppress_vendor_class = true`, skip the persona vendor-class write and emit a `debug!` line saying the persona field was suppressed by user config.
+
+#### NBE.6. `MockBackend::set_cloned_mac` skips MAC validation
+- **Severity**: low (test-only, but masks real bugs)
+- **Area**: tests / mock backend
+- **File**: `src/backend/mock.rs:248-266`
+- **Description**: Real NM rejects multicast / all-zero MACs at the DBus surface. The mock accepts any `Mac`, so tests using `MockBackend` can pass scenarios that would fail on production. Specifically: rotate-loop tests don't catch the "validator missed an edge case" class of bug.
+- **Fix**: Call `mac.validate_assignable()` in the mock; return the same error variant the real backend would.
+
+#### NBE.10. `ethtool -P` parsing breaks on Linux 6.3+ output variants
+- **Severity**: low
+- **Area**: mac factory / sysfs fallback
+- **File**: `src/mac/factory.rs:210-225`
+- **Description**: The parser searches for the literal lowercase prefix `permanent address:`. Linux 6.3+ kernel drivers (some Intel iwlwifi paths in particular) emit `Permanent MAC Address:` instead. Lowercased, the prefixes don't match → factory MAC capture silently falls back to the live address (which after a prior rotation is the cloned MAC, not the factory).
+- **Impact**: First rotation under 6.3+ on affected drivers captures the wrong "factory" — `proteus revert` later restores to the rotated MAC, not the factory.
+- **Fix**: Match against both `permanent address:` and `permanent mac address:` prefixes; or use a regex `^permanent (?:mac )?address:`. Add a fixture-based test.
+
+#### NBE.7. NM `Reapply(empty, version=0, flags=0)` is racy
+- **Severity**: low
+- **Area**: nm / reapply
+- **File**: `src/nm/dhcp.rs:508-513`
+- **Description**: `Device.Reapply(empty_dict, 0, 0)` tells NM "use the stored connection settings, any version." If NM modifies the connection between the read-side and reapply (operator running `nmcli connection modify` concurrently), the reapply lands on stale settings without surfacing the conflict. `version=0` is documented as "no version check" so this is intentional, but a Proteus apply can silently miss a parallel admin edit.
+- **Fix**: Read the connection's current `version_id` (if NM exposes it for the device) and pass it to Reapply so version-bump conflicts surface as DBus errors.
+
+#### NBE.8. Backend device path cached across reconfiguration
+- **Severity**: low
+- **Area**: backend / device enumeration
+- **File**: `src/backend/nm.rs:71`
+- **Description**: `BackendDevice.identifier` stores the NM Device object path at enumeration time. If a device is hot-removed and re-added between enumeration and method call, the cached path is stale — subsequent calls fail with `UnknownObject` or (worse) target a recycled device path.
+- **Impact**: Edge-case in long-running daemons (events daemon on USB-WiFi hosts).
+- **Fix**: Resolve the device by stable identifier (interface name) at every method call, not at enumeration.
+
+#### NBE.2. `select_auto()` and `availability_matrix()` both probe each backend
+- **Severity**: info
+- **Area**: backend / startup
+- **File**: `src/backend/select.rs:46-73`
+- **Description**: Auto-selection probes NM/networkd/raw via `available()`. The doctor command separately calls `availability_matrix()` which probes again. Probes for some backends (networkd) involve syscalls to `/run/systemd/netif`. Wasteful but correct.
+- **Fix**: Cache the last availability check on the backend struct.
+
+#### NBE.5. `802-1x.private-key-password` not explicitly tested in `update_with_secrets` round-trip
+- **Severity**: low (test gap)
+- **Area**: nm / enterprise wifi
+- **File**: `src/nm/mod.rs:241-250`
+- **Description**: The `SECRET_SECTIONS` list contains `"802-1x"`, which means `GetSecrets("802-1x")` is called, returning all secrets in that section including `private-key-password`. The PSK / EAP-TLS cert password should round-trip correctly. But there's no explicit test pinning that an enterprise connection with a passphrase-protected private key survives a rotate. A regression in NM secret-handling (or a refactor of the SECRET_SECTIONS list) would silently strip the password.
+- **Fix**: Extend the existing `MockBackend` enterprise-wifi test to round-trip a connection with `private-key-password` set; assert it's preserved post-rotate.
+
+(Agent's NBE.9, NBE.11, NBE.12 — documentation, duplicate of N12.17, design-tradeoff — dropped as not material.)
+
+---
+
+### Summary of section-13 additions
+
+29 new entries across six subsystems. Severity distribution:
+- 0 critical
+- 1 high (NM2.1)
+- 12 medium (NCMD2.1, NCMD2.3, NCMD2.4, NSUB.1, NSUB.2, NEV2.1, NEV2.2, NEV2.3, NPKG.3, NPKG.7, NPKG.8, NBE.1, NBE.3)
+- 13 low (NM2.5, NM2.7, NCMD2.5, NEV2.4, NEV2.5, NEV2.7, NPKG.4, NPKG.6, NPKG.9, NPKG.14, NBE.4, NBE.6, NBE.10, NBE.7, NBE.8, NBE.5)
+- 2 info (NPKG.13, NBE.2)
+
+Top three from this pass:
+1. **NM2.1** — generator livelock for single-token persona pools is a real
+   stall in the events daemon's hot path.
+2. **NCMD2.3** — apply writes drop-ins but skips daemon-reload on most
+   subsystems, so the documented effect doesn't materialize until the
+   next manual reload.
+3. **NCMD2.4** — revert against deleted-or-recycled NM uuids can mis-target
+   restoration; data corruption potential on fast NM reconfigurations.
+
+Two further agents (cli/persona/diff/timer/init audit, tests/examples/data
+audit) were still running when this section was written and may add
+findings in a follow-up commit.
+
+---
+
+### Section 13.7 — CLI / persona / diff / timer / init (background agent)
+
+#### NMOD.1. `apply::run` acquires state lock before validating config
+- **Severity**: high
+- **Area**: apply / orchestration
+- **File**: `src/commands/apply.rs:74-81`
+- **Description**: Lock acquisition (`acquire_state_lock_or_print`) runs at line 75. Config load (`Config::default_or_loaded`) and its validator (`validate_ranges`) run at line 81 — i.e., *after* the lock is already held. A misconfigured TOML or a multibyte-trailing-char per-SSID entry (N12.5) makes the call abort while still holding the kernel-level flock; the user sees the error, but a concurrent `proteus apply` from a wrapper or operator-retry must wait for the lock release on drop.
+- **Impact**: Lock budget burned by invalid configs. Combined with the existing C1 (HELD mutex held across retry sleep), this stacks: a misconfigured per-SSID block on a busy events-driven host can starve the rotate timer for up to the full 5 s budget per attempt. With panic = abort, an aborted apply also leaks the on-disk lock until kernel cleanup (close-on-exit), which is fast but observable in fast-fire scenarios.
+- **Fix**: Reorder — load and validate config first (cheap, read-only), then acquire the state lock. The require_yes gate can stay where it is; what matters is that the lock is the last thing acquired before the mutating phase begins.
+
+#### NMOD.2. `apply::run` confirmation gate fires before config validation surfaces errors
+- **Severity**: medium (UX)
+- **Area**: apply / dispatch
+- **File**: `src/commands/apply.rs:67-81`
+- **Description**: `require_yes()` runs first (line 67), printing the "this is mutating; pass --yes to confirm" line if missing. Config load (line 81) runs after. A user with a typo in `/etc/proteus/config.toml` runs `proteus apply --yes`, expects to see the typo error, but instead sees the require_yes path succeed and then an unrelated config-load failure. The implication "I confirmed; the system is now writing" is wrong — nothing wrote yet — but operators wired to "confirmation = mutation imminent" find this surprising.
+- **Fix**: Validate config first; gate on --yes only if validation passes. Pairs naturally with NMOD.1's lock-ordering fix.
+
+#### NMOD.3. `diff` skips files Proteus once-managed but that the operator deleted
+- **Severity**: medium
+- **Area**: diff / drift detection
+- **File**: `src/diff/mod.rs:214-227`
+- **Description**: `compute_managed_file_drift()` enumerates `known_managed_paths(etc_root)` which only walks the filesystem. Files listed in `state.json` as ever-managed but absent on disk (operator deleted, package uninstalled, user `rm`'d a drop-in) never appear in the diff report. `proteus diff` reports "all clean" even though Proteus is, in the canonical sense, not managing what it thinks it is.
+- **Impact**: Drift detection fails silently for the deletion class. Operator looking at `proteus diff` and seeing "no drift" believes their state is consistent; in fact the next `proteus apply` will recreate the deleted file (correct restore behavior), but until then the system is in a state Proteus doesn't notice.
+- **Fix**: Cross-reference `state.json`'s tracked-paths set against the filesystem; emit a "missing" entry per absent file in the diff report.
+
+#### NMOD.4. `persona::template::pick_owner` indexes `OWNER_POOL` without an explicit non-empty guard
+- **Severity**: info (defensive)
+- **Area**: persona / template
+- **File**: `src/persona/template.rs:86-87`
+- **Description**: `OWNER_POOL[unbiased_index(OWNER_POOL.len(), …)]`. The constant is 20 entries today; tests cover the non-empty case. A future refactor that empties the pool (e.g., gating it behind a feature flag) would have `unbiased_index(0, …)` return some invariant-violating value and the indexing would panic. No current bug.
+- **Fix**: Add `assert!(!OWNER_POOL.is_empty())` at the top, or use `OWNER_POOL.first()` style with an `unwrap_or` for graceful degradation.
+
+### Section 13.8 — Tests / examples / data (background agent)
+
+#### NTEST.1. Persona `lg-tv-2023.toml` `hostname_template` violates RFC 1123 — persona unusable
+- **Severity**: high
+- **Area**: persona / data
+- **File**: `data/personas/lg-tv-2023.toml:11`
+- **Verified**: confirmed via `grep -n hostname_template data/personas/lg-tv-2023.toml`
+  ```
+  11:hostname_template = "[LG]_webOS_TV_{word}"
+  ```
+  And via inspection of `src/hostname/mod.rs:250-262`: `render_template` calls `to_ascii_lowercase()` then `validate_hostname()`. The lowercase result `"[lg]_webos_tv_<word>"` contains `[`, `]`, and `_` — `validate_hostname` rejects every label that isn't `[a-z0-9-]`, so the call returns `Err(...)`.
+- **Impact**: A user who runs `proteus persona use lg-tv-2023` (or sets it as `[persona] active`) gets a load-time-or-render-time error every rotation. The persona is *parseable* (passes `every_embedded_persona_parses_and_passes_schema_check` because that test does NOT call `validate_hostname` on the template — `schema_check` in `src/persona/load.rs:191-231` checks the template is non-empty but never renders it through the hostname validator), so the bug ships in the binary's embedded persona catalogue.
+- **Fix**: (a) Change the template to a valid form, e.g. `lg-webos-tv-{word}`. (b) **Also** extend `schema_check` to render the template once with a stub `{owner}` / `{word}` and run `validate_hostname` against the result. This catches the entire class — there may be other personas with similar issues that this audit didn't enumerate. (c) Add a test that asserts every shipped persona's `hostname_template` produces RFC-1123-valid output.
+
+#### NTEST.2. `persona-effectiveness.sh` integration test uses fixed `sleep 5` for nmap baseline
+- **Severity**: medium
+- **Area**: tests / integration
+- **File**: `tests/integration/scenarios/persona-effectiveness.sh:49`
+- **Description**: After applying a persona, the test waits 5 s before running nmap to compare fingerprints. On a slow CI runner (especially with virtualized network stacks), 5 s is not always enough for NM apply + DHCP renew + iface up to settle. nmap then sees stale state — baseline and persona variants get conflated.
+- **Impact**: Flaky CI failures attributed to "persona didn't take effect" when the real cause is "test didn't wait long enough."
+- **Fix**: Replace fixed sleep with poll-until-ready: loop with timeout until `proteus current --json` reports the new MAC and DHCP lease timestamp moves, then run nmap. Alternatively: bump to 15–30 s for now and document the tradeoff.
+
+#### NTEST.3. `tests/realworld/probe.sh` assumes `/sys/class/net` exists
+- **Severity**: low
+- **Area**: tests / realworld
+- **File**: `tests/realworld/probe.sh:100-105`
+- **Description**: `for iface in $(ls /sys/class/net 2>/dev/null); do …` redirects errors but the loop runs zero times in environments without `/sys` (containers without `/sys` mount, sandboxes, chroots). The script doesn't fail loudly — it just produces empty results.
+- **Impact**: Edge-case false-positive in airgapped / sandboxed environments: probe.sh "passes" with no actual probing.
+- **Fix**: Pre-check `[ -d /sys/class/net ]` and skip with a clear message if absent. Fail explicitly when `/sys` is missing on a host that's expected to support it.
+
+---
+
+### Summary of section-13.7 / 13.8 additions
+
+7 more entries from the two background agents.
+- 2 high (NMOD.1, NTEST.1)
+- 3 medium (NMOD.2, NMOD.3, NTEST.2)
+- 1 low (NTEST.3)
+- 1 info (NMOD.4)
+
+`NTEST.1` is the headline: a shipped built-in persona is provably unusable because the persona schema-check doesn't render the template through the hostname validator. The fix expands beyond the single persona to a test pattern that exercises every shipped persona's `hostname_template`.
+
+`NMOD.1` rounds out the lock-ordering audit: existing C1 already flagged the in-process mutex held across sleep; this one notes the kernel-flock is held across config-load failures.
+
+---
+
+## Grand total tracker
+
+| Section | Source | Findings | Cumulative |
+|---|---|---|---|
+| 1–11 | Initial bug-hunt session 2026-05-08 | 85 | 85 |
+| 12 | Second-pass agents + manual | 20 | 105 |
+| 13.1–13.6 | Third-pass 6-agent sweep | 29 | 134 |
+| 13.7–13.8 | Background-agent follow-up | 7 | 141 |

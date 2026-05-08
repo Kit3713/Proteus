@@ -1,17 +1,22 @@
 # Roadmap — v0.4.x "Hardening Across Streams" (active)
 
-The branch that produced this roadmap landed [`docs/ISSUES.md`](ISSUES.md) — a
-1,035-line, ~105-item issue log compiled from a focused bug-hunt session on
-2026-05-08. The log spans security, panic potential, concurrency, config
-validation, build/packaging, error handling, docs drift, CLI dispatch, network
-backends, performance, and a 20-item second-pass review.
+Three bug-hunt sessions across two branches produced a combined 141-item
+issue log captured in [`docs/ISSUES.md`](ISSUES.md): the original 85-item
+sweep, a 20-item second pass, and a 36-item third-pass parallel sweep
+(Section 13) brought forward from `claude/find-hidden-bugs-RbE2H`. The log
+spans security, panic potential, concurrency, config validation, build /
+packaging, error handling, docs drift, CLI dispatch, network backends,
+performance, mac internals, commands orchestration, subsystems, events /
+captive portal, packaging, backend / NM integration, and tests / examples /
+data.
 
-The first v0.4 beta (`v0.4.0-beta1`) shipped about 30 of those items. That left
-~75 unfixed — including 4 critical CLI-confirmation bypasses that mutate state
-without `--yes`, 21 high-severity items, and a long tail of medium / low
-findings. This roadmap organises the remaining work into ten **parallelisable
-streams**, each scoped to a distinct module or file area so multiple
-contributors can land changes simultaneously without merge conflict.
+The first v0.4 beta (`v0.4.0-beta1`) shipped about 30 of those items. That
+leaves ~111 unfixed — including 4 critical CLI-confirmation bypasses that
+mutate state without `--yes`, 24 high-severity items (3 added by Section 13:
+NM2.1, NMOD.1, NTEST.1), and a long tail of medium / low findings. This
+roadmap organises the remaining work into ten **parallelisable streams**,
+each scoped to a distinct module or file area so multiple contributors can
+land changes simultaneously without merge conflict.
 
 Versioning stays inside `0.4.x-beta`. The project does **not** advance to
 `0.5.x` until every High and Critical row in `docs/ISSUES.md` has a non-empty
@@ -45,13 +50,69 @@ The closed audit findings (H-1, H-2, M-1, M-3, L-1, L-2, L-4, N-2, T-1) stay in
 the archived audit files as the historical fix record; they need no roadmap
 entry because they are already on `main`.
 
-**Issue-log convention.** `docs/ISSUES.md` remains the live issue log and is
-maintained outside this roadmap — entries close there as they are fixed. The
-roadmap references issue-log IDs (`CL2`, `N12.5`, `B3`, …) directly, and the
-audit IDs above (`M-2`, `N-0`, `N-1`, `L-3`, `N-3`, `I-1`, `I-2`) where the
-finding only exists in the archived audits. The two ID spaces are distinguished
-by the hyphen (`M-2` is from the audit; `M2` would be from the issues log; the
-issues log uses no `M-` prefix).
+### Section 13 absorption (third-pass findings)
+
+The 36 Section 13 entries land in the streams below; the table reproduces the
+mapping for fast lookup. None of these were addressed by the current
+`v0.4.x-beta` work-in-progress — every row is `⏳`.
+
+| ID | Severity | Stream | Sub-area |
+|---|---|---|---|
+| NM2.1 | high | 4 | mac generator livelock on single-token pool |
+| NM2.5 | low | 4 | `generate_for_vendor` postcondition doc |
+| NM2.7 | low | 1 | `mac::plan::preview_mac` ignores OUI pool |
+| NCMD2.1 | medium | 1 | `proteus doctor` exit code conflates Warn + Fail |
+| NCMD2.3 | medium | 4 | `apply` skips `daemon-reload` on dns/stack/ipv6/resolved |
+| NCMD2.4 | medium | 4 | revert mis-targets deleted / recycled NM uuids |
+| NCMD2.5 | low | 1 | `status --json` outputs U+FFFD on non-UTF-8 ifaces |
+| NSUB.1 | medium | 4 | `[stack]` apply silently no-ops kernel-unsupported keys |
+| NSUB.2 | medium | 4 | `[stack]` revert leaves orphaned hardened sysctls |
+| NEV2.1 | medium | 9 | `wiki::get_page` lacks input validation |
+| NEV2.2 | medium | 4 | captive portal misclassifies empty-body 200 as Clear |
+| NEV2.3 | medium | 5 | hostname DBus calls have no timeout |
+| NEV2.4 | low | 7 | bluetooth adapter-disappeared logs `error!` not `warn!` |
+| NEV2.5 | low | 4 | bluetooth name cap doesn't differentiate BR/EDR vs BLE |
+| NEV2.7 | low | 1 | dispatcher rc=70 conflates "not supported" reasons |
+| NPKG.3 | medium | 3 | `build.rs` panics fatally on EACCES |
+| NPKG.4 | low | 3 | `cargo:rerun-if-changed` not per-file |
+| NPKG.6 | low | 3 | Debian compat pinned at 13 |
+| NPKG.7 | medium | 3 | Alpine APKBUILD `sha512sums="SKIP"` (supply chain) |
+| NPKG.8 | medium | 3 | Void template `checksum=SKIP` (supply chain) |
+| NPKG.9 | low | 3 | RPM `%check` bypassable via `--without check` |
+| NPKG.13 | info | 10 | `proteus-rotate.timer` ±75 min jitter (intentional) |
+| NPKG.14 | low | 3 | `install.sh` polkit `sed` rewrite uses unquoted var |
+| NBE.1 | medium | 8 | every backend method opens fresh `zbus::Connection` |
+| NBE.2 | info | 8 | `select_auto` + `availability_matrix` double-probe |
+| NBE.3 | medium | 4 | DHCP DUID/IAID asymmetry on rotate |
+| NBE.4 | low | 4 | `suppress_vendor_class` not sticky across persona |
+| NBE.5 | low | 4 | `802-1x.private-key-password` round-trip test gap |
+| NBE.6 | low | 5 | `MockBackend::set_cloned_mac` skips MAC validation |
+| NBE.7 | low | 4 | NM `Reapply(empty,0,0)` racy under concurrent edits |
+| NBE.8 | low | 4 | backend device path cached across reconfiguration |
+| NBE.10 | low | 4 | `ethtool -P` parser breaks on Linux 6.3+ output variants |
+| NMOD.1 | high | 5 | `apply::run` acquires state lock before validating config |
+| NMOD.2 | medium | 5 | `apply` `--yes` gate fires before config validation |
+| NMOD.3 | medium | 6 | `diff` skips files Proteus once-managed but operator deleted |
+| NMOD.4 | info | 2 | `pick_owner` indexes `OWNER_POOL` without non-empty guard |
+| NTEST.1 | high | 2 | persona `lg-tv-2023.toml` `hostname_template` unusable; `schema_check` doesn't render through `validate_hostname` |
+| NTEST.2 | medium | 4 | `persona-effectiveness.sh` fixed `sleep 5` is flaky on slow CI |
+| NTEST.3 | low | 6 | `tests/realworld/probe.sh` assumes `/sys/class/net` exists |
+
+**Issue-log convention.** `docs/ISSUES.md` is also archived now — Section 13
+(brought forward from `claude/find-hidden-bugs-RbE2H`) brings the cumulative
+total to 141 findings, and every High and Critical row is referenced by some
+stream below. The roadmap is the single live tracker. The roadmap references
+issue-log IDs directly:
+
+- Sections 1–12 IDs: `S*`, `P*`, `C*`, `V*`, `B*`, `E*`, `D*`, `CL*`,
+  `N1`–`N14`, `R*`, `M1`–`M5`, `N12.*`.
+- Section 13 IDs: `NM2.*`, `NCMD2.*`, `NSUB.*`, `NEV2.*`, `NPKG.*`, `NBE.*`,
+  `NMOD.*`, `NTEST.*`.
+- Audit IDs (hyphenated, from the archived security audits): `M‑2`, `N‑0`,
+  `N‑1`, `L‑3`, `N‑3`, `I‑1`, `I‑2`.
+
+The hyphen distinguishes audit IDs from issue-log IDs (e.g. `M-2` is from the
+audit, `M2` would be from the issue log).
 
 **Ops checklist.** `docs/MAINTAINER-FOLLOWUPS.md` is **not** absorbed by this
 roadmap — it tracks one-shot maintainer chores (tag pushes, stale-branch
@@ -73,18 +134,21 @@ parallel. Streams marked **independent** touch disjoint files and can land in
 any order. Streams marked **light-coupling** share one or two files with a
 sibling stream and need a brief sequencing decision (noted per-stream).
 
-| # | Stream | Severity mix | Coupling | Issues covered | Status |
-|---|---|---|---|---|---|
-| 1 | CLI Safety & Confirmation Gates | 4 critical · 1 high · 5 med · 4 low | independent | CL1–CL7, M1, N12.1, N12.2, N12.3 | ⏳ |
-| 2 | Config Schema Validation | 5 high · 5 med · 6 low · 1 info | independent | V1–V12, N12.4, N12.5, N12.12, P1, P7 | ⏳ |
-| 3 | Packaging & Build / CI Coherence | 6 high · 5 med · 6 low | independent | B1–B15, N12.8, N12.9, M4 | ⏳ |
-| 4 | Events Daemon & Network Backends | 2 high · 9 med · 6 low | light (shares `src/commands/events.rs` with Stream 7) | N1–N14, N12.7, N12.11, N12.19, R4 | ⏳ |
-| 5 | State Lock & Concurrency | 1 high · 4 med · 7 low | light (shares `src/state.rs` with Stream 9) | C1–C9, N12.13, N12.15, N12.16, N12.17, S4 | ⏳ |
-| 6 | Panic Hardening | 2 high · 3 med · 2 low | independent | P2–P6, N12.10 | ⏳ |
-| 7 | Error Handling & Logging Discipline | 8 med · 2 low | light (shares `src/commands/dhcp.rs` with Stream 8) | E1–E10 | ⏳ |
-| 8 | Resource Hygiene & Performance | 1 med-high · 1 low-med · 5 low · 2 info | light (DHCP file shared with Stream 7) | R1–R8, N12.14, M3 | ⏳ |
-| 9 | Security Surface Hardening | 5 med · 4 low · 1 info | light (polkit shared with Stream 3) | S1–S3, S5–S10, B15 | ⏳ |
-| 10 | Docs / Wiki / Examples Drift + ⏳ frontier items | 4 high · 2 med · 2 low · 1 info | independent | D1–D8, N12.6, plus ⏳ from v0.3 | ⏳ |
+Severity counts include all absorbed Section 13 / audit findings. Issue lists
+in each stream-detail block are authoritative; this table is a quick read-out.
+
+| # | Stream | Severity mix (post-absorb) | Coupling | Status |
+|---|---|---|---|---|
+| 1 | CLI Safety & Confirmation Gates | 4 critical · 1 high · 7 med · 6 low | independent | ⏳ |
+| 2 | Config Schema Validation | 6 high · 5 med · 6 low · 2 info | independent | ⏳ |
+| 3 | Packaging & Build / CI Coherence | 6 high · 9 med · 10 low · 1 info | independent | ⏳ |
+| 4 | Events Daemon & Network Backends | 3 high · 14 med · 13 low | light (shares `src/commands/events.rs` with Stream 7) | ⏳ |
+| 5 | State Lock & Concurrency | 3 high · 5 med · 8 low | light (shares `src/state.rs` with Stream 9) | ⏳ |
+| 6 | Panic Hardening | 2 high · 4 med · 3 low | independent | ⏳ |
+| 7 | Error Handling & Logging Discipline | 8 med · 3 low | light (shares `src/commands/dhcp.rs` with Stream 8) | ⏳ |
+| 8 | Resource Hygiene & Performance | 1 med-high · 3 med · 5 low · 3 info | light (DHCP file shared with Stream 7) | ⏳ |
+| 9 | Security Surface Hardening | 6 med · 4 low · 1 info | light (polkit shared with Stream 3) | ⏳ |
+| 10 | Docs / Wiki / Examples Drift + ⏳ frontier items | 4 high · 2 med · 2 low · 2 info | independent | ⏳ |
 
 **First wave (zero file overlap; ship in parallel from day one):** Streams 1, 2, 3, 6, 10.
 
@@ -119,7 +183,8 @@ broken. This is the single highest-impact unfixed cluster.
 (apply / revert entry points only — see Stream 7 note),
 `tests/integration/scenarios/` (new files only).
 
-**Issues:** CL1, CL2, CL3, CL4, CL5, CL6, CL7, M1, N12.1, N12.2, N12.3.
+**Issues:** CL1, CL2, CL3, CL4, CL5, CL6, CL7, M1, N12.1, N12.2, N12.3,
+NM2.7, NCMD2.1, NCMD2.5, NEV2.7.
 
 **Work:**
 
@@ -133,6 +198,17 @@ broken. This is the single highest-impact unfixed cluster.
 - ⏳ Add integration scenarios for the 24 untested subcommands (CL4).
 - ⏳ Add `--json` flag to `resume` and `wiki` (non-search) for parity (CL6).
 - ⏳ Document the prefix-collision risk in CLI changelog (CL5).
+- ⏳ `proteus rotate --dry-run` preview: thread the configured OUI pool into
+  `mac::plan::preview_mac` so the previewed MAC reflects the persona, not a
+  hardcoded LAA placeholder (NM2.7).
+- ⏳ `proteus doctor` exit code: split warn-only vs fail; reserve exit 1 for
+  `fail > 0`, map warn-only to exit 0 (or a distinct code) so CI wrappers
+  don't block on warnings (NCMD2.1).
+- ⏳ `proteus status --json`: skip non-UTF-8 sysfs entries with a `debug!`
+  line, or include them with explicit `valid_utf8: false` (NCMD2.5).
+- ⏳ NM dispatcher `rc=70` branch: log captured stderr at `info!` (or split
+  the exit code) so "backend unavailable" doesn't mask "missing nft / nl80211
+  / CAP_NET_ADMIN" (NEV2.7).
 
 **Acceptance:** end-to-end script that calls every mutator without `--yes` and
 asserts exit code 64 (`CONFIRMATION_REQUIRED`); run watch with `--interval 0s`
@@ -146,7 +222,7 @@ a posture they did not ask for.
 
 **Files:** `src/config.rs`, `src/per_ssid.rs`, `src/persona/load.rs`.
 
-**Issues:** V1–V12, N12.4, N12.5, N12.12, P1, P7.
+**Issues:** V1–V12, N12.4, N12.5, N12.12, P1, P7, NMOD.4, NTEST.1.
 
 **Work:**
 
@@ -163,6 +239,14 @@ a posture they did not ask for.
   `get_mut("mac").unwrap()` test path (P7).
 - ⏳ Round-trip test coverage expansion for arrays, numerics, enums (V10).
 - ⏳ SSID-key TOML-special-character coverage (V12).
+- ⏳ Persona `schema_check` now also renders the template through
+  `validate_hostname` (and equivalents) so unusable personas like
+  `lg-tv-2023` are caught at load (NTEST.1, **High**). Fix the existing
+  `data/personas/lg-tv-2023.toml` template (`[LG]_webOS_TV_{word}` →
+  `lg-webos-tv-{word}` or similar) and add a regression test that exercises
+  every shipped persona's `hostname_template` through the validator.
+- ⏳ Defensive guard / assert that `OWNER_POOL` is non-empty before indexing
+  in `persona::template::pick_owner` (NMOD.4).
 
 **Acceptance:** new test module `config::validation_tests` loads each malformed
 example and asserts the specific error variant; full `cargo test --release`
@@ -182,7 +266,8 @@ is unreachable on every install path that is not `cargo install`.
 `.github/workflows/release.yml`, `Cargo.toml` (description-length only),
 `build.rs`, `scripts/check.sh`.
 
-**Issues:** B1–B15, N12.8, N12.9, M4, audit I‑2.
+**Issues:** B1–B15, N12.8, N12.9, M4, audit I‑2, NPKG.3, NPKG.4, NPKG.6,
+NPKG.7, NPKG.8, NPKG.9, NPKG.14.
 
 **Work:**
 
@@ -207,6 +292,20 @@ is unreachable on every install path that is not `cargo install`.
 - ⏳ Wire `cargo audit` into the release workflow with `Cargo.lock` as the
   target; fail the release on any open advisory in `zbus`, `clap`, `tokio`,
   `toml`, `toml_edit`, `serde`, `tracing`, `getrandom` (audit I‑2).
+- ⏳ Populate `sha512sums` in `dist/alpine/APKBUILD` (NPKG.7) and `checksum`
+  in `dist/void/template` (NPKG.8); add a guard rejecting the literal
+  `"SKIP"` placeholder so an early packager-build cannot ship without
+  integrity validation. **Supply-chain gap.**
+- ⏳ Replace `build.rs` `panic!` on wiki-file read errors with an actionable
+  `expect("…")` message and `cargo:warning=` line (NPKG.3); emit
+  `cargo:rerun-if-changed` per file rather than per directory so deletions
+  invalidate correctly (NPKG.4).
+- ⏳ Bump `dist/debian/control` `debhelper-compat` to 14 once `release.yml`
+  passes (NPKG.6).
+- ⏳ Document the `rpmbuild --without check` bypass risk in
+  `dist/rpm/README.md` (NPKG.9); add a `%global _without_check 0` guard.
+- ⏳ Fix `install.sh` polkit `sed` rewrite: use a defensive delimiter
+  (e.g. `#`) and pin the annotate string in a `read -r` heredoc (NPKG.14).
 
 **Acceptance:** spin up Fedora 43, Debian 13, Gentoo, Alpine 3.20 in CI
 containers; `install` the package; assert `systemctl is-enabled
@@ -227,7 +326,9 @@ Stream 7's logging changes rebase cleanly), `src/nm/mod.rs`,
 `src/nm/apply.rs`, `src/backend/nm.rs`, `src/backend/mock.rs`,
 `src/captive_portal/mod.rs`, `src/mac/factory.rs`.
 
-**Issues:** N1–N14, N12.7, N12.11, N12.19, R4, audit N‑1.
+**Issues:** N1–N14, N12.7, N12.11, N12.19, R4, audit N‑1, NM2.1, NM2.5,
+NCMD2.3, NCMD2.4, NSUB.1, NSUB.2, NEV2.2, NEV2.5, NBE.3, NBE.4, NBE.5,
+NBE.7, NBE.8, NBE.10, NTEST.2.
 
 **Work:**
 
@@ -255,6 +356,53 @@ Stream 7's logging changes rebase cleanly), `src/nm/mod.rs`,
   recovery (N13).
 - ⏳ Init-system detection paths beyond hardcoded list (N11).
 - ⏳ Per-SSID policy debounce vs concurrent CLI rotate (N14).
+- ⏳ Drop the `&& opts.pool.len() > 1` guard in
+  `mac::generator::generate_with_probe` so single-token persona pools (e.g.
+  `oui_pool = ["apple"]`) reset `consecutive_collisions` on every retry
+  rather than running out the 64-attempt budget on the same OUI (NM2.1,
+  **High**). Stalls events daemon under sustained collision conditions.
+- ⏳ Add a doc comment to `generate_for_vendor` stating the caller must
+  validate the returned MAC; today both callers do, but the postcondition is
+  undocumented (NM2.5).
+- ⏳ Run a single `systemctl daemon-reload` at the end of `apply::run()`
+  after dns / stack / resolved / ipv6 drop-ins are written, so the
+  documented effect actually materializes without a manual reload (NCMD2.3).
+- ⏳ Validate cached NM uuids against the live `Settings.ListConnections`
+  before invoking restore in `revert`; drop missing uuids with `warn!`,
+  reject restore when uuid is present but the SSID/id has changed (NCMD2.4
+  — guards against NM uuid recycling silently corrupting an unrelated
+  profile). Builds on the N6 fix.
+- ⏳ Surface `warn!` when `read_sysctl(key)` returns `None` during `[stack]`
+  apply (kernel doesn't expose the key) and skip writing the drop-in
+  (NSUB.1). At revert time, re-probe each cached key and restore only those
+  that exist now; log orphans at `info!` (NSUB.2).
+- ⏳ Captive portal classifier: reject `expected_response = ""` at config
+  load with a wiki-linked error, or treat empty `expected_body` paired with
+  empty body as `Unknown` rather than `Clear` (NEV2.2).
+- ⏳ Bluetooth name length: query adapter capabilities and cap BLE-only
+  adapters at ~30 bytes; `warn!` if the configured alias would be truncated
+  by the controller (NEV2.5).
+- ⏳ DHCP DUID/IAID asymmetry on rotate: document the tradeoff and add a
+  config knob to keep IAID persistent (or pin DUID + IAID derivation so the
+  asymmetry goes away). Today rotation breaks DHCPv6-only networks (NBE.3).
+- ⏳ Honor `[dhcp] suppress_vendor_class = true` over the persona's
+  `vendor_class_identifier` write — user suppression should win (NBE.4).
+- ⏳ Extend the existing enterprise-Wi-Fi mock test to round-trip a
+  connection with `private-key-password` set; assert it's preserved
+  post-rotate (NBE.5).
+- ⏳ NM `Reapply` race: read the connection's current `version_id` and pass
+  it to `Reapply` so concurrent `nmcli connection modify` surfaces as a DBus
+  conflict instead of a silent stale-write (NBE.7).
+- ⏳ Resolve backend devices by interface name at every method call rather
+  than caching the NM Device object path at enumeration time (NBE.8).
+- ⏳ `ethtool -P` parser: match against both `permanent address:` and
+  `permanent mac address:` (Linux 6.3+ Intel iwlwifi variant). Add a
+  fixture-based test (NBE.10) — relevant because incorrect parsing means
+  factory-MAC capture silently falls back to the live address.
+- ⏳ Replace `persona-effectiveness.sh`'s fixed `sleep 5` with a poll-until
+  loop on `proteus current --json` (MAC + DHCP lease timestamp), with a
+  generous timeout, so slow CI runners don't conflate baseline and persona
+  variants (NTEST.2).
 
 **Acceptance:** new test scenario `events_rotate_actually_rotates.rs` that
 spins the events daemon, fires a `ConnectionUp` signal, and asserts the
@@ -269,7 +417,7 @@ quarantine logging rebases cleanly), `src/state_lock.rs`,
 sites only).
 
 **Issues:** C1–C9, N12.13, N12.15, N12.16, N12.17, S4 (coordinated with
-Stream 9), S1, audit N‑3 (residual).
+Stream 9), S1, audit N‑3 (residual), NEV2.3, NMOD.1, NMOD.2, NBE.6.
 
 **Work:**
 
@@ -291,6 +439,25 @@ Stream 9), S1, audit N‑3 (residual).
   call (audit N‑3 residual). The `mode(0o600)` half landed in PR #310; the
   symlink-follow gap is what stayed open. Posture should match
   `write_atomic` (`O_CREAT | O_EXCL | O_NOFOLLOW`, `0o600`, RAII cleanup).
+- ⏳ Reorder `apply::run` to load and validate config **before** acquiring
+  the state lock (NMOD.1, **High**). Today the lock is held across config
+  validation; combined with C1 / N12.13 (HELD mutex held across retry sleep)
+  this can starve the rotate timer up to the full 5 s budget on a
+  misconfigured per-SSID block. Concretely: move
+  `Config::default_or_loaded` and `validate_ranges` ahead of
+  `acquire_state_lock_or_print` in `src/commands/apply.rs:67-81`.
+- ⏳ Pair NMOD.1 with moving the `require_yes` gate behind config validation
+  (NMOD.2): users with config typos see the typo error before the
+  confirmation prompt, restoring the "confirmation = mutation imminent"
+  invariant.
+- ⏳ Wrap `systemd-hostnamed` DBus calls
+  (`set_static_hostname` / `set_pretty_hostname` / `set_hostname`) in
+  `tokio::time::timeout(Duration::from_secs(5), …)` and surface `TimedOut`
+  as a recoverable error (NEV2.3). A stalled hostnamed currently pins the
+  NM dispatcher synchronously; document the bound in the wiki.
+- ⏳ Add `mac.validate_assignable()` to `MockBackend::set_cloned_mac` so
+  unit tests catch validator-edge-case bugs that production NM would
+  reject (NBE.6).
 
 **Acceptance:** stress test with 16 concurrent `acquire_state_lock` callers;
 assert no thread blocks more than 5 s; assert no `panic = abort` is
@@ -303,7 +470,7 @@ triggered.
 `src/probe/mod.rs`, `src/captive_portal/mod.rs::body_slice` (line-bounded;
 Stream 4 does not touch this function).
 
-**Issues:** P2–P6, N12.10.
+**Issues:** P2–P6, N12.10, NMOD.3, NTEST.3.
 
 **Work:**
 
@@ -315,6 +482,14 @@ Stream 4 does not touch this function).
   (P6).
 - ⏳ `proteus diff` reads target files unbounded → cap to 64 MiB and
   surface a clear error past that (N12.10).
+- ⏳ `proteus diff`: cross-reference `state.json`'s tracked-paths set
+  against the filesystem and emit a "missing" entry per absent file in the
+  diff report (NMOD.3). Currently `compute_managed_file_drift` only walks
+  the filesystem, so files Proteus once managed but the operator deleted
+  are silently invisible.
+- ⏳ `tests/realworld/probe.sh`: pre-check `[ -d /sys/class/net ]` and skip
+  with a clear message when `/sys` is not mounted (NTEST.3) — currently the
+  loop runs zero times and the script "passes" with no probing.
 
 **Acceptance:** fuzzer-style unit tests with property-based inputs (empty
 strings, all-dots paths, oversize inputs).
@@ -329,7 +504,7 @@ strings, all-dots paths, oversize inputs).
 `src/commands/config_cmd.rs`, `src/commands/doctor.rs`, `src/dns/mod.rs`
 (audit-target only), `src/logging.rs`.
 
-**Issues:** E1–E10.
+**Issues:** E1–E10, NEV2.4.
 
 **Work:**
 
@@ -343,6 +518,10 @@ strings, all-dots paths, oversize inputs).
   on `read_to_string` results (E7).
 - ⏳ Doctor probe error breadcrumbs (E8); unify `Config::default_or_loaded`
   fallback (E9); audit `.unwrap()` shared between dns prod and tests (E10).
+- ⏳ Bluetooth adapter-disappeared: match on the underlying zbus error and
+  log at `warn!` (continue) for `NotFound` / `UnknownObject`; propagate
+  other variants as today (NEV2.4). Avoids spurious `error!` lines on
+  benign hot-unplug.
 
 **Acceptance:** snapshot test of stderr at default verbosity for the success
 path of every mutator; assert empty.
@@ -354,7 +533,7 @@ path of every mutator; assert empty.
 (validators only), `src/dns/mod.rs::lossy` clones (non-overlapping with
 Stream 7's E10 audit).
 
-**Issues:** R1–R8, N12.14, M3.
+**Issues:** R1–R8, N12.14, M3, NBE.1, NBE.2.
 
 **Work:**
 
@@ -367,6 +546,13 @@ Stream 7's E10 audit).
 - ⏳ Drop redundant `lossy().into_owned()` on known-ASCII paths (R5).
 - ⏳ Subprocess fd-close audit comments (R8); shell-metacharacter validators
   on iface names (M3 — coordinate with Stream 9).
+- ⏳ Cache an `Arc<Connection>` on `NmBackend` so trait methods share a
+  single `zbus::Connection::system()` per command invocation rather than
+  re-authenticating on every method call (NBE.1) — same family as R3 but
+  in a different file.
+- ⏳ Cache the last availability check on the backend struct so
+  `select_auto()` and `availability_matrix()` don't double-probe networkd
+  via `/run/systemd/netif` syscalls (NBE.2).
 
 **Acceptance:** `bench/` micro-benchmarks for nft-table parse and wiki search
 (p50 / p99 budget); soak test for DHCP fd accumulation.
@@ -383,7 +569,7 @@ Stream 3), `src/events/source/reg_domain.rs::OwnedFd` (S9),
 Stream 4), `src/mac/generator.rs` separator parser (S10).
 
 **Issues:** S2, S3, S5, S6, S7, S8, S9, S10, B15, audit M‑2 / N‑0, audit
-L‑3 (residual), audit I‑1.
+L‑3 (residual), audit I‑1, NEV2.1.
 
 **Work:**
 
@@ -418,6 +604,11 @@ L‑3 (residual), audit I‑1.
   I‑1). Document in `wiki/dns.md` that the resulting digest is a
   tamper-evidence marker, not a security property — anyone with write
   access to the drop-in can recompute the digest.
+- ⏳ Validate the `name` argument in `wiki::get_page(name)`: reject `/`,
+  `\`, and `..`; require `^[a-zA-Z0-9_-]+$` (NEV2.1). Today the embedded
+  `include_dir` archive doesn't strictly enforce path canonicalisation
+  either, so this is the defense-in-depth gate against any future caller
+  forwarding user-supplied page names.
 
 **Acceptance:** `cargo audit`; manual review of every new validator; test
 for the polkit-missing path that asserts a clear error message.
@@ -434,8 +625,8 @@ silent-deception class.
 `src/error.rs` (docstring / wiki-hint additions; no logic),
 `docs/security/dbus-surface.md`, `docs/realworld-test-log.md` (new).
 
-**Issues:** D1–D8, N12.6, plus the four ⏳ items carried forward from
-[`ROADMAP-v0.3.md`](ROADMAP-v0.3.md):
+**Issues:** D1–D8, N12.6, NPKG.13, plus the four ⏳ items carried forward
+from [`ROADMAP-v0.3.md`](ROADMAP-v0.3.md):
 
 - ⏳ Audit pass: every error string in `src/error.rs` and every `bail!` /
   `anyhow!` callsite carries a `wiki <page>` hint.
@@ -462,6 +653,10 @@ silent-deception class.
 - ⏳ Solicit independent review against `docs/security/dbus-surface.md`;
   track responses in a new `docs/security/external-review.md` (frontier
   item).
+- ⏳ Document the `proteus-rotate.timer` ±75 min effective jitter
+  (`RandomizedDelaySec=30min` + `AccuracySec=45min`) in
+  `wiki/rotation.md`'s tuning section (NPKG.13) so operators tuning rotation
+  cadence don't refile this as a bug. Info-only.
 
 **Acceptance:** `examples/` files round-trip through the loader without
 warnings; CI step that runs `proteus config validate examples/*.toml` and
