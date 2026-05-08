@@ -157,6 +157,18 @@ mock -r fedora-43-x86_64 ~/rpmbuild/SRPMS/proteus-*-1.fc43.src.rpm
   privileged systemd container and aren't lib tests; if Copr hits a flake
   we haven't reproduced locally, rebuild the SRPM with `rpmbuild --without
   check ...` to skip.
+
+  **NPKG.9 — supply-chain risk on `--without check`.** `--without check`
+  is the *only* gate the spec offers between "lockfile resolved cleanly"
+  and "tests passed". A packager who reaches for `--without check` to
+  paper over a real failure in a transitive dep silently ships an RPM
+  that may be exploitable. Use it only when you have already reproduced
+  the failure locally, confirmed it's environmental (Copr container
+  flake, network blip pulling a registry crate), and have an open issue
+  tracking the root cause. The spec uses `%bcond_without check` so the
+  default is ON; flipping it requires intent. Do not pin
+  `_without_check` to 1 in any persistent macros file — that disables
+  testing for every future build of this spec.
 - The NM dispatcher hook is intentionally **not** marked
   `%config(noreplace)`: it's a script that ships with the package, not a
   user config. If the dispatcher logic changes in a new release, RPM

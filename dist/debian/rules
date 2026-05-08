@@ -27,3 +27,16 @@ override_dh_auto_install:
 	install -Dm644 dist/polkit/com.kit3713.proteus.policy debian/proteus/usr/share/polkit-1/actions/com.kit3713.proteus.policy
 	install -dm755 debian/proteus/etc/proteus
 	install -dm700 debian/proteus/var/lib/proteus
+
+# B3 / N12.8: dh_installsystemd writes the standard maintainer-script
+# fragments (postinst/prerm/postrm) that enable + start the units listed
+# below on install, restart them on upgrade, and stop + disable on remove.
+# Without this override, the units land in /lib/systemd/system but never
+# get hooked into systemd's preset machinery — i.e. proteus-events.service
+# was unreachable on every .deb install path before this change.
+override_dh_installsystemd:
+	dh_installsystemd --name=proteus-rotate proteus-rotate.timer
+	dh_installsystemd --name=proteus-check  proteus-check.timer
+	dh_installsystemd --name=proteus-boot   proteus-boot.service
+	dh_installsystemd --name=proteus-resume proteus-resume.service
+	dh_installsystemd --name=proteus-events proteus-events.service

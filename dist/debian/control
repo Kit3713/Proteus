@@ -3,7 +3,7 @@ Section: net
 Priority: optional
 Maintainer: Kit3713 <noreply@example.com>
 Build-Depends:
- debhelper-compat (= 13),
+ debhelper-compat (= 14),
  cargo,
  rustc (>= 1.85),
  pkg-config,
