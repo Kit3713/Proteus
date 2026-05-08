@@ -77,6 +77,14 @@ pub(crate) fn read_uid() -> Option<u32> {
         .and_then(|n| n.parse().ok())
 }
 
+/// Issue #238: this is the *only* privilege check the Proteus binary
+/// performs. The bundled `dist/polkit/com.kit3713.proteus.policy` is a UX
+/// hint for GUI wrappers that elevate via `pkexec` (dialog text,
+/// `auth_admin` defaults) — not a binary-side authorization gate. We never
+/// consult polkit; if the caller is root (via `sudo`, `pkexec`, or any
+/// other route) we proceed, full stop. Anyone with `sudo proteus apply`
+/// rights bypasses the polkit policy entirely. See `dist/polkit/README.md`
+/// ("Honest caveat") and `wiki/internals.md` for the user-facing framing.
 pub(crate) fn require_root() -> anyhow::Result<()> {
     match read_uid() {
         Some(0) => Ok(()),

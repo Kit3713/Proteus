@@ -49,7 +49,7 @@ Commands shipping today:
 - `proteus kill` / `proteus resume` — emergency network shutdown (interfaces down, radios off, BlueZ adapters powered down) and full restoration
 - `proteus apply [--yes]` — orchestrator across every enabled component, prints risk warnings before applying breaking knobs
 - `proteus revert [--yes]` — back out Proteus's network-layer side-effects
-- `proteus diff` — drift between config, defaults, and live state (with managed-file SHA verification)
+- `proteus diff` — drift between config, defaults, and live state (with managed-file SHA edit-detection; tamper hint, not an integrity guarantee against an attacker with write access)
 - `proteus dry-run <cmd>` — preview any mutator without applying
 - `proteus timer status / list / enable / disable / set / reset / logs` — manage the systemd timers without scripting
 - `proteus probe` — manual probe quorum check against the configured targets
@@ -127,6 +127,8 @@ sudo ./install.sh
 ```
 
 `install.sh` is POSIX-shell (no bashisms). It copies the binary to `/usr/local/bin`, creates `/etc/proteus` and `/var/lib/proteus`, installs the systemd units from `dist/systemd/` if present, and applies SELinux file contexts on systems where `semanage` is available. It does not run `proteus apply` for you — applying is mutating, you should review your config first.
+
+A PolicyKit action policy from `dist/polkit/` is also installed when `/usr/share/polkit-1/actions/` exists. This file is a **UX hint to GUI wrappers** that elevate via `pkexec` — it provides the desktop password-prompt text and the `auth_admin` defaults — and is **not a binary-side authorization gate**. The `proteus` binary never consults polkit; the only real privilege gates are `sudo` and `pkexec`. Anyone with sudo can run `sudo proteus apply` directly and bypass the policy entirely. See `dist/polkit/README.md` for the full framing.
 
 ### Distro packages
 

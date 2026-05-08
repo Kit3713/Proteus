@@ -76,7 +76,7 @@ A Microsoft name-resolution protocol (RFC 4795) that multicasts queries on the l
 The 48-bit hardware address of an Ethernet, Wi-Fi, or Bluetooth interface (IEEE 802). Upper 24 bits are the OUI (manufacturer); lower 24 identify the device. The most-fingerprinted thing on a laptop. Software-overridable on every modern Linux NIC. See `proteus wiki mac-recipes`.
 
 ## Managed file
-Any file Proteus writes under `/etc/`. Carries a two-line header — `# managed by proteus — do not edit` and `# expected-sha256: <hex>` — so `proteus diff` can detect manual edits and either re-apply, accept the drift, or back out. See `proteus wiki concepts`.
+Any file Proteus writes under `/etc/`. Carries a two-line header — `# managed by proteus — do not edit` and `# expected-sha256: <hex>` — so `proteus diff` can detect manual edits and either re-apply, accept the drift, or back out. The SHA line is an edit-detection / tamper-hint signal (header and body live in the same root-owned file, so it does not defend against an attacker with write access); it is the equivalent of a sticky note that catches honest drift. See `proteus wiki concepts`.
 
 ## mDNS (Multicast DNS)
 RFC 6762 multicast name resolution on the `.local` TLD, paired with DNS-SD (RFC 6763) for service discovery. Broadcasts both the hostname and a list of services the system offers. Proteus disables the local responder and resolver via systemd-resolved drop-in. See `proteus wiki discovery`.

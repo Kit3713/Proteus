@@ -7,6 +7,7 @@ pub mod cli;
 pub mod commands;
 pub mod config;
 pub mod diff;
+pub mod display;
 pub mod dns;
 pub mod dry_run;
 pub mod enterprise_wifi;
@@ -97,6 +98,15 @@ mod tests {
     }
 
     /// Polkit `exec.path` must point at `/usr/bin/proteus`. Issue #120.
+    ///
+    /// Issue #238 framing reminder: the bundled polkit policy is a UX hint
+    /// to GUI wrappers that elevate via `pkexec` (dialog text, `auth_admin`
+    /// defaults) — *not* a binary-side authorization gate. The Proteus
+    /// binary itself never consults polkit; the only privilege checks live
+    /// in `commands::require_root` and rely on EUID == 0. The real gates
+    /// are sudo and pkexec. Anyone with sudo can bypass the policy
+    /// entirely. See `dist/polkit/README.md` ("Honest caveat") and
+    /// `wiki/internals.md` for the same framing in user-visible docs.
     #[test]
     fn polkit_policy_targets_usr_bin_proteus() {
         let policy = include_str!("../dist/polkit/com.kit3713.proteus.policy");

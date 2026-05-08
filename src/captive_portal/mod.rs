@@ -26,6 +26,8 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
+use crate::display::display_string;
+
 /// Classification of the network path according to the portal detector.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -167,7 +169,12 @@ pub(crate) fn classify_response(
 
     // 3xx redirects almost always mean a portal redirect.
     if (300..400).contains(&resp.status) {
-        let target = resp.header("Location").map(|s| s.to_string());
+        // Issue #241: the `Location:` header is attacker-controlled — a
+        // hostile portal can stuff ANSI escapes, BiDi overrides, NULs, or
+        // a megabyte of junk into it and watch the operator's terminal
+        // (and journald) render the lot. Sanitize at the earliest seam so
+        // every downstream renderer (text, JSON, log) sees the safe form.
+        let target = resp.header("Location").map(display_string);
         return (
             Classification::PortalRequired,
             format!("HTTP {} redirect", resp.status),
@@ -434,6 +441,24 @@ mod tests {
         let (c, _, target) = classify_response(&r, "NetworkManager is online");
         assert_eq!(c, Classification::PortalRequired);
         assert_eq!(target.as_deref(), Some("https://login.example/portal"));
+    }
+
+    /// Issue #241: a hostile portal can stuff ANSI / BiDi / control bytes
+    /// into the `Location:` header. The classifier must hand the URL back
+    /// already neutered so every downstream log/print site is safe.
+    #[test]
+    fn redirect_target_strips_terminal_control_sequences() {
+        let raw = "https://evil.example/\x1b[2J\x1b[31mfake\u{202e}.bank.com";
+        let r = mk_resp(302, &[("Location", raw)], "");
+        let (_, _, target) = classify_response(&r, "NetworkManager is online");
+        let t = target.expect("redirect target captured");
+        assert!(!t.contains('\x1b'), "ESC byte must be escaped: {t:?}");
+        assert!(
+            !t.chars().any(|c| c as u32 == 0x202e),
+            "BiDi override must be escaped: {t:?}",
+        );
+        assert!(t.contains("\\x1b"));
+        assert!(t.contains("\\u{202e}"));
     }
 
     #[test]

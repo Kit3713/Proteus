@@ -78,6 +78,8 @@ Anything Proteus writes to `/etc/` carries a header:
 
 `proteus diff` (phase G) compares the live file's SHA against the expected one. Drift from manual edits gets flagged loudly so you can decide: re-apply, accept the local change, or back the whole thing out with `proteus revert`.
 
+This is an **edit-detection / tamper-hint** primitive, not an integrity guarantee. The header and body live in the same root-owned file: anything that can write the body can also rewrite the header to match. Treat the SHA as the equivalent of a `# do not edit` sticky note that catches honest manual edits and other-tool drift, not as a defence against an attacker who already has write access. For real attestation, verify against an external source (the published binary's `.sha256`, your config-management system, etc.).
+
 The original-MAC cache in `/var/lib/proteus/state.json` is sacred. Captured the first time Proteus sees a system, never re-captured. The original hostname is captured the same way at the same time. If you tinker, `proteus reset` clears your config but never touches the cache. `proteus uninstall --purge` is the only thing that removes it. This is so you can always get back to your system's original identity, no matter how badly you've broken the config.
 
 See `proteus wiki internals` for the full state schema.

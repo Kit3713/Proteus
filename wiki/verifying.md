@@ -285,6 +285,8 @@ tail -n +3 /etc/sysctl.d/95-proteus.conf | sha256sum
 
 Mismatch means someone edited the file. Re-apply or revert.
 
+The header is an edit-detection / tamper-hint primitive, not an integrity guarantee — header and body share the same root-owned file, so anything with write access can recompute the SHA after editing. The check is for catching honest manual edits and other-tool stomps, not for defending against an attacker who already has root. For real attestation, use the published binary's external `.sha256` (see `proteus wiki reproducible-builds`).
+
 ## End-to-end smoke test
 
 ```sh

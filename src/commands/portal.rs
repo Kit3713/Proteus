@@ -15,6 +15,7 @@ use serde::Serialize;
 
 use crate::captive_portal::{self, Classification, DetectionOutcome};
 use crate::config::Config;
+use crate::display::display_string;
 use crate::exit;
 use crate::state::{PortalCheckRecord, State};
 
@@ -221,6 +222,11 @@ pub fn run_open(state_path: Option<&Path>, config_path: Option<&Path>) -> Result
     }
 
     let outcome = run_detector(&config);
+    // Issue #241: `redirect_target` is already sanitized at the classifier;
+    // `config.captive_portal.detect_url` is operator config, raw. Sanitize
+    // the latter so both branches yield a safe-to-print value. Avoid
+    // re-sanitizing `redirect_target` to prevent double-escaping
+    // (`\\x1b` → `\\\\x1b`).
     let url = match outcome.redirect_target.as_deref() {
         Some(u) => u.to_string(),
         None => match outcome.classification {
@@ -228,7 +234,7 @@ pub fn run_open(state_path: Option<&Path>, config_path: Option<&Path>) -> Result
                 println!("portal: clear — no portal in path, nothing to open");
                 return Ok(exit::SUCCESS);
             }
-            _ => config.captive_portal.detect_url.clone(),
+            _ => display_string(&config.captive_portal.detect_url),
         },
     };
 
@@ -288,9 +294,15 @@ fn render_status(report: &StatusReport, json: bool) -> Result<u8> {
     } else {
         println!("captive portal:");
         println!("  enabled:         {}", yesno(report.enabled));
-        println!("  detect-url:      {}", report.detect_url);
+        // Issue #241: `detect_url` is operator-supplied via config and `note`
+        // can embed that same value when parsing fails ("invalid detect_url
+        // '...'"). Sanitize both before rendering. `redirect_target` is
+        // already sanitized at the classifier (see
+        // `captive_portal::classify_response`) so we render it verbatim —
+        // re-running `display_string` would double-escape.
+        println!("  detect-url:      {}", display_string(&report.detect_url));
         println!("  classification:  {}", report.classification);
-        println!("  note:            {}", report.note);
+        println!("  note:            {}", display_string(&report.note));
         if let Some(t) = &report.redirect_target {
             println!("  redirect:        {t}");
         }
