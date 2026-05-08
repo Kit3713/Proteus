@@ -609,7 +609,7 @@ Stream 4 does not touch this function).
 **Acceptance:** fuzzer-style unit tests with property-based inputs (empty
 strings, all-dots paths, oversize inputs).
 
-### Stream 7 — Error Handling & Logging Discipline ⏳
+### Stream 7 — Error Handling & Logging Discipline ⏳ (Wave 1 partial)
 
 **Files (coordinate with Stream 4 on `events.rs`, Stream 8 on `dhcp.rs`):**
 `src/commands/apply.rs` (logging-only sites), `src/commands/events.rs`
@@ -623,23 +623,49 @@ strings, all-dots paths, oversize inputs).
 
 **Work:**
 
-- ⏳ Demote info-level success-path events in `apply` (E1) and events
-  daemon hot path (E2) to `debug`.
-- ⏳ Surface `RUST_LOG` parse failures (E3); show-config permission errors
-  at `error!` not `warn!` (E4).
+- ✅ Demote info-level success-path events in `apply` (E1). ⏳ events
+  daemon hot path (E2) deferred — Stream 4 owns `src/commands/events.rs`
+  in this wave.
+- ✅ Surface `RUST_LOG` parse failures (E3); ✅ show-config permission
+  errors at `error!` not `warn!` (E4).
 - ⏳ Replace `Ok(exit::GENERIC_ERROR)` pattern with typed error returns
-  (E5).
-- ⏳ Stop swallowing NM `GetSecrets` failures (E6); stop `unwrap_or_default`
-  on `read_to_string` results (E7).
-- ⏳ Doctor probe error breadcrumbs (E8); unify `Config::default_or_loaded`
-  fallback (E9); audit `.unwrap()` shared between dns prod and tests (E10).
-- ⏳ Bluetooth adapter-disappeared: match on the underlying zbus error and
-  log at `warn!` (continue) for `NotFound` / `UnknownObject`; propagate
-  other variants as today (NEV2.4). Avoids spurious `error!` lines on
-  benign hot-unplug.
+  (E5) — deferred. The pattern is pervasive across the dispatch table
+  and converting it requires a larger refactor than fits this wave;
+  Stream 8 owns the `dhcp.rs` E5 dispatch site, and the in-scope sites
+  (apply.rs, show_config.rs, doctor.rs, config_cmd.rs) all rely on the
+  caller printing details before returning the non-zero code. Tracked
+  for a follow-up wave.
+- ⏳ Stop swallowing NM `GetSecrets` failures (E6) — deferred (Stream 4
+  owns `src/nm/mod.rs`). ✅ Stop `unwrap_or_default` on `read_to_string`
+  results (E7) for the in-scope `read_os_release` site in `doctor.rs`.
+- ✅ Doctor probe error breadcrumbs (E8); ✅ unify
+  `Config::default_or_loaded` fallback (E9) — `proteus config validate`
+  now routes through `Config::default_or_loaded` so it shares the
+  `validate_ranges` + `Config::validate` chain with every other entry
+  point; ✅ audit `.unwrap()` shared between dns prod and tests (E10) —
+  every unwrap in `src/dns/mod.rs` lives inside `#[cfg(test)]` and is
+  not reachable from production callers (audit comment landed).
+- ✅ Bluetooth adapter-disappeared: `is_adapter_gone` classifier
+  matches on the underlying zbus error (FDO `UnknownObject` /
+  `UnknownInterface` / `UnknownMethod` / `NameHasNoOwner` plus the
+  `org.bluez.Error.NotReady` / `NotFound` MethodErrors) and logs at
+  `warn!` (continue) on hot-unplug; other variants propagate
+  unchanged (NEV2.4). `apply_one_resilient` wraps `apply_one` so a
+  pulled dongle no longer fails the whole apply.
 
-**Acceptance:** snapshot test of stderr at default verbosity for the success
-path of every mutator; assert empty.
+**Wave 1 deferrals (file-scope conflicts):** E2 (events hot path), E5
+(dhcp dispatch), E6 (NM GetSecrets) all touch files owned by Streams
+4 / 8 in Wave 1 and land in a follow-up wave.
+
+**Wave 1 carryover from Stream 2:** ✅ P7 — `get_mut("mac").unwrap()`
+test path in `src/commands/config_cmd.rs` replaced with structured
+`expect`-style lookups so a future schema rename surfaces a useful
+diagnostic instead of a bare panic line number.
+
+**Acceptance:** snapshot tests pin that the `apply` and `show_config`
+success paths emit zero `tracing::info!` events; the `show_config`
+permission-denied path uses `error!`, not `warn!`. Stderr at default
+verbosity is empty on a clean apply.
 
 ### Stream 8 — Resource Hygiene & Performance ⏳
 
