@@ -6,20 +6,20 @@ Named after the shapeshifter.
 
 ## Status
 
-`v0.3.1-alpha` — pre-release. Not a stable release; the CLI surface, config schema, and on-disk formats may still change before `v1.0`. The v0.3 cycle is at ~92% complete on the roadmap (80✅ / 4🚧 / 4⏳ on bullet count).
+`v0.4.0-beta1` — beta. Not a stable release; the CLI surface, config schema, and on-disk formats may still change before `v1.0`. v0.4 is the bug-and-vulnerability-hunt phase; no new features land in this cycle.
 
 What has shipped on `main`:
 
-- **Phase A-G** (v0.1 cycle) — full skeleton + L2 identity + probes/timers/captive-portals + DHCP/IPv6/hostname/802.1X/DNS + discovery silencing + stack fingerprint + 38-page wiki + packaging + revert/diff/dry-run/reset/uninstall/kill-switch + podman+systemd integration tests. See `docs/ROADMAP-v0.1.md` for the archived detail.
-- **v0.2.x** — multi-profile NM rotation (#122), uuid-keyed state (#124), the May 2026 security audit, and a long tail of low-severity polish.
-- **v0.2.8-alpha hotfix batch** (rolled into v0.3.0-alpha) — six critical/high/medium issues from the v0.2.7-alpha review: secrets-merge across all four NM Update sites (#207), enterprise-wifi keyed by uuid (#209), factory-MAC fallback dropped (#208), release-test sysfs hermetic (#200), DNS canonicalize-failure defer (#210), `NO_COLOR` + isatty(stderr) (#201).
-- **v0.3 cycle "Reach + Persona"** — substantial completion in `v0.3.1-alpha`:
-  - **Milestone 1: `NetworkBackend` abstraction.** Trait + three impls (NM full, networkd / raw probes-then-degrades), `[backend] driver` config, doctor matrix. Every `commands/*.rs` call site routed through the trait. `proteus rotate-if-needed` typed entry point replaces the dispatcher's JSON sed-grep (#206-C). `state_lock` migrated to `Mutex<Option<File>>` (#206-B).
-  - **Milestone 2: Persona / Randomizer dual-mode stealth.** 25 stealth covers + 6 randomizer mirrors. Schema, loader, validator, full 11-subcommand CLI surface. Full integration with apply / rotate (MAC OUI shaping, hostname template, DHCP fingerprint write, Bluetooth alias). RFC 5227 ARP probe + IPv6 DAD with adaptive backoff. `wiki/personas.md` + threat-model addendum.
-  - **Milestone 3: Per-SSID profile policies.** `[per_ssid."<ssid>"]` config, `proteus ssid {list,show,set,clear}`, four-layer resolver with source trace, v1→v2 schema migration that mirrors legacy `known_portal_ssids` into per-SSID seed entries.
-  - **Milestone 4: Fingerprint hardening + RF + rotation triggers.** `proteus resolved` (mDNS+LLMNR off), `proteus ntp` (timesyncd normalization, detect-and-defer), nftables `extra_drops` chain (3 opt-in knobs). `proteus rf scan/chipset` + per-scan MAC randomization. `proteus dhcp renew`. Event-driven framework with four sources (NM connection-up / link-flap / regulatory-domain / portal-auth) and `proteus events run` daemon under a hardened systemd unit.
-  - **Milestone 5: Distro reach.** Init-system abstraction (`Systemd`/`Openrc`/`Runit`/`Sysvinit`), ARM + i686 cross-compile matrix, packaging recipes for Alpine APKBUILD + Void template + Gentoo ebuild + AUR `-bin`/`-git` + Copr spec polish + Debian submission-prep. `wiki/distro-support.md` + `wiki/backend.md`.
-  - **Milestone 6: Ergonomics + bug-fix queue.** Short aliases (`proteus s/r/a`), `--watch` mode, `proteus completions <bash|zsh|fish>`, `LOCK_BUSY` exit code (#211), `State::schema_version` migration ladder (#204), 13 bug-fix-queue items closed. `wiki/troubleshooting.md` symptom matrix. `docs/security/dbus-surface.md` audit artifact.
+- **v0.1 cycle (Phases A–G)** — full skeleton + L2 identity + probes/timers/captive-portals + DHCP/IPv6/hostname/802.1X/DNS + discovery silencing + stack fingerprint + 45-page embedded wiki + packaging + revert/diff/dry-run/reset/uninstall/kill-switch + podman+systemd integration tests. See [docs/ROADMAP-v0.1.md](docs/ROADMAP-v0.1.md) for the archived detail.
+- **v0.2 cycle "Polish"** — multi-profile NM rotation (#122), uuid-keyed state (#124), the May 2026 security audit, and a long tail of low-severity polish.
+- **v0.3 cycle "Reach + Persona"** — six milestones, all shipped:
+  - **M1 `NetworkBackend` abstraction.** Trait + three impls (NM full; networkd / raw probes-then-degrades), `[backend] driver` config, doctor matrix. Every `commands/*.rs` call site routes through the trait. `proteus rotate-if-needed` typed entry point.
+  - **M2 Persona / Randomizer dual-mode stealth.** 25 stealth covers + 6 randomizer mirrors. Schema, loader, validator, 11-subcommand CLI. Full integration with apply / rotate (MAC OUI shaping, hostname template, DHCP fingerprint write, Bluetooth alias). RFC 5227 ARP probe + IPv6 DAD with adaptive backoff. [wiki/personas.md](wiki/personas.md) + threat-model addendum.
+  - **M3 Per-SSID profile policies.** `[per_ssid."<ssid>"]` config, `proteus ssid {list,show,set,clear}`, four-layer resolver with source trace.
+  - **M4 Fingerprint hardening + RF + rotation triggers.** `proteus resolved` (mDNS+LLMNR off), `proteus ntp` (timesyncd normalization, detect-and-defer), nftables `extra_drops` chain. `proteus rf scan/chipset` + per-scan MAC randomization. `proteus dhcp renew`. Event-driven framework (`proteus events run`) under a hardened systemd unit.
+  - **M5 Distro reach.** Init-system abstraction (`Systemd`/`Openrc`/`Runit`/`Sysvinit`), aarch64 + armv7 cross-compile matrix, packaging recipes for Alpine APKBUILD + Void template + Gentoo ebuild + AUR `-bin`/`-git` + Copr spec polish + Debian submission-prep.
+  - **M6 Ergonomics + bug-fix queue.** Short aliases (`proteus s/r/a`), `--watch` mode, `proteus completions <bash|zsh|fish>`, `LOCK_BUSY` exit code, `State::schema_version` migration ladder, 13 bug-fix items closed. [wiki/troubleshooting.md](wiki/troubleshooting.md) symptom matrix. [docs/security/dbus-surface.md](docs/security/dbus-surface.md) audit artifact.
+- **v0.4 cycle "Bug + vulnerability hunt"** — no new features. The May 2026 vulnerability hunt cluster (30+ issues) plus three critical-for-beta fixes (#276 packaging version sync, #284 `Mac::from_str` panic, #297 `timer set` newline injection) ship in `v0.4.0-beta1`.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full list and [docs/ROADMAP.md](docs/ROADMAP.md) for the operational view.
 

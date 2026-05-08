@@ -1,7 +1,5 @@
 Probes answer one question: do we still have Internet? They run on a timer and feed the rotation logic. The whole point is to be conservative — one DNS hiccup or one dropped packet shouldn't trigger a MAC rotation, and a captive portal in the path should never trigger one.
 
-Probes ship in phase C.
-
 ## What probes do
 
 A probe round contacts a small set of known endpoints and asks each one a yes/no question: did the connection succeed? The answers feed a quorum vote. Quorum says "Internet is up" (do nothing), "Internet is down" (rotate), or "ambiguous" (do nothing and try again next round).

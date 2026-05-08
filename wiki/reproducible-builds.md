@@ -46,7 +46,7 @@ The fast path uses the script shipped in the repo:
 ```sh
 git clone https://github.com/Kit3713/Proteus.git
 cd Proteus
-./scripts/verify-build.sh v0.1.0-alpha
+./scripts/verify-build.sh v0.4.0-beta1
 ```
 
 `verify-build.sh`:
@@ -61,7 +61,7 @@ cd Proteus
 Manual recipe, if you prefer not to run the script:
 
 ```sh
-TAG=v0.1.0-alpha
+TAG=v0.4.0-beta1
 git clone --depth 1 --branch "$TAG" https://github.com/Kit3713/Proteus.git
 cd Proteus
 export SOURCE_DATE_EPOCH=$(git log -1 --pretty=%ct)

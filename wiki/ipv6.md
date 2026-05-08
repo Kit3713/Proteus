@@ -31,7 +31,7 @@ DUID rotation is coupled with MAC rotation per-interface. Mechanism is in `prote
 
 ## Coupling with MAC rotation
 
-When `proteus rotate <iface>` runs (phase B):
+When `proteus rotate <iface>` runs:
 
 1. Set the new MAC. Mechanism in `proteus wiki mac-recipes`.
 2. Bring the interface down, then up — forces IPv6 re-derivation. Without the down/up cycle the kernel may keep stale addresses for their full preferred lifetime.

@@ -1,4 +1,4 @@
-Practical patterns for MAC rotation. Phase B. For the mental model, see `proteus wiki concepts`.
+Practical patterns for MAC rotation. For the mental model, see `proteus wiki concepts`.
 
 ## One-shot rotation
 
@@ -135,13 +135,13 @@ sudo proteus revert --iface wlan0
 
 This pulls the permanent MAC from `/var/lib/proteus/state.json` (captured the first time Proteus saw the system, never re-captured) and writes it back via the same NM-or-rtnetlink path. The DUID and IID for that interface are rolled back together.
 
-Whole-system revert is `sudo proteus revert` (no flags). Both land in phase G; until then, the only undo is manual `nmcli` plus `ip link set` plus removing `/etc/proteus/`.
+Whole-system revert is `sudo proteus revert --yes` (no other flags).
 
 ## DUID coupling
 
 Rotating the MAC also rotates the DHCPv6 DUID for that interface. Otherwise DHCP would hand the same client identity across MAC rotations, defeating the rotation.
 
-DUID rotation is per-interface, not system-wide — better isolation, smaller blast radius if a DHCPv6 server caches aggressively. Lands in phase D. The DUID is regenerated using the link-layer-plus-time format (RFC 8415 §11.3) seeded with the freshly-assigned MAC.
+DUID rotation is per-interface, not system-wide — better isolation, smaller blast radius if a DHCPv6 server caches aggressively. The DUID is regenerated using the link-layer-plus-time format (RFC 8415 §11.3) seeded with the freshly-assigned MAC.
 
 ## IPv6 IID coupling
 

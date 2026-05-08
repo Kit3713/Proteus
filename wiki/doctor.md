@@ -47,13 +47,13 @@ Reads `ID` and `VERSION_ID` from `/etc/os-release`. `ok` for Fedora 43+. `warn` 
 Checks `/run/NetworkManager` (with `/var/run/NetworkManager` fallback). `ok` if running, `fail` otherwise — NetworkManager is required for MAC rotation. Remediation: `systemctl start NetworkManager`.
 
 ### `daemons::bluez`
-Checks `/run/bluetooth`. `ok` if running, `skip` otherwise — Bluetooth features (phase B) just don't apply when BlueZ is absent.
+Checks `/run/bluetooth`. `ok` if running, `skip` otherwise — Bluetooth features just don't apply when BlueZ is absent.
 
 ### `daemons::systemd_resolved`
-Checks `/run/systemd/resolve`. `ok` if running, `skip` otherwise — the DNS ECS-strip knob (phase D) is a no-op without resolved.
+Checks `/run/systemd/resolve`. `ok` if running, `skip` otherwise — the DNS ECS-strip knob is a no-op without resolved.
 
 ### `daemons::nftables`
-Looks for the `nft` binary on `PATH`. `warn` if missing — some discovery blocks (phase E) need it. With `--quick` or non-root, reports `skip` because the ruleset isn't readable. With root and not quick, currently reports `ok` (a future phase will read the actual ruleset).
+Looks for the `nft` binary on `PATH`. `warn` if missing — some discovery blocks need it. With `--quick` or non-root, reports `skip` because the ruleset isn't readable. With root and not quick, reports `ok`.
 
 ### `files::config_dir`
 `/etc/proteus` exists? `ok` if so, `skip` if not (first run will create it).
@@ -68,7 +68,7 @@ Looks for the `nft` binary on `PATH`. `warn` if missing — some discovery block
 Detects competing DNS-privacy tools — `dnscrypt-proxy`, `AdGuardHome`, `kresd` (knot-resolver), `pihole-FTL` (Pi-hole), non-Proteus drop-ins under `/etc/systemd/resolved.conf.d/`, and a non-systemd `/etc/resolv.conf`. If any is detected, returns `warn` because Proteus's DNS knob will skip — that's by design, not a bug. Wiki: `proteus wiki dns`.
 
 ### `detect_and_defer::ntp`
-Detects `chronyd` or `ntpd` on `PATH`. `warn` if either is present — Proteus's NTP normalization (phase E) defers to whatever NTP client you've chosen. `ok` otherwise.
+Detects `chronyd` or `ntpd` on `PATH`. `warn` if either is present — Proteus's NTP normalization defers to whatever NTP client you've chosen. `ok` otherwise.
 
 ### `detect_and_defer::iface_manager`
 If NetworkManager isn't running but `iwd` or `wpa_supplicant` is on `PATH`, returns `warn` — Proteus needs NM. Otherwise `ok`.
@@ -90,7 +90,7 @@ Reports last-rotated timestamp per managed interface. `ok` if any rotations are 
 The default human format groups checks by category and prefixes each with a glyph:
 
 ```text
-proteus doctor — system health check (v0.1.0, phase B)
+proteus doctor — system health check (v0.4.0-beta1, phase G)
 
 System
   ✓ Linux 6.x.y
@@ -126,8 +126,8 @@ With `-v` you also get the check id beneath each line, e.g. `(daemons::network_m
 ```json
 {
   "schema_version": 1,
-  "proteus_version": "0.1.0",
-  "phase": "A",
+  "proteus_version": "0.4.0-beta1",
+  "phase": "G",
   "checks": [
     {
       "category": "daemons",

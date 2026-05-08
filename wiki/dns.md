@@ -78,8 +78,9 @@ If `dig` still reports a subnet after `proteus apply`, check `proteus status` fi
 
 ## Reverting
 
-- `proteus revert` (phase G) — removes the drop-in, restarts systemd-resolved.
-- `proteus reset` — same; clears config back to defaults.
+- `proteus dns revert --yes` — removes the drop-in, restarts systemd-resolved.
+- `proteus revert --yes` — same effect across every Proteus mutation.
+- `proteus reset --yes` — clears config back to defaults.
 
 The drop-in is the only artifact. Removing it and restarting systemd-resolved returns ECS behavior to the systemd default. Nothing else needs cleaning up.
 

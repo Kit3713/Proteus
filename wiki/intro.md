@@ -56,7 +56,7 @@ By default, on a 2h schedule via `proteus-rotate.timer`, and on probe-driven con
 
 Captive portals are the exception. Probe failures classified as portal-caused never trigger MAC rotation — that is how the loop is avoided. Periodic rotation is suppressed while you are authed behind a portal. Known-portal SSIDs get a fresh MAC per visit instead.
 
-Pinning a MAC per interface or per NetworkManager connection is supported; see `proteus wiki concepts` and the `mac-recipes` page (lands in phase B).
+Pinning a MAC per interface or per NetworkManager connection is supported; see `proteus wiki concepts` and `proteus wiki mac-recipes`.
 
 ## How it behaves
 

@@ -3,8 +3,8 @@
 Init-system artifacts for distros that boot with OpenRC: Alpine, Gentoo,
 Artix-OpenRC. These are the same shapes the `init::openrc::Openrc`
 builder produces at runtime; we ship them as plain files so packagers
-(see `dist/alpine/APKBUILD`, `dist/gentoo/proteus-0.1.0.ebuild`) don't
-have to call into the binary at install time.
+(see `dist/alpine/APKBUILD`, the Gentoo ebuild under `dist/gentoo/`)
+don't have to call into the binary at install time.
 
 | File                        | Install path                                     |
 | --------------------------- | ------------------------------------------------ |
@@ -26,9 +26,10 @@ sudo run-parts --test /etc/periodic/hourly | grep proteus
 ```
 
 The `run-parts --test` output should list `proteus-rotate`. The actual
-rotation cadence still comes from `[rotation] interval` in
-`/etc/proteus/config.toml` once Phase D lands; until then the periodic
-buckets fire at OpenRC's fixed cadence (15min/hourly/daily/weekly).
+rotation cadence is governed by `[mac] rotation_interval` in
+`/etc/proteus/config.toml`; the periodic buckets fire at OpenRC's
+fixed cadence (15min/hourly/daily/weekly) and the binary respects the
+config-driven interval at every invocation.
 
 ## Verification step
 

@@ -38,7 +38,7 @@ The `-bin` variant pulls per-arch tarballs from the GitHub Releases page
 (`v$pkgver`) and skips the Rust toolchain dependency. The `-git`
 variant tracks `main` and is the right choice for testers / contributors.
 
-Submission flow (once `v0.1.0` is tagged):
+Submission flow (once a version tag is pushed, e.g. `v0.4.0-beta1`):
 
 1. Fill `sha256sums` in `PKGBUILD` and `PKGBUILD-bin` from the real
    release tarballs (`makepkg -g >> PKGBUILD`).
@@ -61,7 +61,7 @@ Hard:
 Optional:
 
 - `bluez` — Bluetooth adapter alias and BLE RPA mode
-- `nftables` — discovery silencing rules (Phase E)
+- `nftables` — discovery silencing rules
 - `firewalld` — alternative path for the same rules
 - `polkit` — lets a future GUI elevate via pkexec
 
@@ -106,8 +106,6 @@ This removes everything except `/etc/proteus/` (kept by `backup=()`) and
 
     sudo proteus uninstall --purge --yes
 
-(once Phase G lands; for now, `rm -rf` the directories yourself.)
-
 ## Notes for packagers
 
 - `pkgver` matches `Cargo.toml`'s `version`.
@@ -118,9 +116,9 @@ This removes everything except `/etc/proteus/` (kept by `backup=()`) and
 - The release profile in `Cargo.toml` already does `strip = true`, so no
   explicit `strip` call is needed in `build()`.
 - No `check()` function in the source PKGBUILD: the integration tests
-  need privileged systemd containers (Phase G) and don't fit the
-  standard `cargo test` mold. The `-git` variant *does* run
-  `cargo test --lib` since the lib tests are sandboxed.
+  need privileged systemd containers and don't fit the standard
+  `cargo test` mold. The `-git` variant *does* run `cargo test --lib`
+  since the lib tests are sandboxed.
 
 ## How to help
 

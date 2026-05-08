@@ -17,11 +17,11 @@ proteus -v doctor             # extra detail per check
 
 You just rotated and the link is dead. Start gentle, escalate.
 
-- Try a revert: `sudo proteus revert --iface <iface>` (lands in phase G). Failing that, restart NetworkManager: `sudo systemctl restart NetworkManager`.
+- Try a revert: `sudo proteus revert --yes`. Failing that, restart NetworkManager: `sudo systemctl restart NetworkManager`.
 - Check whether the current MAC is wedged: `proteus status --json | jq .interfaces` and `proteus current --json | jq .interfaces[].mac`.
 - Captive portal in path? See `proteus wiki captive-portals` for the loop fix. The portal detector should classify it; if it didn't, check `proteus status --json | jq .portal`.
 - Verify the rotated MAC didn't collide with the gateway. This should never happen — Proteus checks the ARP table before assigning — but it's the first thing to rule out: `arp -a` then compare with `proteus current --json`.
-- Recovery hatch: `sudo proteus reset` (phase G) clears your config back to defaults and re-applies. It does not touch the original-MAC cache, so this is safe.
+- Recovery hatch: `sudo proteus reset --yes` clears your config back to defaults and re-applies. It does not touch the original-MAC cache, so this is safe.
 
 ## "My printer stopped being discovered"
 
@@ -45,9 +45,9 @@ Same family of problem.
 Enterprise Wi-Fi is fussy. The opt-in 802.1X knob is the usual cause.
 
 - Did you enable `enterprise_wifi.anonymous_outer_identity`? Some Microsoft NPS configs reject mismatched outer/inner identity and silently drop you.
-- Disable per-connection: `sudo proteus enterprise-wifi disable --connection "MyOrgWiFi"` (phase D command). Until that lands, edit `/etc/proteus/config.toml` and run `sudo proteus apply`.
+- Disable per-connection: `sudo proteus enterprise-wifi disable --connection "MyOrgWiFi" --yes`.
 - Look for the EAP failure: `journalctl -u NetworkManager -n 100` and search for `EAP-Failure` or `auth failed`.
-- If your org also pins MAC for 802.1X cert binding, pin Proteus to a stable MAC for that connection: `sudo proteus pin --connection "MyOrgWiFi"` (phase B).
+- If your org also pins MAC for 802.1X cert binding, pin Proteus to a stable MAC for that connection: `sudo proteus pin --connection "MyOrgWiFi" --yes`.
 
 ## "My DHCP lease keeps renewing too often"
 
@@ -90,15 +90,15 @@ Look at the structured reason first.
 
 ## "I want to know what Proteus changed"
 
-- `proteus diff` (phase G) — config vs defaults vs live state, with drift flagged on managed files via the SHA in their headers.
-- `cat /etc/proteus/state.json | jq .` — see what's been captured (original MACs, original hostname, history).
+- `proteus diff` — config vs defaults vs live state, with drift flagged on managed files via the SHA in their headers.
+- `cat /var/lib/proteus/state.json | jq .` — see what's been captured (original MACs, original hostname, history).
 - `find /etc -name '*proteus*'` — see every drop-in Proteus has written.
 - `sudo nft list ruleset` — see the firewall rules in the `proteus` table.
 - `journalctl -t proteus -n 200 --no-pager` — recent log output.
 
 ## "I want to fully remove Proteus"
 
-- One-shot: `sudo proteus uninstall --purge --yes` (phase G). Runs revert, removes the binary, clears `/etc/proteus/` and `/var/lib/proteus/`.
+- One-shot: `sudo proteus uninstall --purge --yes`. Runs revert, removes the binary, clears `/etc/proteus/` and `/var/lib/proteus/`.
 - Manually:
   1. `sudo proteus revert --yes` to undo every applied change.
   2. `sudo rm /usr/local/bin/proteus` to remove the binary.
@@ -120,10 +120,7 @@ Probably not the ECS-strip knob — it has a hard guard that defers to dnscrypt-
 
 ## "I see `not yet implemented` for command X"
 
-Some commands are stubs in the current phase. This is by design — every subcommand parses, with help text, even before the implementation lands.
-
-- Run `proteus help X` for the phase pointer (B, C, D, E, F, or G).
-- The wiki page for that feature still describes the eventual behavior; check `proteus wiki <feature>`.
+The CLI surface is fully wired today. If you see `not yet implemented`, the most common cause is the `[backend] driver = "networkd"` or `"raw"` selection: the NM-driven write paths have full coverage; networkd / raw are graceful-degrade stubs for some mutating paths. Pin `[backend] driver = "nm"` if NM is present, or check `proteus doctor` for the backend matrix.
 
 ## "Permission denied"
 
@@ -132,19 +129,19 @@ Some commands are stubs in the current phase. This is by design — every subcom
 
 ## "How do I run Proteus without systemd?"
 
-You mostly can't. Proteus targets systemd as a primary dependency.
+Limited support, via the init-system abstraction. Proteus knows about `Systemd`, `Openrc`, `Runit`, and `Sysvinit`.
 
 - Read commands work without systemd. `proteus status`, `proteus current`, `proteus original` will run.
-- Mutating commands that modify systemd units fail cleanly with a message naming the missing dependency.
-- Cross-ref `proteus wiki concepts` for the platform abstraction. Phase A is Linux + systemd only; other backends are theoretical.
+- For OpenRC / runit / sysvinit hosts, `proteus doctor` reports the detected init and which features depend on systemd-specific paths (drop-ins under `/etc/systemd/...`, journald-only logging, etc.).
+- See `proteus wiki distro-support` for the matrix.
 
 ## "Proteus says my config has drift"
 
 Manual edits to a managed file get flagged loudly. This is a feature, not a bug.
 
-- Run `proteus diff` (phase G) to see the path, expected SHA, and current SHA.
+- Run `proteus diff` to see the path, expected SHA, and current SHA. The SHA is an edit-detection signal, not an integrity guarantee against an attacker with write access.
 - Decide: re-apply Proteus's version with `sudo proteus apply`, or accept the local edit and update the header SHA, or back the whole thing out with `sudo proteus revert`.
-- The header on every managed file looks like `# managed by proteus — do not edit` followed by `# expected-sha256: <hex>`. If you removed those headers, Proteus will treat the file as foreign and refuse to overwrite it.
+- The header on every managed file looks like `# managed by proteus — do not edit` followed by `# sha256: <hex>`. If you removed those headers, Proteus will treat the file as foreign and refuse to overwrite it.
 
 ## "Probes keep triggering rotations on a flaky link"
 
@@ -153,7 +150,7 @@ The probe quorum exists for exactly this — but if your network is bad enough, 
 - Check the probe state: `proteus status --json | jq '.probes'`.
 - Recent rotations: `journalctl -u proteus-check -n 100`.
 - Loosen the quorum or extend the cooldown in `[probes]`. See `proteus wiki probes`.
-- Or pin the interface for that environment: `sudo proteus pin --iface <iface>` (phase B). Pinned interfaces are skipped by both schedule and probe-driven rotation.
+- Or pin the interface for that environment: `sudo proteus pin --iface <iface> --yes`. Pinned interfaces are skipped by both schedule and probe-driven rotation.
 
 ## Logs and diagnostics
 
@@ -177,7 +174,7 @@ Quick-reference for "X broke; what's the likely culprit?" Read across the row, t
 | `nm` | `proteus rotate` skipped: `pinned to ...` | Profile pin from prior `proteus pin` | `proteus unpin <iface-or-conn>` |
 | `nm` | `set_cloned_mac failed: ... NoSecrets` | NM secrets-merge contention (rare; see #207) | Re-run; `proteus -vv rotate` to surface the section |
 | `nm` | `proteus dhcp renew` exits "Reapply rejected" | NM ≤1.0 doesn't support `Reapply`; Proteus falls back to Disconnect+Activate | Expected; the lease still rotates |
-| `networkd` | every mutating command bails `not yet implemented` | Backend write paths are stubs in v0.3 | Pin `[backend] driver = "nm"` if NM is present, else wait for the M1 follow-up |
+| `networkd` | some mutating commands bail `not yet implemented` | Selected backend write paths are stubs while NM is the lead | Pin `[backend] driver = "nm"` if NM is present, else file an issue with the missing path |
 | `raw` | same | same | same |
 | any | doctor `Backend: no backend available` | No NM, no networkd, no `ip` on `$PATH` | `apt install iproute2` / `dnf install iproute` / equivalent |
 | any | rotate exits 75 | State-lock contention (issue #211) | Wait (timer/dispatcher overlap); raise `PROTEUS_LOCK_TIMEOUT_MS` if persistent |
@@ -210,7 +207,7 @@ Quick-reference for "X broke; what's the likely culprit?" Read across the row, t
 |---|---|---|
 | 0 | success | — |
 | 1 | generic error | read stderr, then `proteus -vv <last-cmd>` |
-| 64 | not implemented (stub) | check the roadmap; pin a different backend |
+| 64 | not implemented (selected backend doesn't drive this path) | pin `[backend] driver = "nm"` if NM is present |
 | 65 | config error or `--yes` missing | re-read the message; the helper text names the wiki page |
 | 66 | permission error (not root) | `sudo proteus ...` |
 | 70 | system not supported | doctor matrix; install the missing daemon |

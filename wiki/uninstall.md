@@ -1,7 +1,5 @@
 Full removal. Two paths: the one command that does it, and the manual fallback for when the binary itself is broken.
 
-`proteus uninstall` lands in phase G. Until then, the manual recipe below is the only path.
-
 ## The simple way
 
 ```sh
@@ -97,9 +95,7 @@ Anything left over is a bug — file it.
 ```sh
 git clone https://github.com/Kit3713/Proteus.git
 cd Proteus
-cargo build --release
-sudo cp target/release/proteus /usr/local/bin/
-# or, once install.sh is in (phase F):
+cargo build --release --locked
 sudo ./install.sh
 ```
 

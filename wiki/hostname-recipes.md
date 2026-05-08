@@ -1,4 +1,4 @@
-Hostname rotation patterns. Phase D.
+Hostname rotation patterns. For the mental model, see `proteus wiki concepts`.
 
 Hostnames are network identifiers. mDNS announces them. DHCP option 12 sends them. Your shell prompt prints them. Same string, several layers, several daemons reading from different files. Proteus changes them coherently so they don't disagree.
 
@@ -32,7 +32,7 @@ The list leans on real CPE patterns: vendor names (`netgear`, `dlink`), product 
 
 ## rotate_with_mac
 
-`[hostname] rotate_with_mac` is `false` by default in phase D. Opt-in.
+`[hostname] rotate_with_mac` is `false` by default. Opt-in.
 
 When `true`, every MAC rotation also picks a fresh hostname (subject to the active mode). Stronger correlation defense — an observer can't link your `linksys-7a3f` session to your `tplink-94c1` session by hostname.
 
@@ -50,7 +50,7 @@ Default off because the failure modes are silent and annoying. Turn it on if the
 Captured into `/var/lib/proteus/state.json` on first apply, never re-captured. Sacred. Same rule as the original MAC. See `proteus wiki concepts`.
 
 - `proteus original` prints it
-- `proteus revert` (phase G) restores it
+- `proteus revert` restores it
 - `proteus reset` clears your config but never touches the cache
 - `proteus uninstall --purge` is the only thing that removes it
 

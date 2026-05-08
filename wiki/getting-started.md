@@ -23,7 +23,7 @@ proteus doctor
 `doctor` runs a battery of read-only checks and prints `ok / warn / fail / skip` per check. Read it top to bottom. Sample output:
 
 ```
-proteus doctor — system health check (v0.1.0)
+proteus doctor — system health check (v0.4.0-beta1)
 
 System
   ✓ Linux 6.x.y

@@ -22,9 +22,9 @@ These apply to every subcommand. They must precede the subcommand name.
 
 ## Subcommands
 
-Alphabetical. Every subcommand parses today; the ones marked **stub** return exit `64` with a one-line pointer to the phase that brings the implementation. Mutating commands require root and accept `--yes` for non-interactive runs. Read commands degrade quietly when files aren't readable.
+Alphabetical. Mutating commands require root and accept `--yes` for non-interactive runs. Read commands degrade quietly when files aren't readable. The full list also includes short aliases: `s` → `status`, `r` → `rotate`, `a` → `apply`. Most read commands accept `--watch [--interval <DUR>]`.
 
-### `apply` — phase **stub** (lands D)
+### `apply`
 
 ```sh
 proteus apply [--yes]
@@ -33,10 +33,10 @@ proteus apply [--yes]
 Apply the current config to the system: rotate MACs that need rotating, write managed files under `/etc/`, install systemd timers. Idempotent — running ten times converges to the same state as once. Mutating; requires root.
 
 Flags: `--yes` proceed without confirmation.
-Exit: `0` success · `1` generic · `65` config error / missing `--yes` · `66` not root · `70` system unsupported.
+Exit: `0` success · `1` generic · `65` config error / missing `--yes` · `66` not root · `70` system unsupported · `75` state lock busy (another proteus instance running).
 Example: `sudo proteus apply --yes`
 
-### `config` — phase **A**
+### `config`
 
 ```sh
 proteus config <SUBCOMMAND> [args...]
@@ -71,30 +71,30 @@ sudo proteus config edit
 
 Cross-ref `proteus wiki config` for the full schema.
 
-### `current` — phase **A**
+### `current`
 
 ```sh
 proteus current [--json] [--iface <NAME>]
 ```
 
-Show the current network identifiers your system is handing out right now. Read-only.
+Show the current network identifiers your system is handing out right now. Read-only. Supports `--watch [--interval <DUR>]`.
 
-Flags: `--json` machine-readable (see the `current --json` schema below) · `--iface <NAME>` limit to one interface.
+Flags: `--json` machine-readable (see the `current --json` schema below) · `--iface <NAME>` limit to one interface · `--watch` re-render on a fixed interval · `--interval <DUR>` cadence for `--watch` (default 1s; minimum 100ms).
 Exit: `0` success · `1` generic.
 Example: `proteus current --json | jq '.[] | select(.type == "wifi")'`
 
-### `diff` — phase **stub** (lands G)
+### `diff`
 
 ```sh
 proteus diff [--json]
 ```
 
-Show the delta between current config, built-in defaults, and live system state. Flags drift from managed files (the SHA in the `# managed by proteus` header is compared to the file's actual SHA). Read-only.
+Show the delta between current config, built-in defaults, and live system state. Flags drift from managed files (the SHA in the `# managed by proteus` header is compared to the file's actual SHA). The SHA is an edit-detection signal, not an integrity guarantee against an attacker with write access. Read-only.
 
 Flags: `--json` machine-readable diff.
-Exit: `0` no drift · `1` drift detected · `64` stub.
+Exit: `0` no drift · `1` drift detected.
 
-### `doctor` — phase **A**
+### `doctor`
 
 ```sh
 proteus doctor [--json] [--quick]
@@ -103,10 +103,10 @@ proteus doctor [--json] [--quick]
 Self-diagnostic. Runs a battery of read-only checks across system / daemons / files / detect-and-defer / runtime / Proteus state and prints `ok / warn / fail / skip` per check with remediation pointers. The first thing to run when something looks wrong. Works without root — checks needing root degrade to `skip` rather than `fail`.
 
 Flags: `--json` machine-readable (see the `doctor --json` schema below) · `--quick` skip slower checks (filesystem walks, DBus probes). Use the global `-v` for extra detail per check (check id beneath each line).
-Exit: `0` no failures (warns and skips are fine) · `1` at least one `fail` · `2` invalid args.
+Exit: `0` no failures (warns and skips are fine) · `1` at least one `fail`.
 Example: `proteus doctor` then `proteus doctor --json | jq '.checks[] | select(.status=="fail")'`
 
-### `dry-run` — phase **stub** (lands G)
+### `dry-run`
 
 ```sh
 proteus dry-run <SUBCOMMAND> [args...]
@@ -114,10 +114,10 @@ proteus dry-run <SUBCOMMAND> [args...]
 
 Preview the mutations a command would make without performing them. Every mutator goes through a `Plan` enum that can be either previewed or executed. Read-only.
 
-Exit: `0` plan empty · `1` plan would have failed · `64` stub.
+Exit: `0` plan empty · `1` plan would have failed.
 Example: `sudo proteus dry-run rotate --iface wlan0`
 
-### `help` — phase **A**
+### `help`
 
 ```sh
 proteus help [<feature>]
@@ -129,7 +129,7 @@ Note: `proteus help` is **not** the same as `proteus --help`. `proteus --help` i
 
 Exit: `0` success or no-arg listing · `1` no such page.
 
-### `original` — phase **A**
+### `original`
 
 ```sh
 proteus original [--json]
@@ -140,9 +140,9 @@ Show the cached original MACs and hostname Proteus snapshotted on first run. Sac
 Flags: `--json` machine-readable (see the `original --json` schema below).
 Exit: `0` success (whether or not a cache exists) · `1` generic read failure.
 
-The cache itself only populates from phase B onward (when the first mutating commands run).
+The cache populates the first time a mutating command runs (e.g. `proteus rotate` or `proteus apply`).
 
-### `pin` — phase **stub** (lands B)
+### `pin`
 
 ```sh
 proteus pin <TARGET>
@@ -151,10 +151,10 @@ proteus pin <TARGET>
 Pin a MAC to a specific interface or NetworkManager connection. Pinned targets are skipped by both scheduled and probe-driven rotation. For environments that lock you to one MAC: corporate networks, hotel Wi-Fi after auth, MAC-bound DHCP reservations. `<TARGET>` is interface name or NM connection profile (profile preferred when ambiguous). Mutating; requires root and `--yes`.
 
 Flags: `--mac <MAC>` pin to an explicit MAC instead of the current one · `--yes` proceed without confirmation.
-Exit: `0` success · `1` generic · `65` missing `--yes` · `66` not root.
+Exit: `0` success · `1` generic · `65` missing `--yes` · `66` not root · `75` state lock busy.
 Example: `sudo proteus pin "Home Wi-Fi" --yes`
 
-### `probe` — phase **C**
+### `probe`
 
 ```sh
 proteus probe [--json] [--quick]
@@ -166,7 +166,7 @@ Flags: `--json` machine-readable (see the `probe --json` schema below) · `--qui
 Exit: `0` clear · `1` down · `2` inconclusive · `3` portal-suspected.
 Example: `proteus probe --json | jq .classification`
 
-### `reset` — phase **stub** (lands G)
+### `reset`
 
 ```sh
 proteus reset [--yes] [--dry-run]
@@ -176,18 +176,18 @@ Rewrite `/etc/proteus/config.toml` to a minimal `profile = "<name>"` file, prese
 
 Exit: `0` success · `65` missing `--yes` · `66` not root.
 
-### `revert` — phase **stub** (lands G)
+### `revert`
 
 ```sh
 proteus revert [--yes]
 ```
 
-Restore everything to the cached originals. The panic button. **Invariant**: must work at every commit from phase B onward — if a feature can't be backed out cleanly, it does not ship. Mutating; requires root.
+Restore everything to the cached originals. The panic button. **Invariant**: must work at every commit — if a feature can't be backed out cleanly, it does not ship. Mutating; requires root.
 
-Exit: `0` success · `1` generic · `65` missing `--yes` · `66` not root.
+Exit: `0` success · `1` generic · `65` missing `--yes` · `66` not root · `75` state lock busy.
 Example: `sudo proteus revert --yes`
 
-### `rotate` — phase **stub** (lands B)
+### `rotate`
 
 ```sh
 proteus rotate [--iface <NAME>] [--yes]
@@ -195,11 +195,11 @@ proteus rotate [--iface <NAME>] [--yes]
 
 Generate a fresh MAC and apply it. With no `--iface`, rotates every managed interface. Skips pinned interfaces. Avoids picking a MAC that matches the gateway or anything else in the local ARP table. Mutating; requires root.
 
-Flags: `--iface <NAME>` limit to one interface · `--yes` proceed without confirmation.
-Exit: `0` success · `1` generic · `65` missing `--yes` · `66` not root.
+Flags: `--iface <NAME>` limit to one interface · `--yes` proceed without confirmation · `--explain` print every candidate the generator considered with rejection reasons.
+Exit: `0` success · `1` generic · `65` missing `--yes` · `66` not root · `75` state lock busy.
 Example: `sudo proteus rotate --iface wlan0 --yes`
 
-### `show-config` — phase **A**
+### `show-config`
 
 ```sh
 proteus show-config [--json]
@@ -210,7 +210,7 @@ Print the active config from `/etc/proteus/config.toml` (override with `--config
 Flags: `--json` emit JSON instead of TOML (see the `show-config --json` schema below).
 Exit: `0` success (including missing file) · `65` parse failure · `66` permission denied · `1` other read failure.
 
-### `show-defaults` — phase **A**
+### `show-defaults`
 
 ```sh
 proteus show-defaults [--json]
@@ -221,18 +221,18 @@ Print the built-in default config. Use this to see every knob and its default be
 Flags: `--json` emit JSON instead of TOML.
 Exit: `0` success.
 
-### `status` — phase **A**
+### `status`
 
 ```sh
 proteus status [--json]
 ```
 
-The overall system + per-feature status report: whether systemd, NetworkManager, BlueZ, and systemd-resolved are present; physical interfaces with their current MAC; per-feature `applied / skipped (reason) / failed (reason)`. Read-only.
+The overall system + per-feature status report: whether systemd, NetworkManager, BlueZ, and systemd-resolved are present; physical interfaces with their current MAC; per-feature `applied / skipped (reason) / failed (reason)`. Read-only. Aliased as `proteus s`. Supports `--watch [--interval <DUR>]`.
 
-Flags: `--json` machine-readable (see the `status --json` schema below).
+Flags: `--json` machine-readable (see the `status --json` schema below) · `--watch` re-render on a fixed interval · `--interval <DUR>` cadence for `--watch` (default 1s; minimum 100ms).
 Exit: `0` success.
 
-### `timer` — phase **C**
+### `timer`
 
 ```sh
 proteus timer <SUBCOMMAND> [args...]
@@ -323,7 +323,7 @@ Tail recent journald logs for a timer's unit (`journalctl -u <unit> -n N --no-pa
 Flags: `--lines N` (default 50).
 Exit: `0` success · `1` generic · `70` no systemd.
 
-### `uninstall` — phase **stub** (lands G)
+### `uninstall`
 
 ```sh
 proteus uninstall [--purge] [--yes]
@@ -334,7 +334,7 @@ Full removal. Runs `revert` first, removes the binary, removes the systemd timer
 Flags: `--purge` also delete `/etc/proteus/` and `/var/lib/proteus/`. Without `--purge`, the original-MAC cache is preserved so a reinstall can restore the same identity. `--yes` proceed without confirmation.
 Exit: `0` success · `65` missing `--yes` · `66` not root.
 
-### `unpin` — phase **stub** (lands B)
+### `unpin`
 
 ```sh
 proteus unpin <TARGET>
@@ -342,9 +342,9 @@ proteus unpin <TARGET>
 
 Remove a pin previously set with `pin`. The target rejoins the rotation pool. `<TARGET>` is interface name or NM connection profile. Mutating; requires root.
 
-Exit: `0` success · `1` no such pin · `64` stub · `66` not root.
+Exit: `0` success · `1` no such pin · `66` not root · `75` state lock busy.
 
-### `wiki` — phase **A** (search subcommand: phase **F**)
+### `wiki`
 
 ```sh
 proteus wiki [<page>]
@@ -370,26 +370,29 @@ Stable. New codes may be added in future versions; existing codes never change m
 | 0 | `SUCCESS` | success |
 | 1 | `GENERIC_ERROR` | generic / unclassified error |
 | 2 | _(clap)_ | invalid arguments — usage error from the parser |
-| 64 | `NOT_IMPLEMENTED` | command parses but the feature has not landed yet — stderr names the phase |
+| 64 | `NOT_IMPLEMENTED` | command parses but the chosen backend / driver path is a stub — stderr names what is missing |
 | 65 | `CONFIG_ERROR` | config parse failure or invalid value |
 | 65 | `CONFIRMATION_REQUIRED` | mutating command invoked without `--yes` (alias of `CONFIG_ERROR`) |
 | 66 | `PERMISSION_ERROR` | mutating command run without root, or read denied on a privileged file |
 | 70 | `SYSTEM_NOT_SUPPORTED` | not Linux, no systemd, or another precondition the binary can't satisfy |
+| 75 | `LOCK_BUSY` | another `proteus` instance is holding the state lock; safe to retry |
 
-`CONFIRMATION_REQUIRED` shares the wire value of `CONFIG_ERROR` (`65`); it's an intent alias so source code reads naturally and so wrappers grepping for `65` keep working. Earlier alpha builds returned `64` (`NOT_IMPLEMENTED`) when `--yes` was missing, which conflated "you forgot a flag" with "the feature is a stub" — issue #117. Wrappers that care about telling the two apart should branch on stderr rather than the numeric code.
+`CONFIRMATION_REQUIRED` shares the wire value of `CONFIG_ERROR` (`65`); it's an intent alias so source code reads naturally and so wrappers grepping for `65` keep working. Wrappers that care about telling the two apart should branch on stderr rather than the numeric code.
+
+`75` (`LOCK_BUSY`) is split out from generic error so wrappers can implement a retry-with-backoff loop. The default lock timeout budget is 5 s; raise it via `PROTEUS_LOCK_TIMEOUT_MS` (e.g. `10000`) when wrapping in a dispatcher or timer that may overlap.
 
 Wrappers should treat `0` as success and any non-zero as failure. Inspect stderr or journald for the human reason; do **not** scrape stdout for status — `--json` is the contract.
 
 ## JSON output schemas
 
-`--json` on a read command emits one JSON document to stdout, pretty-printed with a trailing newline. Stderr is reserved for log lines and human errors. Schemas reflect the current binary (phase A); fields may be added in future phases. Wrappers must ignore unknown fields. Existing fields keep their names and types.
+`--json` on a read command emits one JSON document to stdout, pretty-printed with a trailing newline. Stderr is reserved for log lines and human errors. Schemas may grow in future versions; wrappers must ignore unknown fields. Existing fields keep their names and types.
 
 ### `proteus status --json`
 
 ```json
 {
-  "proteus_version": "0.1.0",
-  "phase": "A",
+  "proteus_version": "0.4.0-beta1",
+  "phase": "G",
   "system": {
     "systemd": true,
     "network_manager": true,
@@ -401,14 +404,14 @@ Wrappers should treat `0` as success and any non-zero as failure. Inspect stderr
     { "name": "eth0",  "mac": "11:22:33:44:55:66", "kind": "ethernet", "wireless": false }
   ],
   "features": [
-    { "name": "mac-rotation", "state": "not implemented", "note": "phase B" },
-    { "name": "hostname",     "state": "not implemented", "note": "phase D" }
+    { "name": "mac-rotation", "state": "applied", "note": null },
+    { "name": "hostname",     "state": "skipped", "note": "disabled by user" }
   ]
 }
 ```
 
 - `interfaces[].mac` is `null` when the address is unreadable. `interfaces[].kind` is `wifi`, `ethernet`, or `other` (virtual interfaces are filtered out).
-- `features[].state` is `not implemented`, `applied`, `skipped`, or `failed`. `features[].note` is human text — the reason or a phase pointer. Full feature list in the Phases section below.
+- `features[].state` is one of `applied`, `skipped`, `failed`, or `not implemented` (only used today when a backend selection cannot drive a feature). `features[].note` is human text — the reason for skip / fail.
 
 ### `proteus current --json`
 
@@ -419,7 +422,7 @@ Wrappers should treat `0` as success and any non-zero as failure. Inspect stderr
 ]
 ```
 
-JSON array, sorted by interface name. `mac` is `null` when unreadable. `type` is `wifi`, `ethernet`, or `other`. With `--iface <NAME>`, the array contains zero or one entries. Hostname/DUID fields land alongside the phase D hostname feature; the array shape is stable.
+JSON array, sorted by interface name. `mac` is `null` when unreadable. `type` is `wifi`, `ethernet`, or `other`. With `--iface <NAME>`, the array contains zero or one entries.
 
 ### `proteus original --json`
 
@@ -429,7 +432,7 @@ When the cache exists:
 {
   "original_macs": { "wlan0": "11:22:33:44:55:66", "eth0": "aa:bb:cc:11:22:33" },
   "original_hostname": "fedora-laptop",
-  "captured_by_version": "0.1.0",
+  "captured_by_version": "0.4.0-beta1",
   "captured_at": "2026-05-06T12:34:56Z"
 }
 ```
@@ -453,8 +456,8 @@ Detect "no cache" via `captured_at == null` or via `note` presence.
 ```json
 {
   "schema_version": 1,
-  "proteus_version": "0.1.0",
-  "phase": "A",
+  "proteus_version": "0.4.0-beta1",
+  "phase": "G",
   "checks": [
     {
       "category": "system",
@@ -482,7 +485,7 @@ Detect "no cache" via `captured_at == null` or via `note` presence.
 
 ### `proteus show-config --json` and `show-defaults --json`
 
-The full `Config` struct serialized as JSON. Schema and every default cross-referenced in `proteus wiki config`. Phase A shape:
+The full `Config` struct serialized as JSON. Schema and every default cross-referenced in `proteus wiki config`. Indicative shape (the actual `Config` carries every section documented in `proteus wiki config`):
 
 ```json
 {
@@ -535,7 +538,7 @@ Branch on `config_present` (absent → present config; `false` → defaults in e
 ## Idempotency
 
 - `proteus apply` is idempotent. Ten runs converge to one run's state.
-- `proteus revert` is an invariant — must work at every commit from phase B onward.
+- `proteus revert` is an invariant — must work at every commit.
 - `apply` / `revert` / `apply` / `revert` is a no-op cycle by design.
 
 ## Logging
@@ -561,32 +564,12 @@ Notes for GUI / automation wrappers. The CLI is designed to be wrappable; the JS
 - **Use `--json` on every read command.** Never scrape human output — column widths and wording will change.
 - **Exit codes are your status signal.** `0` is success, anything else is failure. Don't parse stdout to confirm. Codes are stable.
 - **Stderr is for humans.** Log lines, error context, "see proteus wiki X" pointers go to stderr. Don't confuse it with structured output.
-- **Mutating commands need `--yes` for non-interactive runs.** `apply`, `revert`, `rotate`, `reset`, `uninstall` all accept it.
+- **Mutating commands need `--yes` for non-interactive runs.** `apply`, `revert`, `rotate`, `reset`, `uninstall` all accept it. The same convention applies across the per-feature mutators (`bluetooth apply`, `dhcp apply`, `dns apply`, `hostname rotate`, `ipv6 apply`, `nft apply`, `ntp apply`, `resolved apply`, `rf apply`, `stack apply`, `enterprise-wifi enable`, `portal mark/unmark`).
 - **Override paths for testing.** `--config` and `--state` let you run an isolated Proteus against fixtures without touching `/etc/` or `/var/lib/`.
-- **Tolerate unknown fields.** Future phases add fields; existing fields keep their names and types. Parse defensively.
+- **Tolerate unknown fields.** Future versions add fields; existing fields keep their names and types. Parse defensively.
 - **`proteus wiki <page>` emits raw Markdown** to stdout. Render it; don't shell-quote it.
 - **Long-running commands log progress** to journald or stderr — capture one or the other.
-
-## Phases at a glance
-
-| Phase | Brings | Subcommands wired |
-|-------|--------|-------------------|
-| A | skeleton, read surface, embedded wiki, config CLI, diagnostics | `status`, `current`, `original`, `show-config`, `show-defaults`, `config`, `doctor`, `wiki`, `help` |
-| B | L2 identity (MAC, Bluetooth alias) | `rotate`, `pin`, `unpin` |
-| C | probes, timers, captive portals | `probe`, `timer` (extends `apply` / `status`) |
-| D | DHCP, IPv6, hostname, 802.1X, DNS knob | first wiring of `apply` |
-| E | discovery silencing, stack fingerprint, RF | (extends `apply` / `status`) |
-| F | cross-cutting wiki (this page), search, packaging | (no new subcommands) |
-| G | diff, dry-run, reset, uninstall, full revert | `diff`, `dry-run`, `reset`, `revert`, `uninstall` |
-
-Stub commands print one line to stderr and exit `64`:
-
-```sh
-$ sudo proteus rotate --iface wlan0
-proteus: 'rotate' is not yet implemented; targets phase B. See: proteus wiki mac-recipes
-$ echo $?
-64
-```
+- **Lock contention is recoverable.** Wrap mutating calls in a retry loop on exit `75`; raise `PROTEUS_LOCK_TIMEOUT_MS` for environments where a dispatcher and a timer can overlap.
 
 ## Cross-refs
 
@@ -594,4 +577,5 @@ $ echo $?
 - `proteus wiki config` — full config schema, every flag with default and risks.
 - `proteus wiki troubleshooting` — common errors, what to check, where the logs live.
 - `proteus wiki concepts` — mental model: identifiers, rotation, captive portals, managed files, revert.
+- `proteus wiki backend` — backend selection (`nm` / `networkd` / `raw`) and what each impl covers.
 - `proteus wiki quickstart` — install, first run, basic recipes.
