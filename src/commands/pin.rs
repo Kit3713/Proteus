@@ -17,6 +17,18 @@ pub fn run(target: &str, mac: Option<&str>, yes: bool, state_path: Option<&Path>
     ) {
         return Ok(code);
     }
+    // Issue #292: validate the user-supplied --mac shape BEFORE any expensive
+    // setup (root check, state lock, DBus connection). On a host without
+    // NetworkManager, deferring validation past the DBus connect surfaced a
+    // confusing "DBus I/O error" instead of the obvious "invalid MAC" the
+    // operator needs to see. `Mac::from_str` was hardened in #284 — reuse it.
+    let mac = match mac.map(parse_mac).transpose() {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("proteus: invalid --mac value: {e:#}");
+            return Ok(exit::CONFIG_ERROR);
+        }
+    };
     if let Err(e) = super::require_root() {
         eprintln!("proteus: {e}");
         return Ok(exit::PERMISSION_ERROR);
@@ -27,11 +39,6 @@ pub fn run(target: &str, mac: Option<&str>, yes: bool, state_path: Option<&Path>
     };
     let state_path = super::state_path(state_path);
     let mut state = State::load_or_default(&state_path)?;
-
-    let mac = match mac {
-        Some(m) => Some(parse_mac(m)?),
-        None => None,
-    };
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -152,6 +159,32 @@ mod tests {
         assert!(
             !state_path.exists(),
             "pin without --yes must not create state.json"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Issue #292 regression: `pin --yes --mac <garbage>` used to defer MAC
+    /// validation past `zbus::Connection::system()`; on a host without
+    /// NetworkManager that surfaced as "DBus I/O error" instead of "invalid
+    /// MAC". The fix parses up front so malformed input rejects with
+    /// `CONFIG_ERROR` before any DBus / NM / state work.
+    #[test]
+    fn pin_with_malformed_mac_fast_fails_before_dbus() {
+        let dir = std::env::temp_dir().join("proteus-pin-bad-mac-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let state_path = dir.join("state.json");
+
+        let code = run("wlan0", Some("not-a-mac"), true, Some(&state_path)).unwrap();
+        assert_eq!(
+            code,
+            exit::CONFIG_ERROR,
+            "malformed --mac must yield CONFIG_ERROR (65), not GENERIC_ERROR"
+        );
+        assert!(
+            !state_path.exists(),
+            "pin with bad --mac must not create state.json"
         );
 
         let _ = std::fs::remove_dir_all(&dir);
