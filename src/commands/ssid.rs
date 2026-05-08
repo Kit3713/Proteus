@@ -16,9 +16,12 @@ use anyhow::{Context, Result};
 use serde::Serialize;
 
 use crate::cli::SsidAction;
-use crate::config::{Config, PerSsidPolicy};
+use crate::config::{self, Config, PerSsidPolicy};
 use crate::exit;
+use crate::mac::Mac;
 use crate::per_ssid::{self, EffectivePolicy, display_ssid, validate_ssid};
+use crate::persona::load as persona_load;
+use crate::persona::resolve::default_user_root;
 use crate::profile::Profile;
 
 /// Top-level dispatch for `proteus ssid ...`.
@@ -195,13 +198,11 @@ fn set(
         );
         return Ok(exit::CONFIG_ERROR);
     }
-    // Validate `aggressiveness_profile` up-front so a typo lands here
-    // rather than later in the resolver's silent fall-through.
-    if key == "aggressiveness_profile" && Profile::parse(value).is_none() {
-        eprintln!(
-            "proteus: invalid aggressiveness_profile '{}'; expected one of off|min|low|med|high|agr",
-            display_ssid(value)
-        );
+    // Issue #257: validate every documented key up-front so a typo or
+    // bad value lands here rather than later in the resolver's silent
+    // fall-through. Each branch returns CONFIG_ERROR on rejection.
+    if let Err(msg) = validate_value(key, value) {
+        eprintln!("proteus: {msg}");
         return Ok(exit::CONFIG_ERROR);
     }
     let path = super::config_path(config_override);
@@ -217,6 +218,76 @@ fn set(
         path.display()
     );
     Ok(exit::SUCCESS)
+}
+
+/// Issue #257: per-key value validation for `proteus ssid set`. Each
+/// documented key gets a real check so a typo lands in the CLI rather
+/// than the resolver's silent fall-through. The error string is the
+/// human-facing message; callers prefix `proteus:`.
+fn validate_value(key: &str, value: &str) -> Result<(), String> {
+    match key {
+        "persona" => {
+            if value.trim().is_empty() {
+                return Err("persona must not be empty".into());
+            }
+            // Persona must be a known id from the embedded catalogue or
+            // a user-installed file under /etc/proteus/personas/.
+            let known: Vec<String> = persona_load::list_all(default_user_root())
+                .into_iter()
+                .map(|p| p.id)
+                .collect();
+            if !known.iter().any(|k| k == value) {
+                return Err(format!(
+                    "unknown persona '{}'; run `proteus persona list` for the catalogue",
+                    display_ssid(value)
+                ));
+            }
+            Ok(())
+        }
+        "aggressiveness_profile" => {
+            if Profile::parse(value).is_none() {
+                return Err(format!(
+                    "invalid aggressiveness_profile '{}'; expected one of off|min|low|med|high|agr",
+                    display_ssid(value)
+                ));
+            }
+            Ok(())
+        }
+        "pin_mac" => {
+            // Must parse as a MAC and pass the unicast / non-zero check
+            // — the orchestrator can only honour an assignable MAC.
+            let m: Mac = value.parse().map_err(|e: crate::mac::MacError| {
+                format!("invalid pin_mac '{}': {}", display_ssid(value), e)
+            })?;
+            m.validate_assignable()
+                .map_err(|e| format!("invalid pin_mac '{}': {}", display_ssid(value), e))?;
+            Ok(())
+        }
+        "rotate_interval" => {
+            if !config::is_valid_per_ssid_duration(value) {
+                return Err(format!(
+                    "invalid rotate_interval '{}'; expected like '30s', '5m', '2h', '1d' (>= 1)",
+                    display_ssid(value)
+                ));
+            }
+            Ok(())
+        }
+        "portal_policy" => {
+            // The per-SSID portal_policy grammar is a closed set: the
+            // documented value is `fresh-mac-per-visit`, which the
+            // legacy `known_portal_ssids` migration also writes. Reject
+            // anything else so a typo can't silently land in config.
+            if value != "fresh-mac-per-visit" {
+                return Err(format!(
+                    "invalid portal_policy '{}'; the only documented value is 'fresh-mac-per-visit'",
+                    display_ssid(value)
+                ));
+            }
+            Ok(())
+        }
+        // Already gated by KNOWN_KEYS upstream; defensive default.
+        _ => Err(format!("unknown ssid key '{}'", display_ssid(key))),
+    }
 }
 
 fn clear(ssid: &str, yes: bool, config_override: Option<&Path>) -> Result<u8> {
@@ -447,6 +518,58 @@ mod tests {
         let code = list(true, Some(&path)).unwrap();
         assert_eq!(code, exit::SUCCESS);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // Issue #257: `set` validates pin_mac, rotate_interval, persona,
+    // portal_policy. The validator returns a human error string; the
+    // command surface maps that to exit::CONFIG_ERROR.
+
+    #[test]
+    fn validate_value_rejects_invalid_pin_mac() {
+        assert!(validate_value("pin_mac", "not-a-mac").is_err());
+        // multicast bit set
+        assert!(validate_value("pin_mac", "01:00:00:00:00:01").is_err());
+        // all-zero
+        assert!(validate_value("pin_mac", "00:00:00:00:00:00").is_err());
+        // canonical unicast MAC
+        assert!(validate_value("pin_mac", "aa:bb:cc:dd:ee:ff").is_ok());
+    }
+
+    #[test]
+    fn validate_value_rejects_garbage_rotate_interval() {
+        assert!(validate_value("rotate_interval", "garbage").is_err());
+        assert!(validate_value("rotate_interval", "").is_err());
+        assert!(validate_value("rotate_interval", "0s").is_err());
+        assert!(validate_value("rotate_interval", "30s").is_ok());
+        assert!(validate_value("rotate_interval", "5m").is_ok());
+        assert!(validate_value("rotate_interval", "2h").is_ok());
+        assert!(validate_value("rotate_interval", "1d").is_ok());
+    }
+
+    #[test]
+    fn validate_value_rejects_unknown_persona() {
+        assert!(validate_value("persona", "no-such-persona-xyz").is_err());
+        assert!(validate_value("persona", "").is_err());
+        // iphone-15 is in the embedded built-in catalogue.
+        assert!(validate_value("persona", "iphone-15").is_ok());
+    }
+
+    #[test]
+    fn validate_value_rejects_unknown_portal_policy() {
+        assert!(validate_value("portal_policy", "garbage").is_err());
+        assert!(validate_value("portal_policy", "rotate-before-auth").is_err());
+        assert!(validate_value("portal_policy", "fresh-mac-per-visit").is_ok());
+    }
+
+    #[test]
+    fn validate_value_rejects_unknown_aggressiveness_profile() {
+        assert!(validate_value("aggressiveness_profile", "junk").is_err());
+        for v in ["off", "min", "low", "med", "high", "agr"] {
+            assert!(
+                validate_value("aggressiveness_profile", v).is_ok(),
+                "profile {v} must validate"
+            );
+        }
     }
 
     /// `list` over a config with multiple per-SSID entries returns all of

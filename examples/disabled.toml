@@ -22,72 +22,52 @@
 #
 # schema reference: proteus wiki config
 
-# MAC: do not rotate.
+profile = "off"
+
+# Profile = "off" panic-disables every feature regardless of any
+# per-knob overrides below. The overrides are kept on disk so that
+# switching back to a non-off profile restores them. Sections below
+# are illustrative.
+
 [mac]
 enabled = false
 
-# Hostname: do not touch.
 [hostname]
 enabled = false
 
-# DHCP: leave all options alone.
 [dhcp]
+enabled = false
 suppress_hostname = false
 suppress_vendor_class = false
 rotate_client_id = false
 
-# IPv6: do not touch addr-gen mode, temp addresses, or NDP.
 [ipv6]
 enabled = false
 
-# Discovery: leave mDNS, LLMNR, NetBIOS, SSDP, WSD, WPAD, NTP alone.
 [discovery]
-mdns_responder = true
-mdns_resolve = true
-llmnr = true
-netbios = true
+mdns_silence = false
+llmnr_silence = false
 ssdp_block = false
 wsd_block = false
-wpad = true
-ntp_normalize = false
 
-# Stack fingerprint: leave TCP timestamps, ICMP info-replies, NDP,
-# gratuitous ARP at kernel defaults.
 [stack]
 tcp_timestamps_off = false
 icmp_info_replies_drop = false
 icmpv6_hardening = false
 suppress_gratuitous_arp = false
 
-# Probes: off. No probe-driven rotation (there's nothing to rotate
-# anyway with [mac] off).
-[probes]
-enabled = false
-
-# Captive portals: off. With detection off and no MAC rotation,
-# there is nothing for portal handling to coordinate.
 [captive_portal]
 enabled = false
 
-# Bluetooth: do not touch BlueZ.
 [bluetooth]
 enabled = false
 
-# Enterprise Wi-Fi: leave 802.1X identity alone.
 [enterprise_wifi]
 anonymous_outer_identity = false
 
-# DNS: leave ECS alone (the hard guard would defer most of the time
-# anyway, but explicit is clearer).
 [dns]
 strip_edns_client_subnet = false
 
-# RF: TX power untouched.
 [rf]
 tx_power_reduce = false
-
-# Rotation: nothing to rotate.
-[rotation]
-on_probe_fail = false
-on_link_change = false
-on_ssid_change = false
+scan_random_mac = false

@@ -12,6 +12,8 @@
 # schema reference: proteus wiki config
 # captive portals: proteus wiki captive-portals
 
+profile = "med"
+
 # MAC: faster rotation. 30m matches a typical café visit length so
 # each visit gets at least one fresh MAC.
 # WHY: 30m is at the threshold where some networks throttle DHCP
@@ -21,9 +23,6 @@
 enabled = true
 rotation_interval = "30m"
 oui_pool = ["apple", "intel", "samsung", "dell", "random-locally-administered"]
-exclude_gateways = true
-exclude_arp_table = true
-per_connection = true
 
 # Hostname: rotate from wordlist; do not rotate with MAC because that
 # would change your shell prompt every 30m.
@@ -34,6 +33,7 @@ rotate_with_mac = false
 
 # DHCP: suppress fingerprint-leaking options.
 [dhcp]
+enabled = true
 suppress_hostname = true
 suppress_vendor_class = true
 rotate_client_id = true
@@ -49,14 +49,10 @@ ndp_hardening = true
 # a portable printer or use KDE Connect on the road, you want them
 # working when you join your home network later.
 [discovery]
-mdns_responder = false
-mdns_resolve = true
-llmnr = false
-netbios = false
+mdns_silence = true
+llmnr_silence = true
 ssdp_block = false
 wsd_block = false
-wpad = false
-ntp_normalize = true
 
 # Stack fingerprint: standard set.
 [stack]
@@ -72,7 +68,6 @@ suppress_gratuitous_arp = false
 # went down" but more probe traffic. 2m is still well under any
 # typical lease time so the extra traffic is negligible.
 [probes]
-enabled = true
 quorum_n = 3
 quorum_total = 4
 interval = "2m"
@@ -82,26 +77,16 @@ endpoints = ["1.1.1.1:443", "8.8.8.8:443", "9.9.9.9:443", "142.250.190.78:443"]
 # Captive portals: this is the heart of this preset.
 # rotate-before-auth is already the default but we set it explicitly
 # so it is obvious. fresh_mac_per_visit is already the default but
-# also explicit.
-# WHY: known_portal_ssids gets you a fresh MAC every visit even if
-# the rotation timer hasn't fired. Add and remove SSIDs with
-# `proteus portal mark <ssid>` and `proteus portal unmark <ssid>`.
-# The list below is a starter pack of common public-Wi-Fi SSIDs;
-# `proteus portal list` shows the live list at any time.
+# also explicit. To pin specific SSIDs as portal-driven (fresh MAC
+# every visit), use `proteus ssid set <ssid> portal_policy
+# fresh-mac-per-visit --yes` and they land under [per_ssid.<ssid>].
 [captive_portal]
 enabled = true
 detect_url = "http://nmcheck.gnome.org/check_network_status.txt"
 expected_response = "NetworkManager is online"
 policy = "rotate-before-auth"
 fresh_mac_per_visit = true
-known_portal_ssids = [
-    "StarbucksWiFi",
-    "GoogleStarbucks",
-    "AAGotham",
-    "BoingoHotspot",
-    "attwifi",
-    "xfinitywifi",
-]
+timeout_secs = 5
 
 # Bluetooth: standard.
 [bluetooth]
@@ -113,6 +98,7 @@ ble_rpa = true
 # Enterprise Wi-Fi: off — public Wi-Fi is rarely 802.1X.
 [enterprise_wifi]
 anonymous_outer_identity = false
+realm_strip_strategy = "auto"
 
 # DNS: ECS strip on, hard guard active.
 [dns]
@@ -122,11 +108,13 @@ strip_edns_client_subnet = true
 # crowded café.
 [rf]
 tx_power_reduce = false
+tx_power_reduction_db = 6
+scan_random_mac = true
 
-# Rotation: matches MAC cadence. on_ssid_change is critical for this
-# preset — it ensures a fresh MAC on every network hop.
-[rotation]
+# Rotation cadence: matches MAC. Faster check cycle to react quickly
+# to cafe-network drops.
+[timers.rotate]
 interval = "30m"
-on_probe_fail = true
-on_link_change = true
-on_ssid_change = true
+
+[timers.check]
+interval = "2m"

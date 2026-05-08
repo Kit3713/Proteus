@@ -2,7 +2,7 @@
 # purpose: stronger privacy at the cost of some breakage. Same as
 # standard.toml plus SSDP block, WSD block, hostname rotate-with-MAC,
 # opt-in TX power reduction, enterprise-Wi-Fi anonymous outer
-# identity, gratuitous-ARP suppression.
+# identity, and gratuitous-ARP suppression.
 #
 # Each of the "more aggressive" knobs has a # WARNING: comment
 # explaining what it might break. Read them before applying.
@@ -13,14 +13,13 @@
 #
 # schema reference: proteus wiki config
 
+profile = "high"
+
 # MAC: rotate Wi-Fi/Ethernet MACs every 2h. Same OUI pool as standard.
 [mac]
 enabled = true
 rotation_interval = "2h"
 oui_pool = ["apple", "intel", "samsung", "dell", "random-locally-administered"]
-exclude_gateways = true
-exclude_arp_table = true
-per_connection = true
 
 # Hostname: rotate from the wordlist AND with each MAC rotation.
 # WARNING: rotate_with_mac = true splits per-host bash history and
@@ -33,6 +32,7 @@ rotate_with_mac = true
 
 # DHCP: suppress 12, 60, 61, 81 and rotate DUID with MAC.
 [dhcp]
+enabled = true
 suppress_hostname = true
 suppress_vendor_class = true
 rotate_client_id = true
@@ -52,14 +52,10 @@ ndp_hardening = true
 # Brother). If your printer has IPP/AirPrint as well it will still be
 # discoverable; WSD-only models stop being seen on the network.
 [discovery]
-mdns_responder = false
-mdns_resolve = true
-llmnr = false
-netbios = false
+mdns_silence = true
+llmnr_silence = true
 ssdp_block = true
 wsd_block = true
-wpad = false
-ntp_normalize = true
 
 # Stack fingerprint: drop the easy leaks plus suppress gratuitous ARP.
 # WARNING: suppress_gratuitous_arp = true slows failover detection on
@@ -73,7 +69,6 @@ suppress_gratuitous_arp = true
 
 # Probes: same defaults as standard.
 [probes]
-enabled = true
 quorum_n = 3
 quorum_total = 4
 interval = "5m"
@@ -87,6 +82,7 @@ detect_url = "http://nmcheck.gnome.org/check_network_status.txt"
 expected_response = "NetworkManager is online"
 policy = "rotate-before-auth"
 fresh_mac_per_visit = true
+timeout_secs = 5
 
 # Bluetooth: generic alias, discoverable off, BLE RPA on.
 [bluetooth]
@@ -117,10 +113,11 @@ strip_edns_client_subnet = true
 [rf]
 tx_power_reduce = true
 tx_power_reduction_db = 6
+scan_random_mac = true
 
-# Rotation: same cadence as MAC.
-[rotation]
+# Rotation cadence: same as MAC.
+[timers.rotate]
 interval = "2h"
-on_probe_fail = true
-on_link_change = true
-on_ssid_change = true
+
+[timers.check]
+interval = "5m"

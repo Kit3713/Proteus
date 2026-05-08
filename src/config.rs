@@ -91,11 +91,20 @@ impl Config {
     /// out-of-range `[probes].quorum_n` (or any other invariant added
     /// to `Config::validate`) bails with a clear message instead of
     /// letting `proteus probe` run silently misclassified.
+    ///
+    /// Issue #227: the parse step uses `#[serde(deny_unknown_fields)]`
+    /// on every `Raw*` struct, so a typo'd key fails at `toml::from_str`
+    /// with `unknown field` rather than silently no-op'ing. After
+    /// resolution, `RawConfig::validate_ranges` (run via the same
+    /// `validate` entrypoint) enforces numeric ranges so e.g.
+    /// `quorum_n = 0` and `timeout_secs = u64::MAX` bail loudly.
     pub fn default_or_loaded(path: &Path) -> Result<Self> {
         match std::fs::read_to_string(path) {
             Ok(s) => {
                 let raw: RawConfig =
                     toml::from_str(&s).with_context(|| format!("parsing {}", path.display()))?;
+                raw.validate_ranges()
+                    .with_context(|| format!("validating {}", path.display()))?;
                 let cfg = raw.resolve();
                 cfg.validate()
                     .with_context(|| format!("validating {}", path.display()))?;
@@ -284,7 +293,7 @@ impl Config {
 /// and `proteus config reset` (which clears overrides while preserving
 /// the chosen profile).
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct RawConfig {
     pub profile: Option<Profile>,
     pub mac: Option<RawMacConfig>,
@@ -687,10 +696,264 @@ impl RawConfig {
         }
         false
     }
+
+    /// Issue #227: enforce numeric ranges and structural sanity on the
+    /// user-supplied raw values before resolution. Catches `quorum_n =
+    /// 0` (always-Clear, defeats connectivity-loss detection),
+    /// `timeout_secs = u64::MAX` (multi-millennium hang), oversized
+    /// `tx_power_reduction_db`, empty endpoint pools, and unparseable
+    /// timer / probe durations. Profile baselines are trusted; only the
+    /// user's explicit overrides are checked here. The `Config::validate`
+    /// post-resolve step then enforces cross-field invariants like
+    /// `quorum_n <= endpoints.len()`.
+    pub fn validate_ranges(&self) -> Result<()> {
+        // ---- discovery: nothing numeric, nothing to validate ----
+        // ---- mac: oui_pool may be empty (caller falls back), ranges trivial ----
+        if let Some(m) = &self.mac {
+            if let Some(p) = &m.oui_pool
+                && p.is_empty()
+            {
+                anyhow::bail!("[mac] oui_pool must not be empty (omit the key to use defaults)");
+            }
+            if let Some(s) = &m.rotation_interval {
+                validate_timer_interval("mac.rotation_interval", s)?;
+            }
+        }
+        // ---- bluetooth: alias_source must be one of the known strings ----
+        if let Some(b) = &self.bluetooth
+            && let Some(s) = &b.alias_source
+            && !matches!(s.as_str(), "generic" | "pinned" | "wordlist")
+        {
+            anyhow::bail!(
+                "[bluetooth] alias_source '{s}' must be one of: generic, pinned, wordlist"
+            );
+        }
+        // ---- hostname: mode must be one of the known strings ----
+        if let Some(h) = &self.hostname {
+            if let Some(m) = &h.mode
+                && !matches!(m.as_str(), "wordlist" | "pinned" | "kernel")
+            {
+                anyhow::bail!("[hostname] mode '{m}' must be one of: wordlist, pinned, kernel");
+            }
+            if let Some(v) = &h.pinned_value
+                && v.trim().is_empty()
+            {
+                anyhow::bail!("[hostname] pinned_value must not be empty");
+            }
+        }
+        // ---- ipv6 ----
+        if let Some(i) = &self.ipv6
+            && let Some(m) = &i.addr_gen_mode
+            && !matches!(m.as_str(), "stable-privacy" | "eui64" | "random")
+        {
+            anyhow::bail!(
+                "[ipv6] addr_gen_mode '{m}' must be one of: stable-privacy, eui64, random"
+            );
+        }
+        // ---- enterprise_wifi ----
+        if let Some(e) = &self.enterprise_wifi
+            && let Some(s) = &e.realm_strip_strategy
+            && !matches!(s.as_str(), "auto" | "manual")
+        {
+            anyhow::bail!(
+                "[enterprise_wifi] realm_strip_strategy '{s}' must be one of: auto, manual"
+            );
+        }
+        // ---- ntp ----
+        if let Some(n) = &self.ntp {
+            if let Some(s) = &n.ntp_servers
+                && s.is_empty()
+            {
+                anyhow::bail!("[ntp] ntp_servers must not be empty (omit the key to use defaults)");
+            }
+            if let Some(s) = &n.fallback_servers
+                && s.is_empty()
+            {
+                anyhow::bail!(
+                    "[ntp] fallback_servers must not be empty (omit the key to use defaults)"
+                );
+            }
+        }
+        // ---- probes ----
+        if let Some(p) = &self.probes {
+            if let Some(n) = p.quorum_n
+                && n == 0
+            {
+                anyhow::bail!(
+                    "[probes] quorum_n must be >= 1 (a 0 quorum makes connectivity-loss detection trivially pass)"
+                );
+            }
+            if let Some(t) = p.quorum_total
+                && t == 0
+            {
+                anyhow::bail!("[probes] quorum_total must be >= 1");
+            }
+            if let (Some(n), Some(t)) = (p.quorum_n, p.quorum_total)
+                && n > t
+            {
+                anyhow::bail!("[probes] quorum_n ({n}) must not exceed quorum_total ({t})");
+            }
+            if let Some(e) = &p.endpoints
+                && e.is_empty()
+            {
+                anyhow::bail!(
+                    "[probes] endpoints must not be empty (omit the key to use defaults)"
+                );
+            }
+            if let Some(s) = &p.interval {
+                validate_timer_interval("probes.interval", s)?;
+            }
+            if let Some(s) = &p.cooldown {
+                validate_timer_interval("probes.cooldown", s)?;
+            }
+        }
+        // ---- captive_portal ----
+        if let Some(c) = &self.captive_portal {
+            if let Some(t) = c.timeout_secs {
+                if t == 0 {
+                    anyhow::bail!("[captive_portal] timeout_secs must be >= 1");
+                }
+                if t > 86_400 {
+                    anyhow::bail!(
+                        "[captive_portal] timeout_secs ({t}) exceeds 86400 (1 day); pick a sane HTTP timeout"
+                    );
+                }
+            }
+            if let Some(p) = &c.policy
+                && !matches!(p.as_str(), "rotate-before-auth" | "preserve-mac" | "ask")
+            {
+                anyhow::bail!(
+                    "[captive_portal] policy '{p}' must be one of: rotate-before-auth, preserve-mac, ask"
+                );
+            }
+        }
+        // ---- rf ----
+        if let Some(r) = &self.rf
+            && let Some(db) = r.tx_power_reduction_db
+            && db > 30
+        {
+            anyhow::bail!(
+                "[rf] tx_power_reduction_db ({db}) exceeds 30 dB; hardware caps and 30 dB is already extreme"
+            );
+        }
+        // ---- timers ----
+        if let Some(t) = &self.timers {
+            if let Some(r) = &t.rotate
+                && let Some(s) = &r.interval
+            {
+                validate_timer_interval("timers.rotate.interval", s)?;
+            }
+            if let Some(c) = &t.check
+                && let Some(s) = &c.interval
+            {
+                validate_timer_interval("timers.check.interval", s)?;
+            }
+        }
+        // ---- persona ----
+        if let Some(p) = &self.persona
+            && let Some(a) = &p.active
+            && a.trim().is_empty()
+        {
+            anyhow::bail!("[persona] active must not be empty (omit the key for no persona)");
+        }
+        // ---- events ----
+        if let Some(e) = &self.events {
+            if let Some(s) = e.portal_poll_secs {
+                if s == 0 {
+                    anyhow::bail!("[events] portal_poll_secs must be >= 1");
+                }
+                if s > 86_400 {
+                    anyhow::bail!(
+                        "[events] portal_poll_secs ({s}) exceeds 86400 (1 day); the captive-portal sampler should poll more often"
+                    );
+                }
+            }
+            if let Some(s) = e.link_flap_window_secs {
+                if s == 0 {
+                    anyhow::bail!("[events] link_flap_window_secs must be >= 1");
+                }
+                if s > 3_600 {
+                    anyhow::bail!(
+                        "[events] link_flap_window_secs ({s}) exceeds 3600 (1 hour); a flap window longer than that is meaningless"
+                    );
+                }
+            }
+        }
+        // ---- backend ----
+        // Driver string is validated softly in `resolve()` (warns and falls
+        // back); harden it here to a hard reject so a typo can't silently
+        // make `[backend].driver` ineffective.
+        if let Some(b) = &self.backend
+            && let Some(d) = &b.driver
+            && !crate::backend::select::is_valid_driver(d)
+        {
+            anyhow::bail!("[backend] driver '{d}' must be one of: auto, nm, networkd, raw");
+        }
+        // ---- per_ssid: per-entry sanity ----
+        for (ssid, policy) in &self.per_ssid {
+            if let Some(p) = &policy.aggressiveness_profile
+                && Profile::parse(p).is_none()
+            {
+                anyhow::bail!(
+                    "[per_ssid.\"{ssid}\"] aggressiveness_profile '{p}' must be one of: off, min, low, med, high, agr"
+                );
+            }
+            if let Some(s) = &policy.rotate_interval {
+                // Same accepted shapes as the resolver in per_ssid.rs.
+                if !is_valid_per_ssid_duration(s) {
+                    anyhow::bail!(
+                        "[per_ssid.\"{ssid}\"] rotate_interval '{s}' must be like '30s', '5m', '2h', '1d'"
+                    );
+                }
+            }
+            if let Some(p) = &policy.persona
+                && p.trim().is_empty()
+            {
+                anyhow::bail!("[per_ssid.\"{ssid}\"] persona must not be empty");
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Issue #227: thin wrapper over `timer::parse_interval` that also
+/// allows the documented `"never"` sentinel which only the timers
+/// section honours. Returns an error tagged with the originating field
+/// so the user lands on the right key.
+fn validate_timer_interval(field: &str, s: &str) -> Result<()> {
+    if crate::timer::is_never(s) {
+        // Only `[timers.*]` honours `never`; reject everywhere else.
+        if field.starts_with("timers.") {
+            return Ok(());
+        }
+        anyhow::bail!("[{field}] 'never' is only valid under [timers.*]");
+    }
+    crate::timer::parse_interval(s)
+        .map(|_| ())
+        .with_context(|| format!("[{field}] '{s}'"))
+}
+
+/// Issue #257 / per-SSID resolver: same compact-duration grammar
+/// `per_ssid.rs::parse_duration` accepts (`30s`/`5m`/`2h`/`1d`).
+/// Centralised so the load-time validator and the SSID `set` writer
+/// stay in lock-step.
+pub(crate) fn is_valid_per_ssid_duration(s: &str) -> bool {
+    let s = s.trim();
+    if s.len() < 2 {
+        return false;
+    }
+    let (num, unit) = s.split_at(s.len() - 1);
+    let Ok(n) = num.parse::<u64>() else {
+        return false;
+    };
+    if n == 0 {
+        return false;
+    }
+    matches!(unit, "s" | "m" | "h" | "d")
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct RawMacConfig {
     pub enabled: Option<bool>,
     pub rotation_interval: Option<String>,
@@ -698,7 +961,7 @@ pub struct RawMacConfig {
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct RawBluetoothConfig {
     pub enabled: Option<bool>,
     pub generic_alias: Option<bool>,
@@ -709,7 +972,7 @@ pub struct RawBluetoothConfig {
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct RawHostnameConfig {
     pub enabled: Option<bool>,
     pub mode: Option<String>,
@@ -718,20 +981,20 @@ pub struct RawHostnameConfig {
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct RawDnsConfig {
     pub strip_edns_client_subnet: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct RawResolvedConfig {
     pub mdns_off: Option<bool>,
     pub llmnr_off: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct RawNtpConfig {
     pub enabled: Option<bool>,
     pub ntp_servers: Option<Vec<String>>,
@@ -739,7 +1002,7 @@ pub struct RawNtpConfig {
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct RawNftConfig {
     pub icmpv4_timestamp_drop: Option<bool>,
     pub broadcast_ping_drop: Option<bool>,
@@ -747,7 +1010,7 @@ pub struct RawNftConfig {
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct RawDiscoveryConfig {
     pub mdns_silence: Option<bool>,
     pub llmnr_silence: Option<bool>,
@@ -756,7 +1019,7 @@ pub struct RawDiscoveryConfig {
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct RawProbesConfig {
     pub quorum_n: Option<u8>,
     pub quorum_total: Option<u8>,
@@ -766,7 +1029,7 @@ pub struct RawProbesConfig {
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct RawIpv6Config {
     pub enabled: Option<bool>,
     pub use_temp_addresses: Option<bool>,
@@ -775,7 +1038,7 @@ pub struct RawIpv6Config {
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct RawEnterpriseWifiConfig {
     pub anonymous_outer_identity: Option<bool>,
     pub realm_strip_strategy: Option<String>,
@@ -783,7 +1046,7 @@ pub struct RawEnterpriseWifiConfig {
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct RawStackConfig {
     pub tcp_timestamps_off: Option<bool>,
     pub icmpv6_hardening: Option<bool>,
@@ -792,7 +1055,7 @@ pub struct RawStackConfig {
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct RawDhcpConfig {
     pub enabled: Option<bool>,
     pub suppress_hostname: Option<bool>,
@@ -807,7 +1070,7 @@ pub struct RawDhcpConfig {
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct RawCaptivePortalConfig {
     pub enabled: Option<bool>,
     pub detect_url: Option<String>,
@@ -818,7 +1081,7 @@ pub struct RawCaptivePortalConfig {
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct RawRfConfig {
     pub tx_power_reduce: Option<bool>,
     pub tx_power_reduction_db: Option<u8>,
@@ -827,33 +1090,33 @@ pub struct RawRfConfig {
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct RawTimersConfig {
     pub rotate: Option<RawTimerConfig>,
     pub check: Option<RawTimerConfig>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct RawTimerConfig {
     pub interval: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct RawPersonaConfig {
     pub active: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct RawBackendConfig {
     pub driver: Option<String>,
 }
 
 /// Raw on-disk shape of `[events]`. Roadmap Milestone 4c.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct RawEventsConfig {
     pub enabled: Option<bool>,
     pub portal_poll_secs: Option<u64>,
@@ -1087,7 +1350,7 @@ pub struct PersonaConfig {
 /// it on both sides keeps the round-trip clean and lets read commands
 /// (`proteus ssid list / show`) inspect it without re-parsing the file.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct PerSsidPolicy {
     /// Persona id to use on this SSID (e.g. `"iphone-15"`). When set this
     /// beats the global `[persona] active`.
@@ -1743,5 +2006,273 @@ aggressiveness_profile = "agr"
             !s.contains("[per_ssid"),
             "default config must not emit a [per_ssid] section: {s}"
         );
+    }
+
+    // ---- Issue #227: deny_unknown_fields + validate_ranges --------------
+
+    /// A typo on a top-level section name fails at parse time. Without
+    /// `deny_unknown_fields` on `RawConfig` the section would be
+    /// silently ignored.
+    #[test]
+    fn unknown_top_level_section_is_rejected() {
+        let toml_str = "[rotation]\ninterval = \"2h\"\n";
+        let err = toml::from_str::<RawConfig>(toml_str).unwrap_err();
+        assert!(
+            err.to_string().contains("unknown field"),
+            "expected unknown-field error, got: {err}"
+        );
+    }
+
+    /// A typo on a per-section field name fails at parse time. The
+    /// canonical key for "block multicast DNS" is `mdns_silence`; the
+    /// example files used to write `mdns_responder = false` which was
+    /// silently ignored. The new behaviour fails loud.
+    #[test]
+    fn unknown_field_inside_section_is_rejected() {
+        let toml_str = "[discovery]\nmdns_responder = false\n";
+        let err = toml::from_str::<RawConfig>(toml_str).unwrap_err();
+        assert!(
+            err.to_string().contains("unknown field") || err.to_string().contains("mdns_responder"),
+            "expected unknown-field error, got: {err}"
+        );
+    }
+
+    /// `quorum_n = 0` is the issue-#227 example: the round can never
+    /// fail, so connectivity-loss detection silently breaks.
+    #[test]
+    fn validate_ranges_rejects_zero_probe_quorum() {
+        let raw: RawConfig = toml::from_str("[probes]\nquorum_n = 0\n").unwrap();
+        let err = raw.validate_ranges().unwrap_err();
+        assert!(err.to_string().contains("quorum_n"));
+    }
+
+    /// `quorum_n > quorum_total` is a contradictory pair; reject early.
+    #[test]
+    fn validate_ranges_rejects_quorum_n_above_total() {
+        let raw: RawConfig = toml::from_str("[probes]\nquorum_n = 5\nquorum_total = 3\n").unwrap();
+        let err = raw.validate_ranges().unwrap_err();
+        assert!(err.to_string().contains("quorum_n"));
+    }
+
+    /// Issue #227 motivating example: a wildly oversized timeout
+    /// (here a year in seconds) would let a captive-portal probe hang
+    /// effectively forever. Reject anything beyond 1 day.
+    #[test]
+    fn validate_ranges_rejects_oversized_captive_portal_timeout() {
+        let toml_str = "[captive_portal]\ntimeout_secs = 31536000\n";
+        let raw: RawConfig = toml::from_str(toml_str).unwrap();
+        let err = raw.validate_ranges().unwrap_err();
+        assert!(err.to_string().contains("timeout_secs"));
+    }
+
+    /// `timeout_secs = 0` would mean "abandon the probe immediately" —
+    /// nonsense for a portal detector. Reject.
+    #[test]
+    fn validate_ranges_rejects_zero_captive_portal_timeout() {
+        let raw: RawConfig = toml::from_str("[captive_portal]\ntimeout_secs = 0\n").unwrap();
+        assert!(raw.validate_ranges().is_err());
+    }
+
+    /// Captive-portal `policy` is a closed enum; a typo must fail.
+    #[test]
+    fn validate_ranges_rejects_unknown_captive_portal_policy() {
+        let raw: RawConfig = toml::from_str("[captive_portal]\npolicy = \"yolo\"\n").unwrap();
+        let err = raw.validate_ranges().unwrap_err();
+        assert!(err.to_string().contains("policy"));
+    }
+
+    /// `tx_power_reduction_db > 30` is unphysical and probably a typo
+    /// (e.g. user meant `3` and wrote `300`, but `u8` max is `255`).
+    /// We cap at 30 so wild values bail.
+    #[test]
+    fn validate_ranges_rejects_extreme_tx_power_reduction() {
+        let raw: RawConfig = toml::from_str("[rf]\ntx_power_reduction_db = 100\n").unwrap();
+        let err = raw.validate_ranges().unwrap_err();
+        assert!(err.to_string().contains("tx_power_reduction_db"));
+    }
+
+    /// `[events] portal_poll_secs = 0` would burn a CPU; reject.
+    #[test]
+    fn validate_ranges_rejects_zero_portal_poll_secs() {
+        let raw: RawConfig = toml::from_str("[events]\nportal_poll_secs = 0\n").unwrap();
+        assert!(raw.validate_ranges().is_err());
+    }
+
+    /// `[events] link_flap_window_secs > 1 hour` is meaningless.
+    #[test]
+    fn validate_ranges_rejects_oversized_link_flap_window() {
+        let raw: RawConfig = toml::from_str("[events]\nlink_flap_window_secs = 7200\n").unwrap();
+        assert!(raw.validate_ranges().is_err());
+    }
+
+    /// Garbage timer interval is rejected at validation time. The
+    /// existing `parse_interval` takes care of the underlying check;
+    /// the wrapper just labels the field.
+    #[test]
+    fn validate_ranges_rejects_garbage_timer_interval() {
+        let raw: RawConfig = toml::from_str("[timers.rotate]\ninterval = \"garbage\"\n").unwrap();
+        let err = raw.validate_ranges().unwrap_err();
+        assert!(err.to_string().contains("timers.rotate.interval"));
+    }
+
+    /// `"never"` is the documented sentinel that disables a timer; the
+    /// validator must accept it under `[timers.*]`.
+    #[test]
+    fn validate_ranges_accepts_timer_never() {
+        let raw: RawConfig = toml::from_str("[timers.rotate]\ninterval = \"never\"\n").unwrap();
+        raw.validate_ranges().unwrap();
+    }
+
+    /// `"never"` outside `[timers.*]` is meaningless and must reject.
+    #[test]
+    fn validate_ranges_rejects_never_under_probes() {
+        let raw: RawConfig = toml::from_str("[probes]\ninterval = \"never\"\n").unwrap();
+        assert!(raw.validate_ranges().is_err());
+    }
+
+    /// A garbage `[backend] driver` was previously soft-rejected by
+    /// `resolve()` (warns and falls back to `auto`). The validator
+    /// hardens this to a hard reject so the user can't mistype the
+    /// driver name and silently end up on `auto`.
+    #[test]
+    fn validate_ranges_rejects_unknown_backend_driver() {
+        let raw: RawConfig = toml::from_str("[backend]\ndriver = \"garbage\"\n").unwrap();
+        let err = raw.validate_ranges().unwrap_err();
+        assert!(err.to_string().contains("driver"));
+    }
+
+    /// `[per_ssid.x] aggressiveness_profile = "junk"` rejects: the
+    /// resolver would otherwise silently fall through to the global
+    /// profile, hiding the typo.
+    #[test]
+    fn validate_ranges_rejects_unknown_per_ssid_profile() {
+        let toml_str = r#"
+[per_ssid."home"]
+aggressiveness_profile = "junk"
+"#;
+        let raw: RawConfig = toml::from_str(toml_str).unwrap();
+        let err = raw.validate_ranges().unwrap_err();
+        assert!(err.to_string().contains("aggressiveness_profile"));
+    }
+
+    /// `[per_ssid.x] rotate_interval` only honours `30s/5m/2h/1d`; a
+    /// minute-suffix typo or empty unit must reject.
+    #[test]
+    fn validate_ranges_rejects_garbage_per_ssid_rotate_interval() {
+        let toml_str = r#"
+[per_ssid."home"]
+rotate_interval = "junk"
+"#;
+        let raw: RawConfig = toml::from_str(toml_str).unwrap();
+        let err = raw.validate_ranges().unwrap_err();
+        assert!(err.to_string().contains("rotate_interval"));
+    }
+
+    /// `[per_ssid.x]` with an unknown field rejects at parse time
+    /// (deny_unknown_fields on `PerSsidPolicy`). Without this, a typo
+    /// like `pinned_mac` would be silently dropped.
+    #[test]
+    fn unknown_field_inside_per_ssid_block_is_rejected() {
+        let toml_str = r#"
+[per_ssid."home"]
+pinned_mac = "aa:bb:cc:dd:ee:ff"
+"#;
+        let err = toml::from_str::<RawConfig>(toml_str).unwrap_err();
+        assert!(err.to_string().contains("unknown field"));
+    }
+
+    /// Happy path: the documented schema with every section populated
+    /// passes validation cleanly.
+    #[test]
+    fn validate_ranges_accepts_documented_full_config() {
+        let toml_str = r#"
+profile = "med"
+
+[mac]
+enabled = true
+rotation_interval = "2h"
+oui_pool = ["apple", "intel"]
+
+[discovery]
+mdns_silence = true
+
+[probes]
+quorum_n = 3
+quorum_total = 4
+interval = "5m"
+cooldown = "60s"
+
+[captive_portal]
+enabled = true
+policy = "rotate-before-auth"
+timeout_secs = 5
+
+[rf]
+tx_power_reduce = false
+tx_power_reduction_db = 6
+
+[events]
+enabled = false
+portal_poll_secs = 30
+link_flap_window_secs = 10
+
+[timers.rotate]
+interval = "2h"
+
+[timers.check]
+interval = "5m"
+
+[backend]
+driver = "auto"
+
+[per_ssid."coffee-shop"]
+persona = "iphone-15"
+aggressiveness_profile = "high"
+pin_mac = "aa:bb:cc:dd:ee:ff"
+rotate_interval = "30m"
+portal_policy = "fresh-mac-per-visit"
+"#;
+        let raw: RawConfig = toml::from_str(toml_str).unwrap();
+        raw.validate_ranges()
+            .expect("full documented config must validate");
+    }
+
+    /// All shipped example configs must parse and validate cleanly so
+    /// onboarding stays a copy-paste affair. This is the regression
+    /// guard for the docs-vs-code-drift class of bug (issue D1/D2/D3/D4).
+    #[test]
+    fn every_shipped_example_validates() {
+        for name in [
+            "examples/standard.toml",
+            "examples/aggressive.toml",
+            "examples/captive-portal-heavy.toml",
+            "examples/development.toml",
+            "examples/disabled.toml",
+            "examples/minimal.toml",
+            "examples/paranoid.toml",
+        ] {
+            let body = std::fs::read_to_string(name).unwrap_or_else(|e| panic!("read {name}: {e}"));
+            let raw: RawConfig =
+                toml::from_str(&body).unwrap_or_else(|e| panic!("parse {name}: {e}"));
+            raw.validate_ranges()
+                .unwrap_or_else(|e| panic!("validate {name}: {e}"));
+            // resolve must not panic either
+            let cfg = raw.resolve();
+            cfg.validate()
+                .unwrap_or_else(|e| panic!("resolved validate {name}: {e}"));
+        }
+    }
+
+    #[test]
+    fn is_valid_per_ssid_duration_recognises_each_unit() {
+        assert!(is_valid_per_ssid_duration("30s"));
+        assert!(is_valid_per_ssid_duration("5m"));
+        assert!(is_valid_per_ssid_duration("2h"));
+        assert!(is_valid_per_ssid_duration("1d"));
+        assert!(!is_valid_per_ssid_duration(""));
+        assert!(!is_valid_per_ssid_duration("0s"));
+        assert!(!is_valid_per_ssid_duration("xx"));
+        assert!(!is_valid_per_ssid_duration("3w"));
+        assert!(!is_valid_per_ssid_duration("garbage"));
     }
 }

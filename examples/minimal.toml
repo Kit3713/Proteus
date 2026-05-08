@@ -7,6 +7,8 @@
 #
 # schema reference: proteus wiki config
 
+profile = "min"
+
 # MAC rotation: rotate Wi-Fi/Ethernet MACs every 2 hours.
 [mac]
 enabled = true
@@ -19,6 +21,7 @@ enabled = false
 # DHCP options: leave 12 (hostname), 60 (vendor-class), 61 (client id),
 # 81 (FQDN) alone. Your DHCP banner stays as-is.
 [dhcp]
+enabled = false
 suppress_hostname = false
 suppress_vendor_class = false
 rotate_client_id = false
@@ -27,18 +30,14 @@ rotate_client_id = false
 [ipv6]
 enabled = false
 
-# Discovery: leave mDNS, LLMNR, NetBIOS, SSDP, WSD at OS defaults.
+# Discovery: leave mDNS, LLMNR, SSDP, WSD at OS defaults.
 # WHY: minimal config does not silence anything. Avahi, KDE Connect,
 # Samba, etc. behave exactly as the distro shipped them.
 [discovery]
-mdns_responder = true
-mdns_resolve = true
-llmnr = true
-netbios = true
+mdns_silence = false
+llmnr_silence = false
 ssdp_block = false
 wsd_block = false
-wpad = true
-ntp_normalize = false
 
 # Stack fingerprint: leave TCP timestamps, ICMP info-replies,
 # ICMPv6/NDP hardening alone.
@@ -58,12 +57,12 @@ strip_edns_client_subnet = false
 [bluetooth]
 enabled = false
 
-# Probes: keep the connectivity probe loop on so probe-driven
-# rotation still works alongside the timer.
-[probes]
-enabled = true
-
 # Captive portals: keep first-class portal handling on so MAC
 # rotation does not loop behind a portal.
 [captive_portal]
 enabled = true
+detect_url = "http://nmcheck.gnome.org/check_network_status.txt"
+expected_response = "NetworkManager is online"
+policy = "rotate-before-auth"
+fresh_mac_per_visit = true
+timeout_secs = 5
