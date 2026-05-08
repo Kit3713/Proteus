@@ -376,6 +376,32 @@ fn apply_json_to_command(cmd: &mut Command) {
             TimerAction::Status { json } | TimerAction::List { json } => *json = true,
             _ => {}
         },
+        // Issue #240: M6's `--format json` contract was missed for these
+        // five command groups. Each has a `json: bool` on at least one
+        // reader subaction; flip them so wrappers parsing
+        // `proteus --format json <cmd>` get JSON instead of human text.
+        // PersonaAction::Validate intentionally omitted — the variant
+        // has no json field (it's exit-code-only by design).
+        Command::Probe { json, .. } => *json = true,
+        Command::Persona { action } => match action {
+            PersonaAction::List { json, .. }
+            | PersonaAction::Show { json, .. }
+            | PersonaAction::Current { json }
+            | PersonaAction::Random { json, .. } => *json = true,
+            _ => {}
+        },
+        Command::Ssid { action } => match action {
+            SsidAction::List { json } | SsidAction::Show { json, .. } => *json = true,
+            _ => {}
+        },
+        Command::Wiki { action: Some(WikiAction::Search { json, .. }), .. } => *json = true,
+        Command::Config { action } => match action {
+            ConfigAction::Show { json }
+            | ConfigAction::Get { json, .. }
+            | ConfigAction::Validate { json }
+            | ConfigAction::Keys { json } => *json = true,
+            _ => {}
+        },
         // Subcommands without a `json` flag, or whose readers don't
         // benefit from JSON, are left untouched. Future readers can
         // join the match above.

@@ -116,13 +116,21 @@ impl PortalAuthSource {
                     let _ = registry.fire(RotationTrigger::PortalAuth { ssid });
                 }
                 prev = Some(next);
-                // Without `tokio/macros` we can't use `select!`. Sleep
-                // for the configured cadence then check the stop
-                // signal via `try_recv`. The latency cost is at most
-                // one `poll` interval — acceptable for a 30 s cadence.
-                tokio::time::sleep(poll).await;
-                if stop_rx.try_recv().is_ok() {
-                    break;
+                // Issue #233: race the stop signal against the poll
+                // cadence so shutdown wins. Previously the loop slept
+                // for a full `poll` interval before checking
+                // `stop_rx.try_recv()`, costing up to `poll_secs`
+                // shutdown latency on the only polling source. The
+                // other three sources (netlink/dbus) respond in
+                // milliseconds; the portal poll was the long pole.
+                //
+                // `tokio::time::timeout` is available without the
+                // `tokio/macros` feature (we deliberately don't pull
+                // `select!`). `oneshot::Receiver` is `Unpin`, so a
+                // `&mut Receiver<()>` is usable directly as a Future.
+                match tokio::time::timeout(poll, &mut stop_rx).await {
+                    Ok(_) => break,        // stop signaled (or sender dropped)
+                    Err(_) => continue,    // poll cadence elapsed
                 }
             }
         });

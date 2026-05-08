@@ -86,16 +86,48 @@ impl Config {
     /// Load `path` as TOML, resolving profile + per-knob overrides. If the
     /// file is absent the default profile baseline is returned. Parse
     /// errors propagate as `Err`.
+    ///
+    /// Issue #229: cross-field validation runs after resolve so an
+    /// out-of-range `[probes].quorum_n` (or any other invariant added
+    /// to `Config::validate`) bails with a clear message instead of
+    /// letting `proteus probe` run silently misclassified.
     pub fn default_or_loaded(path: &Path) -> Result<Self> {
         match std::fs::read_to_string(path) {
             Ok(s) => {
                 let raw: RawConfig =
                     toml::from_str(&s).with_context(|| format!("parsing {}", path.display()))?;
-                Ok(raw.resolve())
+                let cfg = raw.resolve();
+                cfg.validate()
+                    .with_context(|| format!("validating {}", path.display()))?;
+                Ok(cfg)
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
             Err(e) => Err(e).with_context(|| format!("reading {}", path.display())),
         }
+    }
+
+    /// Issue #229: validate cross-field invariants the per-section TOML
+    /// shape can't express on its own. Today this only checks the
+    /// probe-quorum trio, but the function is the documented home for
+    /// any future "this combination is nonsensical" rule.
+    ///
+    /// Probe rules:
+    /// - `quorum_n > 0` (a 0 quorum is always-Clear, nonsense as a
+    ///   classifier).
+    /// - `quorum_n <= endpoints.len()` (otherwise the round can never
+    ///   reach Clear and `proteus probe` returns Inconclusive forever).
+    pub fn validate(&self) -> Result<()> {
+        if self.probes.quorum_n == 0 {
+            anyhow::bail!("[probes] quorum_n must be > 0");
+        }
+        if self.probes.quorum_n as usize > self.probes.endpoints.len() {
+            anyhow::bail!(
+                "[probes] quorum_n ({}) exceeds endpoint count ({}); the round can never reach Clear",
+                self.probes.quorum_n,
+                self.probes.endpoints.len()
+            );
+        }
+        Ok(())
     }
 
     /// Structural baseline with the per-section `Default` impl values for

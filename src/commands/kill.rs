@@ -156,9 +156,25 @@ pub fn kill_run(yes: bool, state_path: Option<&Path>) -> Result<u8> {
     Ok(exit::SUCCESS)
 }
 
-/// Public entry point for `proteus kill status [--json]`. Read-only; works
-/// without root because `state.json` is world-readable by design.
+/// Public entry point for `proteus kill status [--json]`.
+///
+/// Issue #235: previously the docstring claimed this was readable without
+/// root because `state.json` is "world-readable by design." It isn't:
+/// `commands::write_atomic` stamps `state.json` at mode `0o600` and
+/// `install.sh` creates `/var/lib/proteus` at `0o700`. A non-root caller
+/// hits `EACCES` on the directory and gets a `Permission denied` from
+/// `State::load`'s `?` operator.
+///
+/// Fix matches the codebase's other read commands: require root upfront
+/// so the error is uniform, the docstring matches reality, and a future
+/// world-readable hint file (issue's option 3, deferred) can be wired in
+/// behind a clean entry point. Mutating `kill` / `resume` already require
+/// root via the dispatcher, so this only tightens `status`.
 pub fn kill_status(json: bool, state_path: Option<&Path>) -> Result<u8> {
+    if let Err(e) = super::require_root() {
+        eprintln!("proteus: {e}");
+        return Ok(crate::exit::PERMISSION_ERROR);
+    }
     let state_path = super::state_path(state_path);
     let state = State::load_or_default(&state_path)?;
     render_status(&state.kill_switch, json)
@@ -508,17 +524,25 @@ mod tests {
         p
     }
 
+    /// Issue #235: `kill_status` now requires root to match reality
+    /// (state.json is mode 0600 in /var/lib/proteus mode 0700). The
+    /// cargo-test process is non-root, so the gate returns
+    /// `PERMISSION_ERROR` before the state file is even read; the
+    /// test pins the gate's existence and exit code.
     #[test]
-    fn status_on_clean_state_reports_inactive() {
+    fn status_returns_permission_error_when_not_root() {
         let path = temp_state_path("status-clean");
-        // No state file at all.
         let code = kill_status(true, Some(&path)).unwrap();
-        assert_eq!(code, exit::SUCCESS);
+        assert_eq!(code, exit::PERMISSION_ERROR);
         let _ = std::fs::remove_file(&path);
     }
 
+    /// Issue #235: even when the operator lays down a populated
+    /// state.json, the non-root path returns `PERMISSION_ERROR` (the
+    /// gate fires before `State::load`). State round-trip is exercised
+    /// elsewhere — this test just pins the privilege check.
     #[test]
-    fn status_renders_active_kill_switch_from_state() {
+    fn status_returns_permission_error_with_populated_state() {
         let path = temp_state_path("status-active");
         let s = State {
             kill_switch: KillSwitchState {
@@ -533,14 +557,13 @@ mod tests {
         };
         s.save(&path).unwrap();
         let code = kill_status(true, Some(&path)).unwrap();
-        assert_eq!(code, exit::SUCCESS);
+        assert_eq!(code, exit::PERMISSION_ERROR);
 
-        // Round-trip: the saved-then-loaded file must still hold the snapshot.
+        // State round-trip is the responsibility of state.rs tests; we
+        // only verify the file the production path would have read is
+        // still parseable.
         let back = State::load_or_default(&path).unwrap();
         assert!(back.kill_switch.active);
-        assert_eq!(back.kill_switch.interfaces, vec!["wlan0"]);
-        assert!(back.kill_switch.nm_wireless_disabled);
-        assert!(back.kill_switch.bluetooth_disabled);
 
         let _ = std::fs::remove_file(&path);
     }

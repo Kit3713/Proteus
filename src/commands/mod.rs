@@ -61,11 +61,19 @@ pub(crate) fn config_path(override_path: Option<&Path>) -> PathBuf {
 }
 
 /// Read the effective UID from procfs (Linux-only, avoids pulling in libc).
+///
+/// `/proc/self/status` `Uid:` line layout: `Uid: <real> <effective> <saved>
+/// <fs>`. Issue #237: the previous `nth(1)` returned the **real** UID
+/// despite the docstring promising effective. In practice every supported
+/// invocation path (sudo, systemd unit, pkexec) sets real == effective ==
+/// saved == 0, so the bug is latent — but a setuid-root or capability-based
+/// install would have `require_root` reject a privileged caller. `nth(2)`
+/// matches the docstring and `require_root`'s real intent.
 pub(crate) fn read_uid() -> Option<u32> {
     let s = std::fs::read_to_string("/proc/self/status").ok()?;
     s.lines()
         .find(|l| l.starts_with("Uid:"))
-        .and_then(|l| l.split_whitespace().nth(1))
+        .and_then(|l| l.split_whitespace().nth(2))
         .and_then(|n| n.parse().ok())
 }
 
