@@ -38,8 +38,8 @@
 //! (RAII guard, nested-acquire-is-no-op) but makes the inner state safe
 //! to read and mutate atomically under any scheduling.
 
-use std::fs::{self, File, OpenOptions};
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::fs::{File, OpenOptions};
+use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -63,9 +63,15 @@ use crate::state::{STATE_FILE_MODE, ensure_state_dir_secure};
 /// follow-up dispatcher invocation.
 const DEFAULT_LOCK_BUDGET_MS: u64 = 5_000;
 /// Issue #221: hard cap on `PROTEUS_LOCK_TIMEOUT_MS` so absurd values
-/// don't overflow the budget→attempts conversion. The systemd drop-in
-/// sets 10s; 1h is far past any legitimate use.
-const MAX_LOCK_BUDGET_MS: u64 = 60 * 60 * 1000;
+/// don't overflow the budget→attempts conversion.
+///
+/// C8: lowered from 1h to 2 minutes. The shipped systemd drop-in sets
+/// 10s and the documented foreground UX expects "blocks for at most a
+/// few seconds" — a 1h cap meant a hostile or fat-fingered env value
+/// could pin a `proteus apply` for an entire hour with the lock held.
+/// Anything that legitimately needs more than 2 min is misusing the
+/// API and should restructure rather than crank this knob.
+const MAX_LOCK_BUDGET_MS: u64 = 120_000;
 const RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(100);
 
 /// Resolve the retry budget from `PROTEUS_LOCK_TIMEOUT_MS` (falling back
@@ -153,24 +159,58 @@ impl Drop for StateLockGuard {
 /// Returns a no-op guard if this process already holds the lock — the
 /// orchestrator pattern relies on this.
 pub fn acquire_for_state_path(state_path: &Path) -> Result<StateLockGuard, LockError> {
-    let mut held = HELD.lock().unwrap_or_else(|e| e.into_inner());
-    if held.is_some() {
-        // Already held by an outer scope in this same process; the kernel
-        // flock would deadlock if we re-acquired, so hand back a no-op guard.
-        return Ok(StateLockGuard { outermost: false });
+    // Issue C1 / N12.13: do NOT hold the `HELD` mutex across the retry-sleep
+    // loop. The previous shape took the guard at the top of this function
+    // and dropped it only after `acquire_inner` returned, which meant a
+    // contended kernel flock pinned the in-process Mutex for the full 5 s
+    // budget — every other tokio task or thread asking for the lock
+    // serialized behind it instead of contending on the kernel flock that
+    // is the actual contention point. We now take the mutex only for the
+    // brief windows where we read or write the slot.
+    {
+        let held = HELD.lock().unwrap_or_else(|e| e.into_inner());
+        if held.is_some() {
+            // Already held by an outer scope in this same process; the
+            // kernel flock would deadlock if we re-acquired, so hand back
+            // a no-op guard.
+            return Ok(StateLockGuard { outermost: false });
+        }
     }
     let path = lock_path_for(state_path);
-    match acquire_inner(&path) {
-        Ok(file) => {
-            *held = Some(file);
-            Ok(StateLockGuard { outermost: true })
+    let file = acquire_inner(&path)?;
+    // Re-check the slot under the mutex in case another caller in this
+    // process won the race to the kernel flock between our read above and
+    // our write here. If so, drop our freshly-acquired file (which
+    // releases the kernel flock via close()) and surface a no-op guard so
+    // the caller still observes the reentrant contract.
+    let mut held = HELD.lock().unwrap_or_else(|e| e.into_inner());
+    if held.is_some() {
+        // Best-effort explicit unlock so the kernel hears about it before
+        // the close() that's about to drop the file.
+        unsafe {
+            libc::flock(file.as_raw_fd(), libc::LOCK_UN);
         }
-        Err(e) => Err(e),
+        drop(file);
+        return Ok(StateLockGuard { outermost: false });
     }
+    *held = Some(file);
+    Ok(StateLockGuard { outermost: true })
 }
 
 fn lock_path_for(state_path: &Path) -> PathBuf {
-    let dir = state_path.parent().unwrap_or_else(|| Path::new("."));
+    // N12.15: a bare filename like `proteus apply --state state.json`
+    // has `parent() == Some("")` (an empty path), which `join` collapses
+    // to `.lock` in $CWD — so a second invocation from a different cwd
+    // does not see the lock as held. Canonicalize the parent to the
+    // current directory so the lock-file path is absolute regardless of
+    // how the caller spelled the state path. Best-effort: if
+    // canonicalize fails we fall back to the previous behaviour rather
+    // than crashing the lock acquire.
+    let parent = state_path.parent();
+    let dir: PathBuf = match parent {
+        Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
+        _ => std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+    };
     dir.join(LOCK_FILE_NAME)
 }
 
@@ -206,9 +246,19 @@ fn acquire_inner(path: &Path) -> Result<File, LockError> {
     // OpenOptions::mode() only takes effect when the file is freshly
     // created. If `.lock` already exists with a wider mode (left over
     // from a pre-#275 install), tighten it now.
-    let perms = fs::Permissions::from_mode(STATE_FILE_MODE);
-    fs::set_permissions(path, perms)
-        .with_context(|| format!("chmod 0{STATE_FILE_MODE:o} on lock file {}", path.display()))?;
+    //
+    // GH #370: tighten via `fchmod` on the open fd rather than `chmod`
+    // on the path so an attacker cannot swap the path between open()
+    // and chmod() (TOCTOU). With `O_NOFOLLOW` plus `fchmod` on the
+    // already-open fd, both halves of audit N-3 are closed.
+    let rc = unsafe { libc::fchmod(file.as_raw_fd(), STATE_FILE_MODE as libc::mode_t) };
+    if rc != 0 {
+        let err = std::io::Error::last_os_error();
+        return Err(LockError::Other(anyhow::anyhow!(
+            "fchmod 0{STATE_FILE_MODE:o} on lock file {}: {err}",
+            path.display(),
+        )));
+    }
 
     let retry_attempts = retry_attempts_from_env(|k| std::env::var(k).ok());
     // Try LOCK_EX|LOCK_NB up to retry_attempts times with a small sleep so a
@@ -243,6 +293,7 @@ pub(crate) fn is_held_in_process() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::PermissionsExt;
 
     /// All tests in this module mutate the process-wide `HELD` slot (or the
     /// kernel-level lock at the same path). Cargo runs tests in parallel by
@@ -369,24 +420,31 @@ mod tests {
         assert_eq!(attempts, 50);
     }
 
-    /// Issue #221: hostile or fat-fingered `PROTEUS_LOCK_TIMEOUT_MS`
-    /// values must not overflow the budget→attempts conversion. The
-    /// previous shape `(budget_ms + granularity_ms - 1) / granularity_ms`
-    /// either panicked in debug (`+ granularity_ms - 1` overflows) or
-    /// wrapped to a tiny number in release (instant Busy DoS).
+    /// Issue #221 / C8: hostile or fat-fingered `PROTEUS_LOCK_TIMEOUT_MS`
+    /// values must not overflow the budget→attempts conversion AND must
+    /// not pin Proteus for absurd durations. C8 lowered the cap from 1h
+    /// to 2 min so a typo can no longer block apply for an entire hour.
     #[test]
     fn retry_attempts_from_env_clamps_oversized_budget() {
-        // u64::MAX → clamped to MAX_LOCK_BUDGET_MS (1h) → 36000 attempts.
-        let attempts = retry_attempts_from_env(|_| Some(u64::MAX.to_string()));
-        assert_eq!(attempts, 36_000);
+        // 2 min budget = 120_000 ms / 100 ms granularity = 1200 attempts.
+        const CAP_ATTEMPTS: u32 = 1_200;
 
-        // Exactly at the cap: 1h budget = 3_600_000 ms / 100 ms = 36000 attempts.
-        let attempts = retry_attempts_from_env(|_| Some("3600000".to_string()));
-        assert_eq!(attempts, 36_000);
+        // u64::MAX → clamped to MAX_LOCK_BUDGET_MS (2 min).
+        let attempts = retry_attempts_from_env(|_| Some(u64::MAX.to_string()));
+        assert_eq!(attempts, CAP_ATTEMPTS);
+
+        // Exactly at the cap.
+        let attempts = retry_attempts_from_env(|_| Some("120000".to_string()));
+        assert_eq!(attempts, CAP_ATTEMPTS);
 
         // One past the cap stays at the cap.
-        let attempts = retry_attempts_from_env(|_| Some("3600001".to_string()));
-        assert_eq!(attempts, 36_000);
+        let attempts = retry_attempts_from_env(|_| Some("120001".to_string()));
+        assert_eq!(attempts, CAP_ATTEMPTS);
+
+        // 1h request (which the previous cap allowed) is now also
+        // clamped down to the 2-min cap.
+        let attempts = retry_attempts_from_env(|_| Some("3600000".to_string()));
+        assert_eq!(attempts, CAP_ATTEMPTS);
     }
 
     /// Issue #206-B regression: a sequence of acquire-drop cycles must
@@ -433,11 +491,13 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Issue #275: the lock file lands at 0o600 even when the parent dir
-    /// existed previously with a permissive umask. The dir itself ends
-    /// up at 0o700.
+    /// Issue #275: the lock file lands at 0o600 when Proteus creates the
+    /// parent dir. GH #354 / #363: a pre-existing operator-supplied dir
+    /// is left alone (no chmod) so `--state /tmp/x` cannot brick /tmp.
+    /// The lock file itself is still tightened to 0o600 — that file is
+    /// always Proteus-owned.
     #[test]
-    fn lock_file_and_dir_carry_root_only_modes() {
+    fn lock_file_lands_at_0600_and_dir_left_alone_when_foreign() {
         let _serial = serial_guard();
         let parent = std::env::temp_dir().join(format!(
             "proteus-lock-mode-{}-{}",
@@ -446,9 +506,9 @@ mod tests {
         ));
         let _ = std::fs::remove_dir_all(&parent);
         std::fs::create_dir_all(&parent).unwrap();
-        // Inner state dir is the one acquire_for_state_path will create
-        // and chmod. Pre-create it 0o755 so we exercise the tighten
-        // path, not just create.
+        // Pre-create the inner dir at 0o755 to mimic an operator's
+        // pre-existing temp dir. With GH #354 / #363 we must NOT chmod
+        // it.
         let dir = parent.join("state");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -456,20 +516,100 @@ mod tests {
         let state = dir.join("state.json");
         let lock = lock_path_for(&state);
         // Pre-create the lock file world-readable to cover the
-        // tighten-existing-file branch too.
+        // tighten-existing-file branch (the lock file itself IS
+        // Proteus-owned and is always re-chmodded to 0o600).
         std::fs::write(&lock, b"").unwrap();
         std::fs::set_permissions(&lock, std::fs::Permissions::from_mode(0o644)).unwrap();
 
         let g = acquire_for_state_path(&state).expect("acquire");
         let dir_mode = std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
         assert_eq!(
-            dir_mode, 0o700,
-            "lock-dir must be 0o700, got 0o{dir_mode:o}"
+            dir_mode, 0o755,
+            "operator-supplied lock-dir must NOT be re-chmodded; got 0o{dir_mode:o}"
         );
         let lock_mode = std::fs::metadata(&lock).unwrap().permissions().mode() & 0o777;
         assert_eq!(
             lock_mode, 0o600,
             "lock file must be 0o600, got 0o{lock_mode:o}"
+        );
+        drop(g);
+        let _ = std::fs::remove_dir_all(&parent);
+    }
+
+    /// Stream 5 acceptance test: stress with N concurrent
+    /// `acquire_state_lock` callers and assert no thread blocks longer
+    /// than the 5 s budget, and that every acquire eventually succeeds
+    /// (no `panic = abort` is triggered, no deadlock). C1 / N12.13:
+    /// the in-process `HELD` mutex must NOT be held across the kernel-
+    /// flock retry sleep; if it were, this stress test would serialize
+    /// on the mutex and the wall-clock per-thread runtime would scale
+    /// linearly with N rather than staying within the 5 s budget.
+    #[test]
+    fn stress_concurrent_acquires_stay_within_budget() {
+        let _serial = serial_guard();
+        let dir = std::env::temp_dir().join(format!(
+            "proteus-lock-stress-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let state = std::sync::Arc::new(dir.join("state.json"));
+
+        const N: usize = 16;
+        let mut handles = Vec::with_capacity(N);
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(N));
+        for _ in 0..N {
+            let state = std::sync::Arc::clone(&state);
+            let barrier = std::sync::Arc::clone(&barrier);
+            handles.push(std::thread::spawn(move || {
+                barrier.wait();
+                let started = std::time::Instant::now();
+                let g = acquire_for_state_path(&state).expect("acquire under stress");
+                // Simulate a short critical section so other threads
+                // actually contend. The 5 s budget must hold even with
+                // a 50 ms hold time × 16 threads.
+                std::thread::sleep(std::time::Duration::from_millis(50));
+                drop(g);
+                started.elapsed()
+            }));
+        }
+
+        for (i, h) in handles.into_iter().enumerate() {
+            let waited = h.join().expect("worker did not panic");
+            // Per the stream-5 acceptance contract: no thread blocks
+            // longer than the 5 s budget.
+            assert!(
+                waited < std::time::Duration::from_secs(5),
+                "thread {i} waited {waited:?}, exceeding the 5s lock budget"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// GH #354 / #363 regression: a freshly-created lock dir lands at
+    /// 0o700 (Proteus owns it). Distinct from the foreign-dir test
+    /// above — this is the cold-install path.
+    #[test]
+    fn lock_dir_chmodded_to_0700_when_proteus_creates_it() {
+        let _serial = serial_guard();
+        let parent = std::env::temp_dir().join(format!(
+            "proteus-lock-fresh-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        let _ = std::fs::remove_dir_all(&parent);
+        std::fs::create_dir_all(&parent).unwrap();
+        // Inner dir does NOT exist; acquire_for_state_path must create
+        // it and tighten to 0o700.
+        let dir = parent.join("fresh-state");
+        let state = dir.join("state.json");
+
+        let g = acquire_for_state_path(&state).expect("acquire");
+        let dir_mode = std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            dir_mode, 0o700,
+            "freshly-created lock dir must be 0o700, got 0o{dir_mode:o}"
         );
         drop(g);
         let _ = std::fs::remove_dir_all(&parent);
