@@ -24,6 +24,41 @@ cycles see [`ROADMAP-v0.3.md`](ROADMAP-v0.3.md) (Reach + Persona, shipped) and
 rationale see [`PLAN.md`](PLAN.md). For how to help see
 [`CONTRIBUTING.md`](../CONTRIBUTING.md).
 
+## Source-of-truth migration (read this first)
+
+This roadmap is the **single source of truth** for every unresolved problem
+reported anywhere in the repo. Findings that historically lived in the two
+security-audit documents have been absorbed into the streams below. The audit
+documents are now archived as historical records; **stop tracking status against
+them**. The mapping is explicit so nothing is lost:
+
+| Audit ID | Origin doc | Severity (current) | Absorbed into |
+|---|---|---|---|
+| M‑2 / N‑0 | `SECURITY-AUDIT-2026-05-07.md`, `-followup.md` | High (re-classified) | Stream 9 — `PROTEUS_*_DIR` env hardening |
+| L‑3 (residual) | `SECURITY-AUDIT-2026-05-07.md` | Low | Stream 9 — `--` separator on `iw`/`ip` positional args |
+| N‑1 | `SECURITY-AUDIT-2026-05-07-followup.md` | Low | Stream 4 — `ethtool -P` iface validation in `mac/factory.rs` |
+| N‑3 (residual) | `SECURITY-AUDIT-2026-05-07-followup.md` | Low | Stream 5 — `O_NOFOLLOW` on `state_lock` open |
+| I‑1 | `SECURITY-AUDIT-2026-05-07.md` | Info | Stream 9 — SHA-256 consolidation into `crate::hash` |
+| I‑2 | `SECURITY-AUDIT-2026-05-07.md` | Info | Stream 3 — `cargo audit` in release CI |
+
+The closed audit findings (H-1, H-2, M-1, M-3, L-1, L-2, L-4, N-2, T-1) stay in
+the archived audit files as the historical fix record; they need no roadmap
+entry because they are already on `main`.
+
+**Issue-log convention.** `docs/ISSUES.md` remains the live issue log and is
+maintained outside this roadmap — entries close there as they are fixed. The
+roadmap references issue-log IDs (`CL2`, `N12.5`, `B3`, …) directly, and the
+audit IDs above (`M-2`, `N-0`, `N-1`, `L-3`, `N-3`, `I-1`, `I-2`) where the
+finding only exists in the archived audits. The two ID spaces are distinguished
+by the hyphen (`M-2` is from the audit; `M2` would be from the issues log; the
+issues log uses no `M-` prefix).
+
+**Ops checklist.** `docs/MAINTAINER-FOLLOWUPS.md` is **not** absorbed by this
+roadmap — it tracks one-shot maintainer chores (tag pushes, stale-branch
+deletion, draft-release publication) that are operational, not findings. That
+file self-deletes when the listed actions are executed; it is intentionally
+out of scope here.
+
 ## Status legend
 
 - ✅ Landed (in `main`)
@@ -147,7 +182,7 @@ is unreachable on every install path that is not `cargo install`.
 `.github/workflows/release.yml`, `Cargo.toml` (description-length only),
 `build.rs`, `scripts/check.sh`.
 
-**Issues:** B1–B15, N12.8, N12.9, M4.
+**Issues:** B1–B15, N12.8, N12.9, M4, audit I‑2.
 
 **Work:**
 
@@ -169,6 +204,9 @@ is unreachable on every install path that is not `cargo install`.
 - ⏳ Replace `build.rs::panic!` with actionable errors (B12); add `:?`-guard
   pattern to `uninstall.sh` (B11); shorten `Cargo.toml` description below
   256 chars (M4).
+- ⏳ Wire `cargo audit` into the release workflow with `Cargo.lock` as the
+  target; fail the release on any open advisory in `zbus`, `clap`, `tokio`,
+  `toml`, `toml_edit`, `serde`, `tracing`, `getrandom` (audit I‑2).
 
 **Acceptance:** spin up Fedora 43, Debian 13, Gentoo, Alpine 3.20 in CI
 containers; `install` the package; assert `systemctl is-enabled
@@ -189,7 +227,7 @@ Stream 7's logging changes rebase cleanly), `src/nm/mod.rs`,
 `src/nm/apply.rs`, `src/backend/nm.rs`, `src/backend/mock.rs`,
 `src/captive_portal/mod.rs`, `src/mac/factory.rs`.
 
-**Issues:** N1–N14, N12.7, N12.11, N12.19, R4.
+**Issues:** N1–N14, N12.7, N12.11, N12.19, R4, audit N‑1.
 
 **Work:**
 
@@ -198,6 +236,11 @@ Stream 7's logging changes rebase cleanly), `src/nm/mod.rs`,
   feature.
 - ⏳ Fix `factory::permanent_address` `Option` → `Result` (N2, N12.19) so
   I/O failure is distinguishable from "no factory MAC".
+- ⏳ Validate the `iface` argument before `EthtoolBin::permanent` calls
+  `ethtool -P <iface>` (audit N‑1) — reuse the existing
+  `crate::ipv6::validate_iface_name` helper or lift a shared
+  `crate::mac::iface::validate` to match the `is_safe_iface` posture L‑3
+  established for `iw` / `ip`.
 - ⏳ Probe NM DBus interface version (N3); preserve method / path on zbus
   errors (N4); fix connection lookup id / uuid mixing (N6).
 - ⏳ Implement per-trigger debounce on link-flap detector (N8); subscribe to
@@ -226,7 +269,7 @@ quarantine logging rebases cleanly), `src/state_lock.rs`,
 sites only).
 
 **Issues:** C1–C9, N12.13, N12.15, N12.16, N12.17, S4 (coordinated with
-Stream 9), S1.
+Stream 9), S1, audit N‑3 (residual).
 
 **Work:**
 
@@ -244,6 +287,10 @@ Stream 9), S1.
   mock backend actually flock for test honesty (C6).
 - ⏳ Replace `std::env::set_var` / `remove_var` in `uninstall.rs` test setup
   with a serialized-test harness (S1).
+- ⏳ Apply `.custom_flags(libc::O_NOFOLLOW)` to the `state_lock` `OpenOptions`
+  call (audit N‑3 residual). The `mode(0o600)` half landed in PR #310; the
+  symlink-follow gap is what stayed open. Posture should match
+  `write_atomic` (`O_CREAT | O_EXCL | O_NOFOLLOW`, `0o600`, RAII cleanup).
 
 **Acceptance:** stress test with 16 concurrent `acquire_state_lock` callers;
 assert no thread blocks more than 5 s; assert no `panic = abort` is
@@ -335,7 +382,8 @@ Stream 3), `src/events/source/reg_domain.rs::OwnedFd` (S9),
 `src/nm/mod.rs::GetSettings/GetSecrets` log values (S8 — rebase after
 Stream 4), `src/mac/generator.rs` separator parser (S10).
 
-**Issues:** S2, S3, S5, S6, S7, S8, S9, S10, B15.
+**Issues:** S2, S3, S5, S6, S7, S8, S9, S10, B15, audit M‑2 / N‑0, audit
+L‑3 (residual), audit I‑1.
 
 **Work:**
 
@@ -351,6 +399,25 @@ Stream 4), `src/mac/generator.rs` separator parser (S10).
   separator parser (S10).
 - ⏳ Sanitize NM dict values before tracing (S8) — coordinate with Stream
   4's error-context preservation (N4).
+- ⏳ Harden `Layout::from_env()` in `src/commands/uninstall.rs` so
+  `PROTEUS_CONFIG_DIR` / `PROTEUS_STATE_DIR` / `PROTEUS_SYSTEMD_DIR` cannot
+  steer `remove_dir_all` against `/etc` or anywhere outside an explicit
+  allowlist (audit M‑2 / N‑0). Two acceptable shapes per the audit
+  recommendation: gate the env reads on `#[cfg(any(test,
+  feature = "test-overrides"))]` with hardcoded production paths, or refuse
+  any path outside `{/etc/proteus, /var/lib/proteus, /etc/systemd/system}`
+  plus tempdir-prefixed test variants. This is the highest-severity
+  unresolved security finding on `main`.
+- ⏳ Insert `--` before user-influenced positional args in every `iw` / `ip`
+  / `ethtool` invocation (audit L‑3 residual). The `is_safe_iface` guard
+  blocks shell metacharacters but does not block `iface = "-h"` flag-parse
+  confusion. Sweep `src/rf/`, `src/kill_switch/`, and `src/mac/factory.rs`.
+- ⏳ Consolidate the four hand-rolled SHA-256 implementations
+  (`src/dns/apply.rs`, `src/stack/sha256.rs`, `src/diff/sha256.rs`,
+  `src/ipv6/mod.rs`) into a single `crate::hash::sha256` module (audit
+  I‑1). Document in `wiki/dns.md` that the resulting digest is a
+  tamper-evidence marker, not a security property — anyone with write
+  access to the drop-in can recompute the digest.
 
 **Acceptance:** `cargo audit`; manual review of every new validator; test
 for the polkit-missing path that asserts a clear error message.

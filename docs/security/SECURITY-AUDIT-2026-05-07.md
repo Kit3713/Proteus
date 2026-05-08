@@ -1,27 +1,29 @@
-# Security audit — 2026-05-07
+# Security audit — 2026-05-07 (ARCHIVED)
 
-> **Maintainer note (2026-05-08).** This document is preserved verbatim as the
-> v0.1.0-alpha audit record. The follow-up at
+> **Archived 2026-05-08.** This document is preserved verbatim as the
+> v0.1.0-alpha audit record. **Live status tracking has moved to
+> [`docs/ROADMAP.md`](../ROADMAP.md).** Do not update status against this
+> file; resolve work against the roadmap streams listed in the
+> "Source-of-truth migration" section there. The follow-up audit at
 > [`SECURITY-AUDIT-2026-05-07-followup.md`](./SECURITY-AUDIT-2026-05-07-followup.md)
-> re-checked these findings against v0.2.7-alpha; the table below brings the
-> status forward to the v0.4.2-beta release window. Original finding text is
-> unchanged.
+> is also archived.
 
-## Status table (added 2026-05-08)
+## Where the open findings now live
 
-| ID | Severity | Status on `main` (v0.4.2-beta prep) | Reference |
-|----|----------|--------------------------------------|-----------|
-| H‑1 | High | **Fixed.** `proteus portal open` no longer auto-launches `xdg-open`; `try_xdg_open` removed. | `src/commands/portal.rs:244,288` |
-| H‑2 | High | **Fixed.** `write_atomic` uses `O_CREAT\|O_EXCL`, random suffix, mode 0o600, RAII cleanup, parent fsync. | PR #188 |
-| M‑1 | Medium | **Fixed.** `iface`/`key` validated via `validate_iface_name`; canonicalized prefix check on writes. | issue #147 |
-| M‑2 | Medium | **OPEN.** Tracked for v0.4.2-beta cycle (`PROTEUS_*_DIR` env hardening). See follow-up N‑0. |  in flight  |
-| M‑3 | Medium | **Fixed.** `parse_http_url` rejects control bytes via `is_request_safe`. |  landed pre-v0.2.7  |
-| L‑1 | Low | **Fixed.** Unbiased `random_index` shipped for MAC + BT alias selection. | PR #307 |
-| L‑2 | Low | **Fixed.** `parse_interval` and `annotate_disable_reason` strip CR/LF/`[`/`]`; tightened further this release. | PR #297 |
-| L‑3 | Low | **Partial.** `is_safe_iface` covers `iw`/`ip`; remaining call sites tracked in v0.4.2-beta cycle. |  in flight  |
-| L‑4 | Low | **Fixed.** `$VISUAL`/`$EDITOR` allowlist + privilege handling landed. | PR #244, PR #309 |
-| I‑1 | Info | **In progress.** SHA-256 consolidation underway. | PR #299 |
-| I‑2 | Info | **Recommended.** `cargo audit` to be added to release checklist; not yet wired into CI. |  open recommendation  |
+The audit identified 11 findings. The closed ones (H-1, H-2, M-1, M-3, L-1,
+L-2, L-4) need no further action — verify them against `main`. The five that
+remained open or partial as of 2026-05-08 are absorbed into the roadmap:
+
+| ID | Severity | Roadmap home |
+|----|----------|--------------|
+| M‑2 | Medium → re-classified High in follow-up as N‑0 | [Roadmap Stream 9](../ROADMAP.md) — `PROTEUS_*_DIR` env hardening |
+| L‑3 (residual) | Low | [Roadmap Stream 9](../ROADMAP.md) — `--` separator on `iw` / `ip` positional args |
+| I‑1 | Info | [Roadmap Stream 9](../ROADMAP.md) — SHA-256 consolidation |
+| I‑2 | Info | [Roadmap Stream 3](../ROADMAP.md) — `cargo audit` in release CI |
+
+The original finding text below is unchanged. Use it for context when
+implementing the corresponding roadmap row; do not file a new issue against
+this file.
 
 Branch: `claude/security-audit-sjnXX`. Audit performed against commit `0c61eac`
 (`v0.1.0-alpha`). Build verified (`cargo build --release` clean) and the full
