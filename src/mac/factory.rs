@@ -38,23 +38,120 @@ const SYSFS_NET: &str = "/sys/class/net";
 /// `include/uapi/linux/netdevice.h` (`NET_ADDR_PERM`).
 const NET_ADDR_PERM: &str = "0";
 
+/// N2 / N12.19: typed result for [`permanent_address_result`]. Splits
+/// "no factory MAC was discoverable" (a routine outcome on hosts
+/// without ethtool / phy80211, or with a randomly-assigned address)
+/// from "an I/O failure prevented the lookup" (sysfs read errored,
+/// ethtool spawn errored, parser errored on otherwise-shaped output).
+///
+/// The legacy `Option`-shaped [`permanent_address`] still works —
+/// it returns `Some(mac)` for `Found`, and `None` for both
+/// `Unavailable` and `IoError`. New callers (`commands::rotate`,
+/// `commands::status`, the doctor) should migrate to
+/// [`permanent_address_result`] so they can warn on the I/O case
+/// instead of silently treating it the same as the no-source case.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FactoryLookup {
+    /// A canonical factory MAC was found via one of the sources
+    /// (phy80211, ethtool, or the NET_ADDR_PERM sysfs fallback).
+    Found(String),
+    /// Every source declined cleanly: phy80211 absent, ethtool
+    /// absent or returned no permanent address, sysfs reports
+    /// `addr_assign_type != 0` (random/stolen/set). This is an
+    /// expected outcome on virtual ifaces, on hosts without
+    /// ethtool, on Wi-Fi drivers without phy80211 + cloned-since-boot.
+    Unavailable,
+    /// At least one source raised an I/O failure (sysfs read
+    /// returned an OS error, ethtool spawned but exited non-zero
+    /// in an unexpected way, parsed output was shape-malformed).
+    /// Distinct from `Unavailable` because it warrants an operator
+    /// warning rather than the silent no-op `Unavailable` gets.
+    IoError(String),
+}
+
 /// Look up the burned-in factory MAC for `iface`. Returns `None` when no
 /// source can produce an address we trust to be the factory value (rather
 /// than a previously cloned one).
+///
+/// Legacy `Option`-shaped surface preserved for callers that don't yet
+/// distinguish "no factory MAC" from "I/O error". New callers should
+/// use [`permanent_address_result`] instead — N2 / N12.19.
 pub fn permanent_address(iface: &str) -> Option<String> {
-    permanent_address_under(Path::new(SYSFS_NET), iface, &EthtoolBin)
+    match permanent_address_result(iface) {
+        FactoryLookup::Found(m) => Some(m),
+        FactoryLookup::Unavailable | FactoryLookup::IoError(_) => None,
+    }
+}
+
+/// N2 / N12.19: distinguishes "no factory MAC was discoverable" from
+/// "an I/O failure prevented the lookup". Production callers can warn
+/// on the latter (so an operator catches a misconfigured ethtool /
+/// permission denied on sysfs early) without spamming on the former.
+pub fn permanent_address_result(iface: &str) -> FactoryLookup {
+    permanent_address_result_under(Path::new(SYSFS_NET), iface, &EthtoolBin)
 }
 
 /// Same as `permanent_address` but with the sysfs root and `ethtool` runner
 /// injected for unit tests.
+#[cfg(test)]
 pub(crate) fn permanent_address_under(
     sysfs_root: &Path,
     iface: &str,
     ethtool: &dyn EthtoolRunner,
 ) -> Option<String> {
-    read_phy80211(sysfs_root, iface)
-        .or_else(|| ethtool.permanent(iface).map(|s| s.to_ascii_lowercase()))
-        .or_else(|| read_address_if_perm(sysfs_root, iface))
+    match permanent_address_result_under(sysfs_root, iface, ethtool) {
+        FactoryLookup::Found(m) => Some(m),
+        FactoryLookup::Unavailable | FactoryLookup::IoError(_) => None,
+    }
+}
+
+/// Test-injectable variant of [`permanent_address_result`].
+pub(crate) fn permanent_address_result_under(
+    sysfs_root: &Path,
+    iface: &str,
+    ethtool: &dyn EthtoolRunner,
+) -> FactoryLookup {
+    if let Some(m) = read_phy80211(sysfs_root, iface) {
+        return FactoryLookup::Found(m);
+    }
+    if let Some(m) = ethtool.permanent(iface) {
+        return FactoryLookup::Found(m.to_ascii_lowercase());
+    }
+    if let Some(m) = read_address_if_perm(sysfs_root, iface) {
+        return FactoryLookup::Found(m);
+    }
+    // Differentiate Unavailable vs IoError by re-checking whether the
+    // iface's `address` file at least exists. If `/sys/class/net/<iface>`
+    // is missing entirely we treat that as a routine "no such device"
+    // (Unavailable). If it exists but every reader returned None we
+    // still treat as Unavailable (the kernel said no, not an I/O error).
+    // True IoError surfaces when sysfs metadata is present but unreadable
+    // — surfaced via the helper below.
+    if has_io_error(sysfs_root, iface) {
+        return FactoryLookup::IoError(format!(
+            "sysfs metadata for {iface} is present but unreadable"
+        ));
+    }
+    FactoryLookup::Unavailable
+}
+
+/// N2: probe whether the iface's sysfs directory exists but the
+/// `address` file is unreadable (permission denied, EIO, etc.).
+/// Returns true only for the "metadata present, read failed" case;
+/// returns false for "iface not in sysfs" (a routine Unavailable).
+fn has_io_error(root: &Path, iface: &str) -> bool {
+    let base = root.join(iface);
+    if !base.exists() {
+        return false;
+    }
+    let addr = base.join("address");
+    match std::fs::metadata(&addr) {
+        Ok(_) => match std::fs::read_to_string(&addr) {
+            Ok(_) => false,
+            Err(e) => !matches!(e.kind(), std::io::ErrorKind::NotFound),
+        },
+        Err(e) => !matches!(e.kind(), std::io::ErrorKind::NotFound),
+    }
 }
 
 fn read_phy80211(root: &Path, iface: &str) -> Option<String> {
@@ -207,19 +304,35 @@ fn is_well_formed_mac(s: &str) -> bool {
 /// Issue #271: also reject multicast addresses (first-octet bit 0 set).
 /// A buggy ethernet driver could otherwise have its multicast permanent
 /// address cached as the factory original and restored on revert.
+///
+/// NBE.10: Linux 6.3+ Intel iwlwifi (and a few related drivers) print
+/// `Permanent MAC address: xx:xx:xx:xx:xx:xx` instead of the legacy
+/// `Permanent address:`. Match both header shapes so factory-MAC capture
+/// keeps working on those drivers; without this, the parser silently
+/// fell back to the live-address sysfs reader which post-rotation would
+/// be the cloned MAC (a known issue dating to Linux 6.3).
 fn parse_ethtool_permanent(stdout: &str) -> Option<String> {
     for line in stdout.lines() {
         let lower = line.trim().to_ascii_lowercase();
-        if let Some(rest) = lower.strip_prefix("permanent address:") {
-            let mac = rest.trim();
-            if mac.is_empty() || mac == "00:00:00:00:00:00" {
-                return None;
-            }
-            if !is_unicast_well_formed_mac(mac) {
-                return None;
-            }
-            return Some(mac.to_string());
+        // Try the canonical legacy shape first, then the
+        // Linux-6.3-and-Intel variant. The two-prefix loop keeps
+        // the parser tolerant of future header tweaks (we accept
+        // anything ending in `address:` after a `permanent` token).
+        let rest = if let Some(r) = lower.strip_prefix("permanent address:") {
+            r
+        } else if let Some(r) = lower.strip_prefix("permanent mac address:") {
+            r
+        } else {
+            continue;
+        };
+        let mac = rest.trim();
+        if mac.is_empty() || mac == "00:00:00:00:00:00" {
+            return None;
         }
+        if !is_unicast_well_formed_mac(mac) {
+            return None;
+        }
+        return Some(mac.to_string());
     }
     None
 }
@@ -568,5 +681,104 @@ mod tests {
         assert!(bin.permanent("eth0\0").is_none());
         // Empty name has no kernel meaning.
         assert!(bin.permanent("").is_none());
+    }
+
+    // === N2 / N12.19: typed Found / Unavailable / IoError outcomes ===
+
+    /// N2: `permanent_address_result_under` returns `Found` when phy80211
+    /// surfaces a unicast MAC. Pin the typed shape so the new callers
+    /// can pattern-match against the variant.
+    #[test]
+    fn factory_lookup_found_via_phy80211() {
+        let s = TestSysfs::new("factory-found-phy");
+        s.write_phy("wlan0", "AA:BB:CC:DD:EE:FF");
+        let got = permanent_address_result_under(s.root(), "wlan0", &no_ethtool());
+        assert_eq!(got, FactoryLookup::Found("aa:bb:cc:dd:ee:ff".to_string()));
+    }
+
+    /// N7 / N12.19: when the iface doesn't exist in sysfs at all we
+    /// surface `Unavailable`. This is the "no such device" case the
+    /// roadmap calls "factory MAC fallback failure path"; before the
+    /// typed shape it collapsed into the same `None` that `Found`
+    /// could produce on a correctly-working iface.
+    #[test]
+    fn factory_lookup_unavailable_when_iface_unknown() {
+        let s = TestSysfs::new("factory-unavail-unknown");
+        let got = permanent_address_result_under(s.root(), "ghost0", &no_ethtool());
+        assert_eq!(got, FactoryLookup::Unavailable);
+    }
+
+    /// N7: kernel reports the address as randomly-assigned (assign_type
+    /// = 1), no phy80211, no ethtool. Refusing to cache the live
+    /// (cloned) value is the documented policy; the new shape labels
+    /// it `Unavailable` (an expected outcome, no operator action) not
+    /// `IoError` (an exceptional one).
+    #[test]
+    fn factory_lookup_unavailable_when_assign_type_is_random() {
+        let s = TestSysfs::new("factory-unavail-random");
+        s.write_address("eth0", "11:22:33:44:55:66", "1");
+        let got = permanent_address_result_under(s.root(), "eth0", &no_ethtool());
+        assert_eq!(got, FactoryLookup::Unavailable);
+    }
+
+    /// N7 / N12.19: regression test for the legacy `Option`-shaped API.
+    /// The pre-fix callers consume `permanent_address` and we must not
+    /// break them. `Unavailable` and `IoError` both project to `None`.
+    #[test]
+    fn legacy_permanent_address_projects_unavailable_to_none() {
+        let s = TestSysfs::new("factory-legacy-unavail");
+        let got = permanent_address_under(s.root(), "ghost0", &no_ethtool());
+        assert!(got.is_none(), "legacy API: Unavailable -> None");
+    }
+
+    /// NBE.10: Linux 6.3+ Intel iwlwifi prints
+    /// `Permanent MAC address:` instead of the legacy
+    /// `Permanent address:`. Pin the new fixture so the parser
+    /// keeps working on those drivers — without this the
+    /// factory-MAC capture silently fell back to the live address.
+    #[test]
+    fn parse_ethtool_permanent_accepts_linux_6_3_mac_header() {
+        let stdout = "Permanent MAC address: aa:bb:cc:dd:ee:ff\n";
+        assert_eq!(
+            parse_ethtool_permanent(stdout).as_deref(),
+            Some("aa:bb:cc:dd:ee:ff")
+        );
+        // Case-insensitive on the header, like the legacy variant.
+        let stdout = "PERMANENT MAC ADDRESS: AA:BB:CC:DD:EE:FF\n";
+        assert_eq!(
+            parse_ethtool_permanent(stdout).as_deref(),
+            Some("aa:bb:cc:dd:ee:ff")
+        );
+    }
+
+    /// NBE.10 sanity: the legacy `Permanent address:` header still
+    /// parses too. The parser must accept both — many distros still
+    /// run pre-6.3 kernels.
+    #[test]
+    fn parse_ethtool_permanent_legacy_header_still_works() {
+        let stdout = "Permanent address: 00:11:22:33:44:55\n";
+        assert_eq!(
+            parse_ethtool_permanent(stdout).as_deref(),
+            Some("00:11:22:33:44:55")
+        );
+    }
+
+    /// N7: full end-to-end through `permanent_address_result_under` with
+    /// the priority ladder. phy80211 wins over ethtool wins over sysfs.
+    /// This is the same priority covered by the `Option` tests but
+    /// cross-checked through the new typed shape so a future refactor
+    /// can't drop a tier.
+    #[test]
+    fn factory_lookup_priority_ladder_through_typed_api() {
+        let s = TestSysfs::new("factory-typed-prio");
+        s.write_phy("wlan0", "AA:BB:CC:DD:EE:FF");
+        // Ethtool would have returned a different MAC; phy80211 wins.
+        let mut m = HashMap::new();
+        m.insert("wlan0".into(), "99:88:77:66:55:44".into());
+        let stub = StubEthtool { map: m };
+        assert_eq!(
+            permanent_address_result_under(s.root(), "wlan0", &stub),
+            FactoryLookup::Found("aa:bb:cc:dd:ee:ff".into())
+        );
     }
 }

@@ -143,14 +143,64 @@ impl DeviceKind {
     }
 }
 
+/// N3: probe the running NM's introspected DBus interface version so
+/// callers can fall back gracefully on a `Reapply`/`Disconnect` etc.
+/// branch when the running daemon predates the method. NM's
+/// `org.freedesktop.NetworkManager.Version` property is a string like
+/// `"1.42.4"`. Returns `None` if the property read errors (older NM
+/// /
+///                                                       a host that
+/// declines the introspection); callers should treat `None` as
+/// "assume modern" but can downgrade if they want to.
+pub async fn probe_version(conn: &zbus::Connection) -> Option<String> {
+    // The proxy doesn't declare `Version` as a typed property, but a
+    // raw `Properties.Get` works against any NM that exposes the root
+    // interface (every supported version does). We dispatch through
+    // the standard freedesktop properties proxy to stay version-agnostic.
+    use zbus::zvariant::Value;
+    let props = match zbus::fdo::PropertiesProxy::builder(conn)
+        .destination("org.freedesktop.NetworkManager")
+        .ok()?
+        .path("/org/freedesktop/NetworkManager")
+        .ok()?
+        .build()
+        .await
+    {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::debug!("nm probe_version: properties proxy failed: {e}");
+            return None;
+        }
+    };
+    let owned = match props
+        .get("org.freedesktop.NetworkManager".try_into().ok()?, "Version")
+        .await
+    {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::debug!("nm probe_version: Properties.Get(Version) failed: {e}");
+            return None;
+        }
+    };
+    // OwnedValue derefs into Value via the standard Deref impl; use the
+    // same pattern as `extract_str` elsewhere in this module.
+    let v: &Value = &owned;
+    if let Value::Str(s) = v {
+        Some(s.as_str().to_string())
+    } else {
+        None
+    }
+}
+
 pub async fn list_devices(conn: &zbus::Connection) -> Result<Vec<DeviceInfo>> {
-    let nm = NetworkManagerProxy::new(conn)
-        .await
-        .context("connecting to NetworkManager DBus")?;
-    let paths = nm
-        .get_devices()
-        .await
-        .context("calling NetworkManager.GetDevices")?;
+    let nm = NetworkManagerProxy::new(conn).await.context(
+        "connecting to NetworkManager DBus root proxy at \
+                  /org/freedesktop/NetworkManager",
+    )?;
+    let paths = nm.get_devices().await.context(
+        "calling NetworkManager.GetDevices on \
+                  /org/freedesktop/NetworkManager",
+    )?;
     let mut out = Vec::with_capacity(paths.len());
     for path in paths {
         let dev = DeviceProxy::builder(conn)
@@ -290,7 +340,17 @@ pub async fn update_with_secrets(
     let proxy = ConnectionProxy::builder(conn)
         .path(connection_path.clone())?
         .build()
-        .await?;
+        .await
+        .with_context(|| {
+            // N4: include the connection path in the error context so an
+            // operator chasing a Settings.Connection failure can see which
+            // profile (and therefore which iface) tripped without grepping
+            // a separate journald line.
+            format!(
+                "building Settings.Connection proxy on path {}",
+                connection_path.as_str()
+            )
+        })?;
     for section in SECRET_SECTIONS {
         // GetSecrets failure modes we tolerate:
         //
@@ -308,15 +368,18 @@ pub async fn update_with_secrets(
             Err(e) => {
                 tracing::debug!(
                     section = section,
+                    path = %connection_path.as_str(),
                     "GetSecrets returned no secrets to merge: {e}"
                 );
             }
         }
     }
-    proxy
-        .update(settings)
-        .await
-        .context("calling Settings.Connection.Update")?;
+    proxy.update(settings).await.with_context(|| {
+        format!(
+            "calling Settings.Connection.Update on {}",
+            connection_path.as_str()
+        )
+    })?;
     Ok(())
 }
 
