@@ -155,60 +155,7 @@ impl NetworkBackend for NmBackend {
         // compatibility — the cooldown decision lives here, the actual
         // mutation is delegated to `commands::rotate::run` (no DBus
         // spelling out).
-        Box::pin(async move {
-            let state_path = std::path::PathBuf::from(crate::commands::DEFAULT_STATE_PATH);
-            let state = match crate::state::State::load_or_default(&state_path) {
-                Ok(s) => s,
-                Err(_) => return Ok(RotateOutcome::BackendUnavailable),
-            };
-            // Cooldown check: read the per-iface `last_rotated` and bail
-            // structured if the elapsed time hasn't met the budget yet.
-            if let Some(rec) = state.managed.interfaces.get(iface)
-                && let Some(stamp) = rec.last_rotated.as_deref()
-                && let Some(remaining) = remaining_cooldown(stamp, cooldown)
-            {
-                return Ok(RotateOutcome::SkippedCooldown { remaining });
-            }
-            // Factory MAC must be on file before we ever rotate; the
-            // sacred-originals invariant in `commands::rotate` saves it
-            // mid-run, but `rotate-if-needed` is meant to be called by
-            // the dispatcher BEFORE the first rotation, so we check
-            // here too. Returning `NoFactoryMac` lets the dispatcher
-            // log a clear "this driver doesn't expose a factory MAC,
-            // skipping" rather than a generic NM error.
-            if factory::permanent_address(iface).is_none()
-                && !state.original_macs.contains_key(iface)
-            {
-                return Ok(RotateOutcome::NoFactoryMac);
-            }
-            // Delegate to the existing rotate path. We don't pass the
-            // result through Result<u8> because that's the CLI exit
-            // code; the typed outcome here is "rotated" iff the call
-            // succeeded.
-            let res = crate::commands::rotate::run(
-                Some(iface),
-                true,
-                false,
-                Some(state_path.as_path()),
-                None,
-            );
-            match res {
-                Ok(c) if c == crate::exit::SUCCESS => {
-                    // Read back the new MAC the rotation just wrote.
-                    let new_state =
-                        crate::state::State::load_or_default(&state_path).unwrap_or_default();
-                    let new_mac = new_state
-                        .managed
-                        .interfaces
-                        .get(iface)
-                        .and_then(|r| r.current_mac.as_deref())
-                        .and_then(|s| s.parse::<Mac>().ok())
-                        .unwrap_or(Mac::new([0; 6]));
-                    Ok(RotateOutcome::Rotated { new_mac })
-                }
-                Ok(_) | Err(_) => Ok(RotateOutcome::BackendUnavailable),
-            }
-        })
+        Box::pin(async move { rotate_if_needed_inner(iface, cooldown).await })
     }
 
     fn read_connection_id<'a>(
@@ -295,6 +242,153 @@ impl NetworkBackend for NmBackend {
             let conn = Self::connect().await?;
             crate::enterprise_wifi::nm::write_anonymous_identity(&conn, &path, value).await
         })
+    }
+}
+
+/// The cooldown-check + rotate body for [`NmBackend::rotate_if_needed`],
+/// pulled out so it can be unit-tested without going through the trait
+/// object.
+///
+/// Issue #245: the previous shape was TOCTOU — concurrent dispatcher
+/// events would both pass the cooldown check (each reading
+/// `last_rotated` before either had updated it), then both fall through
+/// to `commands::rotate::run` and double-rotate inside the cooldown
+/// window. The new shape acquires the state lock at the entry, reads
+/// cooldown state under the lock, and (if rotating) keeps the lock held
+/// across the inner `rotate::run` call. The lock is process-reentrant
+/// (`state_lock` returns a no-op guard for nested calls in the same
+/// process) so the inner command's own acquire is harmless. Two
+/// concurrent invocations now serialise: the first runs the rotate, the
+/// second wakes up holding the lock and observes `last_rotated` already
+/// updated → returns `SkippedCooldown`.
+///
+/// Issue #250: the read-back path used to fall through to
+/// `Mac::new([0; 6])` when the freshly-written `state.json` couldn't be
+/// reloaded or when the parse failed. Reporting `Rotated { new_mac:
+/// 00:00:00:00:00:00 }` to the dispatcher made the operator think the
+/// rotation produced a known-bad MAC. The new shape returns an `Err`
+/// that the caller surfaces with the trail "rotate succeeded but state
+/// read-back failed" so the operator can see the rotate landed and the
+/// only thing missing is the post-mutation observation.
+async fn rotate_if_needed_inner(iface: &str, cooldown: Duration) -> Result<RotateOutcome> {
+    let state_path = std::path::PathBuf::from(crate::commands::DEFAULT_STATE_PATH);
+    rotate_if_needed_inner_with(iface, cooldown, &state_path, |iface, sp| {
+        // Production rotate: the existing CLI helper. Sync — builds its
+        // own current-thread runtime; called from inside our outer
+        // runtime via the same shape `commands::rotate::run_if_needed`
+        // already uses (the previous trait method called it the same
+        // way before issue #245's fix). The inner acquire is reentrant
+        // and the lock we hold here makes it a no-op.
+        crate::commands::rotate::run(Some(iface), true, false, Some(sp), None)
+    })
+    .await
+}
+
+/// Generic form of [`rotate_if_needed_inner`] that takes the state path
+/// and the rotate hook as parameters. Exists so the unit tests can
+/// drive the cooldown / lock / read-back logic against a tempdir state
+/// file and a synthetic rotate that just bumps `last_rotated` — no NM,
+/// no DBus.
+///
+/// `rotate_hook` returns `Result<u8>` matching the CLI exit code
+/// contract `commands::rotate::run` uses (`SUCCESS == 0` means rotated;
+/// anything else is treated as a backend-unavailable signal). When the
+/// hook returns `SUCCESS` the function reads `state.json` back under
+/// the same lock to surface the new MAC.
+async fn rotate_if_needed_inner_with<F>(
+    iface: &str,
+    cooldown: Duration,
+    state_path: &std::path::Path,
+    mut rotate_hook: F,
+) -> Result<RotateOutcome>
+where
+    F: FnMut(&str, &std::path::Path) -> Result<u8>,
+{
+    // Acquire the state lock for the duration of the cooldown decision
+    // AND the inner rotate. Held = no other proteus process can rotate
+    // this iface; nested = the inner `rotate::run` sees the in-process
+    // slot already populated and returns a no-op guard.
+    //
+    // We don't use `commands::acquire_state_lock_or_print` here because
+    // we never want to print: the trait method bubbles a structured
+    // outcome and the caller decides what the operator sees.
+    let _guard = match crate::state_lock::acquire_for_state_path(state_path) {
+        Ok(g) => g,
+        Err(crate::state_lock::LockError::Busy { .. }) => {
+            // Another rotate / apply / pin is mid-flight. The dispatcher
+            // will retry on the next event; surface this as a cooldown
+            // skip with a tiny remaining window so the dispatcher's
+            // existing "skipped: cooldown 0s" log line covers it.
+            return Ok(RotateOutcome::SkippedCooldown {
+                remaining: Duration::from_secs(1),
+            });
+        }
+        Err(_) => return Ok(RotateOutcome::BackendUnavailable),
+    };
+
+    let state = match crate::state::State::load_or_default(state_path) {
+        Ok(s) => s,
+        Err(_) => return Ok(RotateOutcome::BackendUnavailable),
+    };
+    // Cooldown check under the lock: read the per-iface `last_rotated`
+    // and bail structured if the elapsed time hasn't met the budget
+    // yet. The elapsed/now arithmetic is racy with wall-clock skew but
+    // not with concurrent rotates anymore.
+    if let Some(rec) = state.managed.interfaces.get(iface)
+        && let Some(stamp) = rec.last_rotated.as_deref()
+        && let Some(remaining) = remaining_cooldown(stamp, cooldown)
+    {
+        return Ok(RotateOutcome::SkippedCooldown { remaining });
+    }
+    // Factory MAC must be on file before we ever rotate; the
+    // sacred-originals invariant in `commands::rotate` saves it
+    // mid-run, but `rotate-if-needed` is meant to be called by
+    // the dispatcher BEFORE the first rotation, so we check
+    // here too. Returning `NoFactoryMac` lets the dispatcher
+    // log a clear "this driver doesn't expose a factory MAC,
+    // skipping" rather than a generic NM error.
+    if factory::permanent_address(iface).is_none() && !state.original_macs.contains_key(iface) {
+        return Ok(RotateOutcome::NoFactoryMac);
+    }
+    // Delegate to the rotate hook. The inner call will try to acquire
+    // the same lock; the in-process reentrancy guard makes that a
+    // no-op. We don't pass the result through Result<u8> because
+    // that's the CLI exit code; the typed outcome here is "rotated"
+    // iff the call succeeded.
+    let res = rotate_hook(iface, state_path);
+    match res {
+        Ok(c) if c == crate::exit::SUCCESS => {
+            // Read back the new MAC the rotation just wrote. The lock
+            // is still held, so the file we just saved IS the file we
+            // read here — no race with another mutator.
+            let new_state = crate::state::State::load_or_default(state_path).map_err(|e| {
+                anyhow!(
+                    "rotate succeeded on {iface} but state read-back failed: {e:#}; \
+                     check {} for write permissions",
+                    state_path.display()
+                )
+            })?;
+            let mac_str = new_state
+                .managed
+                .interfaces
+                .get(iface)
+                .and_then(|r| r.current_mac.as_deref())
+                .ok_or_else(|| {
+                    anyhow!(
+                        "rotate succeeded on {iface} but state read-back found no \
+                         current_mac entry under managed.interfaces.{iface} in {}",
+                        state_path.display()
+                    )
+                })?;
+            let new_mac = mac_str.parse::<Mac>().map_err(|e| {
+                anyhow!(
+                    "rotate succeeded on {iface} but state read-back returned an \
+                     unparseable MAC '{mac_str}': {e}"
+                )
+            })?;
+            Ok(RotateOutcome::Rotated { new_mac })
+        }
+        Ok(_) | Err(_) => Ok(RotateOutcome::BackendUnavailable),
     }
 }
 
@@ -434,5 +528,366 @@ mod tests {
         // A stamp from year 2000 is far past any reasonable cooldown.
         let r = remaining_cooldown("2000-01-01T00:00:00Z", Duration::from_secs(60));
         assert!(r.is_none());
+    }
+
+    // ===== Issue #245 / #250 — TOCTOU + read-back regressions =====
+
+    use crate::state::{InterfaceRecord, State};
+
+    fn rt() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+    }
+
+    fn fresh_state_dir(label: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("proteus-nm-{label}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// Issue #245: when `last_rotated` is recent, the cooldown branch
+    /// must trip BEFORE the rotate hook fires. The hook would have
+    /// rotated otherwise — assertion would catch a regression of the
+    /// pre-fix shape that called the rotate path twice in tight succession.
+    #[test]
+    fn rotate_if_needed_skips_within_cooldown() {
+        let _serial = crate::state_lock::test_serial_guard();
+        let dir = fresh_state_dir("cooldown");
+        let state_path = dir.join("state.json");
+
+        // Seed `state.json` with a recent rotation stamp.
+        let mut state = State::default();
+        state
+            .original_macs
+            .insert("wlan0".into(), "aa:bb:cc:dd:ee:ff".into());
+        let rec = InterfaceRecord {
+            last_rotated: Some(crate::commands::now_iso8601()),
+            ..Default::default()
+        };
+        state.managed.interfaces.insert("wlan0".into(), rec);
+        state.save(&state_path).unwrap();
+
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let calls_in = calls.clone();
+        let outcome = rt().block_on(async {
+            super::rotate_if_needed_inner_with(
+                "wlan0",
+                Duration::from_secs(3600),
+                &state_path,
+                move |_iface, _sp| {
+                    calls_in.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    Ok(crate::exit::SUCCESS)
+                },
+            )
+            .await
+            .unwrap()
+        });
+        assert!(matches!(outcome, RotateOutcome::SkippedCooldown { .. }));
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "cooldown hit must not invoke the rotate hook"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Issue #245 regression: the cooldown decision MUST happen under
+    /// the state lock so a concurrent `rotate-if-needed` invocation
+    /// (the dispatcher fires one per `state == "connected"` event)
+    /// can't pass the cooldown check before the in-flight rotate
+    /// commits its `last_rotated` stamp. Pre-fix, the lock was acquired
+    /// only inside `commands::rotate::run`; the cooldown read happened
+    /// before the lock, so two near-simultaneous dispatcher events
+    /// both saw "no cooldown" and both rotated.
+    ///
+    /// The shape: assert the lock IS held during the rotate hook (so
+    /// the cooldown read is also under the lock — they're collocated
+    /// in the same critical section), and assert that a SECOND
+    /// `rotate_if_needed` call after the first commits `last_rotated`
+    /// observes the cooldown and skips. Together these prove the
+    /// "decision + mutation under the lock" property the dispatcher
+    /// race relies on.
+    #[test]
+    fn rotate_if_needed_holds_lock_across_decision_and_mutation() {
+        let _serial = crate::state_lock::test_serial_guard();
+        let dir = fresh_state_dir("decision-mutation");
+        let state_path = dir.join("state.json");
+
+        let mut state = State::default();
+        state
+            .original_macs
+            .insert("wlan0".into(), "aa:bb:cc:dd:ee:ff".into());
+        state
+            .managed
+            .interfaces
+            .insert("wlan0".into(), InterfaceRecord::default());
+        state.save(&state_path).unwrap();
+
+        // First call: must rotate (no cooldown active). The hook
+        // checks the in-process slot's `is_held_in_process` to confirm
+        // the lock wraps the cooldown decision — we got HERE because
+        // the cooldown read passed, so the lock must already be held.
+        let lock_observed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let lock_observed_in = lock_observed.clone();
+        let hook_path = state_path.clone();
+        let outcome = rt().block_on(async {
+            super::rotate_if_needed_inner_with(
+                "wlan0",
+                Duration::from_secs(3600),
+                &state_path,
+                move |iface, _sp| {
+                    if crate::state_lock::is_held_in_process() {
+                        lock_observed_in.store(true, std::sync::atomic::Ordering::SeqCst);
+                    }
+                    let mut s = State::load_or_default(&hook_path).unwrap();
+                    let rec = s.managed.interfaces.entry(iface.to_string()).or_default();
+                    rec.current_mac = Some("02:00:00:00:00:01".into());
+                    rec.last_rotated = Some(crate::commands::now_iso8601());
+                    s.save(&hook_path).unwrap();
+                    Ok(crate::exit::SUCCESS)
+                },
+            )
+            .await
+            .unwrap()
+        });
+        assert!(matches!(outcome, RotateOutcome::Rotated { .. }));
+        assert!(
+            lock_observed.load(std::sync::atomic::Ordering::SeqCst),
+            "the rotate hook ran while the state lock was held — pre-fix the lock was \
+             only acquired inside commands::rotate::run, after the cooldown read"
+        );
+
+        // Second call: must observe the just-committed `last_rotated`
+        // and skip. This is the leg that proves the dispatcher's
+        // "near-simultaneous events don't double-rotate" — the lock
+        // serialised the calls, and the second one sees fresh state.
+        let calls_second = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let calls_second_in = calls_second.clone();
+        let outcome2 = rt().block_on(async {
+            super::rotate_if_needed_inner_with(
+                "wlan0",
+                Duration::from_secs(3600),
+                &state_path,
+                move |_iface, _sp| {
+                    calls_second_in.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    Ok(crate::exit::SUCCESS)
+                },
+            )
+            .await
+            .unwrap()
+        });
+        assert!(matches!(outcome2, RotateOutcome::SkippedCooldown { .. }));
+        assert_eq!(
+            calls_second.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "the second rotate-if-needed must skip on cooldown without \
+             invoking the rotate hook a second time"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Issue #250: the pre-fix code returned `Rotated { new_mac:
+    /// 00:00:00:00:00:00 }` when `state.json` couldn't be read back
+    /// after the rotate. Pin the new contract: the function returns
+    /// `Err` whose message names "rotate succeeded but state read-back
+    /// failed", so the dispatcher logs something an operator can act
+    /// on.
+    #[test]
+    fn read_back_failure_after_successful_rotate_returns_meaningful_error() {
+        let _serial = crate::state_lock::test_serial_guard();
+        let dir = fresh_state_dir("readback");
+        let state_path = dir.join("state.json");
+
+        // Seed an empty state so the cooldown branch and NoFactoryMac
+        // branch don't trip — we want to reach the rotate hook.
+        let mut state = State::default();
+        state
+            .original_macs
+            .insert("wlan0".into(), "aa:bb:cc:dd:ee:ff".into());
+        state.save(&state_path).unwrap();
+
+        // Hook returns SUCCESS but rewrites the state file with garbage
+        // so the read-back fails.
+        let hook_path = state_path.clone();
+        let result = rt().block_on(async {
+            super::rotate_if_needed_inner_with(
+                "wlan0",
+                Duration::from_secs(60),
+                &state_path,
+                move |_iface, _sp| {
+                    std::fs::write(&hook_path, b"NOT VALID JSON {").unwrap();
+                    Ok(crate::exit::SUCCESS)
+                },
+            )
+            .await
+        });
+        // Pre-fix this returned `Ok(Rotated { new_mac: 00:00:00:00:00:00 })`.
+        // Post-fix it returns `Err` with the read-back failure message.
+        match result {
+            Err(e) => {
+                let msg = format!("{e:#}");
+                assert!(
+                    msg.contains("rotate succeeded") && msg.contains("state read-back"),
+                    "error must surface the read-back failure, got: {msg}"
+                );
+            }
+            Ok(other) => panic!("expected Err with read-back trail, got Ok({other:?})"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Sibling for #250: even if the file reloads cleanly, a missing
+    /// `current_mac` (rotate logic bug) must surface as a real error
+    /// instead of the all-zero default.
+    #[test]
+    fn read_back_with_missing_current_mac_after_rotate_errors() {
+        let _serial = crate::state_lock::test_serial_guard();
+        let dir = fresh_state_dir("readback-missing");
+        let state_path = dir.join("state.json");
+        let mut state = State::default();
+        state
+            .original_macs
+            .insert("wlan0".into(), "aa:bb:cc:dd:ee:ff".into());
+        state.save(&state_path).unwrap();
+
+        let result = rt().block_on(async {
+            super::rotate_if_needed_inner_with(
+                "wlan0",
+                Duration::from_secs(60),
+                &state_path,
+                move |_iface, _sp| {
+                    // Pretend rotation succeeded but didn't persist
+                    // `current_mac`. The function must error rather
+                    // than fabricate the all-zero MAC.
+                    Ok(crate::exit::SUCCESS)
+                },
+            )
+            .await
+        });
+        match result {
+            Err(e) => {
+                let msg = format!("{e:#}");
+                assert!(
+                    msg.contains("no current_mac"),
+                    "error must call out the missing current_mac, got: {msg}"
+                );
+            }
+            Ok(other) => panic!("expected Err for missing current_mac, got Ok({other:?})"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Happy path: after a successful rotate that writes a valid
+    /// `current_mac`, the function returns `Rotated { new_mac }` with
+    /// the actual rotated value (no all-zero fabrication).
+    #[test]
+    fn read_back_success_returns_actual_rotated_mac() {
+        let _serial = crate::state_lock::test_serial_guard();
+        let dir = fresh_state_dir("readback-success");
+        let state_path = dir.join("state.json");
+        let mut state = State::default();
+        state
+            .original_macs
+            .insert("wlan0".into(), "aa:bb:cc:dd:ee:ff".into());
+        state.save(&state_path).unwrap();
+
+        let hook_path = state_path.clone();
+        let outcome = rt().block_on(async {
+            super::rotate_if_needed_inner_with(
+                "wlan0",
+                Duration::from_secs(60),
+                &state_path,
+                move |iface, _sp| {
+                    let mut s = State::load_or_default(&hook_path).unwrap();
+                    let rec = s.managed.interfaces.entry(iface.to_string()).or_default();
+                    rec.current_mac = Some("02:11:22:33:44:55".into());
+                    rec.last_rotated = Some(crate::commands::now_iso8601());
+                    s.save(&hook_path).unwrap();
+                    Ok(crate::exit::SUCCESS)
+                },
+            )
+            .await
+            .unwrap()
+        });
+        match outcome {
+            RotateOutcome::Rotated { new_mac } => {
+                assert_eq!(new_mac.to_string(), "02:11:22:33:44:55");
+                assert!(
+                    !new_mac.is_all_zero(),
+                    "new_mac must reflect the actual rotation, never the all-zero default"
+                );
+            }
+            other => panic!("expected Rotated, got {other:?}"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Issue #245 cross-process race: a foreign fd holds the
+    /// kernel-level flock while we attempt the rotate path. The
+    /// function must return `SkippedCooldown` with a tiny remaining
+    /// window AND must NOT call the rotate hook — exactly the
+    /// property the NM dispatcher relies on when two `proteus
+    /// rotate-if-needed` processes race. Pre-fix the lock was acquired
+    /// only inside the inner `rotate::run` call, AFTER the cooldown
+    /// read; the rotate path would fire even while a sibling process
+    /// held the lock (the inner acquire would then bail busy, but
+    /// the cooldown decision was already made on a stale read).
+    #[test]
+    fn lock_busy_skips_without_invoking_rotate_hook() {
+        let _serial = crate::state_lock::test_serial_guard();
+        let dir = fresh_state_dir("lock-busy");
+        let state_path = dir.join("state.json");
+        let mut state = State::default();
+        state
+            .original_macs
+            .insert("wlan0".into(), "aa:bb:cc:dd:ee:ff".into());
+        state.save(&state_path).unwrap();
+
+        // Hold the on-disk lock via a foreign fd so `acquire_inner`
+        // races against a real LOCK_EX, not the in-process slot.
+        let lock_path = dir.join(".lock");
+        let foreign = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&lock_path)
+            .unwrap();
+        use std::os::unix::io::AsRawFd;
+        let rc = unsafe { libc::flock(foreign.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+        assert_eq!(rc, 0, "test setup: foreign flock");
+        // Tighten the retry budget so the test doesn't burn 5s waiting.
+        // SAFETY: tests in this module are single-threaded under
+        // `test_serial_guard`, so set_var is sound here.
+        unsafe {
+            std::env::set_var("PROTEUS_LOCK_TIMEOUT_MS", "200");
+        }
+
+        let outcome = rt().block_on(async {
+            super::rotate_if_needed_inner_with(
+                "wlan0",
+                Duration::from_secs(3600),
+                &state_path,
+                |_iface, _sp| panic!("rotate hook must not fire while the lock is busy"),
+            )
+            .await
+            .unwrap()
+        });
+
+        unsafe {
+            std::env::remove_var("PROTEUS_LOCK_TIMEOUT_MS");
+        }
+        // Release the foreign lock.
+        unsafe {
+            libc::flock(foreign.as_raw_fd(), libc::LOCK_UN);
+        }
+        drop(foreign);
+
+        assert!(matches!(outcome, RotateOutcome::SkippedCooldown { .. }));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

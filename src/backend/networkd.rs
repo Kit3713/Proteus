@@ -31,11 +31,22 @@ impl NetworkBackend for NetworkdBackend {
     }
 
     fn available<'a>(&'a self) -> BoxFuture<'a, bool> {
-        // Per task brief: probe the runtime path rather than shelling
-        // out to `systemctl is-active`. systemd creates
-        // /run/systemd/network only when networkd is started, so
-        // presence is a strict positive signal.
-        Box::pin(async { Path::new("/run/systemd/network").is_dir() })
+        // Issue #247: `/run/systemd/network` is just a tmpfiles.d-managed
+        // config directory that exists on every systemd host whether or
+        // not `systemd-networkd` is running. Using it as the availability
+        // signal made `apply` claim networkd was usable on NM-only hosts,
+        // and every backend method then bailed with the milestone-1
+        // "not yet implemented" error.
+        //
+        // The honest signal is `/run/systemd/netif/`, which the
+        // networkd daemon creates and populates on startup. When the
+        // unit is `inactive` the directory does not exist; when the
+        // unit is `active` it holds the per-link state subtree. We also
+        // require the config directory to be writeable since every
+        // future networkd backend method writes a drop-in there — a
+        // backend that can't persist its config can't honestly claim
+        // availability either.
+        Box::pin(async { Path::new("/run/systemd/netif").is_dir() && config_dir_writeable() })
     }
 
     fn list_devices<'a>(&'a self) -> BoxFuture<'a, Result<Vec<BackendDevice>>> {
@@ -141,6 +152,40 @@ impl NetworkBackend for NetworkdBackend {
     }
 }
 
+/// Is `/etc/systemd/network/` writeable by the current process? The full
+/// networkd impl will land drop-ins there, so a backend that can't write
+/// can't honestly call itself available — even if the daemon is running.
+///
+/// We probe by attempting to create+remove a sentinel file. `access(2)`
+/// would lie under capabilities like CAP_DAC_OVERRIDE that change the
+/// effective write right; an actual create is the only honest test.
+fn config_dir_writeable() -> bool {
+    let dir = Path::new("/etc/systemd/network");
+    if !dir.is_dir() {
+        return false;
+    }
+    let probe = dir.join(format!(
+        ".proteus-availability-probe-{}",
+        std::process::id()
+    ));
+    let opened = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(&probe);
+    match opened {
+        Ok(f) => {
+            drop(f);
+            // Best-effort cleanup; if the unlink fails (rare; permission
+            // changed mid-probe), the sentinel name carries our pid so
+            // an operator can identify and clean it.
+            let _ = std::fs::remove_file(&probe);
+            true
+        }
+        Err(_) => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -193,5 +238,31 @@ mod tests {
             assert!(backend.read_connection_id(&cref).await.unwrap().is_none());
             assert!(backend.read_connection_uuid(&cref).await.unwrap().is_none());
         });
+    }
+
+    /// Issue #247: `available()` returned `true` on every systemd host
+    /// because `/run/systemd/network` is a tmpfiles.d config directory
+    /// that exists whether or not networkd is running. A non-root test
+    /// process can't write `/etc/systemd/network/` so the second arm of
+    /// the new probe always trips here — pin that the result is `false`
+    /// in the test process. The runtime check (`/run/systemd/netif`)
+    /// is also rare on a CI host without networkd active. Either gate
+    /// being false is enough to flip availability to false; we just
+    /// assert one of them holds so the test isn't tied to runtime
+    /// daemons CI may or may not start.
+    #[test]
+    fn available_is_false_when_either_gate_fails() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let backend = NetworkdBackend::new();
+        let netif_present = Path::new("/run/systemd/netif").is_dir();
+        let writeable = super::config_dir_writeable();
+        let result = rt.block_on(async { backend.available().await });
+        // The honest answer is the conjunction of both gates; a backend
+        // that can't write its drop-ins can't honestly claim usability,
+        // and a daemon that isn't running can't either.
+        assert_eq!(result, netif_present && writeable);
     }
 }
