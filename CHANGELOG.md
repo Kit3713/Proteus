@@ -11,6 +11,99 @@ landed, what is in flight, and what is on the bench. See
 
 ## [Unreleased]
 
+## [0.4.2-beta] - 2026-05-08
+
+Second v0.4 beta. Closes the remainder of the May 2026 audit tree plus
+the audit follow-up findings carried over from
+`docs/security/SECURITY-AUDIT-2026-05-07-followup.md`. Adds a
+professional clean-and-polish pass over the entire repo (wiki, README,
+SECURITY, CONTRIBUTING, dist READMEs, code comments, dead code).
+
+### Security
+
+- **Persona export safety parity** (#286) — `proteus persona export`
+  requires `--yes`, refuses to overwrite an existing regular file unless
+  `--force` is set, lstat-rejects symlink destinations even with
+  `--force`, writes via `write_atomic` (0o600 + parent fsync) — full
+  parity with `import`.
+- **Quarantine preserves originals** (#290) — entering quarantine no
+  longer destroys cached `originals.hostname` / `originals.bluetooth_alias`,
+  so `proteus revert` correctly restores the actual originals (not the
+  rotated quarantine values).
+- **`PROTEUS_*_DIR` env-var lockdown** (audit M-2 / N-0) — `Layout::from_env()`
+  in `commands/uninstall.rs` no longer reads env vars in production
+  builds; the `cfg(test)` gate keeps the test override path. Hostile
+  sudo-preserved env can no longer steer `remove_dir_all`.
+- **Iface validation on ethtool / iw / ip** (audit N-1, L-3) — iface
+  names validated against `[A-Za-z0-9_.-]+` (≤ 15 chars, no leading
+  dash) before any subprocess invocation. `--` separator inserted before
+  every user-influenced positional arg in `iw` / `ip` calls (defense in
+  depth against future `allow_hyphen_values` flips).
+- **`Mac::from_str` fast-fail on `proteus pin`** (#292) — `--mac` value
+  is parsed up-front and rejected with a clear `MacError`-derived
+  message before any DBus / NM connection is attempted.
+- **`proteus timer` --yes gate + interval bounds** (#293) — `set` /
+  `reset` / `enable` / `disable` honor the project-wide `--yes` gate.
+  Interval bounds: ≥ 60s (sub-minute risks rotation stacking) and ≤ 30
+  days (almost certainly user error). Bounds live as `MIN/MAX_TIMER_INTERVAL_SECONDS`
+  in `src/timer/mod.rs`.
+- **Cross-layer persona consistency** (#305) — brand-named stealth
+  personas (iphone-15, pixel-8, macbook-pro-m3, …) extended with DHCP
+  option 55 (parameter request list), mDNS records, and TCP fingerprint
+  hints distinct per OS family. Single-pass cross-layer classifier no
+  longer identifies "Proteus user with persona X" via the L2/opt-60 vs
+  rest-of-stack mismatch.
+- **Randomized rotation cadence** (#303) — default `OnCalendar` widened
+  with `AccuracySec` ≥ 30min (and per-host random offset where
+  applicable) so the v0.3.x recognizable "every-2h on the wallclock
+  hour ±5min" Proteus signature is broken at the WLAN-controller layer.
+
+### Bug fixes
+
+- `proteus enterprise-wifi disable` restores cached `anonymous-identity`
+  instead of clearing to `""`; `proteus revert` now also reverts
+  enterprise-wifi changes (#298).
+- `--config <missing-path>` accepted by `persona use` and `ssid set`
+  (their write paths handle missing files; the rejection was a stale
+  guard) (#302).
+- `config reset` writes a near-empty file (header comment only) rather
+  than the full set of resolved defaults — defaults stay in code, the
+  file carries only user overrides (#304).
+- `status` `feature_table` reports `probes` / `discovery-silence` /
+  `rf-tx-power` correctly as implemented (#306).
+
+### Code quality
+
+- **SHA-256 deduplicated** (#299) — single canonical implementation in
+  `src/crypto/sha256.rs`; deleted four near-identical copies in dns,
+  ipv6, stack, diff. No new external dep.
+- **Completions regenerated** (#285, #291) — bash, zsh, fish completions
+  now reflect the current ~50-subcommand surface and the embedded wiki
+  page list. Test asserts the bundled files contain a representative
+  cross-section so this can't drift again silently.
+- **Packaging**: RPM `%systemd_post` now enables `proteus-boot.service`
+  alongside the timers and `proteus-resume.service` (#279). Dropped
+  `dist/debian/compat` — it clashed with `debhelper-compat (= 13)` in
+  Build-Depends and broke the deb pipeline.
+
+### Docs
+
+- Professional clean-and-polish pass (#335) — wiki, README,
+  CONTRIBUTING, SECURITY, dist READMEs, docs/, dist/man/proteus.1.
+  Stale phase markers (B/C/D/E/F) removed throughout. Cross-references
+  verified, broken links fixed.
+- May 2026 security audit doc + followup brought onto main under
+  `docs/security/` with a status table mapping each finding to the
+  fixing PR or status (#320).
+
+### Polish
+
+- Surgical polish pass (#333) — dead code removed (`commands/ipv6::apply_nm_one`
+  orphan, `commands/ssid::_expose_per_ssid_policy_type` unused-import
+  shim), stale phase markers in code comments trimmed, packaging
+  recipe descriptions normalized, `rotate-if-needed` short-help fixed
+  to fit one line in `--help`.
+
 ## [0.4.0-beta1] - 2026-05-08
 
 First v0.4 beta. The "Reach + Persona" cycle closed in v0.3.x; v0.4 is bug

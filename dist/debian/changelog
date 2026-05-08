@@ -1,3 +1,26 @@
+proteus (0.4.2~beta-1) unstable; urgency=medium
+
+  * v0.4.2-beta — second beta in the v0.4 cycle. Closes the remainder of
+    the May 2026 audit tree (#279, #285-306 cluster) plus three audit
+    follow-up findings (PROTEUS_*_DIR env-var lockdown, iface validation
+    on ethtool/iw, iw/ip `--` defense-in-depth) carried over from the
+    SECURITY-AUDIT-2026-05-07-followup doc.
+  * Persona export safety parity (--yes / symlink-check / atomic-write /
+    refuse-overwrite). Quarantine no longer destroys originals on entry.
+  * Cross-layer persona consistency (DHCP opt-55, mDNS records, TCP
+    fingerprint hints) for brand-named stealth personas.
+  * Default rotation cadence randomized to break the v0.3.x recognizable
+    "every-2h-on-the-hour ±5min" Proteus signature.
+  * Code quality: SHA-256 deduplicated to a single canonical
+    implementation; status feature_table corrected; completions
+    regenerated; uninstall/quarantine env-var lockdown.
+  * Packaging: dropped clashing dist/debian/compat (debhelper-compat is
+    in Build-Depends). RPM %systemd_post enables proteus-boot.service.
+  * Docs: professional clean-and-polish pass over wiki, README, dist
+    READMEs, and code comments. Stale phase markers removed.
+
+ -- Kit3713 <noreply@example.com>  Fri, 08 May 2026 03:30:00 +0000
+
 proteus (0.4.0~beta1-1) unstable; urgency=medium
 
   * v0.4.0-beta1 — first beta cycle. Reach + Persona work landed in v0.3.x;
