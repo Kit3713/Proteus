@@ -15,7 +15,6 @@
 //! Idempotent: re-running on an already-reverted system does nothing.
 
 use std::path::Path;
-use std::process::Command;
 
 use anyhow::Result;
 
@@ -213,19 +212,28 @@ pub(crate) fn note(p: &Path, outcome: Outcome, warns: &mut Vec<String>) {
     }
 }
 
+/// C3: subprocess timeout for revert helpers. A wedged `systemctl` or
+/// `nft` must not pin `proteus revert` (and the state lock) forever —
+/// 30 s is an order of magnitude past the longest legitimate reload on
+/// supported systems.
+const REVERT_SUBPROCESS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// Run a command quietly. Returns `Err` with a single-line message on
 /// non-zero exit so callers can collect warnings without aborting. Used for
 /// best-effort reload steps (`nft delete`, `sysctl --system`, `systemctl …`)
 /// where failure means the daemon wasn't running, which is fine.
+///
+/// C3: a 30 s timeout protects the lock-holding caller against a child
+/// that hangs (e.g. `systemctl` in a wedged dbus state).
 pub(crate) fn run_quiet(program: &str, args: &[&str]) -> Result<(), String> {
-    match Command::new(program).args(args).output() {
+    match super::apply::run_with_timeout(program, args, REVERT_SUBPROCESS_TIMEOUT) {
         Ok(o) if o.status.success() => Ok(()),
         Ok(o) => Err(format!(
             "{program} {}: {}",
             args.join(" "),
             String::from_utf8_lossy(&o.stderr).trim()
         )),
-        Err(e) => Err(format!("{program}: {e}")),
+        Err(e) => Err(format!("{program}: {e:#}")),
     }
 }
 
