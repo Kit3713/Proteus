@@ -113,7 +113,17 @@ pub fn run(purge: bool, yes: bool) -> Result<u8> {
     Ok(exit::SUCCESS)
 }
 
-/// Install-layout paths. Environment-overridable for sandboxed tests.
+/// Install-layout paths. In production builds the values are hard-coded
+/// to the canonical install locations; only the test build reads
+/// `PROTEUS_*_DIR` environment variables for sandboxed integration tests.
+///
+/// Security audit M-2 / N-0: a previous shape read these env vars in the
+/// production binary too. If sudo preserved them (e.g. `sudo -E` or
+/// `Defaults env_keep += "PROTEUS_*"`), an attacker controlling the env
+/// could steer `remove_dir_all` at arbitrary paths via
+/// `PROTEUS_STATE_DIR=/tmp/...  proteus uninstall --purge --yes`.
+/// Gating the env reads behind `cfg(test)` removes the vector from
+/// shipped binaries without losing the test ergonomics.
 struct Layout {
     config_dir: PathBuf,
     state_dir: PathBuf,
@@ -130,11 +140,25 @@ impl Layout {
     }
 }
 
+/// Resolve a layout path. Production builds always return `default`;
+/// only `cfg(test)` checks the environment so sandboxed tests can point
+/// `Layout` at a tempdir.
+///
+/// Security audit M-2 / N-0: this function MUST NOT read the
+/// environment in non-test builds, otherwise a sudo-preserved
+/// `PROTEUS_STATE_DIR` can redirect destructive deletion at attacker-
+/// chosen paths. The `cfg(test)` gate is the entire mitigation.
+#[cfg(test)]
 fn env_path(key: &str, default: &str) -> PathBuf {
     match std::env::var_os(key) {
         Some(v) if !v.is_empty() => PathBuf::from(v),
         _ => PathBuf::from(default),
     }
+}
+
+#[cfg(not(test))]
+fn env_path(_key: &str, default: &str) -> PathBuf {
+    PathBuf::from(default)
 }
 
 /// Where the running binary lives. Falls back to `/usr/local/bin/proteus` if
@@ -249,6 +273,11 @@ mod tests {
     fn layout_honors_env_overrides() {
         // Safety: env mutation needs unsafe in 2024 edition; the keys here
         // are unique to this test so cross-test bleed is unlikely.
+        //
+        // Security audit M-2 / N-0: in production the env vars are
+        // ignored entirely (see `env_path_ignored_in_production_shape`).
+        // This test only exercises the `cfg(test)` reader so sandboxed
+        // tests can still keep using a tempdir layout.
         unsafe {
             std::env::set_var("PROTEUS_CONFIG_DIR", "/sandbox/etc/proteus");
             std::env::set_var("PROTEUS_STATE_DIR", "/sandbox/var/lib/proteus");
@@ -271,5 +300,35 @@ mod tests {
         assert_eq!(defaulted.config_dir, PathBuf::from(DEFAULT_CONFIG_DIR));
         assert_eq!(defaulted.state_dir, PathBuf::from(DEFAULT_STATE_DIR));
         assert_eq!(defaulted.systemd_dir, PathBuf::from(DEFAULT_SYSTEMD_DIR));
+    }
+
+    /// Security audit M-2 / N-0: source-level guard that the only
+    /// `std::env::var_os` call in this file lives inside a
+    /// `#[cfg(test)]` block. A sudo-preserved env (`Defaults env_keep
+    /// += "PROTEUS_*"` or `sudo -E`) would otherwise let an attacker
+    /// steer `remove_dir_all` at any path. We can't call the
+    /// production-cfg arm directly from a `cfg(test)` build, so this
+    /// test grep-locks the source: the env-var read must be paired
+    /// with a `#[cfg(test)]` marker. If a future refactor drops the
+    /// gate, this test fails before the binary ever ships.
+    #[test]
+    fn env_path_env_read_is_cfg_test_gated() {
+        let source = include_str!("uninstall.rs");
+        // The gate appears immediately above the `fn env_path` that
+        // reads the environment. Removing it would expose the
+        // `PROTEUS_*_DIR` reads to production binaries again.
+        assert!(
+            source.contains("#[cfg(test)]\nfn env_path(key: &str, default: &str) -> PathBuf {"),
+            "env_path env-var reader must keep the #[cfg(test)] gate; \
+             see security audit M-2 / N-0"
+        );
+        // And the `cfg(not(test))` arm must always return the default
+        // unchanged — no env_var lookup.
+        assert!(
+            source
+                .contains("#[cfg(not(test))]\nfn env_path(_key: &str, default: &str) -> PathBuf {"),
+            "env_path production arm must ignore the env entirely; \
+             see security audit M-2 / N-0"
+        );
     }
 }
