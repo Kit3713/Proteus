@@ -47,7 +47,17 @@ pub(super) fn dispatch(cli: Cli) -> Result<u8> {
             let state_path = cli.state.clone();
             let config_path = cli.config.clone();
             if watch {
-                let delay = commands::watch::parse_interval(&interval)?;
+                // Issue #349 / CL1: surface a friendly diagnostic and a
+                // CONFIG_ERROR (== 65) exit instead of bubbling the parse
+                // error up to a generic-1 exit. Same shape for the two
+                // siblings below.
+                let delay = match commands::watch::parse_interval(&interval) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        eprintln!("proteus: invalid --interval: {e:#}");
+                        return Ok(crate::exit::CONFIG_ERROR);
+                    }
+                };
                 commands::watch::run(delay, no_color, move || {
                     commands::status::run(json, state_path.as_deref(), config_path.as_deref())
                 })
@@ -63,7 +73,13 @@ pub(super) fn dispatch(cli: Cli) -> Result<u8> {
             let state_path = cli.state.clone();
             let config_path = cli.config.clone();
             if watch {
-                let delay = commands::watch::parse_interval(&interval)?;
+                let delay = match commands::watch::parse_interval(&interval) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        eprintln!("proteus: invalid --interval: {e:#}");
+                        return Ok(crate::exit::CONFIG_ERROR);
+                    }
+                };
                 commands::watch::run(delay, no_color, move || {
                     commands::session::run(json, state_path.as_deref(), config_path.as_deref())
                 })
@@ -80,7 +96,13 @@ pub(super) fn dispatch(cli: Cli) -> Result<u8> {
             let state_path = cli.state.clone();
             let iface_owned = iface.clone();
             if watch {
-                let delay = commands::watch::parse_interval(&interval)?;
+                let delay = match commands::watch::parse_interval(&interval) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        eprintln!("proteus: invalid --interval: {e:#}");
+                        return Ok(crate::exit::CONFIG_ERROR);
+                    }
+                };
                 commands::watch::run(delay, no_color, move || {
                     commands::current::run(json, iface_owned.as_deref(), state_path.as_deref())
                 })
