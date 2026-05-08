@@ -24,6 +24,7 @@ pub mod per_ssid;
 pub mod persona;
 pub mod probe;
 pub mod profile;
+pub mod rand;
 pub mod rf;
 pub mod stack;
 pub mod state;

@@ -100,7 +100,10 @@ pub fn generate(opts: &GenerateOptions<'_>) -> Result<Mac> {
         .unwrap_or(ByteSuffixPattern::unconstrained());
     let mut last_err: Option<MacError> = None;
     for _ in 0..MAX_GENERATION_ATTEMPTS {
-        let token_idx = (rand_u8()? as usize) % opts.pool.len();
+        // Issue #226: rejection-sampled index instead of `byte % len`.
+        // Persona pools are small (4-12 entries) so naive modulo skews
+        // each token by ~1-3% which a passive observer can cluster.
+        let token_idx = pick_index(opts.pool.len())?;
         let token = &opts.pool[token_idx];
         let vendor = Vendor::from_pool_token(token)
             .ok_or_else(|| anyhow!("unknown OUI pool token '{token}'"))?;
@@ -223,7 +226,11 @@ pub fn generate_with_probe<P: Probe + ?Sized>(
     let suffix = opts
         .suffix_pattern
         .unwrap_or(ByteSuffixPattern::unconstrained());
-    let mut token_cursor: usize = (rand_u8()? as usize) % opts.pool.len();
+    // Issue #226: rejection-sampled starting cursor. The cursor is
+    // advanced deterministically (`+ 1 % len`) once probing kicks in;
+    // only the *initial* index is random, so this is the only `% len`
+    // here that gates uniformity.
+    let mut token_cursor: usize = pick_index(opts.pool.len())?;
     let mut consecutive_collisions: usize = 0;
     let mut attempts: Vec<CandidateAttempt> = Vec::new();
     let mut oui_fallbacks: usize = 0;
@@ -394,7 +401,11 @@ pub fn generate_with_probe<P: Probe + ?Sized>(
 fn generate_for_vendor(vendor: Vendor, suffix: &ByteSuffixPattern) -> Result<Option<Mac>> {
     let mac = match vendor.prefixes() {
         Some(prefixes) => {
-            let prefix_idx = (rand_u8()? as usize) % prefixes.len();
+            // Issue #226: rejection-sampled prefix index. Per-vendor
+            // prefix counts (5-8) make the naive `byte % len` skew up
+            // to ~5%, which clusters fingerprints by OUI prefix in a
+            // way `nmap -O` / fingerbank can spot.
+            let prefix_idx = pick_index(prefixes.len())?;
             let prefix = prefixes[prefix_idx];
             let entropy = rand_bytes::<3>()?;
             let mut tail = [0u8; 3];
@@ -427,10 +438,13 @@ fn generate_for_vendor(vendor: Vendor, suffix: &ByteSuffixPattern) -> Result<Opt
     Ok(Some(mac))
 }
 
-fn rand_u8() -> Result<u8> {
-    let mut buf = [0u8; 1];
-    getrandom::getrandom(&mut buf).map_err(|e| anyhow!("getrandom: {e}"))?;
-    Ok(buf[0])
+/// Bias-free `[0, len)` index for the pickers above. Wraps the shared
+/// `unbiased_index` helper so every selection in this module shares one
+/// rejection-sampled implementation. All MAC pools (vendor tokens, OUI
+/// prefixes) are small (≤ ~12), well within the byte-stream picker's
+/// 256-entry ceiling.
+fn pick_index(len: usize) -> Result<usize> {
+    crate::rand::unbiased_index(len, crate::rand::getrandom_byte)
 }
 
 fn rand_bytes<const N: usize>() -> Result<[u8; N]> {

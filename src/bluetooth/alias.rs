@@ -151,38 +151,11 @@ pub fn select_alias_with_persona(
 }
 
 fn generic() -> Result<String> {
-    let idx = unbiased_index(GENERIC_ALIASES.len(), getrandom_byte)?;
+    // Issue #226: route through the shared rejection-sampled picker so
+    // every pool that previously did `byte % len` here (or in the MAC /
+    // hostname / persona modules) shares one bias-free implementation.
+    let idx = crate::rand::unbiased_index(GENERIC_ALIASES.len(), crate::rand::getrandom_byte)?;
     Ok(GENERIC_ALIASES[idx].to_string())
-}
-
-fn getrandom_byte() -> Result<u8> {
-    let mut buf = [0u8; 1];
-    getrandom::getrandom(&mut buf).map_err(|e| anyhow!("getrandom: {e}"))?;
-    Ok(buf[0])
-}
-
-/// Rejection-sampled `[0, len)` from a stream of bytes. Avoids the modulo
-/// bias of `byte % len` when `256 % len != 0` — for the 19-entry pool the
-/// naive `% 19` skews 4 of the 19 indices ~5% high (issues #143/#152/#154).
-/// Worst case for any `len <= 256` is two extra random byte reads, so the
-/// cost is negligible.
-fn unbiased_index<F: FnMut() -> Result<u8>>(len: usize, mut next: F) -> Result<usize> {
-    if len == 0 {
-        return Err(anyhow!("cannot pick from empty pool"));
-    }
-    if len > 256 {
-        // The byte-stream picker only covers up to 256 distinct values; this
-        // never happens in practice (our pool is fixed) but guard explicitly
-        // so a future caller can't silently fall back to biased modulo.
-        return Err(anyhow!("unbiased_index supports len <= 256 (got {len})"));
-    }
-    let span = 256 - (256 % len);
-    loop {
-        let byte = next()? as usize;
-        if byte < span {
-            return Ok(byte % len);
-        }
-    }
 }
 
 #[cfg(test)]
@@ -311,52 +284,6 @@ mod tests {
         let p = persona_with_bt_template("   ");
         let alias = select_alias_with_persona(&cfg, Some(&p)).expect("ok");
         assert!(GENERIC_ALIASES.contains(&alias.as_str()));
-    }
-
-    #[test]
-    fn unbiased_index_rejects_high_bytes_for_non_divisor_lens() {
-        // 256 % 19 = 9, so the biased "high" range is bytes 247..=255 (the
-        // last 9 of the 256 codepoints). Drive that range explicitly and
-        // confirm we re-roll instead of producing biased output.
-        let mut bytes: Vec<u8> = (247u8..=255).collect();
-        bytes.push(7); // first non-rejected byte
-        bytes.reverse();
-        let idx = unbiased_index(19, || {
-            bytes.pop().ok_or_else(|| anyhow!("ran out of bytes"))
-        })
-        .unwrap();
-        assert_eq!(idx, 7);
-    }
-
-    #[test]
-    fn unbiased_index_distribution_is_uniform_in_practice() {
-        // Cycle through every byte 0..=255 once (a uniform stream) and
-        // confirm each index in [0, 19) gets the same number of hits. With
-        // pure `% 19` we would see 4 indices over-represented by ~5%.
-        let len = 19;
-        let span = 256 - (256 % len);
-        let mut counts = vec![0usize; len];
-        let mut feed: Vec<u8> = (0u8..=255).collect();
-        feed.reverse();
-        while !feed.is_empty() {
-            let res = unbiased_index(len, || feed.pop().ok_or_else(|| anyhow!("end of stream")));
-            match res {
-                Ok(i) => counts[i] += 1,
-                Err(_) => break, // ran out of bytes mid-rejection
-            }
-        }
-        let expected_each = span / len; // 247 / 19 = 13
-        for c in &counts {
-            assert_eq!(
-                *c, expected_each,
-                "uniform stream should give uniform indices, got {counts:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn unbiased_index_rejects_empty_pool() {
-        assert!(unbiased_index(0, || Ok(0)).is_err());
     }
 
     // === Issue #236: alias validation boundary tests ===

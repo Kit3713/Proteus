@@ -128,18 +128,15 @@ pub trait IndexPicker {
     fn pick(&mut self, len: usize) -> Result<usize>;
 }
 
-/// Cryptographic-strength picker backed by `getrandom`.
+/// Cryptographic-strength picker backed by `getrandom`. Issue #226: now
+/// rejection-sampled instead of `u64 % len`. The 534-entry wordlist
+/// exceeds the byte-stream picker's 256-entry ceiling so this site goes
+/// through the u64-stream variant.
 pub struct RandomPicker;
 
 impl IndexPicker for RandomPicker {
     fn pick(&mut self, len: usize) -> Result<usize> {
-        if len == 0 {
-            return Err(anyhow!("cannot pick from empty pool"));
-        }
-        let mut buf = [0u8; 8];
-        getrandom::getrandom(&mut buf).map_err(|e| anyhow!("getrandom: {e}"))?;
-        let n = u64::from_le_bytes(buf) as usize;
-        Ok(n % len)
+        crate::rand::unbiased_index_u64(len, crate::rand::getrandom_u64)
     }
 }
 

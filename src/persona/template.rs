@@ -79,12 +79,19 @@ pub fn render_template(template: &str, wordlist: &[&str]) -> Result<String> {
 }
 
 fn pick_owner() -> Result<&'static str> {
-    let idx = rand_index(OWNER_POOL.len())?;
+    // Issue #226: rejection-sampled byte stream. OWNER_POOL is 20 entries
+    // — well below the byte-stream picker's 256-entry ceiling. Naive
+    // `byte % 20` would skew 16 of the 20 indices ~6% high, clustering
+    // persona-rendered names by which name landed more often than chance.
+    let idx = crate::rand::unbiased_index(OWNER_POOL.len(), crate::rand::getrandom_byte)?;
     Ok(OWNER_POOL[idx])
 }
 
 fn pick_word<'a>(words: &'a [&'a str]) -> Result<&'a str> {
-    let idx = rand_index(words.len())?;
+    // Issue #226: the embedded hostname wordlist is 534 entries, which
+    // exceeds the byte-stream picker's ceiling. Drop into the u64-stream
+    // variant so wordlist picks are uniform too.
+    let idx = crate::rand::unbiased_index_u64(words.len(), crate::rand::getrandom_u64)?;
     Ok(words[idx])
 }
 
@@ -92,28 +99,18 @@ fn pick_word<'a>(words: &'a [&'a str]) -> Result<&'a str> {
 /// (1..=4) and then `getrandom` for the value. Realistic on phones
 /// where templates like `Galaxy-S24-{n}` pick up small sequence
 /// numbers the user wouldn't notice.
+///
+/// Issue #226: width is picked via the rejection-sampled u8 helper
+/// (`256 % 4 == 0`, so `byte % 4` is actually unbiased here, but going
+/// through the helper keeps every selection in this file on the same
+/// audited path). The decimal value `% max` is *not* a pool index —
+/// it's a cap on a counter range — so it stays as plain modulo.
 fn pick_digits() -> Result<u32> {
-    let width_byte = rand_byte()?;
-    let width = (width_byte % 4) + 1;
+    let width = crate::rand::unbiased_index(4, crate::rand::getrandom_byte)? + 1;
     let max = 10u32.pow(width as u32);
     let mut buf = [0u8; 4];
     getrandom::getrandom(&mut buf).map_err(|e| anyhow!("getrandom: {e}"))?;
     Ok(u32::from_le_bytes(buf) % max)
-}
-
-fn rand_index(len: usize) -> Result<usize> {
-    if len == 0 {
-        return Err(anyhow!("cannot pick from empty pool"));
-    }
-    let mut buf = [0u8; 8];
-    getrandom::getrandom(&mut buf).map_err(|e| anyhow!("getrandom: {e}"))?;
-    Ok((u64::from_le_bytes(buf) as usize) % len)
-}
-
-fn rand_byte() -> Result<u8> {
-    let mut buf = [0u8; 1];
-    getrandom::getrandom(&mut buf).map_err(|e| anyhow!("getrandom: {e}"))?;
-    Ok(buf[0])
 }
 
 /// Pure helper used by tests: render a template against an explicit
