@@ -4,7 +4,7 @@ version = "0.4.2-beta"
 edition = "2024"
 license = "GPL-3.0-or-later"
 repository = "https://github.com/Kit3713/Proteus"
-description = "A Rust CLI that erases the network identifiers your Linux laptop hands out every time it joins a network. MAC addresses, DHCP options, IPv6 derivations, hostname, mDNS chatter, TCP fingerprint quirks, Bluetooth name. Rotates MACs on a schedule and on connectivity loss. Single binary, embedded wiki, runs on Fedora 43+ with systemd and NetworkManager."
+description = "Rotates and scrubs the network identifiers your Linux laptop hands out on every join: MAC, DHCP options, IPv6 stable-privacy, hostname, mDNS, TCP fingerprint quirks, Bluetooth name. Single binary; runs on Fedora 43+ with systemd and NetworkManager."
 rust-version = "1.85"
 
 [profile.release]
@@ -21,6 +21,26 @@ strip = true
 inherits = "release"
 strip = false
 debug = "limited"
+
+# B14: cargo features back the Gentoo USE flags declared in
+# dist/gentoo/proteus-0.1.0.ebuild (`IUSE="bluetooth enterprise-wifi nft
+# openrc systemd test"`). Today every feature is empty (no `cfg(feature =
+# "...")` gates in src/), so toggling them is a no-op at compile time. They
+# exist to give packagers a stable surface to wire USE flags through, and
+# to make `cargo --no-default-features --features <flag>` round-trip cleanly
+# without surprising the resolver. When feature-gated code lands in src/,
+# move the relevant deps into the right feature group below — Stream 3
+# explicitly does NOT gate src/, so this table starts empty.
+#
+# `default = []` is intentional: Gentoo's ebuild calls
+# `cargo_src_configure --no-default-features` and adds USE→feature pairs
+# explicitly. Avoid surprising the upstream cargo install flow by leaving
+# the default set empty.
+[features]
+default = []
+bluetooth = []
+enterprise-wifi = []
+nft = []
 
 [dependencies]
 clap = { version = "4", default-features = false, features = ["derive", "std", "help", "usage", "error-context"] }
