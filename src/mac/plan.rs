@@ -172,11 +172,8 @@ fn pool_label(pool: &[String]) -> String {
 /// Falls back to a single LAA token if the resolved pool is empty so
 /// `preview_mac` always has something the generator can chew on.
 fn effective_preview_pool(config: &Config) -> Vec<String> {
-    let active = crate::persona::active_for(
-        config,
-        None,
-        crate::persona::resolve::default_user_root(),
-    );
+    let active =
+        crate::persona::active_for(config, None, crate::persona::resolve::default_user_root());
     if let Some(p) = active
         && matches!(p.kind, crate::persona::PersonaKind::Stealth)
         && !crate::mac::oui::resolve_vendor_tokens(&p.oui_pool).is_empty()

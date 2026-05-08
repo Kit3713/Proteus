@@ -275,11 +275,7 @@ pub(super) fn dispatch(cli: Cli) -> Result<u8> {
                 commands::portal::run_open(yes, cli.state.as_deref(), cli.config.as_deref())
             }
         },
-        Command::Wiki {
-            action,
-            page,
-            json,
-        } => match action {
+        Command::Wiki { action, page, json } => match action {
             Some(WikiAction::Search { query, json, limit }) => {
                 commands::wiki_cmd::run_search(&query, json, limit)
             }

@@ -614,10 +614,8 @@ mod tests {
                 .unwrap_or_else(|e| panic!("builtin {stem} failed to parse: {e}"));
             // Mirror schema_check's logic: render with the validation
             // helper, lowercase, then run through validate_hostname.
-            let rendered = crate::persona::template::render_for_validation(
-                &p.hostname_template,
-                "fedora",
-            );
+            let rendered =
+                crate::persona::template::render_for_validation(&p.hostname_template, "fedora");
             let lowered = rendered.to_ascii_lowercase();
             crate::hostname::validate_hostname(&lowered).unwrap_or_else(|e| {
                 panic!(
@@ -627,7 +625,10 @@ mod tests {
             });
             count += 1;
         }
-        assert!(count >= 15, "expected at least 15 built-in personas, found {count}");
+        assert!(
+            count >= 15,
+            "expected at least 15 built-in personas, found {count}"
+        );
     }
 
     /// NTEST.1 regression: the historical pre-fix lg-tv-2023 template

@@ -660,11 +660,9 @@ mod tests {
         let drifts = compute_managed_file_drift_with_state(&tmp, Some(&state));
         // The expected sysctl drop-in is missing — it must show up as drift.
         assert!(
-            drifts
-                .iter()
-                .any(|d| d.path.ends_with("95-proteus.conf")
-                    && d.drift
-                    && d.reason.contains("missing on disk")),
+            drifts.iter().any(|d| d.path.ends_with("95-proteus.conf")
+                && d.drift
+                && d.reason.contains("missing on disk")),
             "expected missing-sysctl drift, got {drifts:?}"
         );
         let _ = std::fs::remove_dir_all(&tmp);

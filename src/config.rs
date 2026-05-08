@@ -909,7 +909,8 @@ impl RawConfig {
             if let Some(p) = &policy.aggressiveness_profile
                 && Profile::parse(p).is_none()
             {
-                let suggestion = closest_match(p, &profile_names()).map(|s| format!(" — did you mean '{s}'?"))
+                let suggestion = closest_match(p, &profile_names())
+                    .map(|s| format!(" — did you mean '{s}'?"))
                     .unwrap_or_default();
                 anyhow::bail!(
                     "[per_ssid.\"{ssid}\"] aggressiveness_profile '{p}' must be one of: off, min, low, med, high, agr{suggestion}"
@@ -927,10 +928,7 @@ impl RawConfig {
                 if p.trim().is_empty() {
                     anyhow::bail!("[per_ssid.\"{ssid}\"] persona must not be empty");
                 }
-                check_persona_id_known(
-                    &format!("per_ssid.\"{ssid}\".persona"),
-                    p,
-                )?;
+                check_persona_id_known(&format!("per_ssid.\"{ssid}\".persona"), p)?;
             }
             if let Some(m) = &policy.pin_mac {
                 // V7: validate pin_mac at load so a hand-edited typo
@@ -1021,9 +1019,7 @@ fn levenshtein(a: &str, b: &str) -> usize {
         curr[0] = i;
         for j in 1..=m {
             let cost = if av[i - 1] == bv[j - 1] { 0 } else { 1 };
-            curr[j] = (prev[j] + 1)
-                .min(curr[j - 1] + 1)
-                .min(prev[j - 1] + cost);
+            curr[j] = (prev[j] + 1).min(curr[j - 1] + 1).min(prev[j - 1] + cost);
         }
         std::mem::swap(&mut prev, &mut curr);
     }
@@ -2489,16 +2485,14 @@ mod validation_tests {
 
     #[test]
     fn v3_quorum_above_total_rejected() {
-        let raw: RawConfig =
-            toml::from_str("[probes]\nquorum_n = 10\nquorum_total = 4\n").unwrap();
+        let raw: RawConfig = toml::from_str("[probes]\nquorum_n = 10\nquorum_total = 4\n").unwrap();
         let err = raw.validate_ranges().unwrap_err();
         assert!(format!("{err:#}").contains("quorum_n"));
     }
 
     #[test]
     fn v3_quorum_equal_total_accepted() {
-        let raw: RawConfig =
-            toml::from_str("[probes]\nquorum_n = 4\nquorum_total = 4\n").unwrap();
+        let raw: RawConfig = toml::from_str("[probes]\nquorum_n = 4\nquorum_total = 4\n").unwrap();
         raw.validate_ranges().expect("equal quorum is valid");
     }
 
@@ -2515,8 +2509,7 @@ mod validation_tests {
     #[test]
     fn v4_events_link_flap_window_upper_bound() {
         // > 1 hour is meaningless.
-        let raw: RawConfig =
-            toml::from_str("[events]\nlink_flap_window_secs = 3601\n").unwrap();
+        let raw: RawConfig = toml::from_str("[events]\nlink_flap_window_secs = 3601\n").unwrap();
         assert!(raw.validate_ranges().is_err());
     }
 
@@ -2671,8 +2664,7 @@ tx_power_reduction_db = 12
     /// Pin both sides so the contract stays explicit.
     #[test]
     fn v10_empty_array_fields_are_rejected_at_load() {
-        let raw: RawConfig =
-            toml::from_str("[mac]\noui_pool = []\n").unwrap();
+        let raw: RawConfig = toml::from_str("[mac]\noui_pool = []\n").unwrap();
         assert!(raw.validate_ranges().is_err());
         let raw: RawConfig = toml::from_str("[probes]\nendpoints = []\n").unwrap();
         assert!(raw.validate_ranges().is_err());

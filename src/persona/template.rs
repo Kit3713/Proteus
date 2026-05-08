@@ -91,7 +91,9 @@ fn pick_owner() -> Result<&'static str> {
         "OWNER_POOL must contain at least one entry; an empty pool would index-OOB at rotate time"
     );
     if OWNER_POOL.is_empty() {
-        return Err(anyhow!("OWNER_POOL is empty; persona owner-token slot cannot be filled"));
+        return Err(anyhow!(
+            "OWNER_POOL is empty; persona owner-token slot cannot be filled"
+        ));
     }
     // Issue #226: rejection-sampled byte stream. OWNER_POOL is 20 entries
     // — well below the byte-stream picker's 256-entry ceiling. Naive
@@ -140,7 +142,12 @@ fn pick_digits() -> Result<u32> {
 /// Used at load time, not apply time; the apply path keeps using the
 /// real rejection-sampled `render_template`.
 pub fn render_for_validation(template: &str, sample_word: &str) -> String {
-    render_with_static(template, OWNER_POOL.first().copied().unwrap_or("a"), 0, sample_word)
+    render_with_static(
+        template,
+        OWNER_POOL.first().copied().unwrap_or("a"),
+        0,
+        sample_word,
+    )
 }
 
 fn render_with_static(template: &str, owner: &str, digit: u32, word: &str) -> String {

@@ -109,12 +109,14 @@ fn validate_label(label: &str, full: &str) -> Result<()> {
     // turn this into a bounds panic. `first()` / `last()` return `Option`
     // so any such regression surfaces as a structured error instead.
     let bytes = label.as_bytes();
-    let leading = bytes.first().copied().ok_or_else(|| {
-        anyhow!("hostname '{full}' has an empty label (label has no first byte)")
-    })?;
-    let trailing = bytes.last().copied().ok_or_else(|| {
-        anyhow!("hostname '{full}' has an empty label (label has no last byte)")
-    })?;
+    let leading = bytes
+        .first()
+        .copied()
+        .ok_or_else(|| anyhow!("hostname '{full}' has an empty label (label has no first byte)"))?;
+    let trailing = bytes
+        .last()
+        .copied()
+        .ok_or_else(|| anyhow!("hostname '{full}' has an empty label (label has no last byte)"))?;
     if leading == b'-' || trailing == b'-' {
         return Err(anyhow!(
             "hostname '{full}' label '{label}' has a leading or trailing hyphen"
@@ -327,17 +329,7 @@ mod tests {
     fn validator_handles_empty_and_all_dot_inputs_without_panic() {
         // Each of these should return Err, never panic.
         let cases: &[&str] = &[
-            "",
-            ".",
-            "..",
-            "...",
-            "....",
-            ".host",
-            "host.",
-            ".host.",
-            "a..b",
-            "a...b",
-            "a.b.",
+            "", ".", "..", "...", "....", ".host", "host.", ".host.", "a..b", "a...b", "a.b.",
             ".a.b",
         ];
         for c in cases {
