@@ -321,47 +321,61 @@ NM2.7, NCMD2.1, NCMD2.5, NEV2.7.
 asserts exit code 64 (`CONFIRMATION_REQUIRED`); run watch with `--interval 0s`
 and assert exit 64 (rejection) instead of CPU burn.
 
-### Stream 2 — Config Schema Validation ⏳
+### Stream 2 — Config Schema Validation 🟢 (mostly landed)
 
 **Why high-impact:** silent acceptance of nonsense config (zero-interval
 rotates, unknown profile names, multibyte panic in duration parser) gives users
 a posture they did not ask for.
 
-**Files:** `src/config.rs`, `src/per_ssid.rs`, `src/persona/load.rs`.
+**Files:** `src/config.rs`, `src/per_ssid.rs`, `src/persona/load.rs`,
+`src/persona/template.rs`, `data/personas/lg-tv-2023.toml`.
 
 **Issues:** V1–V12 (V8, V9 added explicitly above), N12.4, N12.5, N12.12,
 P1, P7, NMOD.4, NTEST.1.
 
 **Work:**
 
-- ⏳ Reject zero / empty rotation intervals at config-load time (V1).
-- ⏳ Validate profile names and persona IDs against the known catalogue at
-  load time (V2, V6) with closest-match suggestions.
-- ⏳ Validate `quorum_n <= quorum_total` (V3).
-- ⏳ Bound second-precision durations (V4); bound `tx_power_reduction_db` (V5).
-- ⏳ Validate `pin_mac` format at load (V7); validate persona OUI pool (V11).
-- ⏳ Fix `parse_duration` overflow (N12.4) and the multibyte-trailing-char
-  panic in `is_valid_per_ssid_duration` (N12.5) — ship together.
-- ⏳ Constrain `clap` `u32` flags to a sane range (N12.12).
-- ⏳ Replace `split_at` on potentially-empty duration strings (P1) and the
-  `get_mut("mac").unwrap()` test path (P7).
-- ⏳ Distinguish "no value" from "out of range" in `parse_duration`; emit a
-  `warn!` on overflow rather than silent fallback to global timer (V8 —
-  pairs naturally with N12.4).
-- ⏳ Rename `persona_contributed` → `global_persona_contributed` and add a
-  short comment in `src/per_ssid.rs:86-93` so the 4-layer resolver
-  source-trace doesn't read as "persona never affected this SSID" when it
-  actually layered (V9 — cosmetic enhancement, no-brainer).
-- ⏳ Round-trip test coverage expansion for arrays, numerics, enums (V10).
-- ⏳ SSID-key TOML-special-character coverage (V12).
-- ⏳ Persona `schema_check` now also renders the template through
-  `validate_hostname` (and equivalents) so unusable personas like
-  `lg-tv-2023` are caught at load (NTEST.1, **High**). Fix the existing
-  `data/personas/lg-tv-2023.toml` template (`[LG]_webOS_TV_{word}` →
-  `lg-webos-tv-{word}` or similar) and add a regression test that exercises
-  every shipped persona's `hostname_template` through the validator.
-- ⏳ Defensive guard / assert that `OWNER_POOL` is non-empty before indexing
-  in `persona::template::pick_owner` (NMOD.4).
+- ✅ Reject zero / empty rotation intervals at config-load time (V1) —
+  enforced via `parse_interval` for every rotate-shaped field; pinned
+  with `config::validation_tests::v1_*` regression tests.
+- ✅ Validate profile names and persona IDs against the known catalogue at
+  load time (V2, V6) with closest-match suggestions; built-in catalogue
+  exposed via new `persona::load::builtin_ids()`.
+- ✅ Validate `quorum_n <= quorum_total` (V3).
+- ✅ Bound second-precision durations (V4); bound `tx_power_reduction_db` (V5).
+- ✅ Validate `pin_mac` format at load (V7) via `Mac::from_str`.
+- 🟡 Validate persona OUI pool (V11). User personas now hard-fail on an
+  unknown vendor token; built-in `iot-generic` keeps its `espressif` /
+  `realtek` shape-only tokens until the OUI-catalogue extension (Stream
+  owning `src/mac/oui.rs`) lands. Tracked separately as a follow-up so
+  Stream 2 doesn't widen scope into the MAC stream.
+- ✅ Fix `parse_duration` overflow (N12.4) and the multibyte-trailing-char
+  panic in `is_valid_per_ssid_duration` (N12.5) — shipped together.
+- ⏳ Constrain `clap` `u32` flags to a sane range (N12.12) — deferred:
+  CLI lives in `src/cli/`, owned by another stream's worktree.
+- ✅ Replace `split_at` on potentially-empty duration strings (P1).
+- ⏳ Replace `get_mut("mac").unwrap()` test path (P7) — deferred:
+  `src/commands/config_cmd.rs` is owned by another stream.
+- ✅ Distinguish "no value" from "out of range" in `parse_duration`; emit
+  a `warn!` on overflow rather than silent fallback to global timer
+  (V8 — paired with N12.4 via `checked_mul`).
+- ✅ Rename `persona_contributed` → `global_persona_contributed` and add
+  a short comment so the 4-layer resolver source-trace reads correctly
+  (V9).
+- ✅ Round-trip test coverage expansion for arrays, numerics, enums (V10).
+- ✅ SSID-key TOML-special-character coverage (V12) — spaces, dots,
+  brackets, unicode, backslash escapes.
+- ✅ Persona `schema_check` now renders the template through
+  `validate_hostname` so unusable personas like `lg-tv-2023` are caught
+  at load (NTEST.1, **High**). Template fixed:
+  `[LG]_webOS_TV_{word}` → `lg-webos-tv-{word}`. Regression test
+  `every_embedded_persona_hostname_template_renders_validly` exercises
+  every shipped persona.
+- ✅ Defensive guard + const-assert that `OWNER_POOL` is non-empty before
+  indexing in `persona::template::pick_owner` (NMOD.4).
+- ⏳ GH#340 (`ByteSuffixPattern::parse` multibyte panic) — deferred:
+  fix lives in `src/mac/generator.rs` which is out of Stream 2's
+  worktree scope.
 
 **Acceptance:** new test module `config::validation_tests` loads each malformed
 example and asserts the specific error variant; full `cargo test --release`

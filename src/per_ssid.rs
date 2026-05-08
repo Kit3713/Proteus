@@ -145,11 +145,18 @@ pub fn resolve_for_ssid(config: &Config, ssid: &str) -> EffectivePolicy {
 
     // Persona layer: today only the persona id falls out of `[persona]
     // active`. Future fields (e.g. persona-defined rotate cadence) can
-    // fold in here without touching call sites. Compute "did persona
-    // contribute" before the `or_else` move consumes `per_persona`.
-    let persona_contributed = per_persona.is_none() && config.persona.active.is_some();
+    // fold in here without touching call sites. Compute "did the global
+    // persona contribute" (V9) before the `or_else` move consumes
+    // `per_persona` — the variable is named `global_persona_contributed`
+    // because `per_ssid` may legitimately layer its own `persona` *and*
+    // the global `[persona] active` may also be set; the latter only
+    // appears in the source trace when the per-SSID layer left the slot
+    // empty for the global persona to fill. Without the name, the
+    // 4-layer source-trace reads as "persona never affected this SSID"
+    // even when the persona-shaped global *did* layer through.
+    let global_persona_contributed = per_persona.is_none() && config.persona.active.is_some();
     let persona = per_persona.or_else(|| config.persona.active.clone());
-    if persona_contributed {
+    if global_persona_contributed {
         source.push(LAYER_PERSONA);
     }
 
@@ -197,6 +204,18 @@ fn per_block_has_any_field(p: &PerSsidPolicy) -> bool {
 /// boundary via `char_indices` and reject any non-ASCII suffix as
 /// off-format (returning `None`), which causes the resolver to transparently
 /// fall through to the global timer rather than abort.
+///
+/// Issues N12.4 / V8: the previous body used `n * 60`, `n * 3600`,
+/// `n * 86_400` unconditionally. Combined with a u64-shaped numeric
+/// prefix (e.g. `9999999999999999d`) that overflows multiplication and
+/// triggers an arithmetic-overflow panic in debug builds, or silently
+/// wraps in release. Use `checked_mul` and emit a `tracing::warn!` on
+/// overflow so the operator sees *why* their per-SSID timer fell through
+/// to the global cadence rather than the silent-fallback that V8 calls
+/// out. The function still returns `None` on overflow — the resolver
+/// treats `None` as "use the global timer," which is the safe default —
+/// but the warn distinguishes "no per-SSID value set" (no log line) from
+/// "value set but unusable" (logged so the user can fix it).
 fn parse_duration(s: &str) -> Option<Duration> {
     let s = s.trim();
     if s.is_empty() {
@@ -214,12 +233,22 @@ fn parse_duration(s: &str) -> Option<Duration> {
         return None;
     }
     let n: u64 = num.parse().ok()?;
-    match unit {
-        "s" => Some(Duration::from_secs(n)),
-        "m" => Some(Duration::from_secs(n * 60)),
-        "h" => Some(Duration::from_secs(n * 3600)),
-        "d" => Some(Duration::from_secs(n * 86_400)),
-        _ => None,
+    let secs_opt = match unit {
+        "s" => Some(n),
+        "m" => n.checked_mul(60),
+        "h" => n.checked_mul(3600),
+        "d" => n.checked_mul(86_400),
+        _ => return None,
+    };
+    match secs_opt {
+        Some(secs) => Some(Duration::from_secs(secs)),
+        None => {
+            tracing::warn!(
+                input = s,
+                "per-SSID rotate_interval overflowed u64 seconds; falling back to global timer"
+            );
+            None
+        }
     }
 }
 
@@ -511,6 +540,57 @@ mod tests {
         assert_eq!(parse_duration("1s"), Some(Duration::from_secs(1)));
         assert_eq!(parse_duration("60s"), Some(Duration::from_secs(60)));
         assert_eq!(parse_duration("0s"), Some(Duration::from_secs(0)));
+    }
+
+    /// N12.4 / V8 regression: a numerically-valid but multiplicatively-
+    /// overflowing duration (e.g. `u64::MAX / 60 + 1` minutes) used to
+    /// either abort in debug builds or silently wrap in release. The fix
+    /// uses `checked_mul` and returns `None` on overflow so the resolver
+    /// transparently falls through to the global timer — and emits a
+    /// `tracing::warn!` so the operator sees *why* (V8: distinguish "no
+    /// value" from "value but unusable").
+    #[test]
+    fn parse_duration_overflow_returns_none_instead_of_panicking() {
+        // `u64::MAX` minutes overflows when multiplied by 60.
+        let huge = format!("{}m", u64::MAX);
+        assert!(
+            parse_duration(&huge).is_none(),
+            "overflow case must return None, not panic or wrap"
+        );
+        // Same for hours and days.
+        let huge_h = format!("{}h", u64::MAX);
+        assert!(parse_duration(&huge_h).is_none());
+        let huge_d = format!("{}d", u64::MAX);
+        assert!(parse_duration(&huge_d).is_none());
+        // Sanity: the seconds suffix has no multiplier so it can carry
+        // any u64 the caller throws at it.
+        assert_eq!(
+            parse_duration(&format!("{}s", u64::MAX)),
+            Some(Duration::from_secs(u64::MAX))
+        );
+    }
+
+    /// V9: the renamed `global_persona_contributed` flag is exercised
+    /// indirectly through the source-trace ordering. With per-SSID
+    /// supplying a persona, the global persona must NOT contribute even
+    /// though `config.persona.active` is set — proves the flag is gating
+    /// correctly under the new name.
+    #[test]
+    fn global_persona_does_not_contribute_when_per_ssid_supplies_persona() {
+        let mut cfg = cfg_with_profile(Profile::Med);
+        cfg.persona.active = Some("randomizer-med".into());
+        cfg.per_ssid.insert(
+            "x".into(),
+            PerSsidPolicy {
+                persona: Some("iphone-15".into()),
+                ..PerSsidPolicy::default()
+            },
+        );
+        let eff = resolve_for_ssid(&cfg, "x");
+        // The per-SSID layer wins — global persona must NOT show up in
+        // the source trace because per-SSID supplied the persona slot.
+        assert_eq!(eff.persona.as_deref(), Some("iphone-15"));
+        assert!(!eff.source.contains(&LAYER_PERSONA));
     }
 
     /// Empty per-SSID block (`[per_ssid."x"]` with no fields) is treated
