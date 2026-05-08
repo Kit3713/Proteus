@@ -214,21 +214,70 @@ pub async fn find_connection_by_id(
     conn: &zbus::Connection,
     id: &str,
 ) -> Result<(OwnedObjectPath, ConnectionSettings)> {
+    // N6: callers historically passed either a `connection.id` (the
+    // human-readable nmcli column, e.g. `"Home Wi-Fi"`) or a
+    // `connection.uuid` (the dashed hex). NM's `Settings.Connection`
+    // dict carries both keys; the fast path scans the list once and
+    // returns whichever side matches first. Trying uuid first costs
+    // nothing extra — the scan is always linear — but a uuid-shaped
+    // input lands on its match without going through every profile's
+    // GetSettings dict twice.
     let settings_proxy = super::SettingsProxy::new(conn).await?;
+    // Issue: when `id` looks like a NM uuid (36 chars + dashes), prefer
+    // the typed lookup so a profile whose `connection.id` happens to
+    // collide with a uuid string elsewhere doesn't get returned by
+    // mistake.
+    if looks_like_nm_uuid(id)
+        && let Ok(path) = settings_proxy.get_connection_by_uuid(id).await
+    {
+        let proxy = ConnectionProxy::builder(conn)
+            .path(path.clone())?
+            .build()
+            .await?;
+        if let Ok(s) = proxy.get_settings().await {
+            return Ok((path, s));
+        }
+    }
     let conns = settings_proxy.list_connections().await?;
     for path in conns {
         let proxy = ConnectionProxy::builder(conn)
             .path(path.clone())?
             .build()
             .await?;
-        if let Ok(s) = proxy.get_settings().await
-            && let Some(found_id) = extract_str(&s, "connection", "id")
-            && found_id == id
-        {
-            return Ok((path, s));
+        if let Ok(s) = proxy.get_settings().await {
+            // Match against either the id or the uuid so callers
+            // that conflate the two columns get a consistent answer.
+            let found_id = extract_str(&s, "connection", "id");
+            let found_uuid = extract_str(&s, "connection", "uuid");
+            if found_id.as_deref() == Some(id) || found_uuid.as_deref() == Some(id) {
+                return Ok((path, s));
+            }
         }
     }
-    bail!("no NetworkManager connection profile with id '{id}'")
+    bail!("no NetworkManager connection profile with id or uuid '{id}'")
+}
+
+/// N6: rough shape check for an NM-style UUID
+/// (`xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`, 8-4-4-4-12). The check is
+/// deliberately lax — we only use it as a hint to try the typed
+/// `Settings.GetConnectionByUuid` first; the linear scan still runs as
+/// a fallback, so a false positive here just costs one DBus round-trip.
+fn looks_like_nm_uuid(s: &str) -> bool {
+    if s.len() != 36 {
+        return false;
+    }
+    let bytes = s.as_bytes();
+    let dash_positions = [8, 13, 18, 23];
+    for (i, b) in bytes.iter().enumerate() {
+        if dash_positions.contains(&i) {
+            if *b != b'-' {
+                return false;
+            }
+        } else if !b.is_ascii_hexdigit() {
+            return false;
+        }
+    }
+    true
 }
 
 fn extract_str(
@@ -394,6 +443,35 @@ mod tests {
             Some("hunter2-the-original"),
             "the PSK must survive the wifi-key write — secrets merge is what `update_with_secrets` does on top"
         );
+    }
+
+    /// N6: `looks_like_nm_uuid` must accept the canonical NM uuid
+    /// shape and refuse anything else. Used by `find_connection_by_id`
+    /// to pick the typed lookup when the input looks like a uuid.
+    #[test]
+    fn looks_like_nm_uuid_accepts_canonical_shape() {
+        assert!(looks_like_nm_uuid("12345678-aaaa-bbbb-cccc-1234567890ab"));
+        assert!(looks_like_nm_uuid("00000000-0000-0000-0000-000000000000"));
+        assert!(looks_like_nm_uuid("ABCDEF12-3456-7890-ABCD-EF1234567890"));
+    }
+
+    /// N6: any deviation from 8-4-4-4-12 hex must be rejected so the
+    /// fast path doesn't mis-route a `connection.id` like `"Home Wi-Fi"`
+    /// through `GetConnectionByUuid` and surface a misleading
+    /// no-such-uuid error.
+    #[test]
+    fn looks_like_nm_uuid_rejects_anything_else() {
+        for bad in [
+            "",
+            "Home Wi-Fi",
+            "12345678-aaaa-bbbb-cccc-1234567890a", // one short
+            "12345678aaaabbbbcccc1234567890ab",    // missing dashes
+            "12345678-aaaa-bbbb-cccc-1234567890abz", // trailing junk
+            "12345678-aaaa-bbbb-cccc-1234567890aZ", // non-hex
+            "12345678-aaaa-bbbb-cccc 1234567890ab", // space instead of dash
+        ] {
+            assert!(!looks_like_nm_uuid(bad), "should reject: {bad:?}");
+        }
     }
 
     #[test]
