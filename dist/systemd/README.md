@@ -17,10 +17,24 @@ and at boot.
 - `proteus-boot.service` — runs `proteus apply --yes` once after
   NetworkManager comes up at boot.
 
-All three services run as root with the same hardening profile:
-`ProtectSystem=full`, `ProtectHome=true`, `PrivateTmp=true`,
-`NoNewPrivileges=true`, a `CapabilityBoundingSet` of `CAP_NET_ADMIN
-CAP_NET_RAW CAP_NET_BIND_SERVICE`, and `SystemCallFilter=@system-service`.
+All five services (rotate, check, resume, boot, events) run as root with a
+shared strict hardening profile (issue #228): `ProtectSystem=strict`,
+`ProtectHome=true`, `PrivateTmp=true`, `PrivateDevices=true`,
+`NoNewPrivileges=true`, the full `Protect*` family
+(`ProtectKernelTunables`, `ProtectKernelModules`, `ProtectKernelLogs`,
+`ProtectClock`, `ProtectControlGroups`, `ProtectHostname`),
+`RestrictAddressFamilies=AF_UNIX AF_NETLINK AF_INET AF_INET6`,
+`RestrictNamespaces=true`, `RestrictRealtime=true`,
+`LockPersonality=true`, `MemoryDenyWriteExecute=true`,
+`SystemCallArchitectures=native`, a `CapabilityBoundingSet` of
+`CAP_NET_ADMIN CAP_NET_RAW CAP_NET_BIND_SERVICE`, and a
+`SystemCallFilter` that allows `@system-service` minus the dangerous
+sets (`@privileged @resources @obsolete @cpu-emulation @debug @raw-io
+@reboot @swap @mount @module @clock`) with `SystemCallErrorNumber=EPERM`.
+Per-unit `ReadWritePaths=` carve out the directories each workload needs
+(`/var/lib/proteus` for state, plus the `/etc/sysctl.d`,
+`/etc/systemd/{system,resolved.conf.d,timesyncd.conf.d}`,
+`/etc/NetworkManager` drop-in roots for the boot orchestrator).
 Output goes to the journal under `SyslogIdentifier=proteus`.
 
 ## Install

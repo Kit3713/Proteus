@@ -11,15 +11,38 @@ let
 
   # Hardening profile mirrored from dist/systemd/*.service so a NixOS
   # install gets the same security posture as the install.sh path.
+  # Issue #228: strict shape unified across all units.
   hardening = {
     Type = "oneshot";
     User = "root";
-    ProtectSystem = "full";
+    ProtectSystem = "strict";
     ProtectHome = true;
     PrivateTmp = true;
+    PrivateDevices = true;
     NoNewPrivileges = true;
+    ProtectKernelTunables = true;
+    ProtectKernelModules = true;
+    ProtectKernelLogs = true;
+    ProtectClock = true;
+    ProtectControlGroups = true;
+    ProtectHostname = true;
+    RestrictAddressFamilies = [ "AF_UNIX" "AF_NETLINK" "AF_INET" "AF_INET6" ];
+    RestrictNamespaces = true;
+    RestrictRealtime = true;
+    LockPersonality = true;
+    MemoryDenyWriteExecute = true;
+    SystemCallArchitectures = "native";
     CapabilityBoundingSet = [ "CAP_NET_ADMIN" "CAP_NET_RAW" "CAP_NET_BIND_SERVICE" ];
-    SystemCallFilter = [ "@system-service" ];
+    AmbientCapabilities = [ "CAP_NET_ADMIN" "CAP_NET_RAW" ];
+    # Default to state-dir + read-only config; the boot orchestrator
+    # extends this with the additional /etc drop-in roots it writes to.
+    ReadWritePaths = [ "/var/lib/proteus" ];
+    ReadOnlyPaths = [ "/etc/proteus" ];
+    SystemCallFilter = [
+      "@system-service"
+      "~@privileged @resources @obsolete @cpu-emulation @debug @raw-io @reboot @swap @mount @module @clock"
+    ];
+    SystemCallErrorNumber = "EPERM";
     StandardOutput = "journal";
     StandardError = "journal";
     SyslogIdentifier = "proteus";
@@ -98,6 +121,17 @@ in
     systemd.services.proteus-boot = (mkProteusService {
       description = "Proteus boot-time apply";
       args = "apply --yes";
+      # `apply` writes drop-ins under sysctl/systemd/NetworkManager
+      # subtrees on top of /var/lib/proteus, so widen ReadWritePaths
+      # here only.
+      extraServiceConfig.ReadWritePaths = [
+        "/var/lib/proteus"
+        "/etc/sysctl.d"
+        "/etc/systemd/system"
+        "/etc/systemd/resolved.conf.d"
+        "/etc/systemd/timesyncd.conf.d"
+        "/etc/NetworkManager"
+      ];
     }) // {
       wantedBy = [ "multi-user.target" ];
     };

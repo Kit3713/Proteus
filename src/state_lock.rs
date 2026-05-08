@@ -38,13 +38,16 @@
 //! (RAII guard, nested-acquire-is-no-op) but makes the inner state safe
 //! to read and mutate atomically under any scheduling.
 
-use std::fs::{File, OpenOptions};
+use std::fs::{self, File, OpenOptions};
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use anyhow::{Context, Result};
 use thiserror::Error;
+
+use crate::state::{STATE_FILE_MODE, ensure_state_dir_secure};
 
 /// Number of attempts the foreground command makes before giving up on a
 /// busy lock. With [`RETRY_DELAY`] this caps total wait at the default
@@ -173,16 +176,28 @@ fn lock_path_for(state_path: &Path) -> PathBuf {
 
 fn acquire_inner(path: &Path) -> Result<File, LockError> {
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("creating lock dir {}", parent.display()))?;
+        // Issue #275: tighten the state-dir mode regardless of umask so a
+        // pre-existing 0o755 dir cannot leave .lock world-writable.
+        ensure_state_dir_secure(parent)
+            .with_context(|| format!("securing lock dir {}", parent.display()))?;
     }
     let file = OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
         .truncate(false)
+        // Issue #275: don't fall back to umask for the lock-file mode.
+        // 0o600 matches state.json (the file the lock guards) — no other
+        // user has any reason to read or take this flock.
+        .mode(STATE_FILE_MODE)
         .open(path)
         .with_context(|| format!("opening lock file {}", path.display()))?;
+    // OpenOptions::mode() only takes effect when the file is freshly
+    // created. If `.lock` already exists with a wider mode (left over
+    // from a pre-#275 install), tighten it now.
+    let perms = fs::Permissions::from_mode(STATE_FILE_MODE);
+    fs::set_permissions(path, perms)
+        .with_context(|| format!("chmod 0{STATE_FILE_MODE:o} on lock file {}", path.display()))?;
 
     let retry_attempts = retry_attempts_from_env(|k| std::env::var(k).ok());
     // Try LOCK_EX|LOCK_NB up to retry_attempts times with a small sleep so a
@@ -405,5 +420,47 @@ mod tests {
         drop(outer);
         assert!(!is_held_in_process());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Issue #275: the lock file lands at 0o600 even when the parent dir
+    /// existed previously with a permissive umask. The dir itself ends
+    /// up at 0o700.
+    #[test]
+    fn lock_file_and_dir_carry_root_only_modes() {
+        let _serial = serial_guard();
+        let parent = std::env::temp_dir().join(format!(
+            "proteus-lock-mode-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        let _ = std::fs::remove_dir_all(&parent);
+        std::fs::create_dir_all(&parent).unwrap();
+        // Inner state dir is the one acquire_for_state_path will create
+        // and chmod. Pre-create it 0o755 so we exercise the tighten
+        // path, not just create.
+        let dir = parent.join("state");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let state = dir.join("state.json");
+        let lock = lock_path_for(&state);
+        // Pre-create the lock file world-readable to cover the
+        // tighten-existing-file branch too.
+        std::fs::write(&lock, b"").unwrap();
+        std::fs::set_permissions(&lock, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        let g = acquire_for_state_path(&state).expect("acquire");
+        let dir_mode = std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            dir_mode, 0o700,
+            "lock-dir must be 0o700, got 0o{dir_mode:o}"
+        );
+        let lock_mode = std::fs::metadata(&lock).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            lock_mode, 0o600,
+            "lock file must be 0o600, got 0o{lock_mode:o}"
+        );
+        drop(g);
+        let _ = std::fs::remove_dir_all(&parent);
     }
 }

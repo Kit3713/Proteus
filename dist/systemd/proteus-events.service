@@ -17,20 +17,25 @@ Restart=on-failure
 RestartSec=5s
 User=root
 
-# Hardening (see systemd.exec(5)). Mirrors proteus-rotate.service plus
-# the strict-protect bits that suit a long-running daemon.
+# Hardening (see systemd.exec(5)). Issue #228: shared strict profile across
+# proteus-rotate / proteus-resume / proteus-boot / proteus-check / this unit.
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
+PrivateDevices=true
 NoNewPrivileges=true
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectKernelLogs=true
+ProtectClock=true
 ProtectControlGroups=true
+ProtectHostname=true
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+RestrictNamespaces=true
 RestrictRealtime=true
 LockPersonality=true
 MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
 
 # Capabilities — the four sources need:
 # - CAP_NET_ADMIN: bind RTNETLINK + genetlink multicast groups (link-flap,
@@ -48,6 +53,7 @@ ReadWritePaths=/var/lib/proteus
 ReadOnlyPaths=/etc/proteus
 
 SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @obsolete @cpu-emulation @debug @raw-io @reboot @swap @mount @module @clock
 SystemCallErrorNumber=EPERM
 
 StandardOutput=journal
