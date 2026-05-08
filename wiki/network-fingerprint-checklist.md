@@ -81,7 +81,7 @@ Modern kernels randomize the source MAC of pre-association probe frames; the SSI
 
 DHCP DISCOVER and REQUEST broadcasts carry option 12 (hostname), 60 (vendor class identifier — `dhcpcd-9.4.1` is a banner), 61 (client identifier, often the MAC), 81 (FQDN). Even with a fresh MAC every join, the option payload can correlate sessions back to the same device, OS, or human.
 
-`proteus dhcp apply` writes per-NM-connection settings to suppress 12/60/81 and couple 61 plus DHCPv6 DUID to the current MAC. Shipped in phase D.
+`proteus dhcp apply` writes per-NM-connection settings to suppress 12/60/81 and couple 61 plus DHCPv6 DUID to the current MAC.
 
 The DUID coupling is the load-bearing piece. Without it, the v6 client ID is stable across MAC rotations and silently undoes most of the MAC-rotation point. Cross-ref `proteus wiki dhcp` for the option-by-option breakdown and the verification recipe.
 
@@ -105,7 +105,7 @@ Cross-ref `proteus wiki ipv6` and `proteus wiki dhcp`.
 
 RFC 7323 timestamps carry a 32-bit value derived from a per-boot monotonic clock. The clock origin leaks system uptime; the timestamp itself is unique per host on the segment. Survives MAC rotation, DHCP scrubbing, and most VPNs.
 
-`proteus stack apply` writes a sysctl drop-in setting `net.ipv4.tcp_timestamps = 0`. Shipped in phase E.
+`proteus stack apply` writes a sysctl drop-in setting `net.ipv4.tcp_timestamps = 0`.
 
 PAWS edge case (long-lived high-bandwidth flows) is documented; if you are moving terabytes over one connection, keep them on. Cross-ref `proteus wiki stack-fingerprint`.
 
@@ -113,7 +113,7 @@ PAWS edge case (long-lived high-bandwidth flows) is documented; if you are movin
 
 ICMP type 13/14 (Timestamp Request/Reply) leaks the system clock. Type 15/16 (Information Request/Reply) is a pre-DHCP-era discovery vector. Reply 16 leaks the subnet mask. Nothing in modern userspace asks for these; many kernels still answer.
 
-`proteus nft apply` installs nft drop rules in the `proteus` table for ICMP types 13 and 15 inbound on managed interfaces. ICMPv6 Redirect drops via per-interface sysctl. Shipped in phase E.
+`proteus nft apply` installs nft drop rules in the `proteus` table for ICMP types 13 and 15 inbound on managed interfaces. ICMPv6 Redirect drops via per-interface sysctl.
 
 Cross-ref `proteus wiki stack-fingerprint`.
 

@@ -2,7 +2,7 @@ Persona mode is the second of Proteus's two stealth strategies. Where the existi
 
 This page is the field manual: what persona mode does and does not defeat, the schema, how to author your own, the built-in catalogue, and the verification checklist.
 
-For the design rationale and the place this work sits in the v0.3 cycle, see `proteus help roadmap` (Milestone 2). For the threat-model boundary in plain English, see `proteus help threat-model`.
+For the design rationale, see `docs/ROADMAP.md` (Milestone 2 of the v0.3 cycle). For the threat-model boundary in plain English, see `proteus wiki threat-model`.
 
 ## What persona mode is
 
@@ -112,7 +112,7 @@ Permission warnings: `import` runs schema validation before installing; `export`
 
 ## Built-in catalogue
 
-The current built-in set is 19 personas — 13 stealth covers and 6 randomizer mirrors of the existing aggressiveness slider. The roadmap targets 25 stealth covers at v0.3 launch; the remaining six land in the integration follow-up.
+The current built-in set is 31 personas — 25 stealth covers and 6 randomizer mirrors of the existing aggressiveness slider.
 
 | id | kind | category | display name |
 |---|---|---|---|

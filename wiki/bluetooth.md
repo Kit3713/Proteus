@@ -42,7 +42,7 @@ Writes the configured alias (default `BT Device`), sets `Discoverable=false`, an
 sudo proteus revert
 ```
 
-(Phase G.) Restores the original alias and discoverable setting from the cache that Proteus snapshotted on first run. Like every other identifier, the original Bluetooth alias is captured once and never re-captured.
+Restores the original alias and discoverable setting from the cache that Proteus snapshotted on first run. Like every other identifier, the original Bluetooth alias is captured once and never re-captured.
 
 ## Detection logic
 

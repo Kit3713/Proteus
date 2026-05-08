@@ -8,7 +8,7 @@ Proteus exposes four short names. Each maps to one systemd unit.
 
 - **`rotate`** — `proteus-rotate.timer`. Scheduled MAC rotation cadence. Default 2h. The main knob most users want to tune.
 - **`check`** — `proteus-check.timer`. Probe-driven rotation check. Default 5m. Mostly redundant once the NetworkManager dispatcher is installed; safe to disable if you trust the event triggers.
-- **`resume`** — `proteus-resume.timer`. Fires on resume from suspend / hibernate (paired with `proteus-resume.service`). Default off until phase C ships.
+- **`resume`** — `proteus-resume.timer`. Fires on resume from suspend / hibernate (paired with `proteus-resume.service`).
 - **`boot`** — `proteus-boot.service`. Oneshot at boot, ordered after `network-online.target`. Not a timer in the systemd sense; surfaced under `proteus timer` for symmetry. Cannot be set to a custom interval — `proteus timer set boot ...` exits `65`.
 
 `proteus timer list` prints all four with their defaults.
@@ -36,7 +36,7 @@ Runs `systemctl enable --now <unit>` for timers, `systemctl enable <unit>` for t
 
 ### `proteus timer disable <name>`
 
-Runs `systemctl disable --now <unit>`. Mutating; needs root. The unit stays installed — `enable` puts it back. To remove the unit files entirely, use `proteus uninstall` (phase G).
+Runs `systemctl disable --now <unit>`. Mutating; needs root. The unit stays installed — `enable` puts it back. To remove the unit files entirely, use `proteus uninstall`.
 
 ### `proteus timer set <name> --interval <duration>`
 
@@ -105,7 +105,7 @@ The file carries a two-line header:
 
 …followed by a `[Timer]` section with the new directive. The drop-in clears the unit-file `OnCalendar=` first (systemd otherwise *appends* triggers) and then sets exactly one of `OnUnitActiveSec=` or `OnCalendar=`. Other unit-file directives — `Persistent=`, `RandomizedDelaySec=`, `Unit=` — are inherited untouched.
 
-Drop-ins survive package upgrades. The unit file underneath can be replaced freely; the drop-in keeps your cadence. `proteus diff` (phase G) flags drift if anything outside the managed header has been edited by hand.
+Drop-ins survive package upgrades. The unit file underneath can be replaced freely; the drop-in keeps your cadence. `proteus diff` flags drift if anything outside the managed header has been edited by hand.
 
 If you delete the drop-in manually instead of running `proteus timer reset`, the next `daemon-reload` will pick up the change and the cadence reverts to the default. The next `proteus timer status` will show `*` removed from that row.
 

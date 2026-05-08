@@ -271,7 +271,7 @@ proteus diff
 # expected: empty (no drift) OR one line per drifted file
 ```
 
-`proteus diff` lands in phase G. Until then, manual check:
+`proteus diff` is the structured report. Manual spot-check:
 
 ```sh
 head -2 /etc/sysctl.d/95-proteus.conf

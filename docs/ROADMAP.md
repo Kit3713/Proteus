@@ -1,11 +1,24 @@
-# Roadmap — v0.3 "Reach + Persona"
+# Roadmap — v0.3 "Reach + Persona" (shipped); v0.4 "Bug + vulnerability hunt" (active)
 
-This is the active roadmap. The phase-A-through-G build-out is complete and shipped in v0.2.7-alpha; that history lives in [`ROADMAP-v0.1.md`](ROADMAP-v0.1.md). The next cycle is **two big swings**:
+The v0.3 "Reach + Persona" cycle has shipped. v0.4 is bug-and-vulnerability-hunt only — no new features. This document keeps the v0.3 design intent for posterity; the per-bullet status reflects what landed. For per-version release notes, see [`CHANGELOG.md`](../CHANGELOG.md). For how to help, see [`CONTRIBUTING.md`](../CONTRIBUTING.md). The phase-A-through-G build-out lives in [`ROADMAP-v0.1.md`](ROADMAP-v0.1.md).
+
+The v0.3 cycle was **two big swings**:
 
 1. **Reach** — get Proteus running well on any Linux distro / device, not just Fedora 43+ / systemd / NetworkManager. The headline change is a `NetworkBackend` abstraction that lets Proteus drive `systemd-networkd` or raw `ip` + `iw` + `wpa_supplicant`/`iwd` instead of being hardcoded to NM.
 2. **Persona** — turn stealth into a first-class feature with two coexisting modes: the existing entropy-based **randomizer** (anonymity goal) gains a sibling **device-persona** mode (cover-identity goal) where every marker is shaped to look like a specific device — iPhone 15, MacBook Air M3, Pixel 8, Samsung TV, IoT camera, and 20+ more out of the box, with users free to author their own.
 
-For design rationale and the original phase model, see [`PLAN.md`](PLAN.md). For per-version release notes, see [`CHANGELOG.md`](../CHANGELOG.md). For how to help, see [`CONTRIBUTING.md`](../CONTRIBUTING.md).
+For design rationale and the original phase model, see [`PLAN.md`](PLAN.md).
+
+## v0.4 cycle: bug + vulnerability hunt
+
+No new features. The May 2026 vulnerability hunt cluster (30+ issues) plus three critical-for-beta fixes (#276 packaging version sync, #284 `Mac::from_str` panic, #297 `timer set` newline injection) ship in `v0.4.0-beta1`. See `CHANGELOG.md` `[0.4.0-beta1]` for the full bug + security list.
+
+Open frontiers for v0.4.x:
+
+- Real-world testing on diverse Wi-Fi (coffee shops, hotels, conferences with quirky DHCP servers)
+- Independent security review against `docs/security/dbus-surface.md`
+- Distro adoption (AUR / Copr / Debian-unstable submissions need a packager sponsor)
+- The remaining ⏳ items from the v0.3 cycle below
 
 ## Status legend
 
@@ -235,8 +248,8 @@ The mission is local controllable fingerprint reduction. These items live on ano
 ## How to help
 
 - **Real-world testing** — `proteus doctor` + `proteus apply` on coffee-shop / hotel / conference / airport networks; report bugs via the issue template (highest-value contribution right now).
-- **Independent security review** — eyes on `wiki/threat-model.md` and the DBus surface in `src/nm/`, `src/bluetooth/`, `src/commands/dhcp.rs`, `src/commands/ipv6.rs`. Once Milestone 6's `docs/security/dbus-surface.md` lands, that's the artifact to review against.
-- **Persona contributions** — once Milestone 2 lands, the `data/personas/*.toml` schema is open for community PRs to grow the catalogue.
-- **Distro packaging** — Milestone 5 needs Alpine, Void, Gentoo packagers, plus AUR / Copr / Debian unstable submission sponsors.
+- **Independent security review** — eyes on `wiki/threat-model.md` and the DBus surface enumerated in `docs/security/dbus-surface.md`.
+- **Persona contributions** — `data/personas/*.toml` is open for community PRs to grow the catalogue.
+- **Distro packaging** — Alpine, Void, Gentoo packagers needed, plus AUR / Copr / Debian unstable submission sponsors.
 - **Wiki** — pages are landed but always improvable; voice should match `wiki/intro.md`.
 - **Code** — see [`CONTRIBUTING.md`](../CONTRIBUTING.md).

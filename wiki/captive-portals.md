@@ -76,7 +76,7 @@ proteus portal unmark <ssid>    # remove an SSID
 
 When you join an SSID on the list, you get a fresh MAC for that visit, regardless of where the schedule timer is. Inside the visit, the suppression rules above apply normally — fresh MAC at join, then no further rotation until the next disconnect.
 
-The `proteus portal mark` / `list` / `unmark` commands are phase C surface and ship as stubs in earlier phases. They print "not implemented in this phase" and point at this page.
+`proteus portal mark` / `list` / `unmark` manage the known-portal SSID list at the CLI; the underlying state lives in `/var/lib/proteus/state.json`.
 
 ## Browser helper
 
@@ -85,8 +85,6 @@ proteus portal open
 ```
 
 Launches the portal page in your default browser. Tries `$BROWSER` first, then falls back to `xdg-open`. The detector identifies the redirect target so you don't have to type a URL.
-
-Phase C. Earlier phases stub it out.
 
 ## Detection edge cases
 

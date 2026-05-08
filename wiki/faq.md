@@ -38,7 +38,7 @@ Yes. Proteus has a hard guard: if it detects another DNS-privacy tool managing s
 
 ## What's the binary size?
 
-Phase A was around 1.3 MB stripped; with Phase D/E features (DHCP, DNS, IPv6, stack, nft, captive portal, kill switch, enterprise-wifi, profiles, RF inventory) plus the embedded wiki the binary is now around 3.5 MB stripped. Release cap: ≤3.75 MB. Any dependency that adds more than 200 KB needs a justification. Cross-ref `CONTRIBUTING.md` quality bar.
+Around 4.3 MB stripped on x86_64 with the full v0.4 surface (45-page embedded wiki, NetworkBackend trait + three impls, persona / per-SSID / events daemon, full mutator family). Any dependency that adds more than 200 KB needs a justification. Cross-ref `CONTRIBUTING.md` quality bar.
 
 ## Does this work on Ubuntu, Debian, or Arch?
 
@@ -72,7 +72,7 @@ Yes — it's a hard project invariant. Restores cached originals (MAC, hostname)
 
 - Config: `/etc/proteus/config.toml`
 - State (cached originals plus managed state): `/var/lib/proteus/state.json`
-- Drop-ins: `/etc/sysctl.d/`, `/etc/systemd/resolved.conf.d/`, `/etc/systemd/timesyncd.conf.d/`
+- Drop-ins: `/etc/sysctl.d/`, `/etc/systemd/resolved.conf.d/`, `/etc/systemd/timesyncd.conf.d/`, `/etc/systemd/system/proteus-*.timer.d/`
 - nft table: `inet proteus`
 
 Cross-ref `proteus wiki internals`.
@@ -91,7 +91,7 @@ GPL-3.0-or-later. Distribute a modified version, you must release the source und
 
 ## How do I contribute?
 
-Read `CONTRIBUTING.md`. Phase-aware: most useful contributions vary by phase. Pre-Phase A: feedback on the plan. Phase A onwards: code, wiki, integration tests.
+Read `CONTRIBUTING.md`. The major build-out is landed; v0.4 is bug-and-vulnerability-hunt only. Top contributions today: real-world testing on coffee-shop / hotel / conference Wi-Fi, threat-model improvements, persona contributions, distro packaging, wiki polish.
 
 ## Will this break Fedora's hardening?
 

@@ -1,48 +1,43 @@
-# Maintainer follow-ups — v0.3.1-alpha release
+# Maintainer follow-ups
 
-The v0.3.1-alpha work is fully on `origin/main` (tip `71b575b`). The
-following operations need maintainer auth — the auth context that
-landed the code commits has read-only access to non-`main` refs and
-gets HTTP 403 / sideband disconnect on every attempt.
+Operational follow-ups that need maintainer auth — branch deletions, tag
+pushes, GitHub release drafting. Update this file when a new release is
+queued. Delete sections once the action has been performed.
 
-## 1. Push the release tags
+## v0.4.0-beta1 release
 
-Both tags exist locally and point at the right commits:
+`Cargo.toml` is at `0.4.0-beta1`; `CHANGELOG.md` `[0.4.0-beta1]` section
+documents the cycle. Once `main` is green:
 
 ```sh
-git tag --list | grep v0.3
-# v0.3.0-alpha
-# v0.3.1-alpha
-
-git tag -l --format='%(refname:strip=2) -> %(*objectname:short)%(objectname:short)' v0.3.0-alpha v0.3.1-alpha
+git tag -a v0.4.0-beta1 -m "v0.4.0-beta1 — bug + vulnerability hunt"
+git push origin v0.4.0-beta1
 ```
 
-To push:
+The `release.yml` workflow then builds the binaries (x86_64, aarch64),
+produces RPM / .deb / Arch packages, and creates a draft GitHub release.
+Review the artifact set, confirm the stripped binary is under the size
+cap, and publish.
+
+## v0.3 tag push (deferred from v0.3.1-alpha)
+
+Both v0.3 tags exist on the local clone but the original auth context
+could not push them. They are ancestors of `main`. To push:
 
 ```sh
 git push origin v0.3.0-alpha v0.3.1-alpha
 ```
 
-If the tags have drifted on the local clone, recreate from main:
+If the local clone has lost them, recreate from the `[0.3.1-alpha]` and
+`[0.3.0-alpha]` markers in `CHANGELOG.md` (the commits matching those
+release notes are the targets). These are pre-release alphas; flag the
+release as pre-release in the GitHub UI.
 
-```sh
-# v0.3.0-alpha points at the release commit (16adad7)
-git tag -d v0.3.0-alpha
-git tag -a v0.3.0-alpha 16adad7 -m "v0.3.0-alpha — Reach + Persona cycle substantial completion"
+## Stale `claude/*` branches
 
-# v0.3.1-alpha points at the wrap-up commit (43d21e7)
-git tag -d v0.3.1-alpha
-git tag -a v0.3.1-alpha 43d21e7 -m "v0.3.1-alpha — final v0.3 wrap-up"
-
-git push origin v0.3.0-alpha v0.3.1-alpha
-```
-
-## 2. Delete stale `claude/*` branches
-
-Four `claude/*` branches on the remote are leftover from this and
-prior automated sessions. The feature branch's tip is identical to
-`main`; the others predate v0.2.7-alpha and are ancestors of `main`
-through merged work.
+Five `claude/*` branches on the remote are leftover from prior automated
+sessions. Their tips are ancestors of `main` through merged work. To
+delete:
 
 ```sh
 git push origin \
@@ -52,39 +47,15 @@ git push origin \
   claude/security-audit-sjnXX
 ```
 
-If any of those have unique commits the maintainer wants to keep,
-`git log --oneline main..origin/<branch>` will show what's there
-before deleting.
-
-## 3. Cut the GitHub release
-
-Once the tags are on the remote, draft the release notes from
-`CHANGELOG.md` `[0.3.1-alpha]` and `[0.3.0-alpha]` sections. Both
-are pre-release alphas, so set the "this is a pre-release" flag.
-
-## 4. CI verification
-
-After the tag push, the `release.yml` workflow fires. The 4.5 MB
-binary cap was raised in v0.3.0-alpha to fit the v0.3 surface; the
-v0.3.1-alpha stripped binary is 4,339,512 bytes locally. Verify the
-CI job's stripped-size measurement comes in under 4,500,000.
-
-## What landed in v0.3.1-alpha
-
-See `CHANGELOG.md` for the full notes. Headline:
-
-- Roadmap state: 4⏳ / 4🚧 / 80✅ on bullet count (~92% complete).
-- 794 tests passing (was 421 at session start).
-- 12 GitHub issues closed (#200-211).
-- Cargo.toml: 0.1.0 → 0.3.1-alpha (catches up after the v0.2.x cycle
-  was tracked only in CHANGELOG terms).
+Run `git log --oneline main..origin/<branch>` first if you want to
+confirm there's nothing unmerged before deleting.
 
 ## Removing this file
 
-Once the maintainer has handled steps 1-3, delete this file:
+When every section above has been performed, delete this file:
 
 ```sh
 git rm docs/MAINTAINER-FOLLOWUPS.md
-git commit -m "chore: drop maintainer follow-ups note (v0.3.1-alpha shipped)"
+git commit -m "chore: drop maintainer follow-ups note"
 git push origin main
 ```

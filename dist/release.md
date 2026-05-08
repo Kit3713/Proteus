@@ -24,13 +24,13 @@ Covers 64-bit ARM systems running glibc-based Linux. The intended audience:
 
 Built by cross-compiling from `ubuntu-latest` using the
 `gcc-aarch64-linux-gnu` toolchain. The release workflow strips the binary
-with `aarch64-linux-gnu-strip` and enforces the same 4 MB cap as x86_64.
+with `aarch64-linux-gnu-strip` and enforces the same size cap as x86_64
+(see `.github/workflows/release.yml` for the live value).
 
 The aarch64 artifact is not exercised on a real ARM runner in CI — there is
 no GitHub-hosted ARM runner available to the project today. The cross-build
 catches dependency churn and link-level breakage. Functional verification
-on aarch64 still relies on the user reporting issues; the wiki page
-`troubleshooting` will note this once Phase F lands.
+on aarch64 still relies on the user reporting issues.
 
 ## Unsupported architectures
 
@@ -46,8 +46,8 @@ Not shipped. Proteus assumes:
 A user with a 32-bit ARM device is welcome to build from source
 (`cargo build --release`); the code itself should compile cleanly because the
 dependency tree is portable Rust, but the project does not gate CI on armv7
-and will not investigate armv7-only regressions. The 4 MB binary cap is not
-guaranteed on armv7.
+and will not investigate armv7-only regressions. The release-time binary
+size cap is not guaranteed on armv7.
 
 If 32-bit ARM demand becomes loud enough to justify a fourth CI lane, the
 plan is to add an `armv7-unknown-linux-gnueabihf` cross-build to ci.yml first
@@ -95,8 +95,8 @@ If a dependency ever fails to cross-compile, the immediate options are:
 2. Disable a feature flag that triggers the C build.
 3. Drop the dependency.
 
-The 4 MB binary cap and the no-network-egress invariant mean we rarely add
-heavyweight deps anyway, so this is unlikely to bite often.
+The release-time size cap and the no-network-egress invariant mean we
+rarely add heavyweight deps anyway, so this is unlikely to bite often.
 
 ## Distro packages produced on tag
 
@@ -146,9 +146,9 @@ NixOS module.
 
 1. Land all changes on `main` and confirm CI is green, including the
    `cross-build aarch64` lane.
-2. Tag the commit: `git tag -s v0.1.0 -m "Proteus 0.1.0"` (signed tags
-   preferred; unsigned tags also trigger the workflow).
-3. Push the tag: `git push origin v0.1.0`.
+2. Tag the commit: `git tag -s v0.4.0-beta1 -m "Proteus 0.4.0-beta1"`
+   (signed tags preferred; unsigned tags also trigger the workflow).
+3. Push the tag: `git push origin v0.4.0-beta1`.
 4. The `Release` workflow builds both architectures, builds RPM + .deb +
    Arch packages, computes SHA256 sums, and creates a draft GitHub Release
    with everything attached.

@@ -76,7 +76,7 @@ Anything Proteus writes to `/etc/` carries a header:
 # expected-sha256: <64 hex chars>
 ```
 
-`proteus diff` (phase G) compares the live file's SHA against the expected one. Drift from manual edits gets flagged loudly so you can decide: re-apply, accept the local change, or back the whole thing out with `proteus revert`.
+`proteus diff` compares the live file's SHA against the expected one. Drift from manual edits gets flagged loudly so you can decide: re-apply, accept the local change, or back the whole thing out with `proteus revert`.
 
 This is an **edit-detection / tamper-hint** primitive, not an integrity guarantee. The header and body live in the same root-owned file: anything that can write the body can also rewrite the header to match. Treat the SHA as the equivalent of a `# do not edit` sticky note that catches honest manual edits and other-tool drift, not as a defence against an attacker who already has write access. For real attestation, verify against an external source (the published binary's `.sha256`, your config-management system, etc.).
 
@@ -84,11 +84,17 @@ The original-MAC cache in `/var/lib/proteus/state.json` is sacred. Captured the 
 
 See `proteus wiki internals` for the full state schema.
 
-## The Platform trait
+## NetworkBackend
 
-All OS-specific operations live behind a `Platform` trait — netlink calls, dbus calls, file paths, the lot. A future macOS or Windows port (no commitment) would be a backend swap rather than a fork. The CLI, config, and wiki layers stay portable for free.
+Network operations route through a `NetworkBackend` trait with three implementations:
 
-Today there is only `LinuxPlatform`. Other backends are theoretical.
+- **`nm`** (default) — NetworkManager via D-Bus. Full feature surface.
+- **`networkd`** — systemd-networkd via D-Bus + drop-ins under `/etc/systemd/network/`.
+- **`raw`** — `ip` + `iw` + `wpa_supplicant`/`iwd` direct, the "any distro" fallback.
+
+`proteus doctor` autodetects which backends are available and reports the matrix. Pin a specific one with `[backend] driver = "nm" | "networkd" | "raw" | "auto"`. See `proteus wiki backend` for what each impl covers.
+
+A future macOS or Windows port (no commitment) would be a `NetworkBackend` plus a small platform-paths swap. The CLI, config, and wiki layers stay portable for free.
 
 ## Detect-and-defer
 

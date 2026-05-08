@@ -74,7 +74,7 @@ nmcli connection show <name> | grep -E 'dhcp|duid'
 
 Expected values match the keys in "How Proteus does it" above. Anything else is drift — check `proteus status` for a `failed` line, or re-run `proteus apply`.
 
-Once Phase G ships, `proteus diff` confirms the applied config against NM defaults in a single command.
+`proteus diff` confirms the applied config against NM defaults in a single command.
 
 ## Detect-and-defer
 
