@@ -126,6 +126,12 @@ pub enum Command {
     Unpin {
         /// Interface name or NM connection profile.
         target: String,
+        /// Confirm this mutating change (issue #391 / N12.1):
+        /// `unpin` clears the persisted pin so the next rotation
+        /// drops the operator-chosen MAC. Without `--yes` the
+        /// command exits with `CONFIRMATION_REQUIRED`.
+        #[arg(long)]
+        yes: bool,
     },
     /// Show diff between config, defaults, and live state.
     Diff {

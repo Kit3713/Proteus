@@ -122,7 +122,7 @@ pub(super) fn dispatch(cli: Cli) -> Result<u8> {
         Command::Pin { target, mac, yes } => {
             commands::pin::run(&target, mac.as_deref(), yes, cli.state.as_deref())
         }
-        Command::Unpin { target } => commands::unpin::run(&target, cli.state.as_deref()),
+        Command::Unpin { target, yes } => commands::unpin::run(&target, yes, cli.state.as_deref()),
         Command::Diff { json } => {
             commands::diff::run(json, cli.state.as_deref(), cli.config.as_deref())
         }
@@ -205,10 +205,13 @@ pub(super) fn dispatch(cli: Cli) -> Result<u8> {
         },
         Command::Dhcp { action } => match action {
             DhcpAction::Status { json } => commands::dhcp::status(json),
-            DhcpAction::Apply { .. } => {
-                commands::dhcp::apply(cli.state.as_deref(), cli.config.as_deref())
+            // Issue #348/#375/M1/N12.2: --yes was previously dropped by the
+            // `..` rest-pattern which let dhcp apply/revert mutate without
+            // the operator's explicit confirmation. Plumb the flag through.
+            DhcpAction::Apply { yes } => {
+                commands::dhcp::apply(yes, cli.state.as_deref(), cli.config.as_deref())
             }
-            DhcpAction::Revert { .. } => commands::dhcp::revert(cli.state.as_deref()),
+            DhcpAction::Revert { yes } => commands::dhcp::revert(yes, cli.state.as_deref()),
             DhcpAction::Renew { iface, yes } => {
                 commands::dhcp::renew(iface.as_deref(), yes, cli.state.as_deref())
             }
@@ -232,14 +235,17 @@ pub(super) fn dispatch(cli: Cli) -> Result<u8> {
                 commands::portal::run_status(json, cli.state.as_deref(), cli.config.as_deref())
             }
             PortalAction::List { json } => commands::portal::run_list(json, cli.state.as_deref()),
-            PortalAction::Mark { ssid, .. } => {
-                commands::portal::run_mark(&ssid, cli.state.as_deref())
+            // Issue #348/N12.3: portal mark/unmark/open are mutators (mark
+            // and unmark write state.json, open emits a network probe). The
+            // `--yes` flag was being dropped via `..` — plumb it through.
+            PortalAction::Mark { ssid, yes } => {
+                commands::portal::run_mark(&ssid, yes, cli.state.as_deref())
             }
-            PortalAction::Unmark { ssid, .. } => {
-                commands::portal::run_unmark(&ssid, cli.state.as_deref())
+            PortalAction::Unmark { ssid, yes } => {
+                commands::portal::run_unmark(&ssid, yes, cli.state.as_deref())
             }
-            PortalAction::Open { .. } => {
-                commands::portal::run_open(cli.state.as_deref(), cli.config.as_deref())
+            PortalAction::Open { yes } => {
+                commands::portal::run_open(yes, cli.state.as_deref(), cli.config.as_deref())
             }
         },
         Command::Wiki { action, page } => match action {

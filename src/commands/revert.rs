@@ -102,7 +102,7 @@ pub(crate) fn revert_best_effort(warns: &mut Vec<String>) {
     if let Err(e) = super::ipv6::revert(true, None) {
         warns.push(format!("ipv6: {e:#}"));
     }
-    if let Err(e) = super::dhcp::revert(None) {
+    if let Err(e) = super::dhcp::revert(true, None) {
         warns.push(format!("dhcp: {e:#}"));
     }
     // Issue #298: enterprise-wifi was missing from the revert fan-out,

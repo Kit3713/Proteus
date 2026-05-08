@@ -296,7 +296,10 @@ fn run_dhcp(
     if !config.dhcp.enabled {
         return skipped("dhcp", "disabled in config (dhcp.enabled = false)");
     }
-    let primary = classify("dhcp", super::dhcp::apply(state_path, config_path));
+    // The orchestrator's own `--yes` gate ran before this fan-out, so each
+    // per-feature mutator is invoked with `yes=true` to skip the inner gate.
+    // Mirrors the bluetooth/ipv6/enterprise-wifi/rf calls below.
+    let primary = classify("dhcp", super::dhcp::apply(true, state_path, config_path));
     // Roadmap Milestone 4c: when `[dhcp] renew_on_apply = true`, follow
     // the apply with a lease release+renew so the upstream DHCP server
     // hands out a fresh lease against the new client identity. Skipped
