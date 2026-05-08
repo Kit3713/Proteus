@@ -518,10 +518,17 @@ mod tests {
     use std::path::PathBuf;
 
     fn temp_state_path(tag: &str) -> PathBuf {
+        // Issue #275: `State::save` chmods the parent dir to 0o700, so the
+        // state path needs its own scratch subdir under /tmp rather than
+        // /tmp itself (chmod /tmp would fail with EPERM in user-mode CI).
         let mut p = std::env::temp_dir();
-        p.push(format!("proteus-kill-cmd-test-{tag}.json"));
-        let _ = std::fs::remove_file(&p);
-        p
+        p.push(format!(
+            "proteus-kill-cmd-test-{tag}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&p);
+        std::fs::create_dir_all(&p).unwrap();
+        p.join("state.json")
     }
 
     /// Issue #235: `kill_status` now requires root to match reality

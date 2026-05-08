@@ -12,16 +12,40 @@ Type=oneshot
 ExecStart=/usr/local/bin/proteus rotate --if-needed --yes
 User=root
 
-# Hardening (see systemd.exec(5)).
-ProtectSystem=full
+# Hardening (see systemd.exec(5)). Issue #228: parity with proteus-events.service.
+# `rotate --if-needed` shares the same workload as plain rotate — state.json
+# write + NM/hostnamed DBus — so strict ProtectSystem fits.
+ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
+PrivateDevices=true
 NoNewPrivileges=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectClock=true
+ProtectControlGroups=true
+ProtectHostname=true
+RestrictAddressFamilies=AF_UNIX AF_NETLINK AF_INET AF_INET6
+RestrictNamespaces=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+
 # CAP_NET_ADMIN: nftables + sysctl writes for L2/L3 rotation.
 # CAP_NET_RAW:   ICMP probe fallback (phase C).
 # CAP_NET_BIND_SERVICE: bind to privileged ports if probe targets require it.
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
+
+# Read-write access to state dir only.
+ReadWritePaths=/var/lib/proteus
+ReadOnlyPaths=/etc/proteus
+
 SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @obsolete @cpu-emulation @debug @raw-io @reboot @swap @mount @module @clock
+SystemCallErrorNumber=EPERM
 
 StandardOutput=journal
 StandardError=journal

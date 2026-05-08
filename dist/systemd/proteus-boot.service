@@ -10,16 +10,50 @@ Type=oneshot
 ExecStart=/usr/local/bin/proteus apply --yes
 User=root
 
-# Hardening (see systemd.exec(5)).
-ProtectSystem=full
+# Hardening (see systemd.exec(5)). Issue #228: parity with proteus-events.service.
+# `apply` writes drop-ins under multiple /etc/ subtrees (sysctl.d, systemd
+# timesyncd/resolved/system, NetworkManager dispatcher), so we enumerate
+# those explicitly via ReadWritePaths= and keep ProtectSystem=strict for
+# everything else.
+ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
+PrivateDevices=true
 NoNewPrivileges=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectClock=true
+ProtectControlGroups=true
+ProtectHostname=true
+RestrictAddressFamilies=AF_UNIX AF_NETLINK AF_INET AF_INET6
+RestrictNamespaces=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+
 # CAP_NET_ADMIN: nftables + sysctl writes for L2/L3 rotation.
 # CAP_NET_RAW:   ICMP probe fallback (phase C).
 # CAP_NET_BIND_SERVICE: bind to privileged ports if probe targets require it.
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
+
+# `proteus apply` is the orchestrator: it stamps drop-ins under each of
+# these directories (95-proteus.conf for sysctl, 10-proteus-* for resolved,
+# 99.conf for timesyncd, override.conf for timer drop-ins), and persists
+# state.json under /var/lib/proteus.
+ReadWritePaths=/var/lib/proteus
+ReadWritePaths=/etc/sysctl.d
+ReadWritePaths=/etc/systemd/system
+ReadWritePaths=/etc/systemd/resolved.conf.d
+ReadWritePaths=/etc/systemd/timesyncd.conf.d
+ReadWritePaths=/etc/NetworkManager
+ReadOnlyPaths=/etc/proteus
+
 SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @obsolete @cpu-emulation @debug @raw-io @reboot @swap @mount @module @clock
+SystemCallErrorNumber=EPERM
 
 StandardOutput=journal
 StandardError=journal

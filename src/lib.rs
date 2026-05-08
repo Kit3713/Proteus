@@ -143,6 +143,73 @@ mod tests {
         assert!(checked > 0, "no .service files checked under dist/systemd");
     }
 
+    /// Issue #228: every Proteus systemd service must carry the strict
+    /// hardening shape established by `proteus-events.service`. A new
+    /// unit must not slip in with the old `ProtectSystem=full` /
+    /// minimal-hardening profile.
+    #[test]
+    fn systemd_services_carry_strict_hardening_parity() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("dist/systemd");
+        // Each line is matched verbatim — do not coalesce whitespace.
+        let required_lines = [
+            "ProtectSystem=strict",
+            "ProtectHome=true",
+            "PrivateTmp=true",
+            "PrivateDevices=true",
+            "NoNewPrivileges=true",
+            "ProtectKernelTunables=true",
+            "ProtectKernelModules=true",
+            "ProtectKernelLogs=true",
+            "ProtectClock=true",
+            "ProtectControlGroups=true",
+            "ProtectHostname=true",
+            "RestrictNamespaces=true",
+            "RestrictRealtime=true",
+            "LockPersonality=true",
+            "MemoryDenyWriteExecute=true",
+            "SystemCallArchitectures=native",
+            "SystemCallErrorNumber=EPERM",
+        ];
+        let mut checked = 0usize;
+        for entry in std::fs::read_dir(&dir).expect("dist/systemd should exist") {
+            let path = entry.unwrap().path();
+            if path.extension().and_then(|s| s.to_str()) != Some("service") {
+                continue;
+            }
+            let body = std::fs::read_to_string(&path).unwrap();
+            for required in &required_lines {
+                assert!(
+                    body.lines().any(|l| l.trim() == *required),
+                    "{}: missing strict-hardening directive `{}` (issue #228)",
+                    path.display(),
+                    required,
+                );
+            }
+            // RestrictAddressFamilies is required but the exact set
+            // varies per workload — assert the directive is present.
+            assert!(
+                body.lines()
+                    .any(|l| l.starts_with("RestrictAddressFamilies=")),
+                "{}: missing RestrictAddressFamilies directive (issue #228)",
+                path.display(),
+            );
+            // SystemCallFilter must exclude the dangerous sets. A bare
+            // `SystemCallFilter=@system-service` (the old shape) is
+            // banned.
+            assert!(
+                body.lines().any(|l| {
+                    l.starts_with("SystemCallFilter=~")
+                        && l.contains("@privileged")
+                        && l.contains("@module")
+                }),
+                "{}: SystemCallFilter must deny @privileged @module ... (issue #228)",
+                path.display(),
+            );
+            checked += 1;
+        }
+        assert!(checked > 0, "no .service files checked under dist/systemd");
+    }
+
     /// Issue #135: CI must use the pinned toolchain.
     #[test]
     fn ci_workflow_does_not_use_floating_stable_toolchain() {

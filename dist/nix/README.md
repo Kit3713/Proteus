@@ -79,11 +79,21 @@ Drops you into a shell with `cargo`, `rustc`, `rustfmt`, and `clippy`.
   after NetworkManager) and `proteus-resume.service` (rotates on wake).
 - Conditionally enables `proteus-rotate.timer` (2h) and
   `proteus-check.timer` (5m), each with the matching service.
-- All services run as root with the hardened profile from
-  `dist/systemd/`: `ProtectSystem=full`, `ProtectHome=true`,
-  `PrivateTmp=true`, `NoNewPrivileges=true`, capability bounding set
-  limited to `CAP_NET_ADMIN CAP_NET_RAW CAP_NET_BIND_SERVICE`,
-  `SystemCallFilter=@system-service`.
+- All services run as root with the strict shared hardening profile
+  mirrored from `dist/systemd/` (issue #228): `ProtectSystem=strict`,
+  the full `Protect*` family (Home, KernelTunables, KernelModules,
+  KernelLogs, Clock, ControlGroups, Hostname), `PrivateTmp=true`,
+  `PrivateDevices=true`, `RestrictNamespaces=true`,
+  `RestrictRealtime=true`, `LockPersonality=true`,
+  `MemoryDenyWriteExecute=true`, `SystemCallArchitectures=native`,
+  capability bounding set limited to `CAP_NET_ADMIN CAP_NET_RAW
+  CAP_NET_BIND_SERVICE`, and `SystemCallFilter=@system-service` minus
+  the dangerous sets (`@privileged @resources @obsolete @cpu-emulation
+  @debug @raw-io @reboot @swap @mount @module @clock`). Per-unit
+  `ReadWritePaths=` carve out `/var/lib/proteus`; `proteus-boot`
+  additionally allows the `/etc/sysctl.d`, `/etc/systemd/{system,
+  resolved.conf.d, timesyncd.conf.d}`, and `/etc/NetworkManager`
+  drop-in roots that `proteus apply` writes to.
 
 ## Caveats
 

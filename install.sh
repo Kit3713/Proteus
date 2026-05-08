@@ -118,11 +118,18 @@ fi
 
 # State dir is root-only (0700): caches the permanent MAC and original
 # hostname — these are sacred. See wiki concepts page.
+#
+# Issue #275: a pre-existing $STATE_DIR may have been created by a
+# previous install with a permissive umask, leaving state.json (and the
+# .lock file) deletable by any local user. Re-chmod / re-chown on every
+# install so an upgrade automatically tightens a misconfigured dir.
 if [ ! -d "$STATE_DIR" ]; then
     info "creating $STATE_DIR"
-    run install -d -m 0700 "$STATE_DIR"
+    run install -d -m 0700 -o root -g root "$STATE_DIR"
 else
-    info "$STATE_DIR already exists, leaving as-is"
+    info "tightening $STATE_DIR permissions to 0700 root:root (issue #275)"
+    run chmod 0700 "$STATE_DIR"
+    run chown root:root "$STATE_DIR"
 fi
 
 # ---- systemd units ----------------------------------------------------------

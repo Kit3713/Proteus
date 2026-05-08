@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
 use anyhow::{Context, Result};
@@ -9,6 +10,37 @@ use serde::{Deserialize, Serialize};
 
 use crate::commands;
 use crate::kill_switch::KillSwitchState;
+
+/// Mode the state directory must carry (root rwx, no group/other). Issue
+/// #275: callers that auto-create `/var/lib/proteus` previously fell back
+/// to whatever umask was active, which on a misconfigured system left
+/// `state.json` deletable by any local user. Every code path that creates
+/// or touches the state dir routes through [`ensure_state_dir_secure`] so
+/// the mode is forced regardless of umask or pre-existing state.
+pub const STATE_DIR_MODE: u32 = 0o700;
+
+/// Mode the state file (`state.json`) and lock file (`.lock`) must
+/// carry. `write_atomic` already opens the temp file at this mode; this
+/// constant exists so the lock file (which is created via `OpenOptions`
+/// without a mode) can match the same root-only posture (issue #275).
+pub const STATE_FILE_MODE: u32 = 0o600;
+
+/// Ensure `dir` exists and is owned by root with mode [`STATE_DIR_MODE`].
+/// Idempotent: safe to call when the dir is already correct, when it
+/// exists with a wrong mode (gets re-chmodded), or when it doesn't yet
+/// exist (gets created with the target mode).
+///
+/// Issue #275: do **not** trust umask. Callers reach this both at first
+/// install (cold dir) and on every mutating command (warm dir), so a
+/// pre-existing 0o755 directory must be tightened on next run rather
+/// than left for the operator to spot.
+pub fn ensure_state_dir_secure(dir: &Path) -> Result<()> {
+    fs::create_dir_all(dir).with_context(|| format!("creating state dir {}", dir.display()))?;
+    let perms = fs::Permissions::from_mode(STATE_DIR_MODE);
+    fs::set_permissions(dir, perms)
+        .with_context(|| format!("chmod 0{STATE_DIR_MODE:o} on state dir {}", dir.display()))?;
+    Ok(())
+}
 
 /// Issue #204: state.json schema version. Bumped when a structural change
 /// requires a migration (not a backwards-compatible additive field). The
@@ -307,7 +339,25 @@ impl State {
         let mut to_write = self.clone();
         to_write.schema_version = self.schema_version.max(CURRENT_SCHEMA_VERSION);
         let bytes = serde_json::to_vec_pretty(&to_write)?;
-        commands::write_atomic(path, &bytes)
+        // Issue #275: tighten the parent dir to 0o700 before write_atomic
+        // touches it. write_atomic already lands the file at 0o600, but the
+        // dir's mode is whatever umask gave us — fix that here. The chmod
+        // is idempotent: a correctly-permissioned dir is a no-op.
+        if let Some(parent) = path.parent() {
+            ensure_state_dir_secure(parent)?;
+        }
+        commands::write_atomic(path, &bytes)?;
+        // Belt-and-braces: re-assert the file mode after write_atomic in
+        // case a future refactor of write_atomic ever drops the .mode(0o600)
+        // hint. Idempotent and cheap — a single fchmod equivalent.
+        let perms = fs::Permissions::from_mode(STATE_FILE_MODE);
+        fs::set_permissions(path, perms).with_context(|| {
+            format!(
+                "chmod 0{STATE_FILE_MODE:o} on state file {}",
+                path.display()
+            )
+        })?;
+        Ok(())
     }
 }
 
@@ -662,5 +712,86 @@ mod tests {
         assert!(s.managed.interfaces.is_empty());
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Issue #275: `ensure_state_dir_secure` lands a fresh dir at exactly
+    /// 0o700 regardless of the active umask, and tightens an existing
+    /// world-readable dir on a second call.
+    #[test]
+    fn ensure_state_dir_secure_creates_at_0700() {
+        let dir = std::env::temp_dir().join(format!(
+            "proteus-state-mode-create-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        ensure_state_dir_secure(&dir).expect("create with 0700");
+        let mode = fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            mode, STATE_DIR_MODE,
+            "newly-created state dir must be 0o700, got 0o{mode:o}"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Issue #275: a pre-existing 0o755 dir (e.g. left over by an older
+    /// install with a permissive umask) must be tightened on every
+    /// call, not left alone for the operator to spot.
+    #[test]
+    fn ensure_state_dir_secure_tightens_existing_dir() {
+        let dir = std::env::temp_dir().join(format!(
+            "proteus-state-mode-tighten-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        // Simulate the pre-#275 misconfigured-dir bug: world-readable
+        // and group-writable.
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o775)).unwrap();
+        let pre = fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
+        assert_eq!(pre, 0o775, "test fixture: dir should start at 0o775");
+
+        ensure_state_dir_secure(&dir).expect("tighten existing dir");
+        let post = fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            post, STATE_DIR_MODE,
+            "ensure_state_dir_secure must re-chmod an existing dir to 0o700, got 0o{post:o}"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Issue #275: end-to-end — a fresh `State::save` lands the state dir
+    /// at 0o700 and `state.json` itself at 0o600, regardless of the
+    /// active umask.
+    #[test]
+    fn save_lands_state_dir_at_0700_and_file_at_0600() {
+        // Inner state-dir must not exist so save() exercises the
+        // create-then-chmod path, not just the tighten path.
+        let parent = std::env::temp_dir().join(format!(
+            "proteus-state-save-mode-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        let _ = fs::remove_dir_all(&parent);
+        fs::create_dir_all(&parent).unwrap();
+        let dir = parent.join("var-lib-proteus");
+        let path = dir.join("state.json");
+
+        let s = State::default();
+        s.save(&path).expect("save creates dir + file");
+
+        let dir_mode = fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            dir_mode, STATE_DIR_MODE,
+            "state dir must be 0o700, got 0o{dir_mode:o}"
+        );
+        let file_mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            file_mode, STATE_FILE_MODE,
+            "state.json must be 0o600, got 0o{file_mode:o}"
+        );
+
+        let _ = fs::remove_dir_all(&parent);
     }
 }
