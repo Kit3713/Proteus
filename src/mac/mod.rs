@@ -80,7 +80,15 @@ impl FromStr for Mac {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         // Accept colon, dash, or no separator (12 hex chars).
-        let cleaned: String = s.chars().filter(|c| *c != ':' && *c != '-').collect();
+        // Issue #284: drop any non-ASCII char during cleaning so byte-indexed
+        // slicing below is safe. A multi-byte UTF-8 codepoint that satisfies
+        // the old `*c != ':' && *c != '-'` filter would survive into `cleaned`,
+        // make `cleaned.len()` (bytes) hit 12 with N<6 logical hex pairs, and
+        // panic on `&cleaned[i*2..i*2+2]` at a non-char-boundary index.
+        let cleaned: String = s
+            .chars()
+            .filter(|c| *c != ':' && *c != '-' && c.is_ascii())
+            .collect();
         if cleaned.len() != 12 {
             // Re-split using the original separators to give a useful error count.
             let parts: Vec<&str> = if s.contains(':') {
@@ -149,6 +157,21 @@ mod tests {
     fn rejects_bad_hex() {
         let r: Result<Mac, _> = "zz:bb:cc:dd:ee:ff".parse();
         assert!(matches!(r, Err(MacError::Hex(_))));
+    }
+
+    /// Issue #284: a string whose cleaned byte length lands on 12 because of
+    /// multi-byte UTF-8 chars must NOT panic — old code byte-indexed the
+    /// `cleaned` String at i*2..i*2+2 and tripped on a non-char-boundary.
+    #[test]
+    fn rejects_multibyte_utf8_input_without_panic() {
+        // "µ" is 2 bytes (0xC2 0xB5). 6 of them = 12 bytes but only 6 chars,
+        // not 12 hex digits — must reject cleanly, not panic.
+        let r: Result<Mac, _> = "µµµµµµ".parse();
+        assert!(r.is_err(), "multi-byte UTF-8 input must error, not panic");
+
+        // A mixed input that survives the old filter and reaches 12 bytes.
+        let r: Result<Mac, _> = "µµaabbcc".parse();
+        assert!(r.is_err());
     }
 
     #[test]
