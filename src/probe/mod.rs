@@ -218,9 +218,14 @@ pub fn build_report(results: Vec<EndpointResult>, quorum_n: u8, quorum_total: u8
 /// Saturating cast `usize -> u8` for probe counts. Pulled out so the
 /// debug_assert in `classify` and the matching call in `build_report`
 /// share one definition.
+///
+/// Roadmap P6: prefer `u8::try_from` (explicit boundary check) over the
+/// previous `as u8` form. The boundary is visible in the source and a
+/// future refactor that drops the upper-bound check would surface as a
+/// type error rather than silent wrap-around.
 #[inline]
 fn saturate_u8(n: usize) -> u8 {
-    n.min(u8::MAX as usize) as u8
+    u8::try_from(n).unwrap_or(u8::MAX)
 }
 
 #[cfg(test)]
@@ -266,6 +271,20 @@ mod tests {
         assert_eq!(classify(&r, 3), Classification::Clear);
         let r: Vec<_> = (0..255).map(|i| ep(&format!("h{i}"), false)).collect();
         assert_eq!(classify(&r, 3), Classification::Down);
+    }
+
+    /// Roadmap P6: pin the saturate_u8 helper directly. With 256 entries
+    /// the previous `len() as u8` wrapped to 0; the `try_from` guard must
+    /// surface 255 instead. Test this independently of `classify` so a
+    /// future refactor of the helper signature can't reintroduce the bug.
+    #[test]
+    fn saturate_u8_caps_at_255() {
+        assert_eq!(saturate_u8(0), 0);
+        assert_eq!(saturate_u8(1), 1);
+        assert_eq!(saturate_u8(255), 255);
+        assert_eq!(saturate_u8(256), 255);
+        assert_eq!(saturate_u8(1_000), 255);
+        assert_eq!(saturate_u8(usize::MAX), 255);
     }
 
     /// `build_report` shares the saturating-cast story with `classify`.
