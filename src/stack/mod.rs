@@ -13,9 +13,8 @@
 //! --system` reload) lives in `crate::commands::stack` so this module stays
 //! pure and unit-testable.
 
-pub mod sha256;
-
 use crate::config::StackConfig;
+use crate::crypto::sha256;
 use crate::version;
 
 /// Where the drop-in lives. sysctl.d(5) reads files from
@@ -126,7 +125,7 @@ pub fn render_header(body_sha_hex: &str) -> String {
 pub fn render_dropin(cfg: &StackConfig, ifaces: &[String]) -> String {
     let lines = lines_for(cfg, ifaces);
     let body = render_body(&lines);
-    let sha = sha256::hex(body.as_bytes());
+    let sha = sha256::hex_digest(body.as_bytes());
     let header = render_header(&sha);
     format!("{header}{body}")
 }
@@ -262,7 +261,7 @@ mod tests {
         let cfg = StackConfig::default();
         let ifaces = vec!["wlan0".to_string()];
         let body = render_body(&lines_for(&cfg, &ifaces));
-        let expected = sha256::hex(body.as_bytes());
+        let expected = sha256::hex_digest(body.as_bytes());
         let rendered = render_dropin(&cfg, &ifaces);
         assert!(
             rendered.contains(&format!("# sha256:{expected}")),

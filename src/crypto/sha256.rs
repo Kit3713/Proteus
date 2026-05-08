@@ -1,17 +1,27 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Hand-rolled SHA-256 (FIPS 180-4) so `proteus diff` can spot edits to
-//! managed files without pulling in a crypto crate.
+//! Hand-rolled SHA-256 (FIPS 180-4) — the canonical implementation
+//! Proteus uses everywhere it needs a content hash.
 //!
-//! Issue #234: the `# sha256:` header is an edit-detection / tamper-hint
-//! primitive, not an integrity guarantee. Both header and body live in the
-//! same root-owned file; an active adversary with write access can always
-//! recompute the header to match a tampered body. The hash is for catching
-//! honest manual edits and other-tool drift, not for defending against an
-//! attacker who already has root.
+//! Issue #299 lifted four byte-identical copies of this code (one each
+//! in `dns/`, `ipv6/`, `stack/`, `diff/`) into one shared module. The
+//! original copies grew up independently to dodge the `sha2` / `digest`
+//! crate dep: each managed-file writer needs a stable digest stamped
+//! into its `# sha256:<hex>` header so `proteus diff` (issue #234) can
+//! spot manual edits and other-tool drift, but `sha2` would drag in
+//! ~250 KB of transitive code for ~70 lines of well-tested algorithm.
+//! Consolidating to one copy keeps the no-deps invariant intact.
 //!
-//! Single use site, ~70 lines, no constant-time concerns: this is for
-//! drift detection on local config files, not authentication.
+//! Threat model reminder: the `# sha256:` header is an edit-detection /
+//! tamper-hint primitive, **not** an integrity guarantee. Both header
+//! and body live in the same root-owned file; an active adversary with
+//! write access can always recompute the header to match a tampered
+//! body. The hash catches honest manual edits and other-tool drift,
+//! not a root-equipped attacker.
+//!
+//! Single-shot API (`hex_digest`, `digest`) — no streaming `Update` /
+//! `Finalize` because every caller hands us the full body in one slice.
+//! Not constant-time: every use is a public, non-secret content hash.
 
 const K: [u32; 64] = [
     0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
@@ -29,6 +39,10 @@ const H0: [u32; 8] = [
 ];
 
 /// Compute the SHA-256 of `bytes` and return the lowercase hex digest.
+///
+/// 64-byte output, ASCII `[0-9a-f]` only. Allocation-light: builds the
+/// hex once into a fixed-size buffer rather than `format!`-ing each
+/// byte through the formatter machinery.
 pub fn hex_digest(bytes: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let digest = digest(bytes);
@@ -41,36 +55,46 @@ pub fn hex_digest(bytes: &[u8]) -> String {
     String::from_utf8(buf.to_vec()).expect("hex bytes are ASCII")
 }
 
-fn digest(bytes: &[u8]) -> [u8; 32] {
+/// Compute the raw 32-byte SHA-256 of `bytes`.
+pub fn digest(bytes: &[u8]) -> [u8; 32] {
     let mut h = H0;
     let bit_len = (bytes.len() as u64).wrapping_mul(8);
 
-    // Pre-processing: append 0x80 then zero-pad so total length mod 64 == 56,
-    // then 8 bytes of bit-length big-endian.
-    let mut padded = Vec::with_capacity(bytes.len() + 72);
-    padded.extend_from_slice(bytes);
-    padded.push(0x80);
-    while padded.len() % 64 != 56 {
-        padded.push(0);
+    // Pad: 0x80 byte, then zeros until len % 64 == 56, then 8-byte BE bit length.
+    let mut buf = Vec::with_capacity(bytes.len() + 72);
+    buf.extend_from_slice(bytes);
+    buf.push(0x80);
+    while buf.len() % 64 != 56 {
+        buf.push(0);
     }
-    padded.extend_from_slice(&bit_len.to_be_bytes());
+    buf.extend_from_slice(&bit_len.to_be_bytes());
 
-    for chunk in padded.chunks_exact(64) {
-        process_chunk(&mut h, chunk);
+    // Padding guarantees `buf.len() % 64 == 0`. Use `chunks_exact` so the
+    // invariant is enforced — `chunks(64)` would silently feed a partial
+    // trailing block to `compress` (whose `debug_assert` is dropped in
+    // release builds) if the padding logic ever regressed.
+    let mut iter = buf.chunks_exact(64);
+    for chunk in &mut iter {
+        compress(&mut h, chunk);
     }
+    debug_assert!(
+        iter.remainder().is_empty(),
+        "sha256 padding should leave no remainder"
+    );
 
     let mut out = [0u8; 32];
-    for (i, word) in h.iter().enumerate() {
-        out[i * 4..i * 4 + 4].copy_from_slice(&word.to_be_bytes());
+    for (i, w) in h.iter().enumerate() {
+        out[i * 4..i * 4 + 4].copy_from_slice(&w.to_be_bytes());
     }
     out
 }
 
-fn process_chunk(h: &mut [u32; 8], chunk: &[u8]) {
+fn compress(h: &mut [u32; 8], chunk: &[u8]) {
+    debug_assert_eq!(chunk.len(), 64);
     let mut w = [0u32; 64];
-    for (i, slot) in w.iter_mut().enumerate().take(16) {
+    for (i, word) in w.iter_mut().take(16).enumerate() {
         let off = i * 4;
-        *slot = u32::from_be_bytes([chunk[off], chunk[off + 1], chunk[off + 2], chunk[off + 3]]);
+        *word = u32::from_be_bytes([chunk[off], chunk[off + 1], chunk[off + 2], chunk[off + 3]]);
     }
     for i in 16..64 {
         let s0 = w[i - 15].rotate_right(7) ^ w[i - 15].rotate_right(18) ^ (w[i - 15] >> 3);
@@ -129,7 +153,7 @@ mod tests {
 
     #[test]
     fn abc_digest_matches_fips_vector() {
-        // FIPS 180-4 test vector: SHA-256("abc") =
+        // FIPS 180-4 §B.1: SHA-256("abc") =
         // ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad
         assert_eq!(
             hex_digest(b"abc"),
@@ -139,7 +163,9 @@ mod tests {
 
     #[test]
     fn long_block_digest_matches_fips_vector() {
-        // FIPS 180-4 test vector: SHA-256("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq")
+        // FIPS 180-4 test vector: 56-byte input that crosses one full
+        // block plus padding.
+        // SHA-256("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq")
         // = 248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1
         assert_eq!(
             hex_digest(b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"),
@@ -156,5 +182,28 @@ mod tests {
             hex_digest(&input),
             "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0"
         );
+    }
+
+    #[test]
+    fn handles_inputs_around_block_boundaries() {
+        // Lengths near 56 (where padding crosses a block) and 64 (exact
+        // block) exercise every branch of the padding logic. None of these
+        // should panic regardless of build mode — if they ever do,
+        // `chunks_exact` is feeding a malformed remainder to `compress`.
+        for n in [0usize, 1, 55, 56, 57, 63, 64, 65, 119, 120, 127, 128, 1023] {
+            let bytes = vec![0xa5u8; n];
+            let _ = hex_digest(&bytes);
+        }
+    }
+
+    #[test]
+    fn raw_digest_matches_hex_for_empty() {
+        // Round-trip: digest() bytes hex-formatted should equal hex_digest().
+        let raw = digest(b"");
+        let mut hex = String::with_capacity(64);
+        for b in &raw {
+            hex.push_str(&format!("{b:02x}"));
+        }
+        assert_eq!(hex, hex_digest(b""));
     }
 }

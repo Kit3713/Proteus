@@ -17,9 +17,9 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 
 use super::Paths;
-use super::apply::sha256_hex;
 use crate::commands;
 use crate::config::ResolvedConfig;
+use crate::crypto::sha256;
 use crate::version;
 
 /// Single Proteus-owned filename in `resolved.conf.d/`. Numbered higher than
@@ -52,7 +52,7 @@ pub fn is_active(cfg: &ResolvedConfig) -> bool {
 /// rendered body without parsing the header.
 pub fn render_dropin(cfg: &ResolvedConfig) -> String {
     let body = render_body(cfg);
-    let sha = sha256_hex(body.as_bytes());
+    let sha = sha256::hex_digest(body.as_bytes());
     format!(
         "# managed by proteus v{version}\n# do not edit; manage via /etc/proteus/config.toml or `proteus resolved apply`\n# sha256:{sha}\n{body}",
         version = version::VERSION,
@@ -146,7 +146,7 @@ mod tests {
     fn render_dropin_includes_sha_of_body() {
         let c = cfg(true, true);
         let body = render_body(&c);
-        let expected = sha256_hex(body.as_bytes());
+        let expected = sha256::hex_digest(body.as_bytes());
         let full = render_dropin(&c);
         assert!(full.contains(&format!("sha256:{expected}")));
         assert!(full.contains("# managed by proteus v"));
