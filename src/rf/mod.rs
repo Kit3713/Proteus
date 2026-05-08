@@ -501,22 +501,31 @@ struct PhyCapabilities {
 /// - the first `Supported commands` line as a raw string for human
 ///   inspection.
 fn parse_iw_phy_capabilities(text: &str) -> PhyCapabilities {
-    let mut out = PhyCapabilities::default();
-    let lower = text.to_ascii_lowercase();
-    out.randomize_mac = lower.contains("randomize_mac")
-        || lower.contains("randomise_mac")
-        || lower.contains("scan_random_mac");
-    out.active_scan = lower.contains("active scan")
-        || lower.contains("new_scan")
-        || lower.contains("trigger_scan");
+    // Issue #273: previously this allocated a full-buffer lowercase copy
+    // of the entire `iw phy info` output, then ran 6 contains() checks
+    // against that copy. The output can be hundreds of lines on
+    // multi-radio modern Wi-Fi 7 chipsets; the allocation dominates the
+    // parser cost and is unnecessary because each individual contains()
+    // can do its own case-insensitive walk over the original buffer.
+    let randomize_mac = contains_ascii_case_insensitive(text, "randomize_mac")
+        || contains_ascii_case_insensitive(text, "randomise_mac")
+        || contains_ascii_case_insensitive(text, "scan_random_mac");
+    let active_scan = contains_ascii_case_insensitive(text, "active scan")
+        || contains_ascii_case_insensitive(text, "new_scan")
+        || contains_ascii_case_insensitive(text, "trigger_scan");
+    let mut raw_scan_line = None;
     for raw in text.lines() {
         let line = raw.trim();
         if line.starts_with("Supported commands:") {
-            out.raw_scan_line = Some(line.to_string());
+            raw_scan_line = Some(line.to_string());
             break;
         }
     }
-    out
+    PhyCapabilities {
+        randomize_mac,
+        active_scan,
+        raw_scan_line,
+    }
 }
 
 // ---- Chipset / firmware extended report (Milestone 4b) -----------------
@@ -559,6 +568,13 @@ pub fn chip_info_extended(iface: &str) -> ChipInfoExtended {
 /// `firmware_version` in sysfs. Reads `dmesg` (a one-shot, success-or-skip
 /// — the binary is missing on minimal containers) and looks for the first
 /// line that mentions `iface` and the word `firmware`.
+///
+/// Issue #273: previously this re-allocated `iface.to_ascii_lowercase()`
+/// once per dmesg line — dmesg buffers can be tens of thousands of lines
+/// long, and the iface name doesn't change inside the loop. Hoist the
+/// allocation out and replace the per-line `to_ascii_lowercase()` +
+/// `contains` chain with a direct case-insensitive search, so the inner
+/// loop allocates nothing (the `&str` `lines()` iterator is borrow-only).
 fn dmesg_firmware_line(iface: &str) -> Option<String> {
     let output = Command::new("dmesg").output().ok()?;
     if !output.status.success() {
@@ -566,14 +582,48 @@ fn dmesg_firmware_line(iface: &str) -> Option<String> {
         return None;
     }
     let text = String::from_utf8_lossy(&output.stdout);
+    // Hoist out of the loop: lowercase the iface name ONCE.
+    let iface_lower = iface.to_ascii_lowercase();
     for raw in text.lines().rev() {
         let line = raw.trim();
-        let lower = line.to_ascii_lowercase();
-        if lower.contains("firmware") && lower.contains(&iface.to_ascii_lowercase()) {
+        // Case-insensitive substring search avoids allocating a lowercase
+        // copy of every dmesg line.
+        if contains_ascii_case_insensitive(line, "firmware")
+            && contains_ascii_case_insensitive(line, &iface_lower)
+        {
             return Some(line.to_string());
         }
     }
     None
+}
+
+/// Case-insensitive ASCII substring search. `needle` must be ASCII (the
+/// caller's responsibility — interface names are constrained by
+/// `is_safe_iface` and our literal needles like `"firmware"` are ASCII
+/// by construction). Allocates nothing; walks `haystack` once.
+fn contains_ascii_case_insensitive(haystack: &str, needle: &str) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    let n = needle.as_bytes();
+    let h = haystack.as_bytes();
+    if n.len() > h.len() {
+        return false;
+    }
+    let last = h.len() - n.len();
+    for start in 0..=last {
+        let mut ok = true;
+        for i in 0..n.len() {
+            if !h[start + i].eq_ignore_ascii_case(&n[i]) {
+                ok = false;
+                break;
+            }
+        }
+        if ok {
+            return true;
+        }
+    }
+    false
 }
 
 fn iw_phy_reg_get(phy: &str) -> Option<String> {
@@ -794,6 +844,45 @@ mod tests {
         assert!(!caps.randomize_mac);
         assert!(!caps.active_scan);
         assert!(caps.raw_scan_line.is_none());
+    }
+
+    /// Issue #273: case-insensitive helper underpins the perf fix. Pin
+    /// the cases we care about so a future "optimize" doesn't break
+    /// matching on mixed-case phy capability lines.
+    #[test]
+    fn contains_ascii_case_insensitive_matches_regardless_of_case() {
+        assert!(contains_ascii_case_insensitive(
+            "RANDOMIZE_MAC",
+            "randomize_mac"
+        ));
+        assert!(contains_ascii_case_insensitive(
+            "Supported: SCAN_RANDOM_MAC_ADDR",
+            "scan_random_mac"
+        ));
+        assert!(contains_ascii_case_insensitive("foo bar", "BAR"));
+        // Empty needle matches anything (matches `str::contains("")`).
+        assert!(contains_ascii_case_insensitive("anything", ""));
+        // Needle longer than haystack can't match.
+        assert!(!contains_ascii_case_insensitive("ab", "abc"));
+        // No match.
+        assert!(!contains_ascii_case_insensitive("hello world", "xyz"));
+        // Substring at the start, middle, end.
+        assert!(contains_ascii_case_insensitive("ABCDEF", "abc"));
+        assert!(contains_ascii_case_insensitive("xABCx", "abc"));
+        assert!(contains_ascii_case_insensitive("xxABC", "abc"));
+    }
+
+    /// Issue #273: the iface name lowercase happens ONCE for
+    /// `dmesg_firmware_line`. We can't shell out to dmesg in tests, so
+    /// pin the inner search semantics through `contains_ascii_case_insensitive`
+    /// — a dmesg-shaped line containing both `firmware` and the iface
+    /// name in any case must match.
+    #[test]
+    fn dmesg_search_finds_firmware_line_regardless_of_case() {
+        let line = "[ 12.345] iwlwifi 0000:00:14.3: WLAN0: loaded firmware version blah";
+        let iface_lower = "wlan0".to_ascii_lowercase();
+        assert!(contains_ascii_case_insensitive(line, "firmware"));
+        assert!(contains_ascii_case_insensitive(line, &iface_lower));
     }
 
     #[test]

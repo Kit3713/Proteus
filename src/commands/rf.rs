@@ -189,31 +189,85 @@ pub fn revert(yes: bool, state_path: Option<&Path>) -> Result<u8> {
         .iter()
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
-    let mut restored = 0usize;
-    let mut missing = 0usize;
-    for (iface, orig) in &originals {
+    let summary = revert_apply_originals(&mut state, &originals, &mut |iface, mbm| {
+        rf::set_tx_power_mbm(iface, mbm)
+    });
+    state.save(&state_path)?;
+    print_revert_summary(&summary);
+    Ok(exit::SUCCESS)
+}
+
+/// Outcome of `revert_apply_originals` — counts each iface fell into
+/// (successfully restored / had no original to restore / failed). Used
+/// both by the live `revert` command and by unit tests.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct RevertSummary {
+    restored: usize,
+    missing: usize,
+    failed: usize,
+}
+
+/// Issue #269: drive the revert loop in a way that lets us test the
+/// "only-clear-on-success" invariant without shelling out to `iw`.
+///
+/// For each iface we either:
+///   - have a captured TX power to restore: call the writer; if it
+///     succeeds, drop the entry from state; if it fails, KEEP the entry
+///     so a later revert can retry,
+///   - have `None` (the rf-apply path was unable to read TX power on
+///     first capture): nothing actionable, drop the entry.
+///
+/// The previous implementation unconditionally cleared all originals at
+/// the end of the loop, losing the recovery target on partial failures.
+fn revert_apply_originals(
+    state: &mut State,
+    originals: &[(String, RfOriginals)],
+    setter: &mut dyn FnMut(&str, i32) -> Result<()>,
+) -> RevertSummary {
+    let mut summary = RevertSummary::default();
+    let mut clear_keys: Vec<String> = Vec::new();
+    for (iface, orig) in originals {
         match orig.tx_power_mbm {
-            Some(mbm) => match rf::set_tx_power_mbm(iface, mbm) {
+            Some(mbm) => match setter(iface, mbm) {
                 Ok(()) => {
-                    restored += 1;
+                    summary.restored += 1;
+                    clear_keys.push(iface.clone());
                     println!("rf: {iface} restored to {mbm} mBm");
                 }
                 Err(e) => {
+                    summary.failed += 1;
                     tracing::warn!("rf revert: restoring tx power on {iface} failed: {e:#}");
                     println!("rf: {iface} restore failed ({e})");
                 }
             },
             None => {
-                missing += 1;
+                summary.missing += 1;
+                // No original to restore — the entry has no actionable
+                // value, so it's safe to drop. Keeping it would just
+                // leave a stale `tx_power_mbm: None` row in state.json.
+                clear_keys.push(iface.clone());
                 println!("rf: {iface} had no original TX power on first apply, skipping");
             }
         }
     }
+    for k in &clear_keys {
+        state.originals.rf.remove(k);
+    }
+    summary
+}
 
-    state.originals.rf.clear();
-    state.save(&state_path)?;
-    println!("rf revert: {restored} restored, {missing} had no original to restore");
-    Ok(exit::SUCCESS)
+fn print_revert_summary(s: &RevertSummary) {
+    if s.failed == 0 {
+        println!(
+            "rf revert: {} restored, {} had no original to restore",
+            s.restored, s.missing
+        );
+    } else {
+        println!(
+            "rf revert: {} restored, {} had no original to restore, {} failed (originals retained for retry)",
+            s.restored, s.missing, s.failed
+        );
+    }
 }
 
 fn capture_original(state: &mut State, iface: &str) {
@@ -649,5 +703,136 @@ mod tests {
         assert!(Profile::Med.baseline().rf.scan_random_mac);
         assert!(Profile::High.baseline().rf.scan_random_mac);
         assert!(Profile::Agr.baseline().rf.scan_random_mac);
+    }
+
+    /// Issue #269: when every restore succeeds, every original is dropped
+    /// from state — the happy-path equivalence with the previous
+    /// "clear-everything" code. This is the regression-prevention twin of
+    /// the failure-path test below.
+    #[test]
+    fn revert_apply_originals_clears_all_on_full_success() {
+        let mut state = State::default();
+        state.originals.rf.insert(
+            "wlan0".into(),
+            RfOriginals {
+                tx_power_mbm: Some(2_000),
+            },
+        );
+        state.originals.rf.insert(
+            "wlan1".into(),
+            RfOriginals {
+                tx_power_mbm: Some(1_500),
+            },
+        );
+        let originals: Vec<(String, RfOriginals)> = state
+            .originals
+            .rf
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        let mut setter = |_iface: &str, _mbm: i32| -> Result<()> { Ok(()) };
+        let summary = revert_apply_originals(&mut state, &originals, &mut setter);
+        assert_eq!(summary.restored, 2);
+        assert_eq!(summary.failed, 0);
+        assert!(state.originals.rf.is_empty(), "all entries cleared");
+    }
+
+    /// Issue #269: when some restores fail, ONLY the successful entries
+    /// drop out of state. Failed interfaces' originals must remain so a
+    /// later `revert` can retry once the driver/iface is reachable
+    /// again. The previous code cleared everything unconditionally,
+    /// losing the recovery target.
+    #[test]
+    fn revert_apply_originals_preserves_failed_entries() {
+        let mut state = State::default();
+        state.originals.rf.insert(
+            "wlan0".into(),
+            RfOriginals {
+                tx_power_mbm: Some(2_000),
+            },
+        );
+        state.originals.rf.insert(
+            "wlan-fail".into(),
+            RfOriginals {
+                tx_power_mbm: Some(1_500),
+            },
+        );
+        state
+            .originals
+            .rf
+            .insert("wlan-no-orig".into(), RfOriginals { tx_power_mbm: None });
+        let originals: Vec<(String, RfOriginals)> = state
+            .originals
+            .rf
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        // Stub setter: succeed for wlan0, fail for wlan-fail. The None
+        // case never reaches the setter.
+        let mut setter = |iface: &str, _mbm: i32| -> Result<()> {
+            if iface == "wlan-fail" {
+                Err(anyhow::anyhow!("simulated iw failure"))
+            } else {
+                Ok(())
+            }
+        };
+        let summary = revert_apply_originals(&mut state, &originals, &mut setter);
+        assert_eq!(summary.restored, 1);
+        assert_eq!(summary.failed, 1);
+        assert_eq!(summary.missing, 1);
+        // Successful and missing-original entries are cleared.
+        assert!(!state.originals.rf.contains_key("wlan0"));
+        assert!(!state.originals.rf.contains_key("wlan-no-orig"));
+        // Failed entry MUST persist for the retry on the next `revert`
+        // — this is the #269 invariant.
+        assert!(
+            state.originals.rf.contains_key("wlan-fail"),
+            "originals for failed iface must be retained"
+        );
+        assert_eq!(
+            state.originals.rf["wlan-fail"].tx_power_mbm,
+            Some(1_500),
+            "the retained value must equal the original captured at apply time"
+        );
+    }
+
+    /// Issue #269: a second revert pass on the still-cached failed
+    /// originals can finish the job once the underlying driver call is
+    /// fixed. Confirms the recovery flow is actually possible — without
+    /// the fix this test fails at "originals.rf is empty by now".
+    #[test]
+    fn revert_apply_originals_retry_after_failure_cleans_up() {
+        let mut state = State::default();
+        state.originals.rf.insert(
+            "wlan-flaky".into(),
+            RfOriginals {
+                tx_power_mbm: Some(1_400),
+            },
+        );
+        let originals: Vec<(String, RfOriginals)> = state
+            .originals
+            .rf
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        // First pass fails.
+        let mut fail_setter =
+            |_iface: &str, _mbm: i32| -> Result<()> { Err(anyhow::anyhow!("transient")) };
+        let summary = revert_apply_originals(&mut state, &originals, &mut fail_setter);
+        assert_eq!(summary.failed, 1);
+        // Original survived for retry.
+        assert!(state.originals.rf.contains_key("wlan-flaky"));
+
+        // Second pass — driver works now.
+        let originals2: Vec<(String, RfOriginals)> = state
+            .originals
+            .rf
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        let mut ok_setter = |_iface: &str, _mbm: i32| -> Result<()> { Ok(()) };
+        let summary2 = revert_apply_originals(&mut state, &originals2, &mut ok_setter);
+        assert_eq!(summary2.restored, 1);
+        assert!(state.originals.rf.is_empty());
     }
 }

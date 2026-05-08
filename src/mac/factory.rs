@@ -77,7 +77,30 @@ fn read_mac_file(p: &Path) -> Option<String> {
     if raw == "00:00:00:00:00:00" || raw.is_empty() {
         return None;
     }
+    // Issue #271: reject multicast addresses. A buggy driver / firmware
+    // can present a multicast MAC at `phy80211/macaddress` or
+    // `/sys/class/net/<iface>/address`, which would then be cached as
+    // `state.original_macs[<iface>]` and "restored" on `proteus revert` —
+    // poisoning the iface with an unassignable address. The well-formed
+    // and zero checks above don't catch e.g. `01:00:5e:...`, so we filter
+    // those here at the boundary.
+    if !is_unicast_well_formed_mac(&raw) {
+        return None;
+    }
     Some(raw)
+}
+
+/// Issue #271: well-formed AND assignable as a unicast source. Defers
+/// the multicast / all-zero rules to `Mac::validate_assignable` (the same
+/// gate the rotate path uses to refuse a generated candidate), so the
+/// rules can't drift between the factory-capture and rotate sides.
+fn is_unicast_well_formed_mac(s: &str) -> bool {
+    if !is_well_formed_mac(s) {
+        return false;
+    }
+    s.parse::<super::Mac>()
+        .ok()
+        .is_some_and(|m| m.validate_assignable().is_ok())
 }
 
 fn read_trim(p: &Path) -> Option<String> {
@@ -144,6 +167,10 @@ fn is_well_formed_mac(s: &str) -> bool {
 /// former is what the driver reports when it doesn't actually expose a
 /// permanent address; the latter is defence against a quirk where ethtool
 /// prints translated text or a different layout. Issue #206-E.
+///
+/// Issue #271: also reject multicast addresses (first-octet bit 0 set).
+/// A buggy ethernet driver could otherwise have its multicast permanent
+/// address cached as the factory original and restored on revert.
 fn parse_ethtool_permanent(stdout: &str) -> Option<String> {
     for line in stdout.lines() {
         let lower = line.trim().to_ascii_lowercase();
@@ -152,7 +179,7 @@ fn parse_ethtool_permanent(stdout: &str) -> Option<String> {
             if mac.is_empty() || mac == "00:00:00:00:00:00" {
                 return None;
             }
-            if !is_well_formed_mac(mac) {
+            if !is_unicast_well_formed_mac(mac) {
                 return None;
             }
             return Some(mac.to_string());
@@ -367,5 +394,73 @@ mod tests {
     fn is_well_formed_mac_accepts_canonical_form() {
         assert!(is_well_formed_mac("aa:bb:cc:dd:ee:ff"));
         assert!(is_well_formed_mac("00:11:22:33:44:55"));
+    }
+
+    /// Issue #271: a multicast MAC (first-octet bit 0 set) is well-formed
+    /// in shape but unassignable as a unicast source. The unicast filter
+    /// rejects it; the underlying well-formed check still passes since
+    /// the format is valid.
+    #[test]
+    fn is_unicast_filter_rejects_multicast_macs() {
+        // 01:00:5e:... is the canonical IPv4 multicast OUI prefix.
+        assert!(!is_unicast_well_formed_mac("01:00:5e:00:00:01"));
+        // 33:33:... is the IPv6 multicast prefix (also has bit 0 set).
+        assert!(!is_unicast_well_formed_mac("33:33:00:00:00:01"));
+        // ff:ff:... broadcast is also multicast (bit 0 set on 0xff).
+        assert!(!is_unicast_well_formed_mac("ff:ff:ff:ff:ff:ff"));
+        // Any odd first-octet rejects.
+        assert!(!is_unicast_well_formed_mac("03:00:00:00:00:01"));
+        // Even first-octet is acceptable.
+        assert!(is_unicast_well_formed_mac("aa:bb:cc:dd:ee:ff"));
+        assert!(is_unicast_well_formed_mac("02:00:00:00:00:01"));
+        // Locally-administered + unicast (bit 1 set, bit 0 clear) is OK.
+        assert!(is_unicast_well_formed_mac("00:11:22:33:44:55"));
+        // Malformed input fails before the multicast check.
+        assert!(!is_unicast_well_formed_mac("not-a-mac"));
+    }
+
+    /// Issue #271: end-to-end through `parse_ethtool_permanent`. A buggy
+    /// driver presenting a multicast address must be rejected at the
+    /// parser boundary so it never reaches `state.original_macs`.
+    #[test]
+    fn parse_ethtool_permanent_rejects_multicast_address() {
+        for stdout in [
+            "Permanent address: 01:00:5e:00:00:01\n",
+            "Permanent address: 33:33:00:00:00:01\n",
+            "Permanent address: ff:ff:ff:ff:ff:ff\n",
+            "Permanent address: 03:00:00:00:00:01\n",
+        ] {
+            assert!(
+                parse_ethtool_permanent(stdout).is_none(),
+                "should reject multicast MAC in: {stdout:?}"
+            );
+        }
+    }
+
+    /// Issue #271: end-to-end through the sysfs reader. A driver that
+    /// surfaces a multicast address at `phy80211/macaddress` must NOT be
+    /// cached as the factory original.
+    #[test]
+    fn permanent_address_under_rejects_multicast_phy80211() {
+        let s = TestSysfs::new("factory-multicast-phy");
+        s.write_phy("wlan0", "01:00:5e:00:00:01");
+        let got = permanent_address_under(s.root(), "wlan0", &no_ethtool());
+        assert!(
+            got.is_none(),
+            "phy80211 multicast must be refused, got {got:?}"
+        );
+    }
+
+    /// Issue #271: same protection on the `/sys/class/net/<iface>/address`
+    /// fallback, even when `addr_assign_type` reports NET_ADDR_PERM.
+    #[test]
+    fn permanent_address_under_rejects_multicast_sysfs_address() {
+        let s = TestSysfs::new("factory-multicast-sysfs");
+        s.write_address("eth0", "01:00:5e:00:00:01", "0");
+        let got = permanent_address_under(s.root(), "eth0", &no_ethtool());
+        assert!(
+            got.is_none(),
+            "sysfs multicast must be refused, got {got:?}"
+        );
     }
 }
