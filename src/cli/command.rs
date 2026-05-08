@@ -219,6 +219,12 @@ pub enum Command {
         action: Option<WikiAction>,
         /// Page name (e.g. `intro`); omit to list pages.
         page: Option<String>,
+        /// CL6: emit machine-readable JSON instead of the rendered
+        /// markdown / TOC. With a page name the payload is
+        /// `{ "page": ..., "content": ... }`; without one it's
+        /// `{ "pages": [...] }`.
+        #[arg(long)]
+        json: bool,
     },
     /// Show help for a feature (alias for `wiki <feature>` with friendly fallback).
     Help {
@@ -265,6 +271,12 @@ pub enum Command {
     Resume {
         #[arg(long)]
         yes: bool,
+        /// Emit a single-line JSON summary (`{ "resumed": [...], "warnings": [...] }`)
+        /// instead of the human-readable per-iface lines. CL6: parity with
+        /// `kill --status --json` so wrappers don't have to grep the
+        /// human output.
+        #[arg(long)]
+        json: bool,
     },
     /// Manage the Proteus nftables table (ICMP info-drops + optional discovery blocks).
     Nft {

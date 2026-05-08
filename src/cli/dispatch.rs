@@ -275,11 +275,15 @@ pub(super) fn dispatch(cli: Cli) -> Result<u8> {
                 commands::portal::run_open(yes, cli.state.as_deref(), cli.config.as_deref())
             }
         },
-        Command::Wiki { action, page } => match action {
+        Command::Wiki {
+            action,
+            page,
+            json,
+        } => match action {
             Some(WikiAction::Search { query, json, limit }) => {
                 commands::wiki_cmd::run_search(&query, json, limit)
             }
-            None => commands::wiki_cmd::run(page.as_deref(), cli.no_color),
+            None => commands::wiki_cmd::run(page.as_deref(), json, cli.no_color),
         },
         Command::Help { feature } => commands::wiki_cmd::run_help(feature.as_deref(), cli.no_color),
         Command::Doctor { json, quick } => commands::doctor::run(commands::doctor::Options {
@@ -297,7 +301,9 @@ pub(super) fn dispatch(cli: Cli) -> Result<u8> {
             }
             None => commands::kill::kill_run(yes, cli.state.as_deref()),
         },
-        Command::Resume { yes } => commands::kill::resume_run(yes, cli.state.as_deref()),
+        Command::Resume { yes, json } => {
+            commands::kill::resume_run(yes, json, cli.state.as_deref())
+        }
         Command::Nft { action } => match action {
             NftAction::Status { json } => commands::nft::status(json, cli.config.as_deref()),
             NftAction::Apply { yes } => commands::nft::apply(yes, cli.config.as_deref()),
@@ -413,6 +419,13 @@ fn apply_json_to_command(cmd: &mut Command) {
             action: Some(WikiAction::Search { json, .. }),
             ..
         }
+        // CL6: top-level `proteus wiki [page] --json` (no subcommand).
+        | Command::Wiki {
+            action: None,
+            json,
+            ..
+        }
+        | Command::Resume { json, .. }
         | Command::Config {
             action:
                 ConfigAction::Show { json }
