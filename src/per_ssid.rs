@@ -133,7 +133,8 @@ pub fn resolve_for_ssid(config: &Config, ssid: &str) -> EffectivePolicy {
     // layer in `source` only when at least one field was set, so
     // `source` is a precise trace of what actually contributed.
     let per_persona = per.and_then(|p| p.persona.clone());
-    let per_profile = per.and_then(|p| p.aggressiveness_profile.as_deref().and_then(Profile::parse));
+    let per_profile =
+        per.and_then(|p| p.aggressiveness_profile.as_deref().and_then(Profile::parse));
     let per_pin = per.and_then(|p| p.pin_mac.clone());
     let per_rotate = per.and_then(|p| p.rotate_interval.as_deref().and_then(parse_duration));
     let per_portal = per.and_then(|p| p.portal_policy.clone());
@@ -216,7 +217,10 @@ mod display_tests {
         let out = display_ssid(raw);
         assert!(!out.contains('\x1b'), "ESC byte must be escaped: {out:?}");
         assert!(out.starts_with("\\x1b"), "ESC renders as \\x1b: {out:?}");
-        assert!(out.contains("PROTEUS ERROR"), "literal text passes through: {out:?}");
+        assert!(
+            out.contains("PROTEUS ERROR"),
+            "literal text passes through: {out:?}"
+        );
     }
 
     /// OSC-style clipboard injection (`\x1b]52;c;<base64>\x07`) — every

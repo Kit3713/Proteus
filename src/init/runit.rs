@@ -99,8 +99,8 @@ impl InitSystem for Runit {
         // into core-services so it ships with the layout, but the
         // real wiring (an elogind sleep.d shim or a per-distro hack)
         // is the installer's job — same as OpenRC.
-        let path = Path::new("/etc/runit/core-services")
-            .join(format!("90-proteus-{name}-resume.sh"));
+        let path =
+            Path::new("/etc/runit/core-services").join(format!("90-proteus-{name}-resume.sh"));
         let content = format!(
             "#!/bin/sh\n\
              # managed by proteus — resume hook for {name}\n\
@@ -118,8 +118,7 @@ impl InitSystem for Runit {
     fn hook_boot(&self, name: &str, exec: &str) -> Result<InitArtifact> {
         validate_artifact_name(name)?;
         validate_exec(exec)?;
-        let path = Path::new("/etc/runit/core-services")
-            .join(format!("80-proteus-{name}-boot.sh"));
+        let path = Path::new("/etc/runit/core-services").join(format!("80-proteus-{name}-boot.sh"));
         let content = format!(
             "#!/bin/sh\n\
              # managed by proteus — boot hook for {name}\n\
@@ -176,10 +175,11 @@ mod tests {
     #[test]
     fn hook_boot_lands_in_core_services() {
         let r = Runit::new();
-        let art = r.hook_boot("apply", "/usr/local/bin/proteus apply --yes").unwrap();
+        let art = r
+            .hook_boot("apply", "/usr/local/bin/proteus apply --yes")
+            .unwrap();
         assert!(
-            art.path
-                .starts_with("/etc/runit/core-services"),
+            art.path.starts_with("/etc/runit/core-services"),
             "got {}",
             art.path.display()
         );

@@ -184,7 +184,10 @@ fn print_status_human(r: &StatusReport) {
         println!("                 NTP={}", r.ntp_servers.join(" "));
     }
     if !r.fallback_servers.is_empty() {
-        println!("                 FallbackNTP={}", r.fallback_servers.join(" "));
+        println!(
+            "                 FallbackNTP={}",
+            r.fallback_servers.join(" ")
+        );
     }
     println!("  drop-in path:  {}", r.drop_in_path);
     println!(
@@ -252,12 +255,13 @@ mod tests {
     use std::fs;
 
     fn cfg_with_ntp(enabled: bool) -> Config {
-        let mut cfg = Config::default();
-        cfg.ntp = NtpConfig {
-            enabled,
-            ..NtpConfig::default()
-        };
-        cfg
+        Config {
+            ntp: NtpConfig {
+                enabled,
+                ..NtpConfig::default()
+            },
+            ..Config::default()
+        }
     }
 
     fn clean_root() -> TempRoot {
@@ -375,9 +379,11 @@ mod tests {
         let cfg = cfg_with_ntp(true);
         let report = build_status(&cfg, &paths);
         assert!(report.ntp_servers.contains(&"2.fedora.pool.ntp.org".into()));
-        assert!(report
-            .fallback_servers
-            .contains(&"time.cloudflare.com".into()));
+        assert!(
+            report
+                .fallback_servers
+                .contains(&"time.cloudflare.com".into())
+        );
     }
 
     #[test]

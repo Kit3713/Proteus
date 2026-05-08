@@ -90,12 +90,7 @@ impl StopHandle {
     /// event-stream future.
     pub fn channel() -> (Self, oneshot::Receiver<()>) {
         let (tx, rx) = oneshot::channel();
-        (
-            Self {
-                sender: Some(tx),
-            },
-            rx,
-        )
+        (Self { sender: Some(tx) }, rx)
     }
 
     /// Signal the spawned task to wind down. Ignores send errors so
@@ -158,17 +153,27 @@ pub fn start_all(registry: &EventRegistry) -> Result<()> {
 /// `SourceTask` — the rest still run.
 pub async fn spawn_all(registry: Arc<EventRegistry>) -> Vec<SourceTask> {
     let mut out = Vec::new();
-    if let Some(t) = NmConnectionUpSource::new().spawn_into(Arc::clone(&registry)).await {
+    if let Some(t) = NmConnectionUpSource::new()
+        .spawn_into(Arc::clone(&registry))
+        .await
+    {
         out.push(t);
     }
-    if let Some(t) = LinkFlapSource::new().spawn_into(Arc::clone(&registry)).await {
+    if let Some(t) = LinkFlapSource::new()
+        .spawn_into(Arc::clone(&registry))
+        .await
+    {
         out.push(t);
     }
-    if let Some(t) = RegDomainChangeSource::new().spawn_into(Arc::clone(&registry)).await {
+    if let Some(t) = RegDomainChangeSource::new()
+        .spawn_into(Arc::clone(&registry))
+        .await
+    {
         out.push(t);
     }
-    if let Some(t) =
-        PortalAuthSource::default().spawn_into(Arc::clone(&registry)).await
+    if let Some(t) = PortalAuthSource::default()
+        .spawn_into(Arc::clone(&registry))
+        .await
     {
         out.push(t);
     }

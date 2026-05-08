@@ -103,11 +103,8 @@ pub fn rotate(state_path: Option<&Path>, config_path: Option<&Path>) -> Result<u
     // `hostname_template` shapes the rotated name. Falls through to the
     // wordlist/generic/pinned path otherwise so v0.2.x users see no
     // change on upgrade.
-    let active_persona = crate::persona::active_for(
-        &config,
-        None,
-        crate::persona::resolve::default_user_root(),
-    );
+    let active_persona =
+        crate::persona::active_for(&config, None, crate::persona::resolve::default_user_root());
     let new_name = match hostname::resolve_for_apply(&config.hostname, active_persona.as_ref()) {
         Ok(n) => n,
         Err(e) => {

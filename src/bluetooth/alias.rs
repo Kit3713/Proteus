@@ -138,8 +138,7 @@ pub fn select_alias_with_persona(
         // BT-specific dictionary and the existing 534 entries cover the
         // generic-name space well enough for now.
         let words = crate::hostname::wordlist()?;
-        let rendered =
-            crate::persona::template::render_template(&p.bt_name_template, &words)?;
+        let rendered = crate::persona::template::render_template(&p.bt_name_template, &words)?;
         // Issue #236: persona-supplied templates are user-authored
         // (built-ins are static `data/personas/*.toml`; user personas
         // come from `/etc/proteus/personas/` which `proteus persona
@@ -391,12 +390,11 @@ mod tests {
         // RLO — flips display order; classic homoglyph primitive.
         assert!(validate_alias("file\u{202e}txt.exe").is_err());
         // LRM, RLM, LRE, RLE, PDF, LRO, LRI, RLI, FSI, PDI — all rejected.
-        for cp in [0x200E, 0x200F, 0x202A, 0x202B, 0x202C, 0x202D, 0x2066, 0x2067, 0x2068, 0x2069] {
+        for cp in [
+            0x200E, 0x200F, 0x202A, 0x202B, 0x202C, 0x202D, 0x2066, 0x2067, 0x2068, 0x2069,
+        ] {
             let s = format!("a{}b", char::from_u32(cp).unwrap());
-            assert!(
-                validate_alias(&s).is_err(),
-                "U+{cp:04X} should be rejected"
-            );
+            assert!(validate_alias(&s).is_err(), "U+{cp:04X} should be rejected");
         }
     }
 

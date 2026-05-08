@@ -216,7 +216,10 @@ mod tests {
         assert_eq!(art.mode, 0o644);
         // 7200s = 2h → every-2h cron expression.
         assert!(art.content.contains("0 */2 * * *"));
-        assert!(art.content.contains("root /usr/local/bin/proteus rotate --yes"));
+        assert!(
+            art.content
+                .contains("root /usr/local/bin/proteus rotate --yes")
+        );
     }
 
     #[test]
@@ -231,7 +234,9 @@ mod tests {
     #[test]
     fn hook_boot_writes_lsb_init_script() {
         let s = Sysvinit::new();
-        let art = s.hook_boot("apply", "/usr/local/bin/proteus apply --yes").unwrap();
+        let art = s
+            .hook_boot("apply", "/usr/local/bin/proteus apply --yes")
+            .unwrap();
         assert!(art.path.starts_with("/etc/init.d/"));
         assert_eq!(art.mode, 0o755);
         assert!(art.content.contains("### BEGIN INIT INFO"));

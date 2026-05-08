@@ -461,13 +461,9 @@ pub enum PersonaAction {
         yes: bool,
     },
     /// `$EDITOR` on `/etc/proteus/personas/<id>.toml`.
-    Edit {
-        id: String,
-    },
+    Edit { id: String },
     /// Schema-check an arbitrary `.toml` file. Exit 0 / 1.
-    Validate {
-        path: std::path::PathBuf,
-    },
+    Validate { path: std::path::PathBuf },
     /// Copy `<path>` into `/etc/proteus/personas/`.
     Import {
         path: std::path::PathBuf,

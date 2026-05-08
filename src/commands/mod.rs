@@ -256,15 +256,12 @@ fn tmp_path_for(path: &Path) -> Result<PathBuf> {
     let mut rand = [0u8; 8];
     getrandom::getrandom(&mut rand).map_err(|e| anyhow::anyhow!("getrandom: {e}"))?;
     let suffix: String = rand.iter().map(|b| format!("{b:02x}")).collect();
-    let base = path
-        .file_name()
-        .and_then(|s| s.to_str())
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "write_atomic target has no file-name component: {}",
-                path.display()
-            )
-        })?;
+    let base = path.file_name().and_then(|s| s.to_str()).ok_or_else(|| {
+        anyhow::anyhow!(
+            "write_atomic target has no file-name component: {}",
+            path.display()
+        )
+    })?;
     Ok(path.with_file_name(format!("{base}.proteus-{suffix}.tmp")))
 }
 

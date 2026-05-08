@@ -61,10 +61,7 @@ pub enum RotationTrigger {
     /// A connection just came up. `iface` is the interface name; `ssid`
     /// is the Wi-Fi SSID when applicable, `None` for ethernet or for
     /// pre-association events.
-    ConnectionUp {
-        iface: String,
-        ssid: Option<String>,
-    },
+    ConnectionUp { iface: String, ssid: Option<String> },
     /// The link toggled down→up→down→up within the configured flap
     /// window. Likely a roam, a captive-portal interception, or a
     /// flaky AP.
@@ -185,8 +182,8 @@ impl Default for EventRegistry {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
 

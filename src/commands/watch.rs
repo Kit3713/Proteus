@@ -79,9 +79,7 @@ pub fn parse_interval(s: &str) -> anyhow::Result<Duration> {
         let mins: u64 = num.parse()?;
         return Ok(Duration::from_secs(mins * 60));
     }
-    anyhow::bail!(
-        "expected a duration like `2s`, `500ms`, or `1m`; got '{s}'"
-    )
+    anyhow::bail!("expected a duration like `2s`, `500ms`, or `1m`; got '{s}'")
 }
 
 #[cfg(test)]

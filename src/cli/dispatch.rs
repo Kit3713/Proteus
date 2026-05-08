@@ -82,11 +82,7 @@ pub(super) fn dispatch(cli: Cli) -> Result<u8> {
             if watch {
                 let delay = commands::watch::parse_interval(&interval)?;
                 commands::watch::run(delay, no_color, move || {
-                    commands::current::run(
-                        json,
-                        iface_owned.as_deref(),
-                        state_path.as_deref(),
-                    )
+                    commands::current::run(json, iface_owned.as_deref(), state_path.as_deref())
                 })
             } else {
                 commands::current::run(json, iface.as_deref(), cli.state.as_deref())
@@ -310,6 +306,11 @@ pub(super) fn dispatch(cli: Cli) -> Result<u8> {
 /// Mutating commands and commands without a JSON form are left
 /// untouched. Adding a new reader only requires extending this match.
 fn apply_json_to_command(cmd: &mut Command) {
+    // Collapsed-match form: every reader pattern is folded into the outer
+    // match arm so clippy's `collapsible_match` lint stays clean. Issue #240:
+    // probe / persona / ssid / wiki / config readers are part of the same
+    // match. PersonaAction::Validate is intentionally omitted — the variant
+    // has no `json` field (it's exit-code-only by design).
     match cmd {
         Command::Status { json, .. }
         | Command::Session { json, .. }
@@ -318,90 +319,70 @@ fn apply_json_to_command(cmd: &mut Command) {
         | Command::ShowConfig { json }
         | Command::ShowDefaults { json }
         | Command::Diff { json }
-        | Command::Doctor { json, .. } => {
+        | Command::Doctor { json, .. }
+        | Command::Probe { json, .. }
+        | Command::Bluetooth {
+            action: BluetoothAction::Status { json },
+        }
+        | Command::Hostname {
+            action: HostnameAction::Status { json },
+        }
+        | Command::Ipv6 {
+            action: Ipv6Action::Status { json },
+        }
+        | Command::Dhcp {
+            action: DhcpAction::Status { json },
+        }
+        | Command::Dns {
+            action: DnsAction::Status { json },
+        }
+        | Command::Resolved {
+            action: ResolvedAction::Status { json },
+        }
+        | Command::Ntp {
+            action: NtpAction::Status { json },
+        }
+        | Command::Stack {
+            action: StackAction::Status { json },
+        }
+        | Command::Nft {
+            action: NftAction::Status { json },
+        }
+        | Command::EnterpriseWifi {
+            action: EnterpriseWifiAction::Status { json },
+        }
+        | Command::Rf {
+            action: RfAction::Status { json } | RfAction::Scan { json } | RfAction::Chipset { json },
+        }
+        | Command::Portal {
+            action: PortalAction::Status { json } | PortalAction::List { json },
+        }
+        | Command::Timer {
+            action: TimerAction::Status { json } | TimerAction::List { json },
+        }
+        | Command::Persona {
+            action:
+                PersonaAction::List { json, .. }
+                | PersonaAction::Show { json, .. }
+                | PersonaAction::Current { json }
+                | PersonaAction::Random { json, .. },
+        }
+        | Command::Ssid {
+            action: SsidAction::List { json } | SsidAction::Show { json, .. },
+        }
+        | Command::Wiki {
+            action: Some(WikiAction::Search { json, .. }),
+            ..
+        }
+        | Command::Config {
+            action:
+                ConfigAction::Show { json }
+                | ConfigAction::Get { json, .. }
+                | ConfigAction::Validate { json }
+                | ConfigAction::Keys { json },
+        } => {
             *json = true;
         }
-        Command::Bluetooth { action } => match action {
-            BluetoothAction::Status { json } => *json = true,
-            _ => {}
-        },
-        Command::Hostname { action } => match action {
-            HostnameAction::Status { json } => *json = true,
-            _ => {}
-        },
-        Command::Ipv6 { action } => match action {
-            Ipv6Action::Status { json } => *json = true,
-            _ => {}
-        },
-        Command::Dhcp { action } => match action {
-            DhcpAction::Status { json } => *json = true,
-            _ => {}
-        },
-        Command::Dns { action } => match action {
-            DnsAction::Status { json } => *json = true,
-            _ => {}
-        },
-        Command::Resolved { action } => match action {
-            ResolvedAction::Status { json } => *json = true,
-            _ => {}
-        },
-        Command::Ntp { action } => match action {
-            NtpAction::Status { json } => *json = true,
-            _ => {}
-        },
-        Command::Stack { action } => match action {
-            StackAction::Status { json } => *json = true,
-            _ => {}
-        },
-        Command::Nft { action } => match action {
-            NftAction::Status { json } => *json = true,
-            _ => {}
-        },
-        Command::Rf { action } => match action {
-            RfAction::Status { json }
-            | RfAction::Scan { json }
-            | RfAction::Chipset { json } => *json = true,
-            _ => {}
-        },
-        Command::EnterpriseWifi { action } => match action {
-            EnterpriseWifiAction::Status { json } => *json = true,
-            _ => {}
-        },
-        Command::Portal { action } => match action {
-            PortalAction::Status { json }
-            | PortalAction::List { json } => *json = true,
-            _ => {}
-        },
-        Command::Timer { action } => match action {
-            TimerAction::Status { json } | TimerAction::List { json } => *json = true,
-            _ => {}
-        },
-        // Issue #240: M6's `--format json` contract was missed for these
-        // five command groups. Each has a `json: bool` on at least one
-        // reader subaction; flip them so wrappers parsing
-        // `proteus --format json <cmd>` get JSON instead of human text.
-        // PersonaAction::Validate intentionally omitted — the variant
-        // has no json field (it's exit-code-only by design).
-        Command::Probe { json, .. } => *json = true,
-        Command::Persona { action } => match action {
-            PersonaAction::List { json, .. }
-            | PersonaAction::Show { json, .. }
-            | PersonaAction::Current { json }
-            | PersonaAction::Random { json, .. } => *json = true,
-            _ => {}
-        },
-        Command::Ssid { action } => match action {
-            SsidAction::List { json } | SsidAction::Show { json, .. } => *json = true,
-            _ => {}
-        },
-        Command::Wiki { action: Some(WikiAction::Search { json, .. }), .. } => *json = true,
-        Command::Config { action } => match action {
-            ConfigAction::Show { json }
-            | ConfigAction::Get { json, .. }
-            | ConfigAction::Validate { json }
-            | ConfigAction::Keys { json } => *json = true,
-            _ => {}
-        },
         // Subcommands without a `json` flag, or whose readers don't
         // benefit from JSON, are left untouched. Future readers can
         // join the match above.

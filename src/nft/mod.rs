@@ -183,9 +183,7 @@ fn render_persona_chain(p: &crate::persona::Persona) -> String {
         "        type filter hook input priority {PERSONA_CHAIN_PRIORITY}; policy accept;\n"
     ));
     if !p.mdns_advertise {
-        out.push_str(
-            "        # persona does not advertise mDNS; drop inbound 5353\n",
-        );
+        out.push_str("        # persona does not advertise mDNS; drop inbound 5353\n");
         out.push_str("        udp dport 5353 drop\n");
     }
     out.push_str("    }\n");
@@ -586,8 +584,7 @@ mod tests {
         assert_ne!(PERSONA_CHAIN_PRIORITY, DISCOVERY_CHAIN_PRIORITY);
         assert_ne!(PERSONA_CHAIN_PRIORITY, EXTRA_CHAIN_PRIORITY);
         let p = persona_with_mdns(false);
-        let body =
-            render_ruleset_with_persona(&cfg(false, false), &NftConfig::default(), Some(&p));
+        let body = render_ruleset_with_persona(&cfg(false, false), &NftConfig::default(), Some(&p));
         let marker =
             format!("type filter hook input priority {PERSONA_CHAIN_PRIORITY}; policy accept;");
         assert!(body.contains(&marker), "{body}");

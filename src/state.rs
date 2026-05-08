@@ -342,10 +342,7 @@ fn migrate_state(state: &mut State) {
 /// deprecation plan.
 fn migrate_known_portals_to_per_ssid(state: &mut State) {
     for ssid in &state.known_portal_ssids {
-        let entry = state
-            .per_ssid_seed
-            .entry(ssid.clone())
-            .or_insert_with(PerSsidStateSeed::default);
+        let entry = state.per_ssid_seed.entry(ssid.clone()).or_default();
         if entry.portal_policy.is_none() {
             entry.portal_policy = Some("fresh-mac-per-visit".to_string());
         }
@@ -451,8 +448,7 @@ mod tests {
     /// going through `load`).
     #[test]
     fn save_stamps_current_schema_version() {
-        let dir =
-            std::env::temp_dir().join(format!("proteus-state-stamp-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("proteus-state-stamp-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("state.json");
@@ -504,8 +500,7 @@ mod tests {
     /// `save` truncate them on disk.
     #[test]
     fn load_refuses_newer_schema_version() {
-        let dir =
-            std::env::temp_dir().join(format!("proteus-state-newer-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("proteus-state-newer-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("state.json");

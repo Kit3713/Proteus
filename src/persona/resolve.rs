@@ -32,11 +32,7 @@ use crate::config::Config;
 /// `ssid` is `Some(...)` on the connection-up path (Milestone 3 wiring)
 /// and `None` for global apply/rotate. `user_root` points at
 /// `/etc/proteus/personas/` in production; tests pass a `TempDir`.
-pub fn active_for(
-    config: &Config,
-    ssid: Option<&str>,
-    user_root: &Path,
-) -> Option<Persona> {
+pub fn active_for(config: &Config, ssid: Option<&str>, user_root: &Path) -> Option<Persona> {
     let id = pick_id(config, ssid)?;
     match load::load(&id, user_root) {
         Ok(Some((p, _src))) => Some(p),
@@ -178,10 +174,7 @@ mod tests {
         use crate::mac::probe::MockProbe;
         use std::collections::HashSet;
 
-        let dir = std::env::temp_dir().join(format!(
-            "proteus-persona-e2e-{}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("proteus-persona-e2e-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let cfg_path = dir.join("config.toml");
         std::fs::write(

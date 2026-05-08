@@ -393,10 +393,8 @@ mod tests {
     #[test]
     fn dropping_inner_does_not_release_outer_lock() {
         let _serial = serial_guard();
-        let dir = std::env::temp_dir().join(format!(
-            "proteus-lock-nested-drop-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("proteus-lock-nested-drop-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let state = dir.join("state.json");

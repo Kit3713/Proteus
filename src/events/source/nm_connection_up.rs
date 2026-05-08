@@ -65,9 +65,7 @@ impl NmConnectionUpSource {
         let conn = match zbus::Connection::system().await {
             Ok(c) => c,
             Err(e) => {
-                tracing::debug!(
-                    "nm-connection-up: system DBus unavailable, source disabled: {e}"
-                );
+                tracing::debug!("nm-connection-up: system DBus unavailable, source disabled: {e}");
                 return None;
             }
         };
@@ -147,7 +145,10 @@ async fn subscribe_loop(
         let builder = match DeviceProxy::builder(conn).path(path.clone()) {
             Ok(b) => b,
             Err(e) => {
-                tracing::debug!(?path, "nm-connection-up: skipping device proxy builder: {e}");
+                tracing::debug!(
+                    ?path,
+                    "nm-connection-up: skipping device proxy builder: {e}"
+                );
                 continue;
             }
         };
@@ -337,7 +338,11 @@ mod tests {
         }
     }
 
-    fn rig() -> (EventRegistry, Arc<AtomicUsize>, Arc<Mutex<Option<RotationTrigger>>>) {
+    fn rig() -> (
+        EventRegistry,
+        Arc<AtomicUsize>,
+        Arc<Mutex<Option<RotationTrigger>>>,
+    ) {
         let n = Arc::new(AtomicUsize::new(0));
         let last = Arc::new(Mutex::new(None));
         let reg = EventRegistry::new();

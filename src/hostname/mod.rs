@@ -260,9 +260,7 @@ pub fn render_template(template: &str) -> Result<String> {
     // have to remember the kebab convention for every template.
     let rendered = raw.to_ascii_lowercase();
     validate_hostname(&rendered).map_err(|e| {
-        anyhow!(
-            "rendered hostname '{rendered}' from template '{template}' fails RFC 1123: {e}"
-        )
+        anyhow!("rendered hostname '{rendered}' from template '{template}' fails RFC 1123: {e}")
     })?;
     Ok(rendered)
 }
@@ -404,7 +402,10 @@ mod tests {
             // `s-iphone` must be present and the prefix must be one of
             // the OWNER_POOL members.
             assert!(r.ends_with("s-iphone"), "got '{r}'");
-            assert!(validate_hostname(&r).is_ok(), "rendered must be RFC 1123: {r}");
+            assert!(
+                validate_hostname(&r).is_ok(),
+                "rendered must be RFC 1123: {r}"
+            );
         }
     }
 

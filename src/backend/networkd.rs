@@ -11,9 +11,7 @@ use std::time::Duration;
 
 use anyhow::{Result, bail};
 
-use super::{
-    BackendDevice, BoxFuture, ConnectionRef, NetworkBackend, RenewOutcome, RotateOutcome,
-};
+use super::{BackendDevice, BoxFuture, ConnectionRef, NetworkBackend, RenewOutcome, RotateOutcome};
 use crate::ipv6::nm::Ipv6NmSettings;
 use crate::mac::{Mac, factory};
 use crate::state::DhcpSettingsSnapshot;
@@ -193,13 +191,7 @@ mod tests {
         let cref = ConnectionRef::new("");
         rt.block_on(async {
             assert!(backend.read_connection_id(&cref).await.unwrap().is_none());
-            assert!(
-                backend
-                    .read_connection_uuid(&cref)
-                    .await
-                    .unwrap()
-                    .is_none()
-            );
+            assert!(backend.read_connection_uuid(&cref).await.unwrap().is_none());
         });
     }
 }

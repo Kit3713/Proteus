@@ -10,9 +10,7 @@ use std::time::Duration;
 
 use anyhow::{Result, bail};
 
-use super::{
-    BackendDevice, BoxFuture, ConnectionRef, NetworkBackend, RenewOutcome, RotateOutcome,
-};
+use super::{BackendDevice, BoxFuture, ConnectionRef, NetworkBackend, RenewOutcome, RotateOutcome};
 use crate::ipv6::nm::Ipv6NmSettings;
 use crate::mac::{Mac, factory};
 use crate::state::DhcpSettingsSnapshot;
@@ -37,9 +35,7 @@ impl NetworkBackend for RawBackend {
         // for the trait scaffolding to advertise availability — the
         // ethernet / wired path needs nothing else, and the Wi-Fi
         // paths surface their own missing-binary errors when invoked.
-        Box::pin(async {
-            Path::new("/sbin/ip").exists() || Path::new("/usr/bin/ip").exists()
-        })
+        Box::pin(async { Path::new("/sbin/ip").exists() || Path::new("/usr/bin/ip").exists() })
     }
 
     fn list_devices<'a>(&'a self) -> BoxFuture<'a, Result<Vec<BackendDevice>>> {
@@ -60,18 +56,14 @@ impl NetworkBackend for RawBackend {
         _device: &'a BackendDevice,
         _mac: Mac,
     ) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async {
-            bail!("backend::raw: set_cloned_mac not yet implemented (Milestone 1)")
-        })
+        Box::pin(async { bail!("backend::raw: set_cloned_mac not yet implemented (Milestone 1)") })
     }
 
     fn read_cloned_mac<'a>(
         &'a self,
         _device: &'a BackendDevice,
     ) -> BoxFuture<'a, Result<Option<String>>> {
-        Box::pin(async {
-            bail!("backend::raw: read_cloned_mac not yet implemented (Milestone 1)")
-        })
+        Box::pin(async { bail!("backend::raw: read_cloned_mac not yet implemented (Milestone 1)") })
     }
 
     fn read_factory_mac<'a>(&'a self, iface: &'a str) -> BoxFuture<'a, Result<Option<String>>> {
@@ -124,9 +116,7 @@ impl NetworkBackend for RawBackend {
         &'a self,
         _device: &'a BackendDevice,
     ) -> BoxFuture<'a, Result<RenewOutcome>> {
-        Box::pin(async {
-            bail!("backend::raw: renew_lease not yet implemented (Milestone 1)")
-        })
+        Box::pin(async { bail!("backend::raw: renew_lease not yet implemented (Milestone 1)") })
     }
 
     fn write_anonymous_identity<'a>(
@@ -171,13 +161,7 @@ mod tests {
             let backend = RawBackend::new();
             let cref = ConnectionRef::new("");
             assert!(backend.read_connection_id(&cref).await.unwrap().is_none());
-            assert!(
-                backend
-                    .read_connection_uuid(&cref)
-                    .await
-                    .unwrap()
-                    .is_none()
-            );
+            assert!(backend.read_connection_uuid(&cref).await.unwrap().is_none());
         });
     }
 }

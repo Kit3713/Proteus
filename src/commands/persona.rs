@@ -19,9 +19,7 @@ use serde::Serialize;
 use crate::cli::PersonaAction;
 use crate::config::Config;
 use crate::exit;
-use crate::persona::{
-    Persona, PersonaCategory, PersonaKind, PersonaSource, PersonaSummary, load,
-};
+use crate::persona::{Persona, PersonaCategory, PersonaKind, PersonaSource, PersonaSummary, load};
 
 /// Top-level dispatch for `proteus persona ...`.
 pub fn run(action: PersonaAction, config_override: Option<&Path>) -> Result<u8> {
@@ -60,12 +58,7 @@ fn user_root() -> PathBuf {
 
 // ---- list ------------------------------------------------------------
 
-fn list(
-    kind: Option<&str>,
-    category: Option<&str>,
-    json: bool,
-    user_root: &Path,
-) -> Result<u8> {
+fn list(kind: Option<&str>, category: Option<&str>, json: bool, user_root: &Path) -> Result<u8> {
     let kind_filter = parse_kind_filter(kind)?;
     let cat_filter = parse_category_filter(category)?;
     let mut all = load::list_all(user_root);
@@ -151,7 +144,11 @@ fn use_persona(
         eprintln!("proteus: {e}");
         return Ok(exit::PERMISSION_ERROR);
     }
-    if let Err(code) = super::require_yes(yes, "writes [persona] active to config", "proteus help persona") {
+    if let Err(code) = super::require_yes(
+        yes,
+        "writes [persona] active to config",
+        "proteus help persona",
+    ) {
         return Ok(code);
     }
     if load::load(id, user_root)?.is_none() {
@@ -177,7 +174,11 @@ fn clear(yes: bool, config_override: Option<&Path>) -> Result<u8> {
         eprintln!("proteus: {e}");
         return Ok(exit::PERMISSION_ERROR);
     }
-    if let Err(code) = super::require_yes(yes, "clears [persona] active in config", "proteus help persona") {
+    if let Err(code) = super::require_yes(
+        yes,
+        "clears [persona] active in config",
+        "proteus help persona",
+    ) {
         return Ok(code);
     }
     write_active_to_config(None, config_override)?;
@@ -194,7 +195,8 @@ fn write_active_to_config(active: Option<&str>, config_override: Option<&Path>) 
     let mut doc: toml_edit::DocumentMut = if raw.is_empty() {
         toml_edit::DocumentMut::new()
     } else {
-        raw.parse().with_context(|| format!("parsing {}", path.display()))?
+        raw.parse()
+            .with_context(|| format!("parsing {}", path.display()))?
     };
     let table = doc
         .entry("persona")
@@ -286,12 +288,7 @@ fn persona_shaped_fields() -> Vec<&'static str> {
 
 // ---- random ----------------------------------------------------------
 
-fn random(
-    kind: Option<&str>,
-    category: Option<&str>,
-    json: bool,
-    user_root: &Path,
-) -> Result<u8> {
+fn random(kind: Option<&str>, category: Option<&str>, json: bool, user_root: &Path) -> Result<u8> {
     let kind_filter = parse_kind_filter(kind)?;
     let cat_filter = parse_category_filter(category)?;
     let mut pool: Vec<PersonaSummary> = load::list_all(user_root);
@@ -320,7 +317,11 @@ fn new(id: &str, from: &str, yes: bool, user_root: &Path) -> Result<u8> {
         eprintln!("proteus: {e}");
         return Ok(exit::PERMISSION_ERROR);
     }
-    if let Err(code) = super::require_yes(yes, "creates a new persona file under /etc/proteus/personas/", "proteus help persona") {
+    if let Err(code) = super::require_yes(
+        yes,
+        "creates a new persona file under /etc/proteus/personas/",
+        "proteus help persona",
+    ) {
         return Ok(code);
     }
     let Some((mut p, _)) = load::load(from, user_root)? else {
@@ -330,7 +331,10 @@ fn new(id: &str, from: &str, yes: bool, user_root: &Path) -> Result<u8> {
     p.id = id.to_string();
     let dest = load::user_path(user_root, id);
     if dest.exists() {
-        eprintln!("proteus: {} already exists; refusing to overwrite", dest.display());
+        eprintln!(
+            "proteus: {} already exists; refusing to overwrite",
+            dest.display()
+        );
         return Ok(exit::CONFIG_ERROR);
     }
     let body = toml::to_string_pretty(&p).context("serializing cloned persona")?;
@@ -381,7 +385,12 @@ fn edit(id: &str, user_root: &Path) -> Result<u8> {
 fn validate(path: &Path) -> Result<u8> {
     match load::validate(path) {
         Ok(p) => {
-            println!("ok: {} (id='{}', kind={})", path.display(), p.id, p.kind.name());
+            println!(
+                "ok: {} (id='{}', kind={})",
+                path.display(),
+                p.id,
+                p.kind.name()
+            );
             Ok(exit::SUCCESS)
         }
         Err(e) => {
@@ -396,13 +405,20 @@ fn import(path: &Path, yes: bool, user_root: &Path) -> Result<u8> {
         eprintln!("proteus: {e}");
         return Ok(exit::PERMISSION_ERROR);
     }
-    if let Err(code) = super::require_yes(yes, "copies a persona file into /etc/proteus/personas/", "proteus help persona") {
+    if let Err(code) = super::require_yes(
+        yes,
+        "copies a persona file into /etc/proteus/personas/",
+        "proteus help persona",
+    ) {
         return Ok(code);
     }
     let p = load::validate(path).context("source file failed schema check")?;
     let dest = load::user_path(user_root, &p.id);
     if dest.exists() {
-        eprintln!("proteus: {} already exists; refusing to overwrite", dest.display());
+        eprintln!(
+            "proteus: {} already exists; refusing to overwrite",
+            dest.display()
+        );
         return Ok(exit::CONFIG_ERROR);
     }
     let bytes = std::fs::read(path)?;
@@ -417,8 +433,7 @@ fn export(id: &str, path: &Path, user_root: &Path) -> Result<u8> {
         return Ok(exit::CONFIG_ERROR);
     };
     let body = toml::to_string_pretty(&p).context("rendering persona TOML")?;
-    std::fs::write(path, body)
-        .with_context(|| format!("writing {}", path.display()))?;
+    std::fs::write(path, body).with_context(|| format!("writing {}", path.display()))?;
     if matches!(src, PersonaSource::Builtin) {
         eprintln!(
             "proteus: note — exported a built-in persona; world-readable permissions on {} are your call",
@@ -453,8 +468,7 @@ mod tests {
 
     #[test]
     fn cli_parses_use_with_apply_flag() {
-        let w =
-            Wrap::try_parse_from(["x", "use", "iphone-15", "--apply", "--yes"]).expect("parse");
+        let w = Wrap::try_parse_from(["x", "use", "iphone-15", "--apply", "--yes"]).expect("parse");
         match w.cmd {
             PersonaAction::Use { id, apply, yes } => {
                 assert_eq!(id, "iphone-15");

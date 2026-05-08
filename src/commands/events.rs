@@ -28,11 +28,11 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 
 use crate::config::Config;
-use crate::events::{EventHandler, EventRegistry, RotationTrigger};
 use crate::events::source::{
     LinkFlapSource, NmConnectionUpSource, PortalAuthSource, RegDomainChangeSource,
     SystemPortalSampler,
 };
+use crate::events::{EventHandler, EventRegistry, RotationTrigger};
 use crate::exit;
 
 /// Default handler — turns a `RotationTrigger` into a rotation. The
@@ -93,7 +93,10 @@ impl EventHandler for RotateOnTriggerHandler {
         // carries an SSID, resolve the per-SSID policy and log it so
         // an operator can see the right network rules took effect.
         // Other trigger kinds fall through to a plain trigger log.
-        if let RotationTrigger::ConnectionUp { iface, ssid: Some(ssid) } = trigger
+        if let RotationTrigger::ConnectionUp {
+            iface,
+            ssid: Some(ssid),
+        } = trigger
             && let Some(cfg) = self.load_config()
         {
             let policy = crate::per_ssid::resolve_for_ssid(&cfg, ssid);
@@ -180,11 +183,10 @@ pub fn run(
         }
         // Link-flap — needs CAP_NET_ADMIN to bind the netlink
         // socket; degrades to a no-op task when the bind fails.
-        if let Some(t) = LinkFlapSource::with_window(Duration::from_secs(
-            config.events.link_flap_window_secs,
-        ))
-        .spawn_into(Arc::clone(&registry))
-        .await
+        if let Some(t) =
+            LinkFlapSource::with_window(Duration::from_secs(config.events.link_flap_window_secs))
+                .spawn_into(Arc::clone(&registry))
+                .await
         {
             tasks.push(t);
         }
@@ -251,8 +253,8 @@ pub fn run(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
     use crate::events::source::MockNmConnectionUpSource;
@@ -287,7 +289,11 @@ mod tests {
         src.push("wlan0", NM_DEVICE_STATE_ACTIVATED, Some("home".into()));
         crate::events::source::EventSource::start(&src, &registry).unwrap();
 
-        assert_eq!(n.load(Ordering::SeqCst), 1, "handler must fire exactly once");
+        assert_eq!(
+            n.load(Ordering::SeqCst),
+            1,
+            "handler must fire exactly once"
+        );
         match last.lock().unwrap().as_ref().unwrap() {
             RotationTrigger::ConnectionUp { iface, ssid } => {
                 assert_eq!(iface, "wlan0");
@@ -303,10 +309,8 @@ mod tests {
     /// `--force`.
     #[test]
     fn run_without_force_when_disabled_returns_config_error() {
-        let dir = std::env::temp_dir().join(format!(
-            "proteus-events-disabled-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("proteus-events-disabled-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
         let cfg_path = dir.join("config.toml");
         std::fs::write(&cfg_path, "profile = \"med\"\n[events]\nenabled = false\n").unwrap();
@@ -322,10 +326,7 @@ mod tests {
     /// errors so `--force` users see the right message.
     #[test]
     fn run_with_force_clears_config_gate_then_hits_root_gate() {
-        let dir = std::env::temp_dir().join(format!(
-            "proteus-events-force-{}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("proteus-events-force-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
         let cfg_path = dir.join("config.toml");
         std::fs::write(&cfg_path, "profile = \"med\"\n[events]\nenabled = false\n").unwrap();
@@ -341,10 +342,8 @@ mod tests {
     /// opt-in flag's semantics through the new privilege check.
     #[test]
     fn run_with_enabled_true_clears_config_gate_then_hits_root_gate() {
-        let dir = std::env::temp_dir().join(format!(
-            "proteus-events-enabled-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("proteus-events-enabled-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
         let cfg_path = dir.join("config.toml");
         std::fs::write(&cfg_path, "profile = \"med\"\n[events]\nenabled = true\n").unwrap();
@@ -393,10 +392,8 @@ mod tests {
     /// path runs without panic against a real on-disk config.
     #[test]
     fn handler_resolves_per_ssid_policy_on_connection_up() {
-        let dir = std::env::temp_dir().join(format!(
-            "proteus-events-per-ssid-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("proteus-events-per-ssid-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
         let cfg_path = dir.join("config.toml");
         std::fs::write(

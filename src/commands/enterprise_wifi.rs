@@ -314,7 +314,11 @@ async fn disable_one(
     // strip is defensive — `migrate_connection_keys_to_uuid` already drops
     // those at load time — but the disable path is the right place to
     // also remove any entry that survived a partial migration.
-    if let Some(uuid) = nm::apply::read_connection_uuid(conn, &path).await.ok().flatten() {
+    if let Some(uuid) = nm::apply::read_connection_uuid(conn, &path)
+        .await
+        .ok()
+        .flatten()
+    {
         let _ = state.originals.connections.remove(&uuid);
     }
     let _ = state.originals.connections.remove(connection);

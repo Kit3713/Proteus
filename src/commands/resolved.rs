@@ -229,12 +229,13 @@ mod tests {
     use std::os::unix::fs::symlink;
 
     fn cfg_with_resolved(mdns: bool, llmnr: bool) -> Config {
-        let mut cfg = Config::default();
-        cfg.resolved = ResolvedConfig {
-            mdns_off: mdns,
-            llmnr_off: llmnr,
-        };
-        cfg
+        Config {
+            resolved: ResolvedConfig {
+                mdns_off: mdns,
+                llmnr_off: llmnr,
+            },
+            ..Config::default()
+        }
     }
 
     /// Mirrors `dns::tests::clean_root` — set up a tempdir simulating a
@@ -324,7 +325,11 @@ mod tests {
         // thing in isolation.
         assert!(dns_resolved::remove_dropin(&paths).expect("remove"));
         // Proteus file gone, third-party file untouched.
-        assert!(!dropin_dir.join(dns_resolved::PROTEUS_RESOLVED_DROPIN_NAME).exists());
+        assert!(
+            !dropin_dir
+                .join(dns_resolved::PROTEUS_RESOLVED_DROPIN_NAME)
+                .exists()
+        );
         assert!(dropin_dir.join("99-third-party.conf").exists());
     }
 

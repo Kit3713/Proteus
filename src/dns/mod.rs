@@ -319,7 +319,9 @@ fn points_to_resolved_stub(target: &Path, expected: &Path, link_path: &Path) -> 
     // tail check. We now refuse: if canonicalize errors, the link does NOT
     // count as pointing at the well-known stub, so the caller defers.
     match std::fs::canonicalize(link_path) {
-        Ok(canon_link) => canon_link == *expected || canon_link.to_string_lossy().ends_with(STUB_TAIL),
+        Ok(canon_link) => {
+            canon_link == *expected || canon_link.to_string_lossy().ends_with(STUB_TAIL)
+        }
         Err(_) => false,
     }
 }
@@ -583,7 +585,9 @@ mod tests {
         // Replace the legitimate stub symlink with one whose tail matches
         // STUB_TAIL but whose target does not exist.
         fs::remove_file(root.path.join("etc/resolv.conf")).unwrap();
-        let dangling = root.path.join("does/not/exist/run/systemd/resolve/stub-resolv.conf");
+        let dangling = root
+            .path
+            .join("does/not/exist/run/systemd/resolve/stub-resolv.conf");
         symlink(&dangling, root.path.join("etc/resolv.conf")).unwrap();
         let paths = Paths::rooted_at(&root.path);
         let probe = MockProbe::default();

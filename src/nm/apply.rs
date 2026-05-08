@@ -339,9 +339,7 @@ mod tests {
         // A connection with `scan-rand-mac-address = "permanent"` should be
         // upgraded to "random" — Proteus owns the key once configured.
         let mut settings: ConnectionSettings = HashMap::new();
-        let section = settings
-            .entry("802-11-wireless".to_string())
-            .or_default();
+        let section = settings.entry("802-11-wireless".to_string()).or_default();
         section.insert(
             "scan-rand-mac-address".to_string(),
             Value::from("permanent".to_string()).try_into().unwrap(),
@@ -361,9 +359,7 @@ mod tests {
         // those (it lives in the same `update_with_secrets` round trip
         // as `set_cloned_mac`, which has the same invariant).
         let mut settings: ConnectionSettings = HashMap::new();
-        let section = settings
-            .entry("802-11-wireless".to_string())
-            .or_default();
+        let section = settings.entry("802-11-wireless".to_string()).or_default();
         section.insert(
             "ssid".to_string(),
             Value::from("home-net".to_string()).try_into().unwrap(),

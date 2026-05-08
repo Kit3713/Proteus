@@ -25,9 +25,8 @@ use anyhow::{Result, anyhow};
 /// (log2(20) ≈ 4.3 bits). All ASCII-printable, RFC 1123-safe so the
 /// rendered name passes `hostname::validate_hostname`.
 pub const OWNER_POOL: &[&str] = &[
-    "alex", "sam", "chris", "jamie", "morgan", "taylor", "casey", "jordan",
-    "riley", "drew", "avery", "robin", "skyler", "blake", "dakota", "harper",
-    "kai", "kim", "lee", "max",
+    "alex", "sam", "chris", "jamie", "morgan", "taylor", "casey", "jordan", "riley", "drew",
+    "avery", "robin", "skyler", "blake", "dakota", "harper", "kai", "kim", "lee", "max",
 ];
 
 /// Render a persona template against the supplied wordlist. Returns the
@@ -121,12 +120,7 @@ fn rand_byte() -> Result<u8> {
 /// owner / digit / word picker so behaviour stays deterministic
 /// without recompiling.
 #[cfg(test)]
-pub(crate) fn render_with(
-    template: &str,
-    owner: &str,
-    digit: u32,
-    word: &str,
-) -> String {
+pub(crate) fn render_with(template: &str, owner: &str, digit: u32, word: &str) -> String {
     let mut out = String::with_capacity(template.len() + 8);
     let mut chars = template.chars().peekable();
     while let Some(c) = chars.next() {

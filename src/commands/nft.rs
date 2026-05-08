@@ -123,7 +123,8 @@ pub fn apply(yes: bool, config_path: Option<&Path>) -> Result<u8> {
     // 5353 drop alongside the existing icmp/discovery chains).
     let user_root = crate::persona::resolve::default_user_root();
     let persona = crate::persona::active_for(&config, None, user_root);
-    if let Err(e) = nft::apply_ruleset_with_persona(&config.discovery, &config.nft, persona.as_ref())
+    if let Err(e) =
+        nft::apply_ruleset_with_persona(&config.discovery, &config.nft, persona.as_ref())
     {
         eprintln!("proteus: nft apply failed: {e:#}");
         return Ok(exit::GENERIC_ERROR);

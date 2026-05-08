@@ -81,11 +81,7 @@ pub struct GenerateOptions<'a> {
 
 impl<'a> GenerateOptions<'a> {
     /// Build options without a suffix pattern — the v0.2.x default.
-    pub fn new(
-        pool: &'a [String],
-        forbidden: &'a HashSet<Mac>,
-        avoid: &'a HashSet<Mac>,
-    ) -> Self {
+    pub fn new(pool: &'a [String], forbidden: &'a HashSet<Mac>, avoid: &'a HashSet<Mac>) -> Self {
         Self {
             pool,
             forbidden,
@@ -99,7 +95,9 @@ pub fn generate(opts: &GenerateOptions<'_>) -> Result<Mac> {
     if opts.pool.is_empty() {
         bail!("OUI pool is empty");
     }
-    let suffix = opts.suffix_pattern.unwrap_or(ByteSuffixPattern::unconstrained());
+    let suffix = opts
+        .suffix_pattern
+        .unwrap_or(ByteSuffixPattern::unconstrained());
     let mut last_err: Option<MacError> = None;
     for _ in 0..MAX_GENERATION_ATTEMPTS {
         let token_idx = (rand_u8()? as usize) % opts.pool.len();
@@ -222,7 +220,9 @@ pub fn generate_with_probe<P: Probe + ?Sized>(
     // three times, hit collisions, advanced to intel, found one." A pure
     // random walk would surface as "we kept rolling until something landed"
     // which is harder to debug and less useful in `--explain` output.
-    let suffix = opts.suffix_pattern.unwrap_or(ByteSuffixPattern::unconstrained());
+    let suffix = opts
+        .suffix_pattern
+        .unwrap_or(ByteSuffixPattern::unconstrained());
     let mut token_cursor: usize = (rand_u8()? as usize) % opts.pool.len();
     let mut consecutive_collisions: usize = 0;
     let mut attempts: Vec<CandidateAttempt> = Vec::new();
@@ -287,9 +287,7 @@ pub fn generate_with_probe<P: Probe + ?Sized>(
                     },
                 });
                 consecutive_collisions += 1;
-                if consecutive_collisions >= COLLISIONS_BEFORE_OUI_FALLBACK
-                    && opts.pool.len() > 1
-                {
+                if consecutive_collisions >= COLLISIONS_BEFORE_OUI_FALLBACK && opts.pool.len() > 1 {
                     tracing::warn!(
                         token = %token,
                         next_token = %opts.pool[(token_cursor + 1) % opts.pool.len()],
@@ -566,8 +564,7 @@ mod tests {
             suffix_pattern: None,
         };
         let probe = MockProbe::responds(false);
-        let outcome =
-            generate_with_probe(&opts, &probe, &no_nd_probe_opts("wlan0")).expect("ok");
+        let outcome = generate_with_probe(&opts, &probe, &no_nd_probe_opts("wlan0")).expect("ok");
         assert_eq!(outcome.chosen_token, "apple");
         assert_eq!(outcome.oui_fallbacks, 0);
         assert!(matches!(
@@ -594,8 +591,7 @@ mod tests {
             peer_ip: Some("192.168.1.5".into()),
         });
         // Subsequent calls default to Free.
-        let outcome =
-            generate_with_probe(&opts, &probe, &no_nd_probe_opts("wlan0")).expect("ok");
+        let outcome = generate_with_probe(&opts, &probe, &no_nd_probe_opts("wlan0")).expect("ok");
         assert!(
             outcome
                 .attempts
@@ -634,8 +630,7 @@ mod tests {
         }
         // Subsequent probes default to Free, so the next candidate (under
         // the rotated token) gets accepted.
-        let outcome =
-            generate_with_probe(&opts, &probe, &no_nd_probe_opts("wlan0")).expect("ok");
+        let outcome = generate_with_probe(&opts, &probe, &no_nd_probe_opts("wlan0")).expect("ok");
         assert_eq!(
             outcome.oui_fallbacks, 1,
             "expected exactly one OUI fallback after {COLLISIONS_BEFORE_OUI_FALLBACK} \
@@ -663,8 +658,7 @@ mod tests {
         probe.queue_arp(ProbeOutcome::Collision {
             peer_ip: Some("10.20.30.40".into()),
         });
-        let outcome =
-            generate_with_probe(&opts, &probe, &no_nd_probe_opts("wlan0")).expect("ok");
+        let outcome = generate_with_probe(&opts, &probe, &no_nd_probe_opts("wlan0")).expect("ok");
         let collision_entry = outcome
             .attempts
             .iter()
@@ -694,8 +688,7 @@ mod tests {
         };
         let probe = MockProbe::new();
         probe.queue_arp(ProbeOutcome::Unsupported("test: no CAP_NET_RAW"));
-        let outcome =
-            generate_with_probe(&opts, &probe, &no_nd_probe_opts("wlan0")).expect("ok");
+        let outcome = generate_with_probe(&opts, &probe, &no_nd_probe_opts("wlan0")).expect("ok");
         assert!(matches!(
             outcome.attempts.last().unwrap().reason,
             RejectionReason::Accepted
@@ -766,8 +759,7 @@ mod tests {
             suffix_pattern: None,
         };
         let probe = MockProbe::responds(false);
-        let outcome =
-            generate_with_probe(&opts, &probe, &no_nd_probe_opts("wlan0")).expect("ok");
+        let outcome = generate_with_probe(&opts, &probe, &no_nd_probe_opts("wlan0")).expect("ok");
         for attempt in &outcome.attempts {
             // No attempt should be tagged AvoidList when `avoid` is empty.
             assert!(

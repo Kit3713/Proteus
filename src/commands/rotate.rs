@@ -325,16 +325,19 @@ async fn rotate_one<P: Probe + ?Sized>(
         new: new_mac.to_string(),
         connection: primary_id,
     };
-    Ok((entry, outcome.attempts, outcome.chosen_token, outcome.oui_fallbacks))
+    Ok((
+        entry,
+        outcome.attempts,
+        outcome.chosen_token,
+        outcome.oui_fallbacks,
+    ))
 }
 
 fn explain_candidate_from_attempt(a: CandidateAttempt) -> ExplainCandidate {
     let reason = match &a.reason {
         RejectionReason::Accepted => "accepted".to_string(),
         RejectionReason::Forbidden => "forbidden (sacred original or state-cached)".to_string(),
-        RejectionReason::AvoidList => {
-            "avoid-list (live ARP/ND neighbour or gateway)".to_string()
-        }
+        RejectionReason::AvoidList => "avoid-list (live ARP/ND neighbour or gateway)".to_string(),
         RejectionReason::NotAssignable(e) => format!("not-assignable: {e}"),
         RejectionReason::ActiveCollision { peer_ip } => {
             format!(
@@ -372,7 +375,7 @@ fn explain_candidate_from_attempt(a: CandidateAttempt) -> ExplainCandidate {
 /// rather than the tool quietly recording a known-cloned value as the
 /// restoration target.
 fn capture_original_mac(state: &mut State, iface: &str, _hw_hint: Option<&str>) {
-    capture_original_mac_under(state, iface, |i| factory::permanent_address(i))
+    capture_original_mac_under(state, iface, factory::permanent_address)
 }
 
 /// Test-injectable form of [`capture_original_mac`]. The closure stands in
@@ -612,10 +615,7 @@ pub fn run_if_needed(
             Ok(exit::SUCCESS)
         }
         RotateOutcome::SkippedCooldown { remaining } => {
-            println!(
-                "skipped {iface_name}: cooldown {}s",
-                remaining.as_secs()
-            );
+            println!("skipped {iface_name}: cooldown {}s", remaining.as_secs());
             Ok(exit::SUCCESS)
         }
         RotateOutcome::NoFactoryMac => {
@@ -734,7 +734,7 @@ mod tests {
         let empty = stub_permanent(HashMap::new());
         capture_original_mac_under(&mut state, "eth0", &empty);
         assert!(
-            state.original_macs.get("eth0").is_none(),
+            !state.original_macs.contains_key("eth0"),
             "no factory source — must not cache the live (cloned) address"
         );
     }
@@ -811,8 +811,10 @@ mod tests {
         state
             .original_macs
             .insert("wlan0".into(), "aa:bb:cc:dd:ee:ff".into());
-        let mut rec = crate::state::InterfaceRecord::default();
-        rec.pinned = Some("02:00:00:00:00:99".into());
+        let rec = crate::state::InterfaceRecord {
+            pinned: Some("02:00:00:00:00:99".into()),
+            ..Default::default()
+        };
         state.managed.interfaces.insert("wlan0".into(), rec);
 
         let cfg = cfg();
@@ -836,7 +838,8 @@ mod tests {
         assert_eq!(report.skipped.len(), 1);
         let log = backend.call_log();
         assert!(
-            !log.iter().any(|c| matches!(c, MockCall::SetClonedMac { .. })),
+            !log.iter()
+                .any(|c| matches!(c, MockCall::SetClonedMac { .. })),
             "pinned iface must not trigger set_cloned_mac"
         );
     }
@@ -883,7 +886,9 @@ mod tests {
     fn rotate_invokes_set_cloned_mac_once_per_device() {
         let backend = MockBackend::new();
         let mut device = dev("wlan0");
-        device.connections.push(ConnectionRef::new("mock://wlan0/1"));
+        device
+            .connections
+            .push(ConnectionRef::new("mock://wlan0/1"));
         backend.insert_device(device, Some("aa:bb:cc:dd:ee:ff".into()));
         let dir = crate::testing::TempRoot::new("rotate-multi");
         let state_path = dir.path.join("state.json");
@@ -1014,8 +1019,7 @@ mod tests {
         let mut probe_opts = ProbeOptions::for_iface("wlan0");
         probe_opts.run_nd_probe = false;
         for _ in 0..100 {
-            let outcome =
-                generator::generate_with_probe(&opts, &probe, &probe_opts).expect("ok");
+            let outcome = generator::generate_with_probe(&opts, &probe, &probe_opts).expect("ok");
             assert_ne!(outcome.chosen, gw, "gateway MAC must not be chosen");
         }
     }
@@ -1115,8 +1119,12 @@ mod tests {
                 ..PerSsidPolicy::default()
             },
         );
-        let p = persona::active_for(&cfg, Some("coffee-shop"), persona::resolve::default_user_root())
-            .expect("pixel-8 must load");
+        let p = persona::active_for(
+            &cfg,
+            Some("coffee-shop"),
+            persona::resolve::default_user_root(),
+        )
+        .expect("pixel-8 must load");
         assert_eq!(p.id, "pixel-8");
         // pixel-8's pool resolves through the vendor table; Google is the
         // canonical one.
@@ -1147,7 +1155,10 @@ mod tests {
             .expect("randomizer-med builtin must load");
         assert!(matches!(p.kind, crate::persona::PersonaKind::Randomizer));
         let (pool, _) = persona_shape_for(&Some(p), &cfg);
-        assert_eq!(pool, cfg.mac.oui_pool, "randomizer mirrors keep slider pool");
+        assert_eq!(
+            pool, cfg.mac.oui_pool,
+            "randomizer mirrors keep slider pool"
+        );
     }
 
     /// `mac_byte_pattern` literal bytes pin the corresponding trailing
@@ -1276,10 +1287,7 @@ mod tests {
                 .rotate_if_needed("wlan0", std::time::Duration::from_secs(60))
                 .await
                 .unwrap();
-            assert_eq!(
-                outcome,
-                crate::backend::RotateOutcome::BackendUnavailable
-            );
+            assert_eq!(outcome, crate::backend::RotateOutcome::BackendUnavailable);
         });
     }
 }
