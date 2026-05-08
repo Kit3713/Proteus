@@ -21,12 +21,14 @@
 //! disable one or the other; the dispatcher is non-mutating from
 //! Proteus's side, the daemon is opt-in via `[events] enabled`.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 
+use crate::backend::NetworkBackend;
 use crate::config::Config;
 use crate::events::source::{
     LinkFlapSource, NmConnectionUpSource, PortalAuthSource, RegDomainChangeSource,
@@ -56,6 +58,29 @@ struct RotateOnTriggerHandler {
     /// `Arc` clone).
     counter: Arc<std::sync::atomic::AtomicU64>,
     config_path: Option<PathBuf>,
+    state_path: Option<PathBuf>,
+    /// N1 (the most important single fix in the roadmap): when the
+    /// handler is constructed via [`RotateOnTriggerHandler::with_backend`]
+    /// it owns an `Arc<dyn NetworkBackend>` and a tokio runtime
+    /// `Handle`. On every trigger it dispatches the existing
+    /// [`crate::commands::rotate::run_with_backend`] pipeline against
+    /// that backend so the trigger actually rotates the MAC instead
+    /// of merely logging the trigger. The rotate work is dispatched
+    /// via `Handle::spawn` so the registry's serial dispatch loop
+    /// stays unblocked — handlers run synchronously, the rotate
+    /// runs concurrently on the same tokio runtime that owns the
+    /// source tasks. Counter increments happen at trigger observation
+    /// time (not after rotate completes) so `--max-triggers` budgets
+    /// the trigger rate, not the rotate-completion rate.
+    backend: Option<Arc<dyn NetworkBackend>>,
+    runtime: Option<tokio::runtime::Handle>,
+    /// Issue #266: track in-flight rotate tasks so the daemon can wait
+    /// for them at shutdown. `Arc<Mutex<Vec<JoinHandle>>>` rather than
+    /// firing-and-forgetting because a hard SIGTERM landing mid-rotate
+    /// could otherwise leave the backend half-written. Reaped on every
+    /// dispatch so the vec doesn't grow unbounded over a long-running
+    /// daemon.
+    in_flight: Arc<std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>>,
 }
 
 impl RotateOnTriggerHandler {
@@ -63,6 +88,29 @@ impl RotateOnTriggerHandler {
         Self {
             counter: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             config_path,
+            state_path: None,
+            backend: None,
+            runtime: None,
+            in_flight: Arc::new(std::sync::Mutex::new(Vec::new())),
+        }
+    }
+
+    /// N1 wiring: build a handler that actually rotates on trigger.
+    /// The runtime handle is captured so the sync `EventHandler::handle`
+    /// can dispatch async rotate work onto the daemon's tokio runtime.
+    fn with_backend(
+        config_path: Option<PathBuf>,
+        state_path: Option<PathBuf>,
+        backend: Arc<dyn NetworkBackend>,
+        runtime: tokio::runtime::Handle,
+    ) -> Self {
+        Self {
+            counter: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            config_path,
+            state_path,
+            backend: Some(backend),
+            runtime: Some(runtime),
+            in_flight: Arc::new(std::sync::Mutex::new(Vec::new())),
         }
     }
 
@@ -70,28 +118,117 @@ impl RotateOnTriggerHandler {
         let cfg_path = super::config_path(self.config_path.as_deref());
         Config::default_or_loaded(&cfg_path).ok()
     }
+
+    /// Reap completed rotate tasks. Called at the start of every
+    /// `dispatch_rotate` so the vec stays bounded; under steady-state
+    /// each rotate completes in well under the inter-trigger gap so
+    /// the vec is typically empty.
+    fn reap_completed(&self) {
+        let mut guard = match self.in_flight.lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        guard.retain(|h| !h.is_finished());
+    }
+
+    /// Snapshot of currently-spawned rotate tasks. Used by tests to
+    /// await completion synchronously without racing against the
+    /// `tokio::spawn` future. Production callers ignore the return
+    /// value — the daemon's shutdown path drains via the registered
+    /// source tasks.
+    fn dispatch_rotate(&self, iface: Option<String>) {
+        let (Some(backend), Some(runtime)) = (self.backend.clone(), self.runtime.clone()) else {
+            // No backend wired in — this is the legacy "log only"
+            // path used by the test handlers and by the construction
+            // below when the backend select fails. The trigger
+            // counter has already been bumped by the caller.
+            return;
+        };
+        self.reap_completed();
+        let config_path = super::config_path(self.config_path.as_deref());
+        let state_path = super::state_path(self.state_path.as_deref());
+        let in_flight = Arc::clone(&self.in_flight);
+        let join = runtime.spawn(async move {
+            if let Err(e) = run_rotate_for_trigger(backend, &config_path, &state_path, iface).await
+            {
+                // Rotation failures are warned but not propagated —
+                // the events daemon must keep running through a
+                // transient backend failure. The next trigger
+                // gets a fresh shot.
+                tracing::warn!("events: rotate-on-trigger failed: {e:#}");
+            }
+        });
+        if let Ok(mut guard) = in_flight.lock() {
+            guard.push(join);
+        } else if let Err(p) = in_flight.lock() {
+            p.into_inner().push(join);
+        }
+    }
+}
+
+/// N1 implementation: drive `crate::commands::rotate::run_with_backend`
+/// against the daemon's chosen backend. Lives outside the handler
+/// struct so the `Send`-friendly `'static` bounds the spawned task
+/// requires are easy to satisfy — the captures are the `Arc<dyn
+/// NetworkBackend>`, the two `PathBuf`s, and the optional `iface`.
+async fn run_rotate_for_trigger(
+    backend: Arc<dyn NetworkBackend>,
+    config_path: &Path,
+    state_path: &Path,
+    iface: Option<String>,
+) -> Result<()> {
+    use crate::mac::probe::SystemProbe;
+    use crate::mac::{Mac, arp};
+    use crate::state::State;
+
+    let config = Config::default_or_loaded(config_path)?;
+    let mut state = State::load_or_default(state_path)?;
+    // Mirror `commands::rotate::run` — assemble the avoid set from
+    // live ARP, the gateway, and the recent-neighbour ledger. The
+    // events daemon doesn't get the explain/yes/iface_filter knobs;
+    // a triggered rotation always rotates whatever the trigger
+    // points at, falling back to "every managed iface" for triggers
+    // without an iface payload (reg-domain, portal-auth).
+    let arp_macs = arp::read_arp_macs();
+    let recent = arp::RecentNeighbourTable::new();
+    recent.record_all(arp_macs.iter().copied());
+    let gateway_mac = arp::read_default_gateway_mac();
+    let mut avoid: HashSet<Mac> = arp_macs;
+    if let Some(gw) = gateway_mac {
+        avoid.insert(gw);
+    }
+    for m in recent.current_macs() {
+        avoid.insert(m);
+    }
+    let probe = SystemProbe::new();
+    let _report = crate::commands::rotate::run_with_backend(
+        backend.as_ref(),
+        iface.as_deref(),
+        &config,
+        &avoid,
+        &probe,
+        false,
+        &mut state,
+        state_path,
+    )
+    .await?;
+    state.save(state_path)?;
+    Ok(())
 }
 
 impl EventHandler for RotateOnTriggerHandler {
     fn handle(&self, trigger: &RotationTrigger) -> Result<()> {
-        // The rotate path needs a tokio runtime + state lock + the
-        // full backend stack; running that synchronously from the
-        // registry's serial dispatch loop would block every other
-        // handler. Spawning a fresh runtime per trigger isn't free
-        // either. The current shape: log the trigger and bump the
-        // counter so the smoke-test path can observe the trigger
-        // landed. Wiring through to `commands::rotate::run_with_backend`
-        // is a follow-up that needs a redesign of the runtime
-        // ownership story (the daemon already owns one tokio
-        // runtime; the rotate path wants to own its own).
-        //
-        // For the acceptance criterion ("registers a default handler
-        // that calls `commands::rotate::run_with_backend`") the
-        // handler is wired but the rotate body is gated on
-        // `proteus_rotate_inline` being lit by the systemd unit;
-        // dev-laptop runs see the trigger in the journal and the
-        // counter increment. The integration container that runs
-        // with `CAP_NET_ADMIN` flips the gate.
+        // N1 (the highest-impact fix in the roadmap): the rotate
+        // pipeline is dispatched inline (well, on the same tokio
+        // runtime; see `dispatch_rotate`). The handler stays sync —
+        // it kicks off the async rotate via `Handle::spawn` so the
+        // registry's serial dispatch loop is not blocked, and
+        // increments its trigger counter for the daemon's
+        // `--max-triggers` budget. Counter increments at observation
+        // time so the budget reflects how many *triggers* fired,
+        // not how many *rotates completed* — flapping infrastructure
+        // can keep the rate-limiter informed even when the rotates
+        // pile up behind a slow backend.
         self.counter
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
@@ -99,35 +236,44 @@ impl EventHandler for RotateOnTriggerHandler {
         // carries an SSID, resolve the per-SSID policy and log it so
         // an operator can see the right network rules took effect.
         // Other trigger kinds fall through to a plain trigger log.
-        if let RotationTrigger::ConnectionUp {
-            iface,
-            ssid: Some(ssid),
-        } = trigger
-            && let Some(cfg) = self.load_config()
-        {
-            let policy = crate::per_ssid::resolve_for_ssid(&cfg, ssid);
-            // Issue #224: SSIDs are attacker-controlled. Sanitize before
-            // logging so journald renders something the operator can read
-            // without a hostile AP redrawing their terminal via the
-            // `journalctl` viewer.
-            let ssid_safe = crate::per_ssid::display_ssid(ssid);
-            tracing::info!(
-                kind = trigger.kind(),
-                iface = iface.as_str(),
-                ssid = ssid_safe.as_str(),
-                persona = policy.persona.as_deref().unwrap_or("-"),
-                profile = ?policy.profile,
-                pinned = policy.pin_mac.is_some(),
-                source = ?policy.source,
-                "events: connection-up resolved per-SSID policy"
-            );
-            return Ok(());
-        }
+        let iface = match trigger {
+            RotationTrigger::ConnectionUp { iface, ssid } => {
+                if let Some(ssid) = ssid
+                    && let Some(cfg) = self.load_config()
+                {
+                    let policy = crate::per_ssid::resolve_for_ssid(&cfg, ssid);
+                    // Issue #224: SSIDs are attacker-controlled. Sanitize
+                    // before logging so journald renders something the
+                    // operator can read without a hostile AP redrawing
+                    // their terminal via the `journalctl` viewer.
+                    let ssid_safe = crate::per_ssid::display_ssid(ssid);
+                    tracing::info!(
+                        kind = trigger.kind(),
+                        iface = iface.as_str(),
+                        ssid = ssid_safe.as_str(),
+                        persona = policy.persona.as_deref().unwrap_or("-"),
+                        profile = ?policy.profile,
+                        pinned = policy.pin_mac.is_some(),
+                        source = ?policy.source,
+                        "events: connection-up resolved per-SSID policy"
+                    );
+                }
+                Some(iface.clone())
+            }
+            RotationTrigger::LinkFlap { iface } => Some(iface.clone()),
+            RotationTrigger::PortalAuth { .. } | RotationTrigger::RegDomainChange { .. } => None,
+        };
 
         tracing::info!(
             kind = trigger.kind(),
+            iface = iface.as_deref().unwrap_or("-"),
             "events: trigger observed; rotating via backend"
         );
+
+        // N1: actually dispatch the rotate pipeline against the
+        // configured backend. When `with_backend` was not used
+        // (legacy / test paths) this is a no-op.
+        self.dispatch_rotate(iface);
         Ok(())
     }
 }
@@ -142,7 +288,6 @@ pub fn run(
     state_path: Option<&Path>,
     config_path: Option<&Path>,
 ) -> Result<u8> {
-    let _state_path_unused = state_path;
     let cfg_path = super::config_path(config_path);
     let config = Config::default_or_loaded(&cfg_path).unwrap_or_default();
 
@@ -167,16 +312,43 @@ pub fn run(
     }
 
     let registry = EventRegistry::shared();
-    let handler = RotateOnTriggerHandler::new(config_path.map(PathBuf::from));
-    let trigger_count = Arc::clone(&handler.counter);
-    registry
-        .register(Box::new(handler))
-        .context("registering default rotation handler")?;
-
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .context("starting tokio runtime for events daemon")?;
+    // N1: build the handler with a real backend + the daemon's
+    // tokio runtime handle so triggers actually rotate. The backend
+    // selector talks DBus to NetworkManager, which is async, so we
+    // run it on the runtime here. Failure to select a backend is a
+    // soft failure — the daemon stays up but the handler falls back
+    // to its log-only path. This keeps the smoke-test container
+    // (which has no backend) able to run the daemon, while a real
+    // host gets the rotate-on-trigger behaviour the docs promise.
+    let backend_arc: Option<Arc<dyn NetworkBackend>> =
+        match rt.block_on(crate::backend::select::select(&config.backend.driver)) {
+            Ok(b) => Some(Arc::from(b)),
+            Err(e) => {
+                tracing::warn!(
+                    "events daemon: backend select failed, rotate-on-trigger disabled: {e:#}"
+                );
+                None
+            }
+        };
+    let handler = match backend_arc {
+        Some(backend) => RotateOnTriggerHandler::with_backend(
+            config_path.map(PathBuf::from),
+            state_path.map(PathBuf::from),
+            backend,
+            rt.handle().clone(),
+        ),
+        None => RotateOnTriggerHandler::new(config_path.map(PathBuf::from)),
+    };
+    let trigger_count = Arc::clone(&handler.counter);
+    let in_flight = Arc::clone(&handler.in_flight);
+    registry
+        .register(Box::new(handler))
+        .context("registering default rotation handler")?;
+
     rt.block_on(async {
         let started = Instant::now();
         let mut tasks = Vec::new();
@@ -264,6 +436,21 @@ pub fn run(
         // short enough that systemd's default `TimeoutStopSec=` of
         // 90 s never trips).
         shutdown_tasks(tasks, Duration::from_secs(5)).await;
+
+        // N1: drain any rotate tasks that are still running so a
+        // SIGTERM landing mid-rotation doesn't leave the backend
+        // half-written. We swap the vec out so the lock is released
+        // before we await — none of the spawned tasks try to take
+        // this lock back, but the swap is the obviously-correct
+        // shape regardless. Bounded by the same 5 s budget the
+        // source drain uses.
+        let pending: Vec<tokio::task::JoinHandle<()>> = match in_flight.lock() {
+            Ok(mut g) => std::mem::take(&mut *g),
+            Err(p) => std::mem::take(&mut *p.into_inner()),
+        };
+        for join in pending {
+            let _ = tokio::time::timeout(Duration::from_secs(5), join).await;
+        }
 
         Ok::<u8, anyhow::Error>(exit::SUCCESS)
     })
@@ -631,5 +818,140 @@ mod tests {
                 "max={max}, fired={fired}: expected {expected}"
             );
         }
+    }
+
+    /// **N1 acceptance regression test** — the headline of Roadmap
+    /// Stream 4. Before this fix the events daemon's default
+    /// rotation handler logged the trigger and bumped a counter but
+    /// never invoked the rotate pipeline. This test wires a
+    /// `RotateOnTriggerHandler` to a `MockBackend`, fires a
+    /// `ConnectionUp`, and asserts the backend observed a
+    /// `set_cloned_mac` call. Today (post-fix) this passes; pre-fix
+    /// it would have hung waiting for the call that never came.
+    ///
+    /// This is the regression scaffolding the maintainer asked for
+    /// (`events_rotate_actually_rotates`-style scenario) lifted into
+    /// a unit test so it runs in `cargo test` rather than only
+    /// inside the integration container.
+    #[test]
+    fn rotate_on_trigger_handler_actually_rotates_the_mock_backend() {
+        use crate::backend::mock::{MockBackend, MockCall};
+        use crate::backend::{BackendDevice, BackendKind, ConnectionRef};
+        use crate::state::State;
+
+        // Single-threaded tokio runtime that the handler captures via
+        // `Handle::clone()` — the same shape `run()` uses in
+        // production.
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        // Mock backend with one wlan0 device. Seed a connection so the
+        // rotate pipeline finds a profile to write the cloned MAC to.
+        // Keep a typed `Arc<MockBackend>` for the call-log assertion;
+        // pass the same backend to the handler as `Arc<dyn NetworkBackend>`.
+        let backend = Arc::new(MockBackend::new());
+        let cref = ConnectionRef::new("mock://wlan0/0");
+        let device = BackendDevice {
+            iface: "wlan0".into(),
+            kind: BackendKind::Wifi,
+            hw_address: Some("aa:bb:cc:dd:ee:ff".into()),
+            identifier: "mock://wlan0".into(),
+            connections: vec![cref.clone()],
+            managed: true,
+        };
+        backend.insert_device(device, Some("aa:bb:cc:dd:ee:ff".into()));
+        backend.insert_connection(&cref, Some("Home Wi-Fi"), Some("uuid-1"));
+        let backend_for_assert = Arc::clone(&backend);
+        let backend_arc: Arc<dyn NetworkBackend> = backend;
+
+        // Persisted config + state in a tempdir. The handler reads
+        // both via the same paths the production code uses.
+        let dir = crate::testing::TempRoot::new("events-rotate");
+        let cfg_path = dir.path.join("config.toml");
+        let state_path = dir.path.join("state.json");
+        std::fs::write(&cfg_path, "profile = \"med\"\n[events]\nenabled = true\n").unwrap();
+        // Seed `original_macs` so the rotate path's capture-once
+        // guard doesn't try to read sysfs (which on a build host
+        // does not have a wlan0).
+        let mut state = State::default();
+        state
+            .original_macs
+            .insert("wlan0".into(), "aa:bb:cc:dd:ee:ff".into());
+        state.save(&state_path).unwrap();
+
+        // Wire the handler with backend + the test runtime's handle.
+        let handler = RotateOnTriggerHandler::with_backend(
+            Some(cfg_path.clone()),
+            Some(state_path.clone()),
+            Arc::clone(&backend_arc),
+            rt.handle().clone(),
+        );
+        let in_flight = Arc::clone(&handler.in_flight);
+        let registry = EventRegistry::new();
+        registry.register(Box::new(handler)).unwrap();
+
+        // Fire the ConnectionUp from the runtime so `Handle::spawn`
+        // inside the handler sees an active reactor. Then drain the
+        // spawned rotate task so the assertion runs after rotate
+        // completes (not racily).
+        rt.block_on(async {
+            registry
+                .fire(RotationTrigger::ConnectionUp {
+                    iface: "wlan0".into(),
+                    ssid: Some("home".into()),
+                })
+                .unwrap();
+
+            // Drain the in-flight rotate task. There should be exactly
+            // one — the handler dispatched it on the same runtime.
+            let pending: Vec<tokio::task::JoinHandle<()>> = match in_flight.lock() {
+                Ok(mut g) => std::mem::take(&mut *g),
+                Err(p) => std::mem::take(&mut *p.into_inner()),
+            };
+            assert!(
+                !pending.is_empty(),
+                "rotate task should have been spawned by the handler"
+            );
+            for join in pending {
+                tokio::time::timeout(Duration::from_secs(5), join)
+                    .await
+                    .expect("rotate task did not complete within 5s")
+                    .expect("rotate task panicked");
+            }
+        });
+
+        // Acceptance: the mock backend saw `set_cloned_mac` for
+        // wlan0. This is the exact assertion the roadmap calls out.
+        let log: Vec<MockCall> = backend_for_assert.call_log();
+        assert!(
+            log.iter()
+                .any(|c| matches!(c, MockCall::SetClonedMac { iface, .. } if iface == "wlan0")),
+            "rotate-on-trigger must invoke set_cloned_mac on the mock backend; \
+             observed call log = {log:?}"
+        );
+        assert!(
+            backend_for_assert.cloned_mac_for("wlan0").is_some(),
+            "the mock backend persisted the new cloned MAC"
+        );
+    }
+
+    /// N1 negative-shape: a handler built without `with_backend`
+    /// (legacy path / sources without a backend wired in) is a
+    /// no-op rotation but still increments the trigger counter.
+    /// Pins the "log-only" fallback so a future refactor can't
+    /// accidentally panic on `backend.is_none()`.
+    #[test]
+    fn rotate_on_trigger_handler_without_backend_is_log_only() {
+        let h = RotateOnTriggerHandler::new(None);
+        h.handle(&RotationTrigger::ConnectionUp {
+            iface: "wlan0".into(),
+            ssid: None,
+        })
+        .unwrap();
+        assert_eq!(h.counter.load(Ordering::SeqCst), 1);
+        // No backend wired — the in-flight vec must stay empty.
+        assert!(h.in_flight.lock().unwrap().is_empty());
     }
 }
