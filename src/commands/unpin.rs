@@ -7,7 +7,19 @@ use anyhow::Result;
 use crate::exit;
 use crate::state::State;
 
-pub fn run(target: &str, state_path: Option<&Path>) -> Result<u8> {
+/// Issue #391 / N12.1: `unpin` clears the persisted pin so a subsequent
+/// rotation drops the operator-chosen MAC. That's a mutating change just
+/// like `pin`, so we gate on `--yes` for parity with the rest of the
+/// confirmation contract — wrapper scripts that depend on the gate were
+/// silently no-ops before.
+pub fn run(target: &str, yes: bool, state_path: Option<&Path>) -> Result<u8> {
+    if let Err(code) = super::require_yes(
+        yes,
+        "'unpin' is mutating (clears the operator-chosen pin)",
+        "proteus help pin",
+    ) {
+        return Ok(code);
+    }
     if let Err(e) = super::require_root() {
         eprintln!("proteus: {e}");
         return Ok(exit::PERMISSION_ERROR);

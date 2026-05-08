@@ -279,7 +279,7 @@ out-of-cycle as the existing release flow already permits.
 
 ## Stream details
 
-### Stream 1 — CLI Safety & Confirmation Gates ⏳
+### Stream 1 — CLI Safety & Confirmation Gates 🚧
 
 **Why critical:** four mutators run state-changing operations without honouring
 `--yes`. Wrapping scripts that depend on the confirmation contract are silently
@@ -295,27 +295,35 @@ NM2.7, NCMD2.1, NCMD2.5, NEV2.7.
 
 **Work:**
 
-- ⏳ Add `--yes` field to `unpin` action (N12.1) and to every mutator action
+- ✅ Add `--yes` field to `unpin` action (N12.1) and to every mutator action
   that declares a `yes: bool` field today (CL3 — currently dead code).
-- ⏳ Wire `--yes` through dispatch for Bluetooth / Hostname / DNS / Resolved /
+- ✅ Wire `--yes` through dispatch for Bluetooth / Hostname / DNS / Resolved /
   NTP / Portal (CL2), DHCP apply / revert (M1, N12.2), Portal mark / unmark /
   open (N12.3).
-- ⏳ Reject `--interval 0s` in watch mode (CL1) and `<1ms` sleep granularities
+- ✅ Reject `--interval 0s` in watch mode (CL1) and `<1ms` sleep granularities
   (CL7).
 - ⏳ Add integration scenarios for the 24 untested subcommands (CL4).
-- ⏳ Add `--json` flag to `resume` and `wiki` (non-search) for parity (CL6).
+- ✅ Add `--json` flag to `resume` and `wiki` (non-search) for parity (CL6).
 - ⏳ Document the prefix-collision risk in CLI changelog (CL5).
-- ⏳ `proteus rotate --dry-run` preview: thread the configured OUI pool into
+- ✅ `proteus rotate --dry-run` preview: thread the configured OUI pool into
   `mac::plan::preview_mac` so the previewed MAC reflects the persona, not a
   hardcoded LAA placeholder (NM2.7).
-- ⏳ `proteus doctor` exit code: split warn-only vs fail; reserve exit 1 for
+- ✅ `proteus doctor` exit code: split warn-only vs fail; reserve exit 1 for
   `fail > 0`, map warn-only to exit 0 (or a distinct code) so CI wrappers
   don't block on warnings (NCMD2.1).
-- ⏳ `proteus status --json`: skip non-UTF-8 sysfs entries with a `debug!`
+- ✅ `proteus status --json`: skip non-UTF-8 sysfs entries with a `debug!`
   line, or include them with explicit `valid_utf8: false` (NCMD2.5).
-- ⏳ NM dispatcher `rc=70` branch: log captured stderr at `info!` (or split
+- ✅ NM dispatcher `rc=70` branch: log captured stderr at `info!` (or split
   the exit code) so "backend unavailable" doesn't mask "missing nft / nl80211
   / CAP_NET_ADMIN" (NEV2.7).
+- ✅ `rotate-if-needed --explain` to surface policy + cooldown math the
+  dispatcher hot path is making (GH#378).
+- ✅ `proteus revert` honours global `--state` flag (GH#386).
+- ✅ `timer resume` short-name maps to the actual shipped artifact
+  `proteus-resume.service` (GH#352).
+- 🚧 `rotate-if-needed --state` plumbed at CLI but the backend trait
+  hardcodes the read-back path; full fix needs a Stream 5 trait
+  signature change (GH#381 — partial / TODO).
 
 **Acceptance:** end-to-end script that calls every mutator without `--yes` and
 asserts exit code 64 (`CONFIRMATION_REQUIRED`); run watch with `--interval 0s`

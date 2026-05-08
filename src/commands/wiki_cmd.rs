@@ -15,7 +15,14 @@ const SNIPPET_WINDOW: usize = 40;
 const NO_PAGES_NOTE: &str =
     "no pages embedded yet — `intro`, `quickstart`, `concepts` land in phase A alongside this PR";
 
-pub fn run(page: Option<&str>, no_color: bool) -> Result<u8> {
+pub fn run(page: Option<&str>, json: bool, no_color: bool) -> Result<u8> {
+    // CL6: emit a small JSON payload when `--json` is set so wrappers
+    // can navigate the wiki without grepping the rendered markdown. The
+    // shape is intentionally narrow: page-name list when no page is
+    // given, `{ page, content }` when one is.
+    if json {
+        return run_json(page);
+    }
     if let Some(name) = page {
         return print_page(name, no_color);
     }
@@ -27,6 +34,43 @@ pub fn run(page: Option<&str>, no_color: bool) -> Result<u8> {
         list_pages();
     }
     Ok(exit::SUCCESS)
+}
+
+#[derive(Serialize)]
+struct WikiPageList {
+    pages: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct WikiPageContent<'a> {
+    page: &'a str,
+    content: &'a str,
+}
+
+fn run_json(page: Option<&str>) -> Result<u8> {
+    match page {
+        Some(name) => match wiki::get_page(name) {
+            Some(content) => {
+                print_json(&WikiPageContent {
+                    page: name,
+                    content,
+                })?;
+                Ok(exit::SUCCESS)
+            }
+            None => {
+                // Match the human path: stderr "no wiki page" and
+                // exit GENERIC_ERROR so wrappers see a typed failure.
+                eprintln!("proteus: no wiki page '{name}'");
+                Ok(exit::GENERIC_ERROR)
+            }
+        },
+        None => {
+            print_json(&WikiPageList {
+                pages: wiki::list_pages(),
+            })?;
+            Ok(exit::SUCCESS)
+        }
+    }
 }
 
 fn render_to_stdout(content: &str, no_color_flag: bool) {

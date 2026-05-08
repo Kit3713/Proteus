@@ -59,27 +59,46 @@ fn stdout_is_tty() -> bool {
     unsafe { libc::isatty(libc::STDOUT_FILENO) != 0 }
 }
 
-/// Parse a `--interval` value (e.g. `2s`, `500ms`, `1m`) into a Duration.
-/// Returns the default when the input is empty. Errors on garbage.
+/// Smallest cadence accepted by `--watch`. Issue #349 / CL1+CL7: a
+/// zero-second interval (or a sub-millisecond one) busy-loops the
+/// CPU at the rate of clock-poll. We reject below this floor at
+/// parse time so the loop never sees a zero-sleep tick.
+const MIN_INTERVAL: Duration = Duration::from_millis(1);
+
+/// Parse a `--watch --interval` value (e.g. `2s`, `500ms`, `1m`) into a
+/// Duration. Returns the default when the input is empty. Errors on
+/// garbage and on intervals below [`MIN_INTERVAL`].
 ///
 /// Roadmap Milestone 6: keeps the surface small (s / ms / m). Anything
 /// beyond `m` belongs in cron, not in `--watch`.
+///
+/// Issue #349 / CL1: `0s` previously parsed to `Duration::ZERO` and the
+/// run-loop happily called `thread::sleep(0)` every tick, pegging a core
+/// for the lifetime of the watch. CL7 mirrors the same fix at the
+/// sub-millisecond floor — `Duration::from_micros(...)` is technically
+/// representable but is a CPU-burn footgun for the same reason. We reject
+/// both with a single sentinel below.
 pub fn parse_interval(s: &str) -> anyhow::Result<Duration> {
     let s = s.trim();
     if s.is_empty() {
         return Ok(DEFAULT_INTERVAL);
     }
-    if let Some(num) = s.strip_suffix("ms") {
-        return Ok(Duration::from_millis(num.parse()?));
-    }
-    if let Some(num) = s.strip_suffix('s') {
-        return Ok(Duration::from_secs(num.parse()?));
-    }
-    if let Some(num) = s.strip_suffix('m') {
+    let parsed = if let Some(num) = s.strip_suffix("ms") {
+        Duration::from_millis(num.parse()?)
+    } else if let Some(num) = s.strip_suffix('s') {
+        Duration::from_secs(num.parse()?)
+    } else if let Some(num) = s.strip_suffix('m') {
         let mins: u64 = num.parse()?;
-        return Ok(Duration::from_secs(mins * 60));
+        Duration::from_secs(mins * 60)
+    } else {
+        anyhow::bail!("expected a duration like `2s`, `500ms`, or `1m`; got '{s}'");
+    };
+    if parsed < MIN_INTERVAL {
+        anyhow::bail!(
+            "--interval must be >= 1ms (got '{s}'); zero / sub-ms sleeps would peg a CPU core"
+        );
     }
-    anyhow::bail!("expected a duration like `2s`, `500ms`, or `1m`; got '{s}'")
+    Ok(parsed)
 }
 
 #[cfg(test)]
@@ -89,7 +108,6 @@ mod tests {
     #[test]
     fn parse_interval_accepts_seconds() {
         assert_eq!(parse_interval("2s").unwrap(), Duration::from_secs(2));
-        assert_eq!(parse_interval("0s").unwrap(), Duration::from_secs(0));
         assert_eq!(parse_interval("60s").unwrap(), Duration::from_secs(60));
     }
 
@@ -97,6 +115,33 @@ mod tests {
     fn parse_interval_accepts_milliseconds() {
         assert_eq!(parse_interval("500ms").unwrap(), Duration::from_millis(500));
         assert_eq!(parse_interval("1ms").unwrap(), Duration::from_millis(1));
+    }
+
+    /// Issue #349 / CL1: zero-second interval would peg a CPU core via
+    /// `thread::sleep(0)`. The parser must reject it loudly so the loop
+    /// never gets to call `body()` on a hot loop.
+    #[test]
+    fn parse_interval_rejects_zero_seconds() {
+        let e = parse_interval("0s").expect_err("0s must be rejected");
+        let msg = format!("{e:#}");
+        assert!(
+            msg.contains(">= 1ms"),
+            "diagnostic should mention the floor; got {msg:?}"
+        );
+    }
+
+    /// CL7: same rationale at the millisecond floor — `0ms` is a busy
+    /// loop in disguise.
+    #[test]
+    fn parse_interval_rejects_zero_milliseconds() {
+        assert!(parse_interval("0ms").is_err());
+    }
+
+    /// CL7: minutes resolve to seconds resolve to >= 1ms, so any non-zero
+    /// minute count is fine. Zero minutes is the trap-case.
+    #[test]
+    fn parse_interval_rejects_zero_minutes() {
+        assert!(parse_interval("0m").is_err());
     }
 
     #[test]

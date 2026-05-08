@@ -10,7 +10,7 @@
 //!   adapters, and records the snapshot under `state.kill_switch`.
 //! - `kill_status(json, state_path)` — read-only. Renders the recorded
 //!   kill_switch object.
-//! - `resume_run(yes, state_path)` — the restoration path. Reads the
+//! - `resume_run(yes, json, state_path)` — the restoration path. Reads the
 //!   recorded snapshot and reverses each step, then clears the kill_switch
 //!   field.
 //!
@@ -222,8 +222,12 @@ fn render_status(k: &KillSwitchState, json: bool) -> Result<u8> {
     Ok(exit::SUCCESS)
 }
 
-/// Public entry point for `proteus resume [--yes]`.
-pub fn resume_run(yes: bool, state_path: Option<&Path>) -> Result<u8> {
+/// Public entry point for `proteus resume [--yes] [--json]`.
+///
+/// CL6: a `--json` flag was added so wrappers don't have to grep the
+/// human output. The JSON shape is intentionally narrow — the same
+/// `{ resumed, warnings }` skeleton used by `kill --status --json`.
+pub fn resume_run(yes: bool, json: bool, state_path: Option<&Path>) -> Result<u8> {
     if let Err(code) = super::require_yes(
         yes,
         "resume re-enables network traffic and radios",
@@ -244,14 +248,29 @@ pub fn resume_run(yes: bool, state_path: Option<&Path>) -> Result<u8> {
     let mut state = State::load_or_default(&state_path)?;
 
     if !state.kill_switch.active {
-        println!("kill switch not active; nothing to resume");
+        if json {
+            super::print_json(&serde_json::json!({
+                "active": false,
+                "resumed": [],
+                "warnings": [],
+                "note": "kill switch not active; nothing to resume",
+            }))?;
+        } else {
+            println!("kill switch not active; nothing to resume");
+        }
         return Ok(exit::SUCCESS);
     }
 
     let mut warns: Vec<String> = Vec::new();
+    let mut resumed: Vec<String> = Vec::new();
     for iface in &state.kill_switch.interfaces {
         match kill_switch::link_up(iface) {
-            Ok(true) => println!("interface {iface}: up"),
+            Ok(true) => {
+                if !json {
+                    println!("interface {iface}: up");
+                }
+                resumed.push(format!("interface {iface}"));
+            }
             Ok(false) => warns.push(format!(
                 "interface {iface}: `ip` not found in PATH; install iproute2"
             )),
@@ -269,10 +288,16 @@ pub fn resume_run(yes: bool, state_path: Option<&Path>) -> Result<u8> {
             warns.push(format!("nm: {w}"));
         }
         if r.wireless_changed {
-            println!("nm: wireless radio on");
+            if !json {
+                println!("nm: wireless radio on");
+            }
+            resumed.push("nm: wireless radio".into());
         }
         if r.wwan_changed {
-            println!("nm: wwan radio on");
+            if !json {
+                println!("nm: wwan radio on");
+            }
+            resumed.push("nm: wwan radio".into());
         }
     }
     if state.kill_switch.bluetooth_disabled {
@@ -281,14 +306,23 @@ pub fn resume_run(yes: bool, state_path: Option<&Path>) -> Result<u8> {
             warns.push(format!("bluetooth: {w}"));
         }
         if bt.toggled {
-            println!("bluetooth: adapters powered on");
+            if !json {
+                println!("bluetooth: adapters powered on");
+            }
+            resumed.push("bluetooth: adapters".into());
         }
     }
 
     state.kill_switch = KillSwitchState::default();
     state.save(&state_path)?;
 
-    if warns.is_empty() {
+    if json {
+        super::print_json(&serde_json::json!({
+            "active": false,
+            "resumed": resumed,
+            "warnings": warns,
+        }))?;
+    } else if warns.is_empty() {
         println!("kill switch: cleared");
     } else {
         eprintln!("kill switch: cleared with {} warning(s):", warns.len());
@@ -602,7 +636,7 @@ mod tests {
     #[test]
     fn resume_without_yes_returns_confirmation_required_exit() {
         let path = temp_state_path("resume-noyes");
-        let code = resume_run(false, Some(&path)).unwrap();
+        let code = resume_run(false, false, Some(&path)).unwrap();
         assert_eq!(code, exit::CONFIRMATION_REQUIRED);
         let _ = std::fs::remove_file(&path);
     }
