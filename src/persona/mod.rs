@@ -87,6 +87,16 @@ pub struct Persona {
     /// personas (laptops in stealth mode) turn it off.
     #[serde(default)]
     pub mdns_advertise: bool,
+    /// mDNS service records this persona would announce (Bonjour/DNS-SD
+    /// service types like `_apple-mobdev2._tcp`, `_googlecast._tcp`,
+    /// `_ipp._tcp`). Distinct per OS family — iPhones advertise Apple
+    /// Continuity services, Cast devices advertise `_googlecast`, printers
+    /// advertise `_ipp`/`_ipps`. Issue #305: leaving this empty on a brand
+    /// persona is a cross-layer mismatch — a real iPhone always announces
+    /// `_apple-mobdev2`, so an `iphone-15` persona that doesn't is
+    /// observably "Proteus user with iPhone-15 cover".
+    #[serde(default)]
+    pub mdns: MdnsTraits,
     /// Bluetooth alias template; same token set as `hostname_template`.
     #[serde(default)]
     pub bt_name_template: String,
@@ -219,6 +229,37 @@ pub struct Ipv6Traits {
     pub send_rs: bool,
 }
 
+/// mDNS / Bonjour / DNS-SD posture for a persona (issue #305 — cross-layer
+/// brand persona coverage). Real devices announce a per-OS-family set of
+/// service types: iPhones emit `_apple-mobdev2._tcp` and `_companion-link._tcp`,
+/// Cast devices emit `_googlecast._tcp`, printers emit `_ipp._tcp` and
+/// `_pdl-datastream._tcp`. Without these the L2 cover (Apple OUI, hostname
+/// "Sarahs-iPhone") is contradicted by the silence on multicast — a single
+/// `avahi-browse -ar` from any host on the segment names the cover as
+/// "Proteus user with iPhone-15 persona".
+///
+/// **Future work**: the apply path does not yet program avahi to emit these
+/// services. The integration follow-up wires `services` through to an
+/// `/etc/avahi/services/` drop-in (or an embedded `avahi-publish` invocation)
+/// so the multicast layer matches the persona. Until that lands the field
+/// is captured for completeness and future-proofing — `proteus persona show`
+/// surfaces it so an operator can audit the cover.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default, deny_unknown_fields)]
+pub struct MdnsTraits {
+    /// DNS-SD service types to advertise, in `_service._proto` form
+    /// (e.g. `_apple-mobdev2._tcp`, `_googlecast._tcp`, `_ipp._tcp`).
+    /// Empty when `mdns_advertise = false` or when the persona is a
+    /// device family that does not Bonjour at all (Android phones,
+    /// game consoles, IoT widgets that talk only to the vendor cloud).
+    pub services: Vec<String>,
+    /// TXT-record hints for the primary service. Real devices stuff
+    /// model strings (`model=J320AP`, `vendor=Apple`) into TXT; we keep
+    /// this as a flat list of `key=value` strings so the schema check
+    /// can validate ASCII-printable shape without parsing every record.
+    pub txt_hints: Vec<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default, deny_unknown_fields)]
 pub struct RfTraits {
@@ -348,6 +389,10 @@ mod tests {
                 send_rs: true,
             },
             mdns_advertise: true,
+            mdns: MdnsTraits {
+                services: vec!["_apple-mobdev2._tcp".into(), "_companion-link._tcp".into()],
+                txt_hints: vec!["model=iPhone15,2".into()],
+            },
             bt_name_template: "{owner}s iPhone".into(),
             rf_traits: RfTraits {
                 tx_power_dbm: 0,

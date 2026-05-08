@@ -32,6 +32,15 @@ use_temp_addresses = true
 addr_gen_mode = "stable-privacy"
 send_rs = true
 
+[mdns]
+# Linux laptops typically don't auto-advertise unless avahi-daemon is
+# installed and enabled (Fedora ships it; Debian does not by default).
+# Empty services is the conservative, realistic posture for a stock
+# Linux laptop persona — turning chatter on would itself be a
+# distinguisher.
+services = []
+txt_hints = []
+
 [rf_traits]
 tx_power_dbm = 0
 scan_style = "passive"

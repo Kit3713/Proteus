@@ -12,15 +12,22 @@ oui_pool = ["google", "random-locally-administered"]
 hostname_template = "Pixel-8-{n}"
 mdns_advertise = false
 bt_name_template = "Pixel 8"
-notes = "Pixel-line MAC randomization is per-SSID by default in Android; we keep oui_pool tight. DHCP option 60 is the AOSP signature. Android Pixels do not advertise mDNS by default."
+notes = "Pixel-line MAC randomization is per-SSID by default in Android; we keep oui_pool tight. DHCP option 60 is the AOSP signature. Android Pixels do not advertise mDNS by default — mdns.services is intentionally empty (issue #305: silence is plausible for stock Android)."
 
 [dhcp_fingerprint]
 vendor_class_identifier = "android-dhcp-14"
 fqdn = ""
+# Android AOSP option-55 canonical list: subnet-mask, router, DNS,
+# domain-name, MTU (26), broadcast-address (28), lease-time (51),
+# renewal-T1 (58), rebinding-T2 (59), private (43). Distinct from iOS
+# (no 119/252) and from Linux (no 121/249).
 parameter_request_list = [1, 3, 6, 15, 26, 28, 51, 58, 59, 43]
 host_name = "Pixel-8"
 
 [tcp_stack]
+# Linux 5.15 (Android 14) TCP defaults: scale 8, timestamps + SACK on,
+# TTL 64. window_scale 8 is the modern Linux default; iOS uses 6 and
+# Windows uses 8 with TTL 128 — coherent per-OS distinction.
 window_scale = 8
 mss = 1460
 tcp_timestamps = true
@@ -31,6 +38,13 @@ default_ttl = 64
 use_temp_addresses = true
 addr_gen_mode = "random"
 send_rs = true
+
+[mdns]
+# Stock Android does not run avahi/Bonjour. Empty services is the right
+# answer for a Pixel persona — a real Pixel is silent on the multicast
+# layer (apps that need it like Chromecast Sender ship their own client).
+services = []
+txt_hints = []
 
 [rf_traits]
 tx_power_dbm = 0

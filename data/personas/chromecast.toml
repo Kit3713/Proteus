@@ -32,6 +32,20 @@ use_temp_addresses = false
 addr_gen_mode = "eui64"
 send_rs = true
 
+[mdns]
+# Chromecast / Google TV canonical Bonjour set. _googlecast is the
+# diagnostic giveaway — a real Chromecast cannot stay silent on this
+# label and still respond to the Cast SDK. _androidtvremote2 is the
+# Android-TV-specific remote-control discovery service.
+services = [
+    "_googlecast._tcp",
+    "_androidtvremote2._tcp",
+]
+txt_hints = [
+    "md=Chromecast",
+    "rs=",
+]
+
 [rf_traits]
 tx_power_dbm = 0
 scan_style = "passive"

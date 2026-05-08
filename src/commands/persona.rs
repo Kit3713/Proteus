@@ -287,6 +287,7 @@ fn persona_shaped_fields() -> Vec<&'static str> {
         "tcp_stack",
         "ipv6_traits",
         "mdns_advertise",
+        "mdns",
         "bt_name_template",
         "rf_traits",
         "rotate_cadence",

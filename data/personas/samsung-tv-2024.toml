@@ -32,6 +32,21 @@ use_temp_addresses = false
 addr_gen_mode = "eui64"
 send_rs = true
 
+[mdns]
+# Tizen 8 canonical service set. _samsungmsf is the Samsung-specific
+# Multi-Screen Framework discovery; _airplay is announced because Tizen
+# 8 supports AirPlay 2; _googlecast is announced because Samsung TVs
+# also act as Cast receivers.
+services = [
+    "_samsungmsf._tcp",
+    "_airplay._tcp",
+    "_googlecast._tcp",
+    "_raop._tcp",
+]
+txt_hints = [
+    "model=QN65Q70C",
+]
+
 [rf_traits]
 tx_power_dbm = 0
 scan_style = "passive"

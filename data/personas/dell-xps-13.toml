@@ -32,6 +32,19 @@ use_temp_addresses = true
 addr_gen_mode = "stable-privacy"
 send_rs = true
 
+[mdns]
+# Windows 11 historically used LLMNR/NBNS rather than mDNS, but as of
+# 22H2 Windows ships an mDNS responder that announces a small set of
+# services for nearby printer/sharing discovery. Compared to macOS this
+# list is narrow — just SMB and (if printing roles installed) IPP.
+services = [
+    "_smb._tcp",
+    "_ipp._tcp",
+]
+txt_hints = [
+    "model=Latitude9430",
+]
+
 [rf_traits]
 tx_power_dbm = 0
 scan_style = "active"

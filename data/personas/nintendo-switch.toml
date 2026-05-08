@@ -32,6 +32,13 @@ use_temp_addresses = false
 addr_gen_mode = "eui64"
 send_rs = false
 
+[mdns]
+# Nintendo Switch does not advertise mDNS — the console networking stack
+# is intentionally minimal (Nintendo's cloud is contacted directly, no
+# LAN service discovery). Empty services is the right cover.
+services = []
+txt_hints = []
+
 [rf_traits]
 tx_power_dbm = 0
 scan_style = "passive"

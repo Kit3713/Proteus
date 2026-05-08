@@ -32,6 +32,13 @@ use_temp_addresses = false
 addr_gen_mode = "eui64"
 send_rs = false
 
+[mdns]
+# Ring doorbells / cameras do not advertise mDNS — they reach the Ring
+# (Amazon) cloud directly over TLS and use BLE for the setup flow.
+# Cellular-camera-style profile: the device is silent on the LAN.
+services = []
+txt_hints = []
+
 [rf_traits]
 tx_power_dbm = 0
 scan_style = "passive"

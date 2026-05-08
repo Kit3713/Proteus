@@ -31,6 +31,13 @@ use_temp_addresses = false
 addr_gen_mode = "eui64"
 send_rs = true
 
+[mdns]
+# PS5 does not advertise mDNS by default — Sony's RemotePlay and the
+# PlayStation App use proprietary discovery (DHCP-INFORM + UDP probe
+# rather than Bonjour/DNS-SD). Empty services matches a real console.
+services = []
+txt_hints = []
+
 [rf_traits]
 tx_power_dbm = 0
 scan_style = "passive"

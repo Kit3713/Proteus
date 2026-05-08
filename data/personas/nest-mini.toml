@@ -32,6 +32,21 @@ use_temp_addresses = false
 addr_gen_mode = "eui64"
 send_rs = true
 
+[mdns]
+# Cast hardware canonical Bonjour set: _googlecast is the giveaway,
+# _googlerpc and _googlezone are the supporting RPC channels Nest Mini
+# uses for multi-room audio. A real Nest Mini announces all three
+# loudly; silence on these labels would identify the cover.
+services = [
+    "_googlecast._tcp",
+    "_googlerpc._tcp",
+    "_googlezone._tcp",
+]
+txt_hints = [
+    "md=Google Nest Mini",
+    "ic=/setup/icon.png",
+]
+
 [rf_traits]
 tx_power_dbm = 0
 scan_style = "passive"

@@ -32,6 +32,26 @@ use_temp_addresses = true
 addr_gen_mode = "stable-privacy"
 send_rs = true
 
+[mdns]
+# macOS Sonoma canonical Bonjour set — same as macbook-pro-m3. AirDrop
+# and Continuity are present even on an Air; SSH advertisement is on
+# whenever Remote Login is enabled (default off in 14.x but present in
+# the announcement set if the user toggles it).
+services = [
+    "_ssh._tcp",
+    "_afpovertcp._tcp",
+    "_smb._tcp",
+    "_airdrop._tcp",
+    "_companion-link._tcp",
+    "_apple-mobdev2._tcp",
+    "_printer._tcp",
+    "_ipp._tcp",
+]
+txt_hints = [
+    "model=Mac15,12",
+    "osxvers=23",
+]
+
 [rf_traits]
 tx_power_dbm = 0
 scan_style = "passive"

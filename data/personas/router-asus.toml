@@ -33,6 +33,18 @@ use_temp_addresses = false
 addr_gen_mode = "eui64"
 send_rs = true
 
+[mdns]
+# AsusWRT advertises a small admin-discovery service on mDNS for the
+# Asus mobile app pairing flow. Real routers also expose _http._tcp on
+# the LAN-side admin UI.
+services = [
+    "_asus-router._tcp",
+    "_http._tcp",
+]
+txt_hints = [
+    "model=RT-AX88U",
+]
+
 [rf_traits]
 tx_power_dbm = 0
 scan_style = "active"

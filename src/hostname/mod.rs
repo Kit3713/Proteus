@@ -382,6 +382,7 @@ mod tests {
             tcp_stack: Default::default(),
             ipv6_traits: Default::default(),
             mdns_advertise: true,
+            mdns: Default::default(),
             bt_name_template: String::new(),
             rf_traits: Default::default(),
             rotate_cadence: None,

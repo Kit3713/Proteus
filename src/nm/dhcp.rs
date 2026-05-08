@@ -107,6 +107,18 @@ pub fn apply_persona_fingerprint(
              (followup: pipe through backend trait)"
         );
     }
+    // Issue #305: mDNS records aren't yet wired into avahi but log them
+    // so an operator running `-v` sees the cross-layer surface the
+    // persona intends. Avahi drop-in emission is the integration
+    // follow-up tracked alongside this issue.
+    if !persona.mdns.services.is_empty() {
+        tracing::debug!(
+            persona = %persona.id,
+            services = ?persona.mdns.services,
+            advertise = persona.mdns_advertise,
+            "persona mdns service set captured (avahi/Bonjour wiring is the integration follow-up)"
+        );
+    }
     Ok(changed)
 }
 
@@ -690,6 +702,7 @@ mod tests {
             tcp_stack: Default::default(),
             ipv6_traits: Default::default(),
             mdns_advertise: true,
+            mdns: Default::default(),
             bt_name_template: String::new(),
             rf_traits: Default::default(),
             rotate_cadence: None,
