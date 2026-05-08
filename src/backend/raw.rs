@@ -30,12 +30,25 @@ impl NetworkBackend for RawBackend {
     }
 
     fn available<'a>(&'a self) -> BoxFuture<'a, bool> {
-        // The full impl will need `iw` and one of
-        // `wpa_supplicant`/`iwd` for Wi-Fi, but `ip` alone is enough
-        // for the trait scaffolding to advertise availability — the
-        // ethernet / wired path needs nothing else, and the Wi-Fi
-        // paths surface their own missing-binary errors when invoked.
-        Box::pin(async { Path::new("/sbin/ip").exists() || Path::new("/usr/bin/ip").exists() })
+        // Issue #247: the previous gate just checked that `ip` was
+        // installed, which is true on essentially every Linux host —
+        // including ones where NetworkManager is the active manager.
+        // The selector then preferred raw on systems where NM was the
+        // only honest answer, and `apply` failed with the milestone-1
+        // "not yet implemented" stub.
+        //
+        // Raw is the last-resort fallback the selector falls through
+        // to when no structured manager is present. Pin that meaning
+        // at the availability gate: `ip` must exist (otherwise no
+        // ethernet path can run), AND no higher-level manager owns
+        // the network (otherwise raw's `ip link set` fights NM /
+        // networkd and kills the active connection). Hosts where the
+        // operator actively chose `--backend raw` still get the raw
+        // impl — the selector skips `available()` for explicit names.
+        Box::pin(async {
+            let ip_present = Path::new("/sbin/ip").exists() || Path::new("/usr/bin/ip").exists();
+            ip_present && !nm_is_running() && !networkd_is_running()
+        })
     }
 
     fn list_devices<'a>(&'a self) -> BoxFuture<'a, Result<Vec<BackendDevice>>> {
@@ -130,6 +143,20 @@ impl NetworkBackend for RawBackend {
     }
 }
 
+/// Same runtime signal `commands::status::detect_system` and the NM
+/// backend's own `available()` use. Pulled out so the raw backend can
+/// honestly defer to NM when it's running.
+fn nm_is_running() -> bool {
+    Path::new("/run/NetworkManager").exists() || Path::new("/var/run/NetworkManager").exists()
+}
+
+/// Mirrors `backend::networkd::available()`'s positive gate: networkd
+/// creates `/run/systemd/netif/` only after start. Raw must defer to
+/// it when present so we don't fight a structured manager.
+fn networkd_is_running() -> bool {
+    Path::new("/run/systemd/netif").is_dir()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -163,5 +190,35 @@ mod tests {
             assert!(backend.read_connection_id(&cref).await.unwrap().is_none());
             assert!(backend.read_connection_uuid(&cref).await.unwrap().is_none());
         });
+    }
+
+    /// Issue #247: `available()` previously returned `true` whenever
+    /// `ip` was installed, which made the selector pick raw on hosts
+    /// running NetworkManager — and every raw method then bailed with
+    /// the milestone-1 stub error. Pin the new contract: when NM (or
+    /// networkd) is running, raw must defer.
+    #[test]
+    fn available_defers_to_nm_when_nm_is_running() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let backend = RawBackend::new();
+        // Compute the expected answer from the same predicates the impl
+        // uses so the test isn't tied to which daemon CI happens to run.
+        let ip_present = Path::new("/sbin/ip").exists() || Path::new("/usr/bin/ip").exists();
+        let expected = ip_present && !super::nm_is_running() && !super::networkd_is_running();
+        let actual = rt.block_on(async { backend.available().await });
+        assert_eq!(
+            actual, expected,
+            "raw availability must reflect ip-present && !nm && !networkd"
+        );
+        // And specifically: if NM is running, the answer is `false`.
+        if super::nm_is_running() {
+            assert!(
+                !actual,
+                "raw must defer to NM when NetworkManager is running"
+            );
+        }
     }
 }

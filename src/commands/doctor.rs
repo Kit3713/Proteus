@@ -802,15 +802,29 @@ fn push_backend(out: &mut Vec<Check>, config_path: Option<&Path>) {
     out.push(check_backend_selected(&cfg.backend.driver, &available));
 }
 
-/// Probe `available()` for each backend without standing up the full
-/// async selector. Synchronous because every probe is a path check;
-/// keeps the doctor entry-point off the tokio runtime.
+/// Probe `available()` for each backend by delegating to the trait's
+/// own gate. Issue #247: the previous shape duplicated path checks
+/// inline here, and the duplicates fell out of sync with the honest
+/// gate — `proteus doctor` advertised networkd / raw as available on
+/// hosts where the backend itself would refuse, and operators chased
+/// the disagreement.
+///
+/// Builds a small current-thread runtime to drive the async trait
+/// methods. The probes themselves are sync (path checks); the runtime
+/// is overhead, but `proteus doctor` is invoked at most once per
+/// command so the cost is irrelevant.
 fn backend_matrix() -> Vec<(&'static str, bool)> {
-    let nm =
-        Path::new("/run/NetworkManager").exists() || Path::new("/var/run/NetworkManager").exists();
-    let networkd = Path::new("/run/systemd/network").is_dir();
-    let raw = Path::new("/sbin/ip").exists() || Path::new("/usr/bin/ip").exists();
-    vec![("nm", nm), ("networkd", networkd), ("raw", raw)]
+    let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    else {
+        // Runtime build failures are exceedingly rare; if we can't
+        // stand one up, every probe gets `false` so the doctor surfaces
+        // a "no backend available" message and the user sees the
+        // remediation hint.
+        return vec![("nm", false), ("networkd", false), ("raw", false)];
+    };
+    rt.block_on(crate::backend::select::availability_matrix())
 }
 
 fn check_backend_available(matrix: &[(&'static str, bool)], available: &[&'static str]) -> Check {
