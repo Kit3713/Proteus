@@ -298,9 +298,12 @@ fn random(kind: Option<&str>, category: Option<&str>, json: bool, user_root: &Pa
         eprintln!("proteus: no personas match the filter");
         return Ok(exit::CONFIG_ERROR);
     }
-    let mut buf = [0u8; 8];
-    getrandom::getrandom(&mut buf).map_err(|e| anyhow::anyhow!("getrandom: {e}"))?;
-    let idx = (u64::from_le_bytes(buf) as usize) % pool.len();
+    // Issue #226: rejection-sampled u64 picker. The persona pool can
+    // grow beyond 256 once users start importing custom personas via
+    // `proteus persona import`, so we use the u64-stream variant rather
+    // than the byte-stream one. For the small built-in pools this is
+    // identical to the cheaper byte path in observable behaviour.
+    let idx = crate::rand::unbiased_index_u64(pool.len(), crate::rand::getrandom_u64)?;
     let pick = &pool[idx];
     if json {
         super::print_json(pick)?;
