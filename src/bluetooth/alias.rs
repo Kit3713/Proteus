@@ -29,16 +29,82 @@ pub const GENERIC_ALIASES: &[&str] = &[
 ];
 
 pub fn select_alias(cfg: &BluetoothConfig) -> Result<String> {
-    match cfg.alias_source.as_str() {
+    let alias = match cfg.alias_source.as_str() {
         "pinned" => cfg
             .pinned_alias
             .clone()
-            .ok_or_else(|| anyhow!("alias_source = 'pinned' but pinned_alias is unset")),
-        "generic" => generic(),
-        other => Err(anyhow!(
-            "unknown alias_source '{other}'; expected 'generic' or 'pinned'"
-        )),
+            .ok_or_else(|| anyhow!("alias_source = 'pinned' but pinned_alias is unset"))?,
+        "generic" => generic()?,
+        other => {
+            return Err(anyhow!(
+                "unknown alias_source '{other}'; expected 'generic' or 'pinned'"
+            ));
+        }
+    };
+    // Issue #236: validate the resolved alias before it ships to BlueZ
+    // (and gets broadcast to nearby BT scanners + displayed verbatim by
+    // any GUI that lists adapter aliases). Pinned aliases come from
+    // user config, generic aliases from a hardcoded ASCII pool —
+    // validation catches the pinned path's hostile input and the
+    // generic path is a constant-cost no-op pass.
+    validate_alias(&alias)?;
+    Ok(alias)
+}
+
+/// Issue #236: hard-reject Bluetooth aliases that would carry attacker-
+/// or typo-controlled bytes onto the air or into the operator's
+/// `bluetoothctl info` output. The hostname path has the equivalent
+/// validator (`crate::hostname::validate_hostname`); the BT path was
+/// missing one. Mirrors that shape:
+///
+/// - Empty rejected (BlueZ accepts but a blank broadcast leaks "this
+///   adapter is unconfigured").
+/// - 248-byte cap matches the EIR payload limit BlueZ truncates at;
+///   rejecting up-front avoids burning DBus bytes on a string that
+///   won't reach scanners anyway.
+/// - C0 / C1 / NUL / DEL controls — same terminal-injection vector as
+///   #224 (SSID escapes), since the alias surfaces in tools that print
+///   to a TTY.
+/// - BiDi override codepoints (LRM/RLM/LRE-PDF/LRI-PDI) — homoglyph /
+///   right-to-left disguise primitives. A scanner near the host
+///   sees what looks like one device name; a tool rendering the same
+///   bytes through Unicode awareness sees something different.
+///
+/// Called by `select_alias` and `select_alias_with_persona` so every
+/// path that ships an alias to BlueZ runs the check.
+pub fn validate_alias(s: &str) -> Result<()> {
+    if s.is_empty() {
+        return Err(anyhow!("Bluetooth alias is empty"));
     }
+    if s.len() > 248 {
+        return Err(anyhow!(
+            "Bluetooth alias exceeds 248 bytes ({} bytes); BlueZ would truncate the EIR broadcast",
+            s.len()
+        ));
+    }
+    for c in s.chars() {
+        let cp = c as u32;
+        if cp == 0 {
+            return Err(anyhow!("Bluetooth alias contains a NUL byte"));
+        }
+        if c.is_control() {
+            return Err(anyhow!(
+                "Bluetooth alias contains control character U+{:04X}",
+                cp
+            ));
+        }
+        if matches!(
+            cp,
+            // LRM / RLM / LRE / RLE / PDF / LRO / RLO / LRI / RLI / FSI / PDI
+            0x200E | 0x200F | 0x202A..=0x202E | 0x2066..=0x2069
+        ) {
+            return Err(anyhow!(
+                "Bluetooth alias contains BiDi override character U+{:04X}",
+                cp
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Roadmap M2 "Integration": pick the BlueZ adapter alias honouring an
@@ -56,10 +122,14 @@ pub fn select_alias_with_persona(
     persona: Option<&crate::persona::Persona>,
 ) -> Result<String> {
     if cfg.alias_source.as_str() == "pinned" {
-        return cfg
+        let pinned = cfg
             .pinned_alias
             .clone()
-            .ok_or_else(|| anyhow!("alias_source = 'pinned' but pinned_alias is unset"));
+            .ok_or_else(|| anyhow!("alias_source = 'pinned' but pinned_alias is unset"))?;
+        // Issue #236: validate before returning so a hostile pinned
+        // alias never reaches BlueZ.
+        validate_alias(&pinned)?;
+        return Ok(pinned);
     }
     if let Some(p) = persona
         && !p.bt_name_template.trim().is_empty()
@@ -70,6 +140,12 @@ pub fn select_alias_with_persona(
         let words = crate::hostname::wordlist()?;
         let rendered =
             crate::persona::template::render_template(&p.bt_name_template, &words)?;
+        // Issue #236: persona-supplied templates are user-authored
+        // (built-ins are static `data/personas/*.toml`; user personas
+        // come from `/etc/proteus/personas/` which `proteus persona
+        // import` writes). Both sources can carry control bytes after
+        // template rendering.
+        validate_alias(&rendered)?;
         return Ok(rendered);
     }
     select_alias(cfg)
@@ -282,5 +358,73 @@ mod tests {
     #[test]
     fn unbiased_index_rejects_empty_pool() {
         assert!(unbiased_index(0, || Ok(0)).is_err());
+    }
+
+    // === Issue #236: alias validation boundary tests ===
+
+    #[test]
+    fn validate_alias_rejects_empty() {
+        assert!(validate_alias("").is_err());
+    }
+
+    #[test]
+    fn validate_alias_rejects_oversized() {
+        let long = "a".repeat(249);
+        assert!(validate_alias(&long).is_err());
+        let at_limit = "a".repeat(248);
+        assert!(validate_alias(&at_limit).is_ok());
+    }
+
+    #[test]
+    fn validate_alias_rejects_nul_and_control_chars() {
+        assert!(validate_alias("foo\0bar").is_err());
+        // ESC: classic terminal-injection primitive.
+        assert!(validate_alias("\x1b[31mhi").is_err());
+        // BEL: visible to anyone who cats journald output.
+        assert!(validate_alias("\x07alert").is_err());
+        // C1 CSI (0x9b) — encoded as U+009B in UTF-8.
+        assert!(validate_alias("\u{009b}red").is_err());
+    }
+
+    #[test]
+    fn validate_alias_rejects_bidi_override_chars() {
+        // RLO — flips display order; classic homoglyph primitive.
+        assert!(validate_alias("file\u{202e}txt.exe").is_err());
+        // LRM, RLM, LRE, RLE, PDF, LRO, LRI, RLI, FSI, PDI — all rejected.
+        for cp in [0x200E, 0x200F, 0x202A, 0x202B, 0x202C, 0x202D, 0x2066, 0x2067, 0x2068, 0x2069] {
+            let s = format!("a{}b", char::from_u32(cp).unwrap());
+            assert!(
+                validate_alias(&s).is_err(),
+                "U+{cp:04X} should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_alias_accepts_printable_ascii_and_unicode() {
+        assert!(validate_alias("My iPhone").is_ok());
+        assert!(validate_alias("Café BT").is_ok()); // legitimate non-ASCII
+        assert!(validate_alias("Adapter 12").is_ok());
+    }
+
+    /// Issue #236: a hostile pinned alias is rejected at `select_alias`
+    /// time; the bad bytes never reach BlueZ.
+    #[test]
+    fn select_alias_rejects_hostile_pinned() {
+        let bad = cfg("pinned", Some("\x1b[2J\x1b[31mPWNED\x1b[0m"));
+        assert!(select_alias(&bad).is_err());
+    }
+
+    /// Issue #236: a persona whose `bt_name_template` renders to a
+    /// hostile string is rejected at `select_alias_with_persona` time.
+    /// (No template variable currently injects controls — this guards
+    /// against a future variable that might.)
+    #[test]
+    fn select_alias_with_persona_rejects_hostile_template_render() {
+        let cfg = cfg("generic", None);
+        // Use a literal-only template so the renderer doesn't need a
+        // variable lookup; the rendered string contains a control byte.
+        let p = persona_with_bt_template("BT\x1b[31m");
+        assert!(select_alias_with_persona(&cfg, Some(&p)).is_err());
     }
 }
