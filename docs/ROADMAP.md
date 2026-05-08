@@ -120,6 +120,113 @@ deletion, draft-release publication) that are operational, not findings. That
 file self-deletes when the listed actions are executed; it is intentionally
 out of scope here.
 
+### No-action documented (info-only / intentional / duplicate)
+
+Items the audits and bug-hunt sessions flagged as *not* requiring code change.
+Tracked here so the issues log can close them without confusion.
+
+| ID | Source | Reason no-action |
+|---|---|---|
+| M2 | ISSUES.md §11 | `mem::forget(guard)` in `write_atomic` is intentional; documented in source comment |
+| M5 | ISSUES.md §11 | Rustc 1.93.0 vs MSRV 1.85 + Edition 2024 — both pins correct; flagged for clarity |
+| R8 | ISSUES.md §10 | Implicit subprocess fd close everywhere — already correct; comments only if the team wants |
+| N12.13 | ISSUES.md §12 | Re-confirmation of C1 (state-lock HELD mutex held across retry sleep). Tracked under C1. |
+| N12.18 | ISSUES.md §12 | "Year 700,000 problem" — `t as i64` cast in `unix_to_ymdhms` after `t /= 24`. Not reachable in any plausible runtime. |
+| N12.19 | ISSUES.md §12 | Re-confirmation of N2 (`factory::permanent_address` returns `Option`). Tracked under N2 in Stream 4. |
+| N12.20 | ISSUES.md §12 | Duplicate of M3 (subprocess iface-name validators allow shell metacharacters). Tracked under M3 in Stream 8. |
+| NPKG.13 | ISSUES.md §13.5 | `proteus-rotate.timer` ±75 min jitter is intentional fingerprint defense. Documented in Stream 10 so future audits don't re-flag. |
+
+### GitHub issue absorption (kit3713/proteus, open)
+
+79 open GitHub issues as of 2026-05-08. The bug / security cluster maps to
+existing or expanded streams; the enhancement cluster lives in the
+**Enhancements queue** section further below.
+
+**Bug / security GH issues mapped to streams** (duplicates of issues-log items
+flagged with "= ID"):
+
+| GH # | Severity | Stream | Notes |
+|---|---|---|---|
+| #348 | critical | 1 | = CL2/M1/N12.2/N12.3 — `--yes` dropped on dhcp + portal mutators |
+| #349 | high | 1 | = CL1 — `--watch --interval 0s` zero-sleep CPU loop |
+| #345, #339 | high | 2 | = N12.5 — `is_valid_per_ssid_duration` multibyte panic |
+| #340 | high | 2 | new — `ByteSuffixPattern::parse` panics on multibyte input (same class as #284); land alongside N12.5 |
+| #391 | critical | 1 | = N12.1 — `unpin` skips `--yes` |
+| #375 | critical | 1 | = M1/N12.2 — `dhcp apply/revert` drops `--yes` (incomplete fix of #242) |
+| #351 | high | 3 | = N12.8/B1 — `proteus-events.service` ExecStart path mismatch |
+| #370 | medium | 5 | = audit N‑3 — state-lock `O_NOFOLLOW` + post-open `chmod` TOCTOU |
+| #377 | medium | 5 | = C2 — cooldown reads `SystemTime::now()` (wall clock) |
+| #388 | medium | 10 | = N12.6 — `display_string` clamps INPUT not OUTPUT |
+| #371 | meta | — | "index of edge / zero-day findings filed against v0.4.2-beta"; this roadmap IS the index |
+| #389 | medium | 9 | new — BiDi override codepoints (U+202E etc.) pass `display_ssid` (mirror of #241/#224) |
+| #386 | medium | 1 | new — `proteus revert` ignores global `--state` flag; nested steps hardcode default |
+| #382 | medium | 2 | new — `iot-generic.toml` `oui_pool` has tokens `Vendor::from_pool_token` doesn't know — silent LAA degrade |
+| #381 | medium | 1 | new — `rotate-if-needed --state` silently ignored; backend hardcodes `/var/lib/proteus/state.json` |
+| #380 | medium | 9 | new — `persona list` prints unvalidated `display_name`/`notes` — terminal injection |
+| #379 | medium | 4 | new — `apply` not idempotent — `build_forbidden` always adds `current_mac` to forbidden set |
+| #374 | medium | 9 | new — `persona list` prints `display_name` byte-for-byte — ANSI/control/BiDi injection |
+| #373 | medium | 9 | new — `portal mark/unmark` print raw SSID via `println!` — same N-2 family, four sites |
+| #367 | medium | 9 | new — terminal-escape passthrough via raw `iface` echo in `rotate{,-if-needed}` (N-2 third site) |
+| #366 | medium | 4 | new — `state.managed.connections` updated *before* `set_cloned_mac` — failed rotation persists ghost MAC |
+| #365 | medium | 9 | new — `proteus session` (and `portal list`) prints SSIDs/aliases verbatim — terminal injection |
+| #363 | medium | 5 | new — state-lock acquire chmods state-dir parent unconditionally (same family as #354) |
+| #362 | medium | 9 | new — NM dispatcher `validate_cli_value` 128-byte cap uses bash `${#val}` (char-count, locale-bypass) |
+| #361 | medium | 9 | new — `persona edit` runs `$EDITOR` as root with caller's `$HOME` (vector L-4 missed) |
+| #360 | medium | 9 | new — `factory::EthtoolBin` PATH-fallback contradicts absolute-path pinning intent of #202 |
+| #359 | medium | 9 | new — 5 distinct iface validator definitions across modules; consolidate |
+| #358 | medium | 9 | new — `ipv6::write_sysctl` `key` and `value` parameters unvalidated (latent path traversal beyond M-1) |
+| #357 | medium | 9 | new — terminal-escape via SSID echo in `session` and `portal {mark,list,unmark}` (N-2 partial fix) |
+| #355 | medium | 4 | new — `events nm-connection-up` poll fallback fires spurious `ConnectionUp` on daemon startup |
+| #354 | high | 5 | new — `--state <path>` chmods parent dir to `0700`, system-bricking footgun (e.g. `--state /tmp/x` → `chmod /tmp 0700`) |
+| #352 | medium | 1 | new — `timer resume` short-name maps to non-existent `proteus-resume.timer` (artifact is `.service`); `enable/disable/set/reset/status resume` all target a unit that doesn't exist |
+| #342 | high | 9 | new — path traversal in `persona {new,edit,show,use}` via unvalidated `<id>` (mirror of NEV2.1) |
+| #378 | low | 1 | new — `rotate-if-needed --explain` to surface policy + cooldown math the dispatcher hot path is making (request, but useful for triage) |
+
+Of the 34 bug-class GH issues above, 9 are duplicates of existing roadmap
+entries (cross-referenced) and 25 are new bugs absorbed into the appropriate
+stream. The Enhancements queue below covers the remaining 45 GH issues.
+
+### Issue-closure protocol
+
+When a stream's work lands, the matching GitHub issues **must auto-close
+through the PR** that merges the fix. This roadmap is how we know which
+issues to close.
+
+**Rule.** Every PR that lands work on a roadmap stream must include a
+`Closes #N` (or `Fixes #N`) line in its description for each GitHub issue
+that the diff actually resolves. GitHub will close the issue on merge. If a
+PR fixes a partial subset of an issue, use `Refs #N` and leave the issue
+open with a status comment.
+
+**Mapping for PR authors.** Use the "GitHub issue absorption" table above
+plus the per-stream issue lists to find the affected GH issues. Concrete
+examples:
+
+- A Stream 1 PR that wires `--yes` through `dhcp apply / revert` and the
+  portal mutators should write:
+  `Closes #348, #391, #375` (and `Refs #242` to credit the prior partial
+  fix).
+- A Stream 9 PR that introduces the central
+  `crate::display::display_safe` helper and replaces every raw SSID /
+  iface print should write:
+  `Closes #357, #365, #367, #373, #374, #380, #389` (the seven-issue
+  terminal-injection cluster — see "Notes for the maintainer" #3 below).
+- A Stream 5 PR landing audit N‑3 (`O_NOFOLLOW` on state lock) should
+  write: `Closes #370`.
+- A Stream 2 PR landing N12.5 / V2 (multibyte panic + ByteSuffixPattern)
+  should write: `Closes #339, #340, #345`.
+
+**Duplicates and meta issues.** GH #371 ("index of edge / zero-day
+findings") is meta; close it with a comment pointing at this roadmap once
+the first wave of streams ships. The Enhancements-queue 🟡 / 🔴 entries
+stay open in GitHub as the canonical request and are linked from this
+roadmap; they close when the corresponding feature ships in v0.5+.
+
+**Audit-only findings (`M-2`, `N-1`, `L-3`, etc.).** No GitHub issue
+exists for these — they came from the archived security audits. The
+roadmap is the only tracker. PR descriptions still cite the audit ID for
+the historical record.
+
 ## Status legend
 
 - ✅ Landed (in `main`)
@@ -222,7 +329,8 @@ a posture they did not ask for.
 
 **Files:** `src/config.rs`, `src/per_ssid.rs`, `src/persona/load.rs`.
 
-**Issues:** V1–V12, N12.4, N12.5, N12.12, P1, P7, NMOD.4, NTEST.1.
+**Issues:** V1–V12 (V8, V9 added explicitly above), N12.4, N12.5, N12.12,
+P1, P7, NMOD.4, NTEST.1.
 
 **Work:**
 
@@ -237,6 +345,13 @@ a posture they did not ask for.
 - ⏳ Constrain `clap` `u32` flags to a sane range (N12.12).
 - ⏳ Replace `split_at` on potentially-empty duration strings (P1) and the
   `get_mut("mac").unwrap()` test path (P7).
+- ⏳ Distinguish "no value" from "out of range" in `parse_duration`; emit a
+  `warn!` on overflow rather than silent fallback to global timer (V8 —
+  pairs naturally with N12.4).
+- ⏳ Rename `persona_contributed` → `global_persona_contributed` and add a
+  short comment in `src/per_ssid.rs:86-93` so the 4-layer resolver
+  source-trace doesn't read as "persona never affected this SSID" when it
+  actually layered (V9 — cosmetic enhancement, no-brainer).
 - ⏳ Round-trip test coverage expansion for arrays, numerics, enums (V10).
 - ⏳ SSID-key TOML-special-character coverage (V12).
 - ⏳ Persona `schema_check` now also renders the template through
@@ -638,7 +753,7 @@ from [`ROADMAP-v0.3.md`](ROADMAP-v0.3.md):
 **Work:**
 
 - ⏳ Fix `[discovery]`, `[rotation]`, `[mac]`, `[probes]` sections in every
-  example to use real schema field names (D1–D4) — single sweep.
+  example to use real schema field names (D1, D2, D3, D4) — single sweep.
 - ⏳ Document exit code 75 in `wiki/cli.md` (D5); correct doctor exit code
   reference (D6); recount wiki pages (D7); add `config set-profile`
   section (D8).
@@ -707,6 +822,108 @@ fails on any non-zero exit.
    persona use iphone-15` continues to produce diverging detections. The
    persona feature is the headline of v0.3 and must not regress through
    any Stream 4 refactor.
+
+## Enhancements queue (GitHub feature requests)
+
+The v0.4.x cycle is **bug + vulnerability hunt** — the existing convention is
+"no new features" until the High and Critical bug rows close. The 45
+enhancement-class GitHub issues below are recognized here so nothing falls
+through the cracks, but each one is tagged with a verdict:
+
+- **🟢 no-brainer (land in v0.4.x):** small, additive, no behaviour change to
+  existing surface. Worth landing alongside the bug-fix work because it
+  closes a sharp edge users keep hitting.
+- **🟡 worth-doing (queue for v0.5+):** clear value but big enough to deserve
+  its own cycle slot. Don't crowd the bug-fix work; pick up on the way out.
+- **🔴 flag-for-review:** design call. Either touches headline UX (renames,
+  config-schema breakage) or asks for substantial scope (new subsystem). The
+  maintainer should decide before someone starts.
+
+**Verdict count:** 18 🟢 · 19 🟡 · 8 🔴.
+
+### CLI ergonomics
+
+| GH # | Verdict | Item | One-line review |
+|---|---|---|---|
+| #390 | 🟢 | `proteus logs` — tail journald entries across every Proteus unit + dispatcher | Tiny shell wrapper over `journalctl -u 'proteus*'` plus the dispatcher's syslog tag; no risk |
+| #376 | 🟢 | `proteus version --json` / `proteus about` with build info (git sha, rustc, target, build time, schema versions) | Read-only; structured output for CI; `build.rs` already emits some of this |
+| #395 | 🟢 | `proteus rotate --json` summary (rotated/skipped/explain) | Mirrors existing `--json` on other readers; eliminates screen-scraping in dispatcher |
+| #343 | 🟢 | `proteus apply / revert --json` per-component summary | Same shape as #395; CI / Ansible consumers want this |
+| #364 | 🟢 | `proteus pin list` — enumerate every pinned interface / connection | Read-only inverse of `pin`; existing state already has the data |
+| #392 | 🟢 | `proteus unpin --all` / `--scope <type>` | Symmetric with #364; one-loop implementation |
+| #353 | 🟢 | `proteus backup <path>` / `proteus restore <path>` — bundle config + state + user personas in one tarball | High user value; `tar.gz` of three known dirs; gates with `--yes` on restore |
+| #300 | 🟢 | `proteus state info` — schema version, migration metadata, contents summary read-only | Very small; useful for support; adjacent to existing `proteus status` |
+| #283 | 🟢 | `proteus events list-sources` — show available sources, why degraded, what capability needed | Read-only; events daemon already has the data internally |
+| #393 | 🟢 | `proteus events status` — live per-source / per-handler counters and last-fired timestamps | Adjacent to #283; one queryable surface; existing instrumentation |
+| #346 | 🟢 | `proteus events trigger <name>` — fire synthetic trigger for smoke-test | Unblocks integration testing without a live network; gated behind `--yes` + `--debug` |
+| #404 | 🟢 | `proteus config show --annotate` (or `--origin`) — mark each field's source | Read-only; `wiki/profiles.md` already promises this |
+| #394 | 🟢 | `proteus config explain <key>` — surface the doc-comment + risk-warning + wiki link | Read-only; complements #404 |
+| #383 | 🟢 | `proteus persona search <query>` — scan ids, display_names, notes | Trivial; persona catalogue is small; ergonomics win |
+| #338 | 🟢 | `proteus persona delete <id>` — remove user-authored personas without `rm` | Symmetric with `persona new`; gated with `--yes` + lstat-rejects symlinks (mirror of #286 export safety) |
+| #356 | 🟢 | `proteus persona random --use [--apply]` — one-shot pick + activate | Composes existing `random` + `use`; minor flag plumbing |
+| #294 | 🟢 | `proteus rotate --reason "<text>"` — stamp human-readable audit string into state + journald | Tiny; aids forensic correlation; complements existing `--explain` |
+| #406 | 🟢 | `proteus wiki list [--json]` — enumerate embedded pages programmatically | Read-only; replaces curated TOC fallback |
+
+### CLI ergonomics — queue for v0.5+
+
+| GH # | Verdict | Item | One-line review |
+|---|---|---|---|
+| #407 | 🟡 | `proteus mac validate <addr>` and `proteus mac info <addr>` — offline parse + classify (LAA / multicast / OUI lookup) | Useful enough but a new top-level subcommand family; design the surface in v0.5 |
+| #401 | 🟡 | `proteus mac generate [--vendor] [--pattern] [--count N]` — offline MAC generation | Same family as #407; ship together |
+| #402 | 🟡 | `proteus persona effects <id>` — render the on-wire fingerprint a persona would project, side-by-side with current | High user value but needs design — what to compare, how to render; v0.5 candidate |
+| #295 | 🟡 | `proteus persona compare <a> <b>` — structural diff of two personas | Adjacent to #402; ship together |
+| #301 | 🟡 | `proteus persona suggest` — score every persona against host's existing fingerprint, recommend matches | Cool feature but needs the fingerprint reader to exist (#402 first) |
+| #277 | 🟡 | persona `extends = "<id>"` inheritance for near-sibling personas (iphone-13 / iphone-15) | Schema change — needs version bump; queue with persona system v2 |
+| #372 | 🟡 | `proteus profile {list, show, compare}` — inspect baselines without switching | Useful; ergonomics win; minor |
+| #396 | 🟡 | `proteus dhcp lease [--iface]` — show active lease (server, time-to-renew, parameters, transaction-id) | NM has the data; format design + v4/v6 handling worth a cycle slot |
+| #385 | 🟡 | `proteus session --iface <name>` / `--all` — multi-radio support | Bigger than it looks; multi-iface session model needs design |
+| #344 | 🟡 | `proteus rotate history` — bounded per-iface ring buffer in state | Schema change + retention policy; v0.5 with persona-v2 |
+| #378 | 🟡 | `proteus rotate-if-needed --explain` — already absorbed as Stream 1 bug fix; here as the verbose variant | Pairs with #395 |
+| #387 | 🟡 | `--dry-run` extended to every mutating subcommand (dhcp/dns/resolved/ntp/stack/nft/ipv6/rf/enterprise-wifi/persona/ssid/kill/timer/config) | High value but spans every command; cycle-sized work |
+| #341 | 🟡 | `apply / revert --component <name>[,...]` to scope orchestrator | Powerful for ops; needs careful design re partial state |
+| #350 | 🟡 | `proteus probe --continuous` + `--exit-on <classification>` for triage scripts | Useful; small; queue because nothing depends on it |
+| #282 | 🟡 | `proteus diff <component>` — scope drift output by subsystem | Adjacent to #341 |
+| #369 | 🟡 | `proteus diff --exit-on-drift` — fail-fast for CI / Ansible | Tiny once #282 lands |
+| #384 | 🟡 | `proteus completions install [--shell] [--user]` — install without manual copy | Surface convenience; minor |
+| #347 | 🟡 | dynamic completions for persona ids, SSID names, interface names | Needs `proteus __complete` hidden surface; cycle-sized |
+| #403 | 🟡 | `proteus timer enable --all / disable --all / reset --all` | Mid-effort; touches every timer unit; cycle-sized |
+
+### Enhancement design-calls flagged for your review
+
+| GH # | Verdict | Item | Why it's flagged |
+|---|---|---|---|
+| #399 | 🔴 | rename / alias `proteus doctor` → `proteus check` | Headline-UX rename. `doctor` is widely googled; aliasing is fine, renaming would break muscle memory. Decide: alias-only, or actual rename in v0.5? |
+| #397 | 🔴 | `proteus self-test` — end-to-end smoke check (apply → diff → revert → check originals match) on the live host | Mutates real network state during a "test" — a misclassified portal or a hostile network turns this into a footgun. Needs a strict guard model: only on networks the user explicitly tags as safe? Skip if `[per_ssid]` says portal? Decide policy first. |
+| #400 | 🔴 | `apply --no-rotate` and `--rotate-only` | Splits the apply orchestrator's atomicity guarantees. "MAC unchanged + DHCP/DNS/IPv6 rotated" is a posture the threat model doesn't cover — could leak the prior MAC by exposing the new DUID under the old MAC. Decide whether the use case justifies the threat-model expansion. |
+| #296 | 🔴 | `proteus doctor --fix` — apply mechanical idempotent remediations that `next steps:` already names | Doctor is read-only today; making it mutate is a contract break. The remediations exist as separate `apply` calls; the question is whether to fold them. Could land as `proteus doctor fix` (subcommand) instead. |
+| #280 | 🔴 | `proteus config schema` — emit JSON Schema for `/etc/proteus/config.toml` so editors validate hand-edits | Locks the config surface to a public schema. Once published, every new field is a versioned contract. High-value (best UX for power users) but one-way door — needs commitment. |
+| #405 | 🔴 | events daemon SIGHUP reload + `proteus events reload` — Stream 4 R4 covers SIGHUP for captive_portal config; this expands to all config | Reload story for everything — needs careful design about which knobs are reloadable vs require restart. R4 only covers captive portal. Decide: SIGHUP = full reload, partial reload, or just captive_portal? |
+| #278 | 🔴 | events `--format json` log surface — one JSON-line per trigger, as `events/mod.rs` comments already promise | Comments promise it; needs schema commitment. Decide schema before shipping. |
+| #398 | 🔴 | `proteus rf monitor` — stream live signal/quality/TX-power per Wi-Fi iface | New subsystem; needs `nl80211` polling loop + signal-strength normalisation across drivers; could explode in scope. Maybe limit to existing `iw event` parsing? |
+
+### Notes for the maintainer
+
+A few opinions worth flagging while you review the verdicts above:
+
+1. **The 18 🟢 enhancements together are roughly 1-2 weeks of work** if landed
+   in parallel with bug-fix streams. They are uniformly read-only or
+   additive, so they don't risk regressing existing behaviour. Recommend
+   landing as a single "ergonomics polish" wave once Stream 1 settles.
+2. **#371's "index of edge / zero-day findings"** is exactly what this
+   roadmap now is. Closing #371 with a pointer here would save a stale
+   tracking issue.
+3. **The terminal-injection cluster (#365, #367, #373, #374, #380, #389,
+   #357)** all have the same root cause — display layer doesn't sanitize
+   AP-controlled strings. These should land as a single helper
+   (`crate::display::display_safe(&str) -> Cow<str>`) used everywhere, not
+   as seven point-fixes. Stream 9 entry should be re-scoped accordingly.
+4. **#359 (5 distinct iface validators)** plus the audit's L-3 / N-1 work
+   in Streams 4 and 9 should consolidate to one `crate::iface::validate`
+   helper that the whole codebase calls. Doing it once here saves the next
+   audit from refiling the same finding.
+5. **The "queue for v0.5+" pile is naturally a CLI ergonomics cycle.**
+   Worth scoping as the v0.5.0-beta theme — every entry there is additive
+   and they share a lot of plumbing.
 
 ## How to help
 
