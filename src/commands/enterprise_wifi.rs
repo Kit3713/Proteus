@@ -11,8 +11,13 @@
 //! * `enable` requires root + `--yes`. Reads the inner identity, derives
 //!   the realm, writes `802-1x.anonymous-identity = anonymous@<realm>`,
 //!   and caches the pre-Proteus value in `state.json`.
-//! * `disable` requires root + `--yes`. Clears `802-1x.anonymous-identity`
-//!   and untags the connection in `state.json`.
+//! * `disable` requires root + `--yes`. Restores `802-1x.anonymous-identity`
+//!   to the cached pre-Proteus value (issue #298 — the prior shape always
+//!   cleared the field, even when the operator had a non-empty outer
+//!   identity before enable). Untags the connection in `state.json`.
+//! * `revert` is the helper called by `proteus revert` /
+//!   `proteus uninstall` to walk every cached enterprise-wifi original
+//!   in one pass.
 //!
 //! Connections that aren't 802.1X are skipped cleanly with a single log
 //! line — matching the rest of Proteus's detect-and-defer story.
@@ -179,13 +184,21 @@ pub fn disable(connection: &str, yes: bool, state_path: Option<&Path>) -> Result
     });
 
     match outcome {
-        Ok(DisableOutcome::Cleared {
+        Ok(DisableOutcome::Restored {
             connection: name,
             previous,
+            restored,
         }) => {
             state.save(&state_path)?;
             let prev_label = previous.as_deref().unwrap_or("(unset)");
-            println!("enterprise-wifi: {name}: anonymous-identity cleared (was {prev_label})");
+            match restored.as_deref() {
+                Some(value) => println!(
+                    "enterprise-wifi: {name}: anonymous-identity restored to {value} (was {prev_label})"
+                ),
+                None => println!(
+                    "enterprise-wifi: {name}: anonymous-identity cleared (was {prev_label})"
+                ),
+            }
             Ok(exit::SUCCESS)
         }
         Ok(DisableOutcome::NotEap { connection: name }) => {
@@ -194,6 +207,94 @@ pub fn disable(connection: &str, yes: bool, state_path: Option<&Path>) -> Result
         }
         Err(e) => {
             eprintln!("proteus: enterprise-wifi disable failed: {e:#}");
+            Ok(exit::GENERIC_ERROR)
+        }
+    }
+}
+
+/// Best-effort revert: walk every cached enterprise-wifi original and
+/// push the cached `anonymous-identity` back onto the live NM
+/// connection. Mirrors `dhcp::revert` and `rf::revert` so the parent
+/// `commands::revert::run` (and `commands::uninstall::run`) can call it
+/// alongside the other per-feature reverts.
+///
+/// `state.originals.connections[uuid].anonymous_identity` is the source
+/// of truth: a `Some("…")` is written back verbatim, a `Some(None)` is
+/// cleared (the field was unset before Proteus's first `enable`). After
+/// the write succeeds the cached field is dropped from state so a
+/// re-run doesn't keep retrying a connection that's already restored.
+///
+/// Issue #298: the prior shape (no enterprise-wifi step in
+/// `revert_best_effort`) left `802-1x.anonymous-identity` set to
+/// `anonymous@<realm>` after `proteus revert`, leaving the user's
+/// supplicant talking to the AP with the Proteus-applied outer
+/// identity even though they thought they had backed Proteus out.
+pub fn revert(yes: bool, state_path: Option<&Path>) -> Result<u8> {
+    if let Err(e) = super::require_root() {
+        eprintln!("proteus: {e}");
+        return Ok(exit::PERMISSION_ERROR);
+    }
+    if let Err(code) = super::require_yes(
+        yes,
+        "'enterprise-wifi revert' is mutating",
+        "proteus help enterprise-wifi",
+    ) {
+        return Ok(code);
+    }
+    let _lock = match super::acquire_state_lock_or_print(state_path) {
+        Ok(g) => g,
+        Err(code) => return Ok(code),
+    };
+
+    let state_path = super::state_path(state_path);
+    let mut state = State::load_or_default(&state_path)?;
+
+    if !state
+        .originals
+        .connections
+        .values()
+        .any(|c| c.anonymous_identity.is_some())
+    {
+        // Nothing to revert. Stay quiet so a fresh install's
+        // `proteus revert` doesn't spam the operator.
+        return Ok(exit::SUCCESS);
+    }
+
+    let outcomes = run_async(async {
+        let conn = zbus::Connection::system()
+            .await
+            .context("connecting to system DBus (NetworkManager required)")?;
+        let cfg = Config::default_or_loaded(&super::config_path(None)).unwrap_or_default();
+        let backend = crate::backend::select::select(&cfg.backend.driver).await?;
+        do_revert(&conn, backend.as_ref(), &mut state).await
+    });
+
+    match outcomes {
+        Ok(rs) => {
+            state.save(&state_path)?;
+            for r in &rs {
+                match (&r.restored, &r.error) {
+                    (_, Some(e)) => {
+                        eprintln!("enterprise-wifi: {}: revert failed: {}", r.connection, e);
+                    }
+                    (Some(value), None) => {
+                        println!(
+                            "enterprise-wifi: {}: anonymous-identity restored to {value}",
+                            r.connection
+                        );
+                    }
+                    (None, None) => {
+                        println!(
+                            "enterprise-wifi: {}: anonymous-identity cleared",
+                            r.connection
+                        );
+                    }
+                }
+            }
+            Ok(exit::SUCCESS)
+        }
+        Err(e) => {
+            eprintln!("proteus: enterprise-wifi revert failed: {e:#}");
             Ok(exit::GENERIC_ERROR)
         }
     }
@@ -215,13 +316,34 @@ enum EnableOutcome {
 
 #[derive(Debug)]
 enum DisableOutcome {
-    Cleared {
+    /// Issue #298: disable now restores the cached pre-Proteus value
+    /// instead of always clearing. `restored` carries the value that
+    /// was actually written: `Some("alice@example.edu")` means we put
+    /// back a non-empty cached original; `None` means the cache held
+    /// `None` (the field was unset before Proteus's first enable, so
+    /// we cleared it, matching NM's "empty string == unset" contract).
+    Restored {
         connection: String,
         previous: Option<String>,
+        restored: Option<String>,
     },
     NotEap {
         connection: String,
     },
+}
+
+/// Per-connection outcome from [`do_revert`]. Mirrors `DisableOutcome`
+/// but flattened for the revert loop, which writes one row per
+/// connection that had a cached original.
+#[derive(Debug)]
+struct RevertOutcome {
+    connection: String,
+    /// Value actually pushed back into NM. `None` means we wrote the
+    /// empty string (NM's "unset on save" contract).
+    restored: Option<String>,
+    /// Populated when the revert write itself failed; in that case
+    /// state retains the cached original so a later revert can retry.
+    error: Option<String>,
 }
 
 async fn enable_one(
@@ -290,6 +412,20 @@ async fn enable_one(
     })
 }
 
+/// Issue #298: decide the value to write into
+/// `802-1x.anonymous-identity` on `disable` or `revert`. A
+/// `Some(value)` is the cached pre-Proteus original — restore it
+/// verbatim. `None` covers both "Proteus saw the field unset on
+/// enable" (state stored `None`) and "no cache entry at all" (state
+/// was wiped, or operator never ran enable); both fall back to the
+/// empty string, which is NM's "unset on save" contract.
+///
+/// Pure function so the disable+revert tests can pin the table
+/// without needing a live DBus or backend.
+fn decide_disable_value(cached_original: Option<&str>) -> String {
+    cached_original.unwrap_or("").to_string()
+}
+
 async fn disable_one(
     conn: &zbus::Connection,
     backend: &dyn NetworkBackend,
@@ -306,27 +442,149 @@ async fn disable_one(
         });
     }
 
+    // Issue #298: restore the cached pre-Proteus `anonymous-identity`
+    // instead of always clearing. The cache lives at
+    // `state.originals.connections[uuid].anonymous_identity` (populated
+    // on `enable`). When there's no cached value, fall back to
+    // writing empty — NM's "unset on save" contract.
+    let uuid = nm::apply::read_connection_uuid(conn, &path)
+        .await
+        .ok()
+        .flatten();
+    let cached_original = uuid
+        .as_deref()
+        .and_then(|u| state.originals.connections.get(u))
+        .and_then(|c| c.anonymous_identity.as_deref());
+    let new_value = decide_disable_value(cached_original);
+    let restored = if new_value.is_empty() {
+        None
+    } else {
+        Some(new_value.clone())
+    };
+
     let cref = ConnectionRef::new(path.as_str().to_string());
-    backend.write_anonymous_identity(&cref, "").await?;
+    backend.write_anonymous_identity(&cref, &new_value).await?;
 
     // Issue #209: untag by uuid (the canonical state key), with a fallback
     // pass that strips any legacy id-keyed entry we still find. The legacy
     // strip is defensive — `migrate_connection_keys_to_uuid` already drops
     // those at load time — but the disable path is the right place to
     // also remove any entry that survived a partial migration.
-    if let Some(uuid) = nm::apply::read_connection_uuid(conn, &path)
-        .await
-        .ok()
-        .flatten()
-    {
+    if let Some(uuid) = uuid {
         let _ = state.originals.connections.remove(&uuid);
     }
     let _ = state.originals.connections.remove(connection);
 
-    Ok(DisableOutcome::Cleared {
+    Ok(DisableOutcome::Restored {
         connection: connection.to_string(),
         previous: snapshot.anonymous_identity,
+        restored,
     })
+}
+
+/// Pull the list of enterprise-wifi revert targets out of state. A
+/// "target" is a connection uuid whose `anonymous_identity` cache is
+/// populated (`Some(_)`, including the empty string). `None` means
+/// the entry is purely a DHCP record from `dhcp::apply` and doesn't
+/// belong to the enterprise-wifi pass — skipping it preserves the
+/// segregation between the two features.
+///
+/// Pure helper so the revert-targeting logic can be pinned with a
+/// straight unit test instead of a live NM + state fixture.
+fn revert_targets(state: &State) -> Vec<(String, String)> {
+    state
+        .originals
+        .connections
+        .iter()
+        .filter_map(|(uuid, c)| Some((uuid.clone(), c.anonymous_identity.clone()?)))
+        .collect()
+}
+
+/// Walk every NM connection that has a cached enterprise-wifi original
+/// in `state.originals.connections` and push the cached
+/// `anonymous-identity` back. Mirrors the `dhcp::do_revert` shape so
+/// both sit at the same layer for the parent `revert_best_effort` to
+/// fan out into.
+///
+/// On success: clears `anonymous_identity` on the matching state entry
+/// (other fields like `dhcp_settings` are preserved so a parallel
+/// `dhcp::revert` invocation doesn't see the entry vanish out from
+/// under it).
+///
+/// On failure: the cached original is **kept** so a later revert can
+/// retry — same recovery posture as `rf::revert_apply_originals`.
+async fn do_revert(
+    conn: &zbus::Connection,
+    backend: &dyn NetworkBackend,
+    state: &mut State,
+) -> Result<Vec<RevertOutcome>> {
+    let settings_proxy = nm::SettingsProxy::new(conn)
+        .await
+        .context("connecting to NetworkManager Settings")?;
+
+    // Snapshot just the uuids (and their cached value) so we can mutate
+    // state inside the loop without re-borrowing.
+    let targets = revert_targets(state);
+
+    let mut outcomes = Vec::new();
+    for (uuid, cached) in targets {
+        // Resolve the live NM path for this uuid. If NM doesn't know
+        // it (profile deleted manually, NM restarted, etc.) drop the
+        // entry from state — there's nothing on-the-wire to restore.
+        let path = match settings_proxy.get_connection_by_uuid(&uuid).await {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::debug!(uuid = %uuid, "enterprise-wifi revert: NM has no connection: {e:#}");
+                if let Some(c) = state.originals.connections.get_mut(&uuid) {
+                    c.anonymous_identity = None;
+                }
+                outcomes.push(RevertOutcome {
+                    connection: uuid.clone(),
+                    restored: None,
+                    error: Some(format!("connection no longer in NetworkManager: {e}")),
+                });
+                continue;
+            }
+        };
+
+        // Display name used in operator output. Falls back to the uuid
+        // when the lookup fails — keeps the line meaningful even when
+        // NM is being uncooperative.
+        let display = nm::apply::read_connection_id(conn, &path)
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| uuid.clone());
+
+        let cref = ConnectionRef::new(path.as_str().to_string());
+        match backend.write_anonymous_identity(&cref, &cached).await {
+            Ok(()) => {
+                if let Some(c) = state.originals.connections.get_mut(&uuid) {
+                    c.anonymous_identity = None;
+                }
+                outcomes.push(RevertOutcome {
+                    connection: display,
+                    restored: if cached.is_empty() {
+                        None
+                    } else {
+                        Some(cached)
+                    },
+                    error: None,
+                });
+            }
+            Err(e) => {
+                // Keep the cached entry so a later retry has
+                // something to restore from.
+                outcomes.push(RevertOutcome {
+                    connection: display,
+                    restored: None,
+                    error: Some(format!("{e:#}")),
+                });
+            }
+        }
+    }
+    outcomes.sort_by(|a, b| a.connection.cmp(&b.connection));
+    Ok(outcomes)
 }
 
 /// Walk every NM connection profile, return one row per profile that has an
@@ -545,5 +803,138 @@ mod tests {
         );
         state.originals.connections.remove(&uuid);
         assert!(!state.originals.connections.contains_key(&uuid));
+    }
+
+    // === Issue #298 — disable restores cached anonymous-identity ===
+
+    /// Issue #298: a cached `Some("…")` original means Proteus saw a
+    /// real outer identity at first `enable`, so `disable` must put
+    /// that exact value back rather than clearing the field. This is
+    /// the primary regression: pre-fix, every `disable` wrote `""`.
+    #[test]
+    fn decide_disable_value_restores_cached_some() {
+        let v = decide_disable_value(Some("alice@uni.edu"));
+        assert_eq!(
+            v, "alice@uni.edu",
+            "cached non-empty original must be restored verbatim"
+        );
+    }
+
+    /// No cached value (state's `anonymous_identity` was `None`, or
+    /// no cache entry at all): defensive clear, since we don't have
+    /// anything safer to write.
+    #[test]
+    fn decide_disable_value_clears_when_no_cache() {
+        let v = decide_disable_value(None);
+        assert!(
+            v.is_empty(),
+            "missing cache must fall back to clear, got {v:?}"
+        );
+    }
+
+    // === Issue #298 — revert path ===
+
+    /// `revert_targets` selects only the connections that have a
+    /// cached enterprise-wifi original. A pure-DHCP entry (with
+    /// `anonymous_identity = None` AND a `dhcp_settings` snapshot)
+    /// must NOT be picked up by the enterprise-wifi revert pass —
+    /// that's `dhcp::revert`'s job, and double-touching it would
+    /// break the segregation between the two features.
+    #[test]
+    fn revert_targets_skips_pure_dhcp_entries() {
+        use crate::state::DhcpSettingsSnapshot;
+        let mut state = State::default();
+        // Enterprise-wifi entry — should be picked up.
+        state.originals.connections.insert(
+            "11111111-1111-1111-1111-111111111111".to_string(),
+            ConnectionOriginals {
+                anonymous_identity: Some("alice@uni.edu".to_string()),
+                dhcp_settings: None,
+            },
+        );
+        // Pure-DHCP entry — must be skipped.
+        state.originals.connections.insert(
+            "22222222-2222-2222-2222-222222222222".to_string(),
+            ConnectionOriginals {
+                anonymous_identity: None,
+                dhcp_settings: Some(DhcpSettingsSnapshot::default()),
+            },
+        );
+        let targets = revert_targets(&state);
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].0, "11111111-1111-1111-1111-111111111111");
+        assert_eq!(targets[0].1, "alice@uni.edu");
+    }
+
+    /// An entry whose cached `anonymous_identity` is the empty string
+    /// is still actionable on revert: writing `""` is NM's contract
+    /// for clearing the field, so the connection ends up unset —
+    /// matching whatever shape Proteus saw before the first `enable`
+    /// on it. Pin that `revert_targets` includes such entries rather
+    /// than skipping them.
+    #[test]
+    fn revert_targets_includes_entries_cached_as_empty_string() {
+        let mut state = State::default();
+        state.originals.connections.insert(
+            "33333333-3333-3333-3333-333333333333".to_string(),
+            ConnectionOriginals {
+                anonymous_identity: Some(String::new()),
+                dhcp_settings: None,
+            },
+        );
+        let targets = revert_targets(&state);
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].1, "", "cached empty string survives selection");
+    }
+
+    /// End-to-end-ish: the trait write that the disable handler
+    /// reaches through is the same one that the revert path
+    /// reaches through. This pins that a cached `Some("alice@x")`
+    /// value gets pushed onto the connection (through the trait,
+    /// observed via the mock backend). Pre-fix, the same input
+    /// would have observed the empty-string clear.
+    #[test]
+    fn disable_pushes_cached_value_through_trait() {
+        let backend = MockBackend::new();
+        let cref = crate::backend::ConnectionRef::new("/org/freedesktop/NetworkManager/Settings/9");
+        let to_write = decide_disable_value(Some("alice@uni.edu"));
+        rt().block_on(async { backend.write_anonymous_identity(&cref, &to_write).await })
+            .unwrap();
+        assert_eq!(
+            backend.anonymous_identity_for(&cref).as_deref(),
+            Some("alice@uni.edu"),
+            "disable must push cached value, not clear"
+        );
+    }
+
+    /// Issue #298: `enable` already caches the original (verified by
+    /// reading the existing `enable_one` body). This test pins the
+    /// invariant from the state-file side: a state with a cached
+    /// non-empty `anonymous_identity` survives a serialize-then-
+    /// deserialize round trip with the value intact, so
+    /// disable-after-restart still has access to the original.
+    #[test]
+    fn cached_original_survives_state_round_trip() {
+        let mut state = State::default();
+        let uuid = "44444444-4444-4444-4444-444444444444".to_string();
+        state.originals.connections.insert(
+            uuid.clone(),
+            ConnectionOriginals {
+                anonymous_identity: Some("bob@example.org".to_string()),
+                dhcp_settings: None,
+            },
+        );
+        let bytes = serde_json::to_vec(&state).unwrap();
+        let back: State = serde_json::from_slice(&bytes).unwrap();
+        let entry = back
+            .originals
+            .connections
+            .get(&uuid)
+            .expect("entry survives round trip");
+        assert_eq!(
+            entry.anonymous_identity.as_deref(),
+            Some("bob@example.org"),
+            "cached original must round-trip through serde"
+        );
     }
 }
