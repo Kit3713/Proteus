@@ -47,6 +47,7 @@ pub use resolve::active_for;
 /// serde; user-authored personas under `/etc/proteus/personas/<id>.toml`
 /// use the same struct.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Persona {
     /// Stable kebab-case identifier. Must match the file stem.
     pub id: String,
@@ -176,7 +177,7 @@ impl PersonaCategory {
 /// follow-up routes these through `src/commands/dhcp.rs` so the option
 /// path *sets* values from a persona instead of only suppressing.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct DhcpFingerprint {
     /// Option 60. Empty string means "do not send".
     pub vendor_class_identifier: String,
@@ -193,7 +194,7 @@ pub struct DhcpFingerprint {
 /// path translates these abstract traits to the actual `/proc/sys/net/...`
 /// writes.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct TcpStackProfile {
     /// `net.ipv4.tcp_window_scaling` shape. Real iOS/Android/Linux values.
     pub window_scale: u8,
@@ -208,7 +209,7 @@ pub struct TcpStackProfile {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct Ipv6Traits {
     /// `net.ipv6.conf.<iface>.use_tempaddr`.
     pub use_temp_addresses: bool,
@@ -219,7 +220,7 @@ pub struct Ipv6Traits {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct RfTraits {
     /// dBm absolute. 0 means "leave at regulatory max".
     pub tx_power_dbm: u8,
@@ -239,6 +240,13 @@ pub struct PersonaSummary {
     pub kind: PersonaKind,
     pub category: PersonaCategory,
     pub source: PersonaSource,
+    /// `true` when the persona passes the schema check. `false` flags a
+    /// malformed entry so the CLI surfaces it with a marker instead of
+    /// silently dropping it (#253).
+    pub valid: bool,
+    /// Schema-check failure reason; populated only when `valid` is `false`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub schema_error: Option<String>,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize)]
