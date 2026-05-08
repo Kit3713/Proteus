@@ -140,7 +140,14 @@ async fn subscribe_loop(
     // daemon restarts — acceptable trade-off for now; NM exposes a
     // `DeviceAdded` signal we'd subscribe to in a follow-up.
     let paths = nm.get_devices().await.unwrap_or_default();
-    let mut watchers: Vec<tokio::task::JoinHandle<()>> = Vec::new();
+    // Issue #256: each per-device watcher gets its own stop channel
+    // so the parent can drain them within a deadline before
+    // resorting to abort. Previously the parent only called `abort()`
+    // when it received the stop signal, which gives no chance for
+    // in-flight DBus reads to complete; the watchers now poll their
+    // stop receiver in the same `tokio::time::timeout` shape the
+    // portal-auth source uses.
+    let mut watchers: Vec<Watcher> = Vec::new();
     for path in paths {
         let builder = match DeviceProxy::builder(conn).path(path.clone()) {
             Ok(b) => b,
@@ -160,7 +167,8 @@ async fn subscribe_loop(
             }
         };
         let registry = Arc::clone(&registry);
-        let watcher = tokio::spawn(async move {
+        let (watcher_tx, watcher_rx) = tokio::sync::oneshot::channel::<()>();
+        let join = tokio::spawn(async move {
             // The signal-stream API on a generated zbus proxy is
             // `dev.receive_<signal_name>()`. zbus 5.x exposes
             // `Device.StateChanged` via the introspection-driven
@@ -168,16 +176,55 @@ async fn subscribe_loop(
             // time we degrade to a polling fallback that reads the
             // `State` property every 2 s. Both branches forward to
             // `fire_connection_up` so the test seam is consistent.
-            poll_state_property(&dev, registry).await;
+            poll_state_property(&dev, registry, watcher_rx).await;
         });
-        watchers.push(watcher);
+        watchers.push(Watcher {
+            join,
+            stop: watcher_tx,
+        });
     }
 
     let _ = stop.await;
-    for w in watchers {
-        w.abort();
-    }
+    drain_watchers(watchers, std::time::Duration::from_secs(5)).await;
     Ok(())
+}
+
+/// One per-device watcher with its own graceful-stop channel.
+/// Issue #256.
+struct Watcher {
+    join: tokio::task::JoinHandle<()>,
+    stop: tokio::sync::oneshot::Sender<()>,
+}
+
+/// Drain every watcher within `deadline`. Each watcher gets its
+/// stop-channel signal first so the poll loop can exit cleanly;
+/// stragglers past the deadline are aborted explicitly.
+async fn drain_watchers(watchers: Vec<Watcher>, deadline: std::time::Duration) {
+    for w in watchers {
+        // Best-effort: a send error means the watcher already
+        // exited (its receiver was dropped) — nothing to do.
+        let _ = w.stop.send(());
+        let mut join = w.join;
+        match tokio::time::timeout(deadline, &mut join).await {
+            Ok(Ok(())) => {
+                tracing::debug!("nm-connection-up: per-device watcher shut down cleanly");
+            }
+            Ok(Err(e)) => {
+                tracing::warn!(
+                    "nm-connection-up: per-device watcher panicked or was cancelled: {e}"
+                );
+            }
+            Err(_) => {
+                tracing::warn!(
+                    deadline_secs = deadline.as_secs(),
+                    "nm-connection-up: per-device watcher missed shutdown deadline; aborting"
+                );
+                join.abort();
+                let _ =
+                    tokio::time::timeout(std::time::Duration::from_millis(250), &mut join).await;
+            }
+        }
+    }
 }
 
 /// Polling fallback for the state-changed loop. Reads
@@ -195,14 +242,29 @@ async fn subscribe_loop(
 /// — connection-up events fire within 2 s of NM's Activated edge —
 /// and a follow-up PR can swap in the real signal stream behind the
 /// same `fire_connection_up` call.
-async fn poll_state_property(dev: &crate::nm::DeviceProxy<'_>, registry: Arc<EventRegistry>) {
+async fn poll_state_property(
+    dev: &crate::nm::DeviceProxy<'_>,
+    registry: Arc<EventRegistry>,
+    mut stop_rx: tokio::sync::oneshot::Receiver<()>,
+) {
     use std::time::Duration;
     let mut last: Option<u32> = None;
     loop {
         let state = match read_device_state(dev).await {
             Some(s) => s,
             None => {
-                tokio::time::sleep(Duration::from_secs(2)).await;
+                // Issue #256: race the stop signal against the poll
+                // cadence so the watcher exits within milliseconds
+                // of the parent calling `stop`. Previously the
+                // unconditional `sleep` could hold the watcher up to
+                // 2 s past shutdown, which the daemon's drain
+                // deadline tolerates but isn't free.
+                if tokio::time::timeout(Duration::from_secs(2), &mut stop_rx)
+                    .await
+                    .is_ok()
+                {
+                    return;
+                }
                 continue;
             }
         };
@@ -215,7 +277,12 @@ async fn poll_state_property(dev: &crate::nm::DeviceProxy<'_>, registry: Arc<Eve
             let ssid = read_active_ssid_via_proc(&iface);
             let _ = registry.fire(RotationTrigger::ConnectionUp { iface, ssid });
         }
-        tokio::time::sleep(Duration::from_secs(2)).await;
+        if tokio::time::timeout(Duration::from_secs(2), &mut stop_rx)
+            .await
+            .is_ok()
+        {
+            return;
+        }
     }
 }
 
@@ -349,7 +416,8 @@ mod tests {
         reg.register(Box::new(Counter {
             n: Arc::clone(&n),
             last: Arc::clone(&last),
-        }));
+        }))
+        .unwrap();
         (reg, n, last)
     }
 

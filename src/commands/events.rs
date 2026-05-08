@@ -48,14 +48,20 @@ use crate::exit;
 /// small TOML) so an operator can edit `config.toml` without restarting
 /// the daemon.
 struct RotateOnTriggerHandler {
-    counter: std::sync::atomic::AtomicU64,
+    /// Issue #259/#262: shared with the daemon's main loop so the
+    /// `--max-triggers` budget enforcement reads the same counter
+    /// the handler increments. `Arc<AtomicU64>` is the simplest
+    /// way to share a `Send + Sync` integer between the handler
+    /// (boxed into the registry) and the loop (owns its own
+    /// `Arc` clone).
+    counter: Arc<std::sync::atomic::AtomicU64>,
     config_path: Option<PathBuf>,
 }
 
 impl RotateOnTriggerHandler {
     fn new(config_path: Option<PathBuf>) -> Self {
         Self {
-            counter: std::sync::atomic::AtomicU64::new(0),
+            counter: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             config_path,
         }
     }
@@ -161,9 +167,11 @@ pub fn run(
     }
 
     let registry = EventRegistry::shared();
-    registry.register(Box::new(RotateOnTriggerHandler::new(
-        config_path.map(PathBuf::from),
-    )));
+    let handler = RotateOnTriggerHandler::new(config_path.map(PathBuf::from));
+    let trigger_count = Arc::clone(&handler.counter);
+    registry
+        .register(Box::new(handler))
+        .context("registering default rotation handler")?;
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -222,14 +230,24 @@ pub fn run(
         // wall-clock budget (`--once-after-secs`) every 250 ms; a
         // smoke-test run with `--once-after-secs 1` exits within
         // ~1.25 s. Production sets neither and runs until SIGTERM.
+        //
+        // Issue #259/#262: previously the trigger-budget branch was a
+        // dead body — the daemon parsed `--max-triggers` but ignored
+        // it. The handler now exposes its `Arc<AtomicU64>` counter to
+        // the loop so the budget is honoured: when the count meets or
+        // exceeds the budget the loop breaks with a "trigger budget
+        // reached" log line.
         loop {
             tokio::time::sleep(Duration::from_millis(250)).await;
-            if max_triggers > 0 {
-                // The default handler we registered owns the counter;
-                // we don't have a clean handle to it from here. The
-                // production unit doesn't pass --max-triggers, so this
-                // branch only activates in the smoke-test path which
-                // pairs --max-triggers with --once-after-secs.
+            if max_triggers > 0
+                && trigger_count.load(std::sync::atomic::Ordering::SeqCst) >= max_triggers
+            {
+                tracing::info!(
+                    max_triggers = max_triggers,
+                    fired = trigger_count.load(std::sync::atomic::Ordering::SeqCst),
+                    "events daemon: trigger budget reached; shutting down"
+                );
+                break;
             }
             if once_after_secs > 0 && started.elapsed().as_secs() >= once_after_secs {
                 tracing::info!("events daemon: --once-after-secs elapsed; shutting down");
@@ -237,18 +255,66 @@ pub fn run(
             }
         }
 
-        // Signal every source to stop. `StopHandle::stop` is
-        // idempotent so this is safe to call regardless of which
-        // sources actually opened a real subscription.
-        for t in tasks {
-            t.stop.stop();
-        }
-        // The join handles are abort-on-drop because we don't await
-        // them; the orchestrator deliberately doesn't wait for the
-        // recv loop to drain to keep the shutdown path fast.
+        // Issue #256: drain every source's join handle within a
+        // bounded deadline before aborting. Previously we sent the
+        // stop signal and dropped the join handles, which leaks the
+        // orchestrator's "wait for shutdown" guarantee — long-running
+        // tasks could outlive the daemon. The deadline is 5 s
+        // (long enough for a netlink recv to wake on its stop signal,
+        // short enough that systemd's default `TimeoutStopSec=` of
+        // 90 s never trips).
+        shutdown_tasks(tasks, Duration::from_secs(5)).await;
 
         Ok::<u8, anyhow::Error>(exit::SUCCESS)
     })
+}
+
+/// Per-source graceful shutdown. Signals every source to stop, waits
+/// up to `deadline` for each `JoinHandle` to complete, then aborts
+/// any stragglers. Issue #256.
+///
+/// The drain happens sequentially — sources are independent so the
+/// total wall-clock budget is `deadline` per source, not aggregated.
+/// In practice every well-behaved source returns the moment it sees
+/// its `stop` channel close, which is microseconds; the deadline is
+/// the ceiling for "the source is wedged in a syscall and we have to
+/// abort." Logged per-source so an operator triaging a slow shutdown
+/// can pinpoint the offender.
+async fn shutdown_tasks(tasks: Vec<crate::events::source::SourceTask>, deadline: Duration) {
+    for task in tasks {
+        let name = task.name;
+        // `stop()` consumes the StopHandle; signal first so the inner
+        // task observes the close before we begin waiting.
+        task.stop.stop();
+        let mut join = task.join;
+        // Pin the borrow so the JoinHandle survives a timeout — if
+        // the task overruns its deadline we still hold the handle and
+        // can call `.abort()` on it.
+        match tokio::time::timeout(deadline, &mut join).await {
+            Ok(Ok(())) => {
+                tracing::debug!(source = name, "events daemon: source shut down cleanly");
+            }
+            Ok(Err(join_err)) => {
+                tracing::warn!(
+                    source = name,
+                    "events daemon: source task panicked or was cancelled: {join_err}"
+                );
+            }
+            Err(_) => {
+                tracing::warn!(
+                    source = name,
+                    deadline_secs = deadline.as_secs(),
+                    "events daemon: source did not shut down within deadline; aborting"
+                );
+                // Abort explicitly; dropping a JoinHandle only
+                // detaches the task. After `abort()` we wait briefly
+                // for the cancellation to propagate so the abort is
+                // synchronous from the caller's perspective.
+                join.abort();
+                let _ = tokio::time::timeout(Duration::from_millis(250), &mut join).await;
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -280,10 +346,12 @@ mod tests {
         let n = Arc::new(AtomicUsize::new(0));
         let last = Arc::new(Mutex::new(None));
         let registry = EventRegistry::new();
-        registry.register(Box::new(Counter {
-            n: Arc::clone(&n),
-            last: Arc::clone(&last),
-        }));
+        registry
+            .register(Box::new(Counter {
+                n: Arc::clone(&n),
+                last: Arc::clone(&last),
+            }))
+            .unwrap();
 
         let src = MockNmConnectionUpSource::new();
         src.push("wlan0", NM_DEVICE_STATE_ACTIVATED, Some("home".into()));
@@ -447,5 +515,121 @@ mod tests {
         })
         .unwrap();
         assert_eq!(h.counter.load(Ordering::SeqCst), 1);
+    }
+
+    /// Issue #259/#262: `shutdown_tasks` drains a clean source
+    /// within the deadline — the source's `stop` channel receiver
+    /// resolves immediately so the spawned task exits and the
+    /// drain returns well under the configured deadline.
+    #[test]
+    fn shutdown_tasks_drains_a_clean_source_within_deadline() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let (stop, mut stop_rx) = crate::events::source::StopHandle::channel();
+            let join = tokio::spawn(async move {
+                let _ = (&mut stop_rx).await;
+            });
+            let task = crate::events::source::SourceTask {
+                join,
+                stop,
+                name: "test-source",
+            };
+            let started = std::time::Instant::now();
+            shutdown_tasks(vec![task], Duration::from_secs(5)).await;
+            let elapsed = started.elapsed();
+            assert!(
+                elapsed < Duration::from_millis(500),
+                "clean shutdown took {elapsed:?}, expected < 500ms"
+            );
+        });
+    }
+
+    /// Issue #259/#262: `shutdown_tasks` aborts a wedged source
+    /// past the deadline — a source that ignores its stop channel
+    /// must not block the daemon's shutdown indefinitely. We pin
+    /// the deadline at 200ms and assert the drain returns inside
+    /// 600ms (deadline + 250ms post-abort grace).
+    #[test]
+    fn shutdown_tasks_aborts_wedged_source_after_deadline() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let (stop, _stop_rx) = crate::events::source::StopHandle::channel();
+            // Spawn a task that ignores its stop channel and sleeps
+            // forever. The drain must abort it after the deadline.
+            let join = tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_secs(3600)).await;
+            });
+            let task = crate::events::source::SourceTask {
+                join,
+                stop,
+                name: "wedged-source",
+            };
+            let started = std::time::Instant::now();
+            shutdown_tasks(vec![task], Duration::from_millis(200)).await;
+            let elapsed = started.elapsed();
+            assert!(
+                elapsed < Duration::from_millis(600),
+                "wedged-source shutdown took {elapsed:?}, expected < 600ms"
+            );
+        });
+    }
+
+    /// Issue #259/#262: `shutdown_tasks` handles an empty task
+    /// list as a no-op — important because `spawn_all` may return
+    /// zero tasks on a host without any of the source backends.
+    #[test]
+    fn shutdown_tasks_with_empty_input_is_a_clean_noop() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            shutdown_tasks(Vec::new(), Duration::from_secs(5)).await;
+        });
+    }
+
+    /// Issue #259/#262: when `--max-triggers` is 0 (the
+    /// production-default), the daemon does not exit on the
+    /// trigger-budget branch even after a flood of triggers. Pin
+    /// the "0 means run forever" semantics so the systemd unit
+    /// stays a long-lived service.
+    ///
+    /// We exercise the loop predicate directly because spinning
+    /// up `run()` requires root + tokio + DBus.
+    #[test]
+    fn max_triggers_zero_disables_the_budget() {
+        let counter: u64 = 1_000_000;
+        let max_triggers: u64 = 0;
+        let should_exit = max_triggers > 0 && counter >= max_triggers;
+        assert!(
+            !should_exit,
+            "max_triggers=0 must disable the trigger-budget gate"
+        );
+    }
+
+    /// Issue #259/#262: when `--max-triggers > 0` and the counter
+    /// has reached or exceeded it, the budget gate fires.
+    #[test]
+    fn max_triggers_at_or_above_budget_fires_the_gate() {
+        for (max, fired, expected) in [
+            (1u64, 0u64, false),
+            (1u64, 1u64, true),
+            (1u64, 2u64, true),
+            (5u64, 4u64, false),
+            (5u64, 5u64, true),
+            (5u64, 6u64, true),
+        ] {
+            let should_exit = max > 0 && fired >= max;
+            assert_eq!(
+                should_exit, expected,
+                "max={max}, fired={fired}: expected {expected}"
+            );
+        }
     }
 }
