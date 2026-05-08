@@ -51,7 +51,12 @@ pub fn run(action: PersonaAction, config_override: Option<&Path>) -> Result<u8> 
         PersonaAction::Edit { id } => edit(&id, &user_root),
         PersonaAction::Validate { path } => validate(&path),
         PersonaAction::Import { path, yes } => import(&path, yes, &user_root),
-        PersonaAction::Export { id, path } => export(&id, &path, &user_root),
+        PersonaAction::Export {
+            id,
+            path,
+            yes,
+            force,
+        } => export(&id, &path, yes, force, &user_root),
     }
 }
 
@@ -459,13 +464,61 @@ fn import(path: &Path, yes: bool, user_root: &Path) -> Result<u8> {
     Ok(exit::SUCCESS)
 }
 
-fn export(id: &str, path: &Path, user_root: &Path) -> Result<u8> {
+/// Issue #286: bring `export` up to import-parity. Without these guards a
+/// typo like `proteus persona export iphone-15 /etc/sudoers` (intended
+/// `~/sudoers.toml`) silently overwrites root-owned config files; a symlink
+/// pre-placed at the destination follows through to whatever it targets.
+///
+/// Parity surface, mirroring [`import`]:
+/// * `--yes` is required (uses [`super::require_yes`]).
+/// * The target must not be a symlink — checked via `lstat` so the symlink
+///   itself is examined rather than its target.
+/// * An existing regular file blocks the export; `--force` is the explicit
+///   opt-in for overwrite, but even `--force` does not bypass the symlink
+///   check (a symlink with `--force` is still refused).
+/// * The write goes through [`super::write_atomic`] for the same TOCTOU /
+///   crash-safety guarantees the rest of the codebase relies on.
+fn export(id: &str, path: &Path, yes: bool, force: bool, user_root: &Path) -> Result<u8> {
+    if let Err(code) = super::require_yes(
+        yes,
+        "writes a persona TOML to the given path",
+        "proteus help persona",
+    ) {
+        return Ok(code);
+    }
     let Some((p, src)) = load::load(id, user_root)? else {
         eprintln!("proteus: persona '{id}' not found");
         return Ok(exit::CONFIG_ERROR);
     };
+    // lstat-based existence/type check: symlink_metadata does NOT follow
+    // symlinks, so a symlink pre-placed at `path` is detected as a symlink
+    // rather than reporting the target's type. NotFound is the happy path
+    // (we'll create the file fresh); any other error gets bubbled to the
+    // operator.
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) => {
+            if meta.file_type().is_symlink() {
+                eprintln!(
+                    "proteus: refusing to export through symlink {} (security)",
+                    path.display()
+                );
+                return Ok(exit::CONFIG_ERROR);
+            }
+            if !force {
+                eprintln!(
+                    "proteus: {} already exists; pass --force to overwrite",
+                    path.display()
+                );
+                return Ok(exit::CONFIG_ERROR);
+            }
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => {
+            return Err(anyhow::Error::from(e)).with_context(|| format!("stat {}", path.display()));
+        }
+    }
     let body = toml::to_string_pretty(&p).context("rendering persona TOML")?;
-    std::fs::write(path, body).with_context(|| format!("writing {}", path.display()))?;
+    super::write_atomic(path, body.as_bytes())?;
     if matches!(src, PersonaSource::Builtin) {
         eprintln!(
             "proteus: note — exported a built-in persona; world-readable permissions on {} are your call",
@@ -520,5 +573,133 @@ mod tests {
             }
             _ => panic!("wrong action"),
         }
+    }
+
+    /// Issue #286: `--yes` and `--force` parse on the export subcommand,
+    /// matching `import`'s shape.
+    #[test]
+    fn cli_parses_export_with_yes_and_force() {
+        let w = Wrap::try_parse_from(["x", "export", "iphone-15", "/tmp/p.toml", "--yes"])
+            .expect("parse");
+        match w.cmd {
+            PersonaAction::Export {
+                id,
+                path,
+                yes,
+                force,
+            } => {
+                assert_eq!(id, "iphone-15");
+                assert_eq!(path.to_str(), Some("/tmp/p.toml"));
+                assert!(yes);
+                assert!(!force);
+            }
+            _ => panic!("wrong action"),
+        }
+
+        let w2 = Wrap::try_parse_from([
+            "x",
+            "export",
+            "iphone-15",
+            "/tmp/p.toml",
+            "--yes",
+            "--force",
+        ])
+        .expect("parse");
+        match w2.cmd {
+            PersonaAction::Export { yes, force, .. } => {
+                assert!(yes);
+                assert!(force);
+            }
+            _ => panic!("wrong action"),
+        }
+    }
+
+    /// Issue #286 — without `--yes`, export bails with the confirmation
+    /// exit code and writes nothing. The wiki-hint string matches the
+    /// rest of the persona surface (`proteus help persona`).
+    #[test]
+    fn export_refuses_without_yes() {
+        let tmp = crate::testing::TempRoot::new("persona-export-noyes");
+        let dest = tmp.path.join("out.toml");
+        // user_root is irrelevant here — the require_yes gate trips first.
+        let user_root = std::path::Path::new("/dev/null/persona-root");
+        let rc = export("iphone-15", &dest, false, false, user_root).expect("call ok");
+        assert_eq!(rc, crate::exit::CONFIRMATION_REQUIRED);
+        assert!(!dest.exists(), "export must not have written without --yes");
+    }
+
+    /// Issue #286 — refusing to overwrite is the default. An existing
+    /// regular file at the destination yields CONFIG_ERROR and the file
+    /// is left untouched.
+    #[test]
+    fn export_refuses_overwrite_without_force() {
+        let tmp = crate::testing::TempRoot::new("persona-export-over");
+        let dest = tmp.path.join("out.toml");
+        std::fs::write(&dest, b"DO NOT TOUCH").unwrap();
+        let rc = export("iphone-15", &dest, true, false, &tmp.path).expect("call ok");
+        assert_eq!(rc, crate::exit::CONFIG_ERROR);
+        assert_eq!(
+            std::fs::read(&dest).unwrap(),
+            b"DO NOT TOUCH",
+            "destination must not be touched on overwrite refusal"
+        );
+    }
+
+    /// Issue #286 — `--force` permits overwriting a regular file. The
+    /// new contents are valid persona TOML for the picked builtin.
+    #[test]
+    fn export_force_overwrites_existing_regular_file() {
+        let tmp = crate::testing::TempRoot::new("persona-export-force");
+        let dest = tmp.path.join("out.toml");
+        std::fs::write(&dest, b"old contents").unwrap();
+        let rc = export("iphone-15", &dest, true, true, &tmp.path).expect("call ok");
+        assert_eq!(rc, crate::exit::SUCCESS);
+        let body = std::fs::read_to_string(&dest).unwrap();
+        assert!(
+            body.contains("id = \"iphone-15\""),
+            "force-overwritten file must contain new persona body, got: {body}"
+        );
+    }
+
+    /// Issue #286 — a symlink at the destination is refused even with
+    /// `--force`. lstat-based check prevents following the link to its
+    /// target (which could be `/etc/sudoers` or similar).
+    #[test]
+    fn export_refuses_symlink_destination_even_with_force() {
+        let tmp = crate::testing::TempRoot::new("persona-export-sym");
+        let target = tmp.path.join("victim");
+        std::fs::write(&target, b"sensitive").unwrap();
+        let dest = tmp.path.join("link");
+        std::os::unix::fs::symlink(&target, &dest).unwrap();
+
+        // --force is set but symlinks must be refused regardless.
+        let rc = export("iphone-15", &dest, true, true, &tmp.path).expect("call ok");
+        assert_eq!(
+            rc,
+            crate::exit::CONFIG_ERROR,
+            "symlink destination must be refused even with --force"
+        );
+        // Target file must be untouched.
+        assert_eq!(std::fs::read(&target).unwrap(), b"sensitive");
+        // The symlink itself stays in place.
+        let meta = std::fs::symlink_metadata(&dest).unwrap();
+        assert!(meta.file_type().is_symlink());
+    }
+
+    /// Issue #286 — happy path: writing to a fresh path lands a 0o600
+    /// file via `write_atomic` and exits SUCCESS.
+    #[test]
+    fn export_writes_atomically_to_fresh_path() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = crate::testing::TempRoot::new("persona-export-fresh");
+        let dest = tmp.path.join("out.toml");
+        let rc = export("iphone-15", &dest, true, false, &tmp.path).expect("call ok");
+        assert_eq!(rc, crate::exit::SUCCESS);
+        assert!(dest.exists(), "export must have created the destination");
+        let body = std::fs::read_to_string(&dest).unwrap();
+        assert!(body.contains("id = \"iphone-15\""));
+        // write_atomic lands files at 0o600.
+        let mode = std::fs::metadata(&dest).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "exported file must be 0o600, got 0o{mode:o}");
     }
 }

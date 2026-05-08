@@ -474,6 +474,13 @@ pub enum PersonaAction {
     Export {
         id: String,
         path: std::path::PathBuf,
+        /// Confirm the destructive operation (mirrors `import`).
+        #[arg(long)]
+        yes: bool,
+        /// Allow overwriting an existing regular file at `<path>`. Even
+        /// with `--force`, symlinks are still refused.
+        #[arg(long)]
+        force: bool,
     },
 }
 

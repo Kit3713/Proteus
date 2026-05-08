@@ -273,9 +273,22 @@ impl State {
     /// Issue #127: a malformed state.json must not brick read-only commands
     /// (`status`, `current`, `original`, `diff`, ...). When parsing fails we
     /// quarantine the bad file as `<path>.corrupt-<utc-stamp>` and return
-    /// `Ok(None)`. The next mutating apply re-captures originals and writes a
-    /// fresh state.json, while read-only callers see an empty state and keep
-    /// working.
+    /// `Ok(Some(recovered))` where `recovered` carries any originals we could
+    /// salvage — the next mutating apply keeps the cached originals so
+    /// `proteus revert` still restores the actual original hostname / BT
+    /// alias, not the rotated one.
+    ///
+    /// Issue #290: previously the quarantine path returned `Ok(None)` (an
+    /// empty state). With the hostname rotated, the next apply would
+    /// re-capture the **rotated** hostname as the "original" because
+    /// `state.originals.hostname.is_some()` was now `false`. The fix is
+    /// best-effort partial recovery: we re-parse the corrupt bytes as a
+    /// `serde_json::Value` and extract whatever `originals`, `original_macs`,
+    /// and `original_hostname` fields still deserialize cleanly. The rest of
+    /// the state (managed records, kill switch, portal data, etc.) is
+    /// recoverable from the live system on the next apply, but the
+    /// originals cache is sacred — there is no other source for it once the
+    /// system is rotated.
     pub fn load(path: &Path) -> Result<Option<Self>> {
         let bytes = match fs::read(path) {
             Ok(b) => b,
@@ -314,12 +327,40 @@ impl State {
                     path.display(),
                     quarantine.display()
                 );
+                // Issue #290: rescue the originals cache before quarantining
+                // so a later `proteus revert` can still restore the real
+                // pre-Proteus hostname / BT alias. recover_originals
+                // best-effort-parses the bad bytes via serde_json::Value;
+                // anything it can't extract stays at its default.
+                let recovered = recover_originals(&bytes);
                 // Best-effort rename; if it fails the next apply will overwrite
-                // via write_atomic, so we still degrade to an empty state.
+                // via write_atomic, so we still degrade to a recovered state.
                 let _ = fs::rename(path, &quarantine);
-                Ok(None)
+                if recovered.has_any_originals() {
+                    tracing::warn!(
+                        "state.json quarantine: recovered originals cache (hostname / BT alias / MAC) — revert can still restore the pre-Proteus values"
+                    );
+                    Ok(Some(recovered))
+                } else {
+                    Ok(None)
+                }
             }
         }
+    }
+
+    /// True when at least one of the sacred-original fields is populated.
+    /// Used by [`load`] to decide whether the quarantine path should
+    /// surface a recovered partial state vs. the historical empty-state
+    /// behaviour.
+    fn has_any_originals(&self) -> bool {
+        self.original_hostname.is_some()
+            || !self.original_macs.is_empty()
+            || self.originals.hostname.is_some()
+            || !self.originals.bluetooth_aliases.is_empty()
+            || !self.originals.connections.is_empty()
+            || !self.originals.ipv6.is_empty()
+            || !self.originals.sysctls.is_empty()
+            || !self.originals.rf.is_empty()
     }
 
     pub fn load_or_default(path: &Path) -> Result<Self> {
@@ -429,6 +470,64 @@ fn is_uuid_shape(s: &str) -> bool {
         }
     }
     true
+}
+
+/// Issue #290: best-effort rescue of the sacred-originals cache from a
+/// state.json that failed strict deserialization. Strategy:
+///
+/// 1. Parse as a permissive `serde_json::Value`. If even that fails (e.g.
+///    truncated mid-token), return [`State::default`] — there is genuinely
+///    nothing recoverable.
+/// 2. For each sacred-originals subtree (`original_hostname`,
+///    `original_macs`, `originals`), try to deserialize **just that
+///    subtree** into its typed shape. Any subtree that fails round-trip
+///    stays at its default; everything else flows back into the returned
+///    state.
+///
+/// We do NOT attempt to recover non-originals fields (managed records,
+/// kill_switch, portal lists, per_ssid_seed, ...). The rest of the state is
+/// re-derivable from the live system on the next apply; the originals are
+/// not, which is why they get the white-glove treatment here.
+///
+/// Anything recovered flows through [`migrate_state`] so a v0/v1 quarantine
+/// file's fields end up at the current schema before callers see them.
+fn recover_originals(bytes: &[u8]) -> State {
+    let value: serde_json::Value = match serde_json::from_slice(bytes) {
+        Ok(v) => v,
+        Err(_) => return State::default(),
+    };
+    let mut recovered = State::default();
+    if let Some(obj) = value.as_object() {
+        // Each field is recovered independently — a bad `originals` subtree
+        // must not poison the legacy `original_hostname` / `original_macs`
+        // fields and vice versa.
+        if let Some(v) = obj.get("original_hostname")
+            && let Ok(parsed) = serde_json::from_value::<Option<String>>(v.clone())
+        {
+            recovered.original_hostname = parsed;
+        }
+        if let Some(v) = obj.get("original_macs")
+            && let Ok(parsed) = serde_json::from_value::<BTreeMap<String, String>>(v.clone())
+        {
+            recovered.original_macs = parsed;
+        }
+        if let Some(v) = obj.get("originals")
+            && let Ok(parsed) = serde_json::from_value::<Originals>(v.clone())
+        {
+            recovered.originals = parsed;
+        }
+        // schema_version is recoverable too — saving a recovered state with
+        // schema_version 0 would force the migration ladder to re-run on
+        // every load, which is functionally fine but noisy in logs.
+        if let Some(v) = obj.get("schema_version")
+            && let Ok(parsed) = serde_json::from_value::<u32>(v.clone())
+            && parsed <= CURRENT_SCHEMA_VERSION
+        {
+            recovered.schema_version = parsed;
+        }
+    }
+    migrate_state(&mut recovered);
+    recovered
 }
 
 /// `<path>.corrupt-<UTC-iso-with-colons-replaced>` so the bad bytes are
@@ -793,5 +892,161 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(&parent);
+    }
+
+    /// Issue #290: when `state.json` becomes unparseable but the cached
+    /// originals subtree is still valid JSON, the quarantine path must
+    /// rescue them. Otherwise the next `proteus apply` re-captures the
+    /// **rotated** hostname / BT alias as "originals" and `proteus revert`
+    /// silently restores the rotated value rather than the actual
+    /// pre-Proteus one.
+    #[test]
+    fn load_recovers_originals_on_corrupt_state_json() {
+        let dir = std::env::temp_dir().join(format!(
+            "proteus-state-recover-orig-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("state.json");
+        // Strict-typed deserialization must fail on this body because
+        // `managed` carries the wrong shape (a string where the schema
+        // expects an object) — but it is still well-formed JSON, so the
+        // value-fallback parser can pull the originals subtree intact.
+        //
+        // This shape mimics the real failure mode in #290: a subset of
+        // fields on disk has drifted off-schema (manual edit, partial
+        // write, or a future-Proteus quirk) while the originals cache
+        // beside it is fine.
+        let body = r#"{
+            "schema_version": 2,
+            "original_hostname": "factory-laptop",
+            "original_macs": { "wlan0": "aa:bb:cc:dd:ee:ff" },
+            "originals": {
+                "bluetooth_aliases": { "hci0": "Factory BT" },
+                "hostname": {
+                    "kernel": "factory-laptop",
+                    "pretty": "Factory Laptop",
+                    "transient": "factory-laptop"
+                }
+            },
+            "managed": "this is a string, not the ManagedState object schema expects"
+        }"#;
+        fs::write(&path, body).unwrap();
+
+        let s = State::load(&path)
+            .expect("load returns Ok on corrupt input")
+            .expect("partial-recovered state must surface as Some");
+        assert_eq!(
+            s.original_hostname.as_deref(),
+            Some("factory-laptop"),
+            "original_hostname must survive quarantine recovery"
+        );
+        assert_eq!(
+            s.original_macs.get("wlan0").map(String::as_str),
+            Some("aa:bb:cc:dd:ee:ff"),
+            "original_macs must survive quarantine recovery"
+        );
+        assert_eq!(
+            s.originals
+                .bluetooth_aliases
+                .get("hci0")
+                .map(String::as_str),
+            Some("Factory BT"),
+            "bluetooth_aliases must survive quarantine recovery"
+        );
+        let h = s.originals.hostname.expect("hostname triple recovered");
+        assert_eq!(h.kernel.as_deref(), Some("factory-laptop"));
+        assert_eq!(h.pretty.as_deref(), Some("Factory Laptop"));
+
+        // The bad file must still be quarantined so the operator can
+        // postmortem it.
+        assert!(!path.exists(), "corrupt file must be renamed away");
+        let quarantines: Vec<_> = fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().contains(".corrupt-"))
+            .collect();
+        assert_eq!(quarantines.len(), 1, "expected one quarantined sidecar");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Issue #290 — degenerate corruption (file truncated mid-token, no
+    /// recoverable JSON) still falls back to `Ok(None)` so read-only
+    /// commands don't break. The quarantine sidecar is left for the
+    /// operator. This pins the existing #127 contract while we extend
+    /// it for partial-recovery.
+    #[test]
+    fn load_returns_none_when_no_originals_recoverable() {
+        let dir = std::env::temp_dir().join(format!(
+            "proteus-state-recover-empty-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("state.json");
+        // Not even valid JSON at all — Value parse fails too.
+        fs::write(&path, b"\x00\x00not-json\x00").unwrap();
+
+        let result = State::load(&path).expect("load Ok on degenerate corruption");
+        assert!(
+            result.is_none(),
+            "no recoverable originals → fall back to Ok(None)"
+        );
+        assert!(!path.exists(), "corrupt file must be renamed away");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Issue #290 — recover_originals must NOT pull non-originals fields
+    /// like `managed` even if they happen to deserialize cleanly. The
+    /// rest of the state is re-derivable from the live system on the
+    /// next apply; only the originals get the white-glove rescue.
+    #[test]
+    fn recover_originals_only_extracts_sacred_fields() {
+        // Valid JSON with `managed` populated but `originals` empty.
+        let bytes = br#"{
+            "managed": {
+                "interfaces": {
+                    "wlan0": { "current_mac": "11:22:33:44:55:66", "rotation_count": 7 }
+                }
+            },
+            "original_hostname": "factory"
+        }"#;
+        let recovered = recover_originals(bytes);
+        assert_eq!(recovered.original_hostname.as_deref(), Some("factory"));
+        // managed must NOT have been rescued — re-derived from live system.
+        assert!(
+            recovered.managed.interfaces.is_empty(),
+            "recover_originals must only pull sacred fields, not managed"
+        );
+    }
+
+    /// Issue #290 — a corrupt state file with no originals fields at all
+    /// has `has_any_originals == false` so `load` keeps the historical
+    /// `Ok(None)` shape. Pins the boundary between "rescued partial"
+    /// and "give up" behaviours.
+    #[test]
+    fn has_any_originals_is_false_for_default_state() {
+        let s = State::default();
+        assert!(
+            !s.has_any_originals(),
+            "default state must report no originals"
+        );
+
+        let with_hostname = State {
+            original_hostname: Some("h".into()),
+            ..Default::default()
+        };
+        assert!(with_hostname.has_any_originals());
+
+        let mut with_bt = State::default();
+        with_bt
+            .originals
+            .bluetooth_aliases
+            .insert("hci0".into(), "name".into());
+        assert!(with_bt.has_any_originals());
     }
 }
