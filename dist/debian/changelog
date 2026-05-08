@@ -1,3 +1,15 @@
+proteus (0.4.0~beta1-1) unstable; urgency=medium
+
+  * v0.4.0-beta1 — first beta cycle. Reach + Persona work landed in v0.3.x;
+    this cycle is bug + vulnerability hunting only, no new features.
+  * Closes 30+ issues from the May 2026 vulnerability hunt (#225-#275 cluster):
+    persona schema validation, output sanitization, PATH hardening, systemd
+    hardening parity, NM dispatcher hardening, event-trigger rate limits,
+    unbiased random pickers, RF/MAC/per_ssid bug fixes, backend honesty,
+    rotate-if-needed TOCTOU, --yes dispatch parity, SHA-pinned actions.
+
+ -- Kit3713 <noreply@example.com>  Fri, 08 May 2026 02:30:00 +0000
+
 proteus (0.1.0-1) unstable; urgency=medium
 
   * Initial Debian packaging for Phase A/B.

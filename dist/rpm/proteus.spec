@@ -1,5 +1,5 @@
 Name:           proteus
-Version:        0.1.0
+Version:        0.4.0~beta1
 Release:        1%{?dist}
 Summary:        Erase network-layer identifiers your Linux laptop hands out on every join
 
@@ -105,6 +105,12 @@ install -dm700 %{buildroot}%{_sharedstatedir}/proteus
 %systemd_postun_with_restart proteus-rotate.timer proteus-check.timer
 
 %changelog
+* Fri May 08 2026 Kit3713 <noreply@example.com> - 0.4.0~beta1-1
+- v0.4.0-beta1: closes May 2026 vulnerability hunt cluster (#225-#275 +
+  #276/#284/#297). Persona schema validation, output sanitization, PATH
+  hardening, systemd hardening parity, NM dispatcher hardening, event
+  rate limits, unbiased random pickers, rotate-if-needed TOCTOU, --yes
+  dispatch parity, SHA-pinned actions, packaging version sync.
 * Thu May 07 2026 Kit3713 <noreply@example.com> - 0.1.0-1
 - Milestone 5 polish: explicit cargo + rust >= 1.85 BRs, %check section
   running `cargo test --release --lib`, dropped stale openssl-devel BR

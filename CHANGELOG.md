@@ -11,7 +11,89 @@ landed, what is in flight, and what is on the bench. See
 
 ## [Unreleased]
 
-(post-v0.3.1-alpha work lands here)
+## [0.4.0-beta1] - 2026-05-08
+
+First v0.4 beta. The "Reach + Persona" cycle closed in v0.3.x; v0.4 is bug
++ vulnerability hunting only, no new features. This release lands the May
+2026 vulnerability hunt cluster (30+ issues) plus three critical-for-beta
+fixes (#276 packaging version sync, #284 Mac::from_str panic, #297 timer
+set newline injection).
+
+### Security
+
+- **Output sanitization** (#241, #234, #238) — captive-portal `Location:`
+  header sanitized through a shared `display_string` helper; `# sha256:`
+  framing reworded from "verification" to "edit detection"; polkit policy
+  framing clarified as a GUI hint, not a binary-side authorization gate.
+- **PATH hardening** (#239) — `main()` resets `$PATH` to a known-good list
+  before any subcommand dispatch.
+- **systemd hardening parity** (#228) — `proteus-rotate`, `proteus-resume`,
+  `proteus-boot`, `proteus-check` services now carry the strict-protect
+  shape that `proteus-events.service` had (`ProtectSystem=strict`,
+  `ProtectKernel*`, `RestrictAddressFamilies`, `MemoryDenyWriteExecute`,
+  `LockPersonality`, `SystemCallErrorNumber=EPERM`, etc).
+- **State-dir + lock-file perms** (#275) — explicit chmod 0o700 / 0o600 on
+  create regardless of umask; install.sh chmods existing dirs.
+- **NM dispatcher hardening** (#225) — `--` separator, value validation,
+  stderr captured to journal instead of /dev/null.
+- **DBus error visibility** (#248) — replaced `unwrap_or_default()` on NM /
+  Bluetooth property reads with skip-and-log instead of ghost devices.
+- **Event-trigger rate limit + bounded FlapTable** (#254) — per-kind
+  sliding-window limiter + LRU eviction for FlapTable.
+- **Persona import TOCTOU** (#231) — single-read of source bytes.
+- **Persona schema validation** (#266, #232, #253, #255) —
+  `deny_unknown_fields` on Persona structs, full schema_check coverage,
+  schema_check run during load_user / load_builtin / list_all.
+- **Modulo-bias-free random pickers** (#226) — lifted `unbiased_index` to
+  shared `src/rand/mod.rs`, adopted at every MAC / hostname / persona
+  picker.
+- **Config + SSID validation** (#227, #257) — `deny_unknown_fields` and
+  range validation on Raw* structs; `ssid set` validates pin_mac /
+  rotate_interval / persona / portal_policy.
+- **Mac::from_str UTF-8 panic** (#284) — non-ASCII input that lands at 12
+  cleaned bytes no longer panics; rejects cleanly.
+- **Timer set unit-grammar injection** (#297) — `parse_interval` now
+  rejects control chars, `[`, `]`, `;`, `#`, and caps length at 200 bytes
+  before classifying as Calendar.
+
+### Bug fixes
+
+- Backend `available()` honesty for networkd/raw (#247).
+- `rotate_if_needed` reports proper read-back errors instead of all-zero
+  MAC (#250).
+- Cooldown / rotate TOCTOU closed by holding state-lock across the
+  decision and rotate (#245).
+- RF revert preserves originals on partial failure (#269).
+- Factory MAC readers reject multicast addresses (#271).
+- `parse_duration` UTF-8-safe — no panic on `5µ` (#272).
+- `dmesg_firmware_line` and `parse_iw_phy_capabilities` allocations
+  hoisted out of hot loops (#273).
+- ARP / IPv6 ND probes implemented (#267).
+- Events daemon `--max-triggers` honored (#259, #262).
+- `is_auth_edge` handles `PortalRequired → Unknown → Clear` (#261).
+- `EventRegistry::register` recovers from poisoned mutex (#252).
+- Per-watcher graceful shutdown for nm-connection-up (#256).
+- Link-flap and reg-domain netlink sources implemented with kernel-origin
+  validation (#251).
+- `--yes` flag honored on bluetooth/hostname/dns/resolved/ntp apply+revert
+  (#242).
+- `version::PHASE` bumped from 'B' to 'G' (#249).
+- All third-party GitHub Actions SHA-pinned (#260).
+- `tests/realworld/probe.sh` IPv4 / IPv6 anonymisation regex fixes (#263,
+  #264).
+- `commands::uninstall::revert_best_effort` deduplicated; uninstall now
+  delegates to `commands::revert::revert_best_effort` (#265).
+- Persona `edit` HOME warning + $VISUAL / DEFAULT_EDITOR fallback (#230,
+  #244).
+- **Packaging** version strings synced to Cargo.toml (#276) — Arch
+  PKGBUILD, RPM spec, Debian changelog all bumped to 0.4.0-beta1 so
+  release pipeline produces correctly-labeled artifacts.
+
+### CI
+
+- 4 root-context test failures fixed (#274) — kill / events permission
+  tests now skip when EUID=0, matching the existing dhcp pattern. Restored
+  zero-warnings clippy build.
 
 ## [0.3.1-alpha] - 2026-05-07
 
