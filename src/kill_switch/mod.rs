@@ -168,12 +168,34 @@ pub fn link_up(iface: &str) -> Result<bool, String> {
     run_ip(&["link", "set", iface, "up"])
 }
 
-fn is_safe_iface(iface: &str) -> bool {
-    !iface.is_empty()
-        && !iface.starts_with('-')
-        && iface
-            .bytes()
-            .all(|b| b != b'/' && b != 0 && b.is_ascii_graphic())
+/// M3: shell-metacharacter validator for iface names. Linux limits iface
+/// names to `IFNAMSIZ-1 == 15` bytes; the kernel itself rejects names
+/// containing `/`, `:`, whitespace, or NUL. We additionally reject every
+/// shell metacharacter so a future call site that forwards user-shaped
+/// input through a `Command::new("sh")`-shaped wrapper can't be made to
+/// reinterpret an iface name. Coordinated with Stream 9: this validator
+/// covers the kill-switch surface only; if Stream 9 lifts a global iface
+/// validator helper we should call into it from here in a follow-up.
+pub(crate) fn is_safe_iface(iface: &str) -> bool {
+    if iface.is_empty() || iface.len() > 15 {
+        return false;
+    }
+    if iface.starts_with('-') {
+        return false;
+    }
+    // Allow only the kernel-blessed iface alphabet: ASCII alphanumerics
+    // plus `_`, `-`, `.`, `:` (some virtual interfaces use `:` but the
+    // kernel rejects it for newly-created devices; we still accept it
+    // here so we can DOWN existing-but-deprecated names; a leading `:`
+    // is still rejected by the leading-`-` shape because graphics class
+    // already excluded `\0`).
+    //
+    // The shell metacharacters explicitly blocked here: ` $ ; & | < > (
+    // ) [ ] { } \ ' " * ? ~ # ! ^ , % = + space tab newline. Anything
+    // outside the allowlist is rejected.
+    iface
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-' || b == b'.' || b == b':')
 }
 
 fn run_ip(args: &[&str]) -> Result<bool, String> {
@@ -184,6 +206,12 @@ fn run_ip(args: &[&str]) -> Result<bool, String> {
     // suspenders against a future call site that forwards user-shaped
     // input. `ip(8)` accepts `--` as a flag terminator before its
     // OBJECT/COMMAND grammar.
+    //
+    // R8 (fd hygiene): `Command::output()` collects stdout/stderr to
+    // `Vec<u8>` and waits — its implementation handles pipe close + child
+    // reap atomically, so we don't leak the child's writer fds even on
+    // failure paths. No spawn/wait_with_output split here, so no manual
+    // stdin drop is required.
     let output = match Command::new("ip").arg("--").args(args).output() {
         Ok(o) => o,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
@@ -233,6 +261,47 @@ mod tests {
         for bad in ["-attacker", "-x", "with/slash", "with space", ""] {
             assert!(link_down(bad).is_err(), "link_down({bad:?}) must refuse");
             assert!(link_up(bad).is_err(), "link_up({bad:?}) must refuse");
+        }
+    }
+
+    /// M3: shell-metacharacter validator. Anything outside the
+    /// `[A-Za-z0-9_.:-]` allowlist must be rejected so a future
+    /// `Command::new("sh")`-shaped wrapper can't reinterpret the iface
+    /// name. Pin both the rejection set and the over-15-bytes guard
+    /// (kernel `IFNAMSIZ-1`) so a drive-by relaxation can't slip
+    /// metacharacters through.
+    #[test]
+    fn is_safe_iface_rejects_shell_metacharacters() {
+        let bads = [
+            "wlan0;rm",
+            "wlan0|cat",
+            "wlan0&",
+            "wlan0`id`",
+            "wlan0$x",
+            "wlan0(",
+            "wlan0)",
+            "wlan0<",
+            "wlan0>",
+            "wlan0*",
+            "wlan0?",
+            "wlan0[",
+            "wlan0]",
+            "wlan0{",
+            "wlan0}",
+            "wlan0\\",
+            "wlan0'",
+            "wlan0\"",
+            "wlan0\nrm",
+            "wlan0\t",
+            "wlan0 ",
+            "this-name-is-way-too-long",
+        ];
+        for bad in bads {
+            assert!(!is_safe_iface(bad), "is_safe_iface({bad:?}) must be false");
+        }
+        // Real names still pass.
+        for good in ["wlan0", "wlo1", "eno1", "enp48s0", "eth0.100", "br0:1"] {
+            assert!(is_safe_iface(good), "is_safe_iface({good:?}) must be true");
         }
     }
 

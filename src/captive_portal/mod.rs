@@ -28,6 +28,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::display::display_string;
 
+/// N12.14: hard ceiling on bytes accepted from the captive-portal
+/// detector endpoint. A portal that returns more than this is either
+/// misconfigured or hostile; 64 KiB is plenty for status line + headers
+/// plus a status snippet, but small enough that a malicious peer can't
+/// drive our memory by drip-feeding bytes inside the per-read timeout.
+pub(crate) const MAX_RESPONSE_BYTES: usize = 65_536;
+
 /// Classification of the network path according to the portal detector.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -378,15 +385,24 @@ fn http_get(parts: &UrlParts, timeout: Duration) -> std::io::Result<HttpResponse
                 stream.set_write_timeout(Some(remaining_budget(started, timeout)?))?;
                 stream.write_all(req.as_bytes())?;
                 let mut buf = Vec::with_capacity(4096);
-                // Cap at 64 KiB — portals don't need megabytes of HTML to identify.
+                // N12.14: hard cap at MAX_RESPONSE_BYTES so a hostile or
+                // misconfigured portal can't drive memory or CPU by streaming
+                // megabytes of HTML at our detector. The response only needs
+                // to be big enough to identify the portal (status line +
+                // a few headers + a few hundred bytes of body); 64 KiB is
+                // generous for that and still trivially small. Bytes past
+                // the cap are dropped on the floor and the connection is
+                // closed.
                 let mut tmp = [0u8; 1024];
-                while buf.len() < 65_536 {
+                while buf.len() < MAX_RESPONSE_BYTES {
                     // Re-check the budget per chunk: a peer that dribbles
                     // bytes just under the per-read timeout could otherwise
                     // keep us reading past `timeout`. This is the body-read
                     // half of issue #129.
                     stream.set_read_timeout(Some(remaining_budget(started, timeout)?))?;
-                    match stream.read(&mut tmp) {
+                    let remaining = MAX_RESPONSE_BYTES - buf.len();
+                    let slice_end = remaining.min(tmp.len());
+                    match stream.read(&mut tmp[..slice_end]) {
                         Ok(0) => break,
                         Ok(n) => buf.extend_from_slice(&tmp[..n]),
                         Err(e) => return Err(e),
