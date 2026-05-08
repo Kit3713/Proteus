@@ -529,6 +529,7 @@ pub fn run_if_needed(
     cooldown_secs: u64,
     ssid: Option<&str>,
     yes: bool,
+    explain: bool,
     state_path: Option<&Path>,
     config_path: Option<&Path>,
 ) -> Result<u8> {
@@ -574,6 +575,14 @@ pub fn run_if_needed(
         && p.pin_mac.is_some()
     {
         let iface_label = iface.unwrap_or("(no iface)");
+        if explain {
+            // Issue #378: surface the policy that drove the skip so the
+            // dispatcher's logger sees *why* this iface was excluded.
+            println!(
+                "explain rotate-if-needed: ssid={} per-SSID pin_mac is set → skipping (no rotation)",
+                ssid.unwrap_or("(none)")
+            );
+        }
         println!("skipped {iface_label}: pinned by per-SSID policy");
         return Ok(exit::SUCCESS);
     }
@@ -583,6 +592,28 @@ pub fn run_if_needed(
         .map(|p_secs| p_secs.max(cooldown_secs))
         .unwrap_or(cooldown_secs);
     let cooldown = std::time::Duration::from_secs(effective_cooldown_secs);
+
+    if explain {
+        // Issue #378: triage hook — operators wrapping the dispatcher
+        // need to see the policy and cooldown math the hot path is
+        // making *before* the backend call. Print on stdout so journal
+        // grep / CI capture can pick it up alongside the result line.
+        let per_ssid_floor = policy
+            .as_ref()
+            .and_then(|p| p.rotate_interval.map(|d| d.as_secs()));
+        println!(
+            "explain rotate-if-needed: iface={} ssid={} \
+             requested_cooldown_s={} per_ssid_floor_s={} effective_cooldown_s={} backend={}",
+            iface.unwrap_or("(auto)"),
+            ssid.unwrap_or("(none)"),
+            cooldown_secs,
+            per_ssid_floor
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "(none)".into()),
+            effective_cooldown_secs,
+            config.backend.driver,
+        );
+    }
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -638,6 +669,21 @@ pub fn run_if_needed(
             Ok(exit::SUCCESS)
         }
         RotateOutcome::BackendUnavailable => {
+            // NEV2.7: rc=70 conflates "backend unavailable" with the
+            // genuine "missing nft / nl80211 / CAP_NET_ADMIN" branch the
+            // dispatcher script also returns. The trait can't yet carry
+            // the underlying-cause string back through the BackendUnavailable
+            // variant (Stream 4 work), so at minimum we log the iface
+            // and the configured driver at info-level so an operator
+            // following the journal sees the context that's otherwise
+            // lost. The backend-side path that rejects on permission
+            // logs its own trail; this is the consumer-side hint.
+            tracing::info!(
+                iface = %iface_name,
+                driver = %config.backend.driver,
+                "rotate-if-needed: backend reports unavailable; \
+                 likely missing CAP_NET_ADMIN, nl80211, or the configured driver"
+            );
             println!("unavailable {iface_name}: backend reports unavailable");
             Ok(exit::SYSTEM_NOT_SUPPORTED)
         }

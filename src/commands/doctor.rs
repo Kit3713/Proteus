@@ -72,11 +72,28 @@ pub fn run(opts: Options<'_>) -> Result<u8> {
         let style = render_style(opts.no_color);
         print!("{}", render_human(&report, style, opts.verbose));
     }
-    Ok(if report.summary.fail > 0 {
+    Ok(exit_code_for(&report.summary))
+}
+
+/// NCMD2.1: pin the doctor exit-code contract.
+///
+/// - `fail > 0`              → `exit::GENERIC_ERROR` (1) — the historical
+///   "doctor failed" sentinel; CI guards that grep for non-zero keep
+///   working.
+/// - `fail == 0 && warn > 0` → `exit::SUCCESS` (0) — warnings are
+///   advisory, not a CI-blocking event. Operators read the human/JSON
+///   output for the per-check detail.
+/// - `fail == 0 && warn == 0` → `exit::SUCCESS` (0).
+///
+/// The split lives in its own helper so a future bump to a distinct
+/// "warn-only" exit code only requires changing this body, not every
+/// caller. Pinned by the unit tests at the end of this module.
+fn exit_code_for(summary: &Summary) -> u8 {
+    if summary.fail > 0 {
         exit::GENERIC_ERROR
     } else {
         exit::SUCCESS
-    })
+    }
 }
 
 fn build_report(opts: &Options<'_>) -> Report {
@@ -1310,6 +1327,47 @@ mod tests {
             message: "msg".into(),
             remediation: None,
         }
+    }
+
+    /// NCMD2.1: pin the warn-only-vs-fail exit-code split.
+    ///
+    /// The old code returned `GENERIC_ERROR` from a single
+    /// `if fail>0` arm. Refactoring into `exit_code_for` is harmless
+    /// in itself; the value of these tests is to lock the contract
+    /// so a future change can't silently flip warn-only to non-zero
+    /// (which would break every CI pipeline that runs `proteus doctor`
+    /// as a posture probe).
+    #[test]
+    fn doctor_exits_zero_on_warn_only() {
+        let s = Summary {
+            ok: 3,
+            warn: 2,
+            fail: 0,
+            skip: 1,
+        };
+        assert_eq!(exit_code_for(&s), exit::SUCCESS);
+    }
+
+    #[test]
+    fn doctor_exits_one_when_any_check_fails() {
+        let s = Summary {
+            ok: 1,
+            warn: 0,
+            fail: 1,
+            skip: 0,
+        };
+        assert_eq!(exit_code_for(&s), exit::GENERIC_ERROR);
+    }
+
+    #[test]
+    fn doctor_exits_zero_on_clean_run() {
+        let s = Summary {
+            ok: 5,
+            warn: 0,
+            fail: 0,
+            skip: 0,
+        };
+        assert_eq!(exit_code_for(&s), exit::SUCCESS);
     }
 
     #[test]

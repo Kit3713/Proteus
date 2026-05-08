@@ -136,11 +136,13 @@ pub(super) fn dispatch(cli: Cli) -> Result<u8> {
             cooldown,
             ssid,
             yes,
+            explain,
         } => commands::rotate::run_if_needed(
             iface.as_deref(),
             cooldown,
             ssid.as_deref(),
             yes,
+            explain,
             cli.state.as_deref(),
             cli.config.as_deref(),
         ),

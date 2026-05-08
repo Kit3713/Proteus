@@ -111,6 +111,13 @@ pub enum Command {
         ssid: Option<String>,
         #[arg(long)]
         yes: bool,
+        /// Issue #378: print the policy + cooldown math the dispatcher
+        /// hot path is making (effective cooldown, per-SSID pin/interval
+        /// overrides, the configured backend driver) before invoking
+        /// the backend. Triage tool — does NOT mutate; pairs with
+        /// `--cooldown` to surface the actual effective budget.
+        #[arg(long)]
+        explain: bool,
     },
     /// Pin an interface or NM connection to a specific MAC.
     Pin {
