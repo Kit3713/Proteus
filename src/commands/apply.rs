@@ -127,7 +127,10 @@ pub(crate) fn preflight_backend(config: &Config) -> anyhow::Result<&'static str>
         .context("starting tokio runtime")?;
     let backend = rt.block_on(async { crate::backend::select::select(&driver).await })?;
     let name = backend.name();
-    tracing::info!(driver = %driver, resolved = %name, "apply: backend preflight ok");
+    // Roadmap Stream 7 / E1: success-path breadcrumbs go to debug so the
+    // default-verbosity stderr stays empty for a clean apply. Operators
+    // hunting for the resolved backend re-enable with `-v` or RUST_LOG.
+    tracing::debug!(driver = %driver, resolved = %name, "apply: backend preflight ok");
     Ok(name)
 }
 
@@ -762,6 +765,43 @@ mod tests {
         let merged = merge_dhcp_with_renew(primary, Ok(exit::GENERIC_ERROR));
         assert_eq!(merged.status, Status::Failed);
         assert!(merged.note.contains("renew failed"));
+    }
+
+    /// Roadmap Stream 7 / E1 acceptance: at default verbosity (no `-v`,
+    /// no `RUST_LOG`), the success path of `apply` emits zero events
+    /// from this module. Concretely: every `tracing::*!` in this file
+    /// must be at debug or trace level on the success path. Pin this
+    /// by source inspection — the production code (everything before
+    /// `mod tests`) must contain no `info!` calls outside of comments
+    /// / strings, since those propagate to stderr at the default INFO
+    /// level. New success-path breadcrumbs must use `debug!` so the
+    /// default stderr stays empty.
+    #[test]
+    fn success_path_emits_no_info_level_tracing_events() {
+        let src = include_str!("apply.rs");
+        // Cut at the test module boundary so the test's own `tracing`
+        // strings (in assertion messages) don't trigger.
+        let prod = src
+            .split_once("\n#[cfg(test)]\n")
+            .map(|(prod, _)| prod)
+            .unwrap_or(src);
+        let mut without_comments = String::with_capacity(prod.len());
+        for line in prod.lines() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("//") || trimmed.starts_with("///") {
+                continue;
+            }
+            without_comments.push_str(line);
+            without_comments.push('\n');
+        }
+        // `info!` is the discipline-violating level on the success
+        // path; `warn!` / `error!` are still allowed for failure-path
+        // diagnostics elsewhere in the file (none today).
+        assert!(
+            !without_comments.contains("tracing::info!"),
+            "src/commands/apply.rs must not call tracing::info! on the success path (Stream 7 / E1). \
+             Use `debug!` for breadcrumbs so default-verbosity stderr stays empty."
+        );
     }
 
     #[test]
