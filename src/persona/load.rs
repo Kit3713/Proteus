@@ -471,6 +471,34 @@ pub fn user_path(root: &Path, id: &str) -> PathBuf {
     root.join(format!("{id}.toml"))
 }
 
+/// V6 / GH#345 / #339: enumerate every shipped built-in persona id (the
+/// kebab-case file stem under `data/personas/`). Used by config-load
+/// validation so a typo'd `[persona] active = "iphone-1"` lands a clear
+/// error with a closest-match suggestion at load time, instead of silently
+/// degrading later when `active_for` falls through to "no persona".
+///
+/// User personas under `/etc/proteus/personas/` are deliberately *not*
+/// included here — config validation runs in contexts where the user-root
+/// may not be readable (early boot, a foreign rootfs in CI), and
+/// requiring filesystem I/O at validation time invites flakiness. The
+/// validator therefore accepts any kebab-case id and only suggests against
+/// the deterministic built-in catalogue. A user-authored persona with an
+/// unfamiliar id passes validation; if it is genuinely missing the
+/// downstream `load()` call surfaces the not-found error.
+pub fn builtin_ids() -> Vec<&'static str> {
+    let mut ids: Vec<&'static str> = BUILTIN
+        .files()
+        .filter_map(|f| {
+            if f.path().extension().and_then(|s| s.to_str()) != Some("toml") {
+                return None;
+            }
+            f.path().file_stem().and_then(|s| s.to_str())
+        })
+        .collect();
+    ids.sort_unstable();
+    ids
+}
+
 /// Iterator over every embedded built-in persona's TOML body. Used by the
 /// `every embedded persona validates` test; not part of the public API.
 #[cfg(test)]

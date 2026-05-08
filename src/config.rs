@@ -889,13 +889,30 @@ impl RawConfig {
         {
             anyhow::bail!("[backend] driver '{d}' must be one of: auto, nm, networkd, raw");
         }
+        // ---- persona: V6 / GH#345 / #339 — validate `[persona] active`
+        // against the built-in catalogue with a closest-match suggestion.
+        // User personas live in `/etc/proteus/personas/` and are accepted
+        // unconditionally because the loader resolves them at apply time;
+        // we only want to catch typos against the deterministic shipped
+        // catalogue.
+        if let Some(p) = &self.persona
+            && let Some(active) = &p.active
+        {
+            check_persona_id_known("persona.active", active)?;
+        }
+        // ---- backend ----
+        // (already done above; left here so the section ordering reads
+        // top-to-bottom but the actual check sits earlier.)
+
         // ---- per_ssid: per-entry sanity ----
         for (ssid, policy) in &self.per_ssid {
             if let Some(p) = &policy.aggressiveness_profile
                 && Profile::parse(p).is_none()
             {
+                let suggestion = closest_match(p, &profile_names()).map(|s| format!(" — did you mean '{s}'?"))
+                    .unwrap_or_default();
                 anyhow::bail!(
-                    "[per_ssid.\"{ssid}\"] aggressiveness_profile '{p}' must be one of: off, min, low, med, high, agr"
+                    "[per_ssid.\"{ssid}\"] aggressiveness_profile '{p}' must be one of: off, min, low, med, high, agr{suggestion}"
                 );
             }
             if let Some(s) = &policy.rotate_interval {
@@ -906,14 +923,111 @@ impl RawConfig {
                     );
                 }
             }
-            if let Some(p) = &policy.persona
-                && p.trim().is_empty()
-            {
-                anyhow::bail!("[per_ssid.\"{ssid}\"] persona must not be empty");
+            if let Some(p) = &policy.persona {
+                if p.trim().is_empty() {
+                    anyhow::bail!("[per_ssid.\"{ssid}\"] persona must not be empty");
+                }
+                check_persona_id_known(
+                    &format!("per_ssid.\"{ssid}\".persona"),
+                    p,
+                )?;
+            }
+            if let Some(m) = &policy.pin_mac {
+                // V7: validate pin_mac at load so a hand-edited typo
+                // (`pin_mac = "aa:bb:cc:dd:ee"` — 5 octets) fails at the
+                // user, not later when the orchestrator hands it to
+                // `Mac::from_str`.
+                if m.parse::<crate::mac::Mac>().is_err() {
+                    anyhow::bail!(
+                        "[per_ssid.\"{ssid}\"] pin_mac '{m}' is not a valid 6-octet MAC (expected 'aa:bb:cc:dd:ee:ff' or dash/none separator)"
+                    );
+                }
             }
         }
         Ok(())
     }
+}
+
+/// V2 / V6: known profile names for closest-match suggestions on a typo.
+fn profile_names() -> Vec<&'static str> {
+    Profile::all().iter().map(|p| p.name()).collect()
+}
+
+/// V6 / GH#345 / #339: validate a persona id against the built-in
+/// catalogue, surfacing a closest-match suggestion when the id is unknown
+/// AND looks like a near-miss. Empty / whitespace-only ids are rejected
+/// at the call site (existing behaviour). User personas under
+/// `/etc/proteus/personas/` are accepted unconditionally — see
+/// `persona::load::builtin_ids` for the rationale on why we don't I/O the
+/// user-root at config-validation time.
+fn check_persona_id_known(field: &str, id: &str) -> Result<()> {
+    let trimmed = id.trim();
+    if trimmed.is_empty() {
+        anyhow::bail!("[{field}] persona id must not be empty");
+    }
+    let known = crate::persona::load::builtin_ids();
+    if known.contains(&trimmed) {
+        return Ok(());
+    }
+    // Non-builtin id: accept silently (it may be a user persona). Only
+    // surface a suggestion when the id is *close to* a known builtin —
+    // a clear typo signal — by emitting a tracing::warn so the operator
+    // sees the candidate in -v mode without breaking apply.
+    if let Some(suggestion) = closest_match(trimmed, &known) {
+        tracing::warn!(
+            field = field,
+            persona = trimmed,
+            did_you_mean = suggestion,
+            "persona id is not a built-in; treating as user persona but the closest builtin is suggested in case of typo"
+        );
+    }
+    Ok(())
+}
+
+/// Closest-match helper used by the validation suggestions. Returns the
+/// candidate with the smallest Levenshtein distance to `needle`, capped
+/// at 3 — beyond that the suggestion is more confusing than helpful.
+/// Empty `haystack` returns `None`.
+fn closest_match<'a>(needle: &str, haystack: &[&'a str]) -> Option<&'a str> {
+    let mut best: Option<(&str, usize)> = None;
+    for cand in haystack {
+        let d = levenshtein(needle, cand);
+        if d > 3 {
+            continue;
+        }
+        match best {
+            Some((_, bd)) if d >= bd => {}
+            _ => best = Some((cand, d)),
+        }
+    }
+    best.map(|(c, _)| c)
+}
+
+/// Plain Levenshtein distance. O(len_a * len_b) memory, fine for our
+/// short ids and profile names. Not exposed publicly.
+fn levenshtein(a: &str, b: &str) -> usize {
+    let av: Vec<char> = a.chars().collect();
+    let bv: Vec<char> = b.chars().collect();
+    let (n, m) = (av.len(), bv.len());
+    if n == 0 {
+        return m;
+    }
+    if m == 0 {
+        return n;
+    }
+    let mut prev: Vec<usize> = (0..=m).collect();
+    let mut curr: Vec<usize> = vec![0; m + 1];
+    for i in 1..=n {
+        curr[0] = i;
+        for j in 1..=m {
+            let cost = if av[i - 1] == bv[j - 1] { 0 } else { 1 };
+            curr[j] = (prev[j] + 1)
+                .min(curr[j - 1] + 1)
+                .min(prev[j - 1] + cost);
+        }
+        std::mem::swap(&mut prev, &mut curr);
+    }
+    prev[m]
 }
 
 /// Issue #227: thin wrapper over `timer::parse_interval` that also
@@ -2300,5 +2414,362 @@ portal_policy = "fresh-mac-per-visit"
         assert!(!is_valid_per_ssid_duration("xx"));
         assert!(!is_valid_per_ssid_duration("3w"));
         assert!(!is_valid_per_ssid_duration("garbage"));
+    }
+
+    /// N12.5 / GH#272 sibling: feeding a multibyte trailing char into
+    /// `is_valid_per_ssid_duration` previously panicked at the byte-
+    /// boundary `split_at`. With `panic = abort` set crate-wide the
+    /// process aborts. The test must exit cleanly and return `false`.
+    #[test]
+    fn is_valid_per_ssid_duration_rejects_multibyte_without_panic() {
+        // Two-byte UTF-8 trailing char.
+        assert!(!is_valid_per_ssid_duration("5µ"));
+        // Four-byte emoji.
+        assert!(!is_valid_per_ssid_duration("5🦀"));
+        // Three-byte CJK ideograph.
+        assert!(!is_valid_per_ssid_duration("5日"));
+        // Lone multibyte char with no numeric prefix.
+        assert!(!is_valid_per_ssid_duration("µ"));
+        // Multibyte interior plus ASCII suffix — numeric parse fails.
+        assert!(!is_valid_per_ssid_duration("1µs"));
+    }
+}
+
+// =====================================================================
+// config::validation_tests — Stream 2 schema-validation regression suite
+// =====================================================================
+//
+// Every test in this module loads a malformed (or load-bearing happy-path)
+// TOML sample through `RawConfig::validate_ranges` (and where the rule
+// only surfaces post-resolve, through `Config::validate`) and asserts the
+// specific error path. The point of having a separate module is so a
+// failing assertion lands a clear "schema validation regressed" signal,
+// not a generic "config tests are flaky."
+//
+// `cargo test --release` is the load-bearing run because `panic = abort`
+// is set crate-wide; a regression in the multibyte / overflow / split_at
+// class would manifest as a SIGABRT during a release-mode test, not a
+// graceful failure.
+#[cfg(test)]
+mod validation_tests {
+    use super::*;
+
+    // ---- V1: zero / empty rotation interval rejected at load time ----
+
+    #[test]
+    fn v1_zero_seconds_timer_interval_rejected() {
+        let raw: RawConfig = toml::from_str("[timers.rotate]\ninterval = \"0s\"\n").unwrap();
+        let err = raw.validate_ranges().unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("timers.rotate.interval") || msg.contains("> 0"),
+            "expected zero-interval reject, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn v1_empty_string_timer_interval_rejected() {
+        let raw: RawConfig = toml::from_str("[timers.rotate]\ninterval = \"\"\n").unwrap();
+        assert!(raw.validate_ranges().is_err());
+    }
+
+    #[test]
+    fn v1_zero_minutes_timer_interval_rejected() {
+        let raw: RawConfig = toml::from_str("[timers.check]\ninterval = \"0m\"\n").unwrap();
+        assert!(raw.validate_ranges().is_err());
+    }
+
+    #[test]
+    fn v1_mac_rotation_interval_zero_rejected() {
+        let raw: RawConfig = toml::from_str("[mac]\nrotation_interval = \"0s\"\n").unwrap();
+        assert!(raw.validate_ranges().is_err());
+    }
+
+    // ---- V3: quorum_n <= quorum_total ----
+
+    #[test]
+    fn v3_quorum_above_total_rejected() {
+        let raw: RawConfig =
+            toml::from_str("[probes]\nquorum_n = 10\nquorum_total = 4\n").unwrap();
+        let err = raw.validate_ranges().unwrap_err();
+        assert!(format!("{err:#}").contains("quorum_n"));
+    }
+
+    #[test]
+    fn v3_quorum_equal_total_accepted() {
+        let raw: RawConfig =
+            toml::from_str("[probes]\nquorum_n = 4\nquorum_total = 4\n").unwrap();
+        raw.validate_ranges().expect("equal quorum is valid");
+    }
+
+    // ---- V4: bound second-precision durations ----
+
+    #[test]
+    fn v4_captive_portal_timeout_upper_bound() {
+        // 86_401 just past the 1-day cap.
+        let toml_str = "[captive_portal]\ntimeout_secs = 86401\n";
+        let raw: RawConfig = toml::from_str(toml_str).unwrap();
+        assert!(raw.validate_ranges().is_err());
+    }
+
+    #[test]
+    fn v4_events_link_flap_window_upper_bound() {
+        // > 1 hour is meaningless.
+        let raw: RawConfig =
+            toml::from_str("[events]\nlink_flap_window_secs = 3601\n").unwrap();
+        assert!(raw.validate_ranges().is_err());
+    }
+
+    // ---- V5: tx_power_reduction_db ----
+
+    #[test]
+    fn v5_tx_power_reduction_db_capped() {
+        let raw: RawConfig = toml::from_str("[rf]\ntx_power_reduction_db = 31\n").unwrap();
+        assert!(raw.validate_ranges().is_err());
+    }
+
+    #[test]
+    fn v5_tx_power_reduction_db_at_cap_accepted() {
+        let raw: RawConfig = toml::from_str("[rf]\ntx_power_reduction_db = 30\n").unwrap();
+        raw.validate_ranges().unwrap();
+    }
+
+    // ---- V2 / V6: profile + persona name validation ----
+
+    #[test]
+    fn v2_per_ssid_aggressiveness_profile_typo_suggests_correction() {
+        let toml_str = r#"
+[per_ssid."home"]
+aggressiveness_profile = "hgh"
+"#;
+        let raw: RawConfig = toml::from_str(toml_str).unwrap();
+        let err = raw.validate_ranges().unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("aggressiveness_profile"));
+        assert!(
+            msg.contains("did you mean 'high'"),
+            "closest-match suggestion missing: {msg}"
+        );
+    }
+
+    #[test]
+    fn v6_persona_active_unknown_id_does_not_hard_fail() {
+        // Unknown id is treated as a possible user persona; validation
+        // accepts it (the loader will surface the not-found at apply
+        // time). The closest-match suggestion is emitted via tracing,
+        // not a hard error, so this test only asserts the validation
+        // does not bail.
+        let raw: RawConfig =
+            toml::from_str("[persona]\nactive = \"my-custom-user-persona\"\n").unwrap();
+        raw.validate_ranges()
+            .expect("user-persona-shaped id must validate");
+    }
+
+    #[test]
+    fn v6_per_ssid_persona_empty_string_rejected() {
+        let toml_str = r#"
+[per_ssid."x"]
+persona = ""
+"#;
+        let raw: RawConfig = toml::from_str(toml_str).unwrap();
+        assert!(raw.validate_ranges().is_err());
+    }
+
+    // ---- V7: pin_mac format validation ----
+
+    #[test]
+    fn v7_pin_mac_too_few_octets_rejected() {
+        let toml_str = r#"
+[per_ssid."x"]
+pin_mac = "aa:bb:cc:dd:ee"
+"#;
+        let raw: RawConfig = toml::from_str(toml_str).unwrap();
+        let err = raw.validate_ranges().unwrap_err();
+        assert!(format!("{err:#}").contains("pin_mac"));
+    }
+
+    #[test]
+    fn v7_pin_mac_garbage_rejected() {
+        let toml_str = r#"
+[per_ssid."x"]
+pin_mac = "not-a-mac"
+"#;
+        let raw: RawConfig = toml::from_str(toml_str).unwrap();
+        assert!(raw.validate_ranges().is_err());
+    }
+
+    #[test]
+    fn v7_pin_mac_well_formed_accepted() {
+        let toml_str = r#"
+[per_ssid."x"]
+pin_mac = "aa:bb:cc:dd:ee:ff"
+"#;
+        let raw: RawConfig = toml::from_str(toml_str).unwrap();
+        raw.validate_ranges().unwrap();
+    }
+
+    #[test]
+    fn v7_pin_mac_dash_separator_accepted() {
+        let toml_str = r#"
+[per_ssid."x"]
+pin_mac = "aa-bb-cc-dd-ee-ff"
+"#;
+        let raw: RawConfig = toml::from_str(toml_str).unwrap();
+        raw.validate_ranges().unwrap();
+    }
+
+    // ---- V10: round-trip coverage for arrays / numerics / enums ----
+
+    /// Probe endpoints (string array), quorum_n / quorum_total
+    /// (numeric u8), backend driver (enum-string) — all round-trip
+    /// through `to_raw_explicit` and back.
+    #[test]
+    fn v10_arrays_numerics_enums_round_trip() {
+        let toml_str = r#"
+profile = "high"
+
+[probes]
+quorum_n = 2
+quorum_total = 5
+endpoints = ["1.2.3.4:443", "5.6.7.8:80"]
+
+[mac]
+oui_pool = ["apple", "intel", "samsung"]
+
+[backend]
+driver = "nm"
+
+[rf]
+tx_power_reduction_db = 12
+"#;
+        let raw: RawConfig = toml::from_str(toml_str).unwrap();
+        let cfg = raw.resolve();
+        assert_eq!(cfg.probes.quorum_n, 2);
+        assert_eq!(cfg.probes.quorum_total, 5);
+        assert_eq!(cfg.probes.endpoints.len(), 2);
+        assert_eq!(cfg.mac.oui_pool, vec!["apple", "intel", "samsung"]);
+        assert_eq!(cfg.backend.driver, "nm");
+        assert_eq!(cfg.rf.tx_power_reduction_db, 12);
+
+        // Round-trip back through TOML.
+        let raw2 = cfg.to_raw_explicit();
+        let s = toml::to_string(&raw2).unwrap();
+        let parsed: RawConfig = toml::from_str(&s).unwrap();
+        let back = parsed.resolve();
+        assert_eq!(back.probes.endpoints, cfg.probes.endpoints);
+        assert_eq!(back.probes.quorum_n, cfg.probes.quorum_n);
+        assert_eq!(back.probes.quorum_total, cfg.probes.quorum_total);
+        assert_eq!(back.mac.oui_pool, cfg.mac.oui_pool);
+        assert_eq!(back.backend.driver, cfg.backend.driver);
+        assert_eq!(back.rf.tx_power_reduction_db, cfg.rf.tx_power_reduction_db);
+        assert_eq!(back.profile, cfg.profile);
+    }
+
+    /// Empty array fields are accepted on the resolved side as
+    /// "fall through to defaults" by `validate_ranges`'s NTP/probes/mac
+    /// rules — but on the raw side an explicit empty list is rejected.
+    /// Pin both sides so the contract stays explicit.
+    #[test]
+    fn v10_empty_array_fields_are_rejected_at_load() {
+        let raw: RawConfig =
+            toml::from_str("[mac]\noui_pool = []\n").unwrap();
+        assert!(raw.validate_ranges().is_err());
+        let raw: RawConfig = toml::from_str("[probes]\nendpoints = []\n").unwrap();
+        assert!(raw.validate_ranges().is_err());
+        let raw: RawConfig = toml::from_str("[ntp]\nntp_servers = []\n").unwrap();
+        assert!(raw.validate_ranges().is_err());
+    }
+
+    // ---- V12: SSID-key TOML special-character coverage ----
+
+    /// SSIDs with spaces, dots, dashes, brackets, and backslashes must
+    /// round-trip through TOML when escaped per spec (basic-string keys).
+    /// The previous test suite only exercised plain kebab-case keys —
+    /// this regression guard pins the actual hostile-AP / messy-deployment
+    /// shapes operators will encounter.
+    #[test]
+    fn v12_ssid_keys_with_spaces_round_trip() {
+        let toml_str = r#"
+[per_ssid."Coffee Shop Wi-Fi"]
+aggressiveness_profile = "high"
+"#;
+        let raw: RawConfig = toml::from_str(toml_str).unwrap();
+        raw.validate_ranges().unwrap();
+        let cfg = raw.resolve();
+        assert!(cfg.per_ssid.contains_key("Coffee Shop Wi-Fi"));
+        // Round-trip back.
+        let raw2 = cfg.to_raw_explicit();
+        let s = toml::to_string(&raw2).unwrap();
+        let parsed: RawConfig = toml::from_str(&s).unwrap();
+        assert!(parsed.per_ssid.contains_key("Coffee Shop Wi-Fi"));
+    }
+
+    #[test]
+    fn v12_ssid_keys_with_dots_round_trip() {
+        let toml_str = r#"
+[per_ssid."guest.lan.example"]
+pin_mac = "aa:bb:cc:dd:ee:ff"
+"#;
+        let raw: RawConfig = toml::from_str(toml_str).unwrap();
+        raw.validate_ranges().unwrap();
+        let cfg = raw.resolve();
+        assert!(cfg.per_ssid.contains_key("guest.lan.example"));
+    }
+
+    #[test]
+    fn v12_ssid_keys_with_brackets_round_trip() {
+        // Brackets in an SSID need TOML quoting to round-trip.
+        let toml_str = r#"
+[per_ssid."[guest]"]
+aggressiveness_profile = "med"
+"#;
+        let raw: RawConfig = toml::from_str(toml_str).unwrap();
+        raw.validate_ranges().unwrap();
+        let cfg = raw.resolve();
+        assert!(cfg.per_ssid.contains_key("[guest]"));
+    }
+
+    #[test]
+    fn v12_ssid_keys_with_unicode_round_trip() {
+        let toml_str = r#"
+[per_ssid."café-📶"]
+aggressiveness_profile = "agr"
+"#;
+        let raw: RawConfig = toml::from_str(toml_str).unwrap();
+        raw.validate_ranges().unwrap();
+        let cfg = raw.resolve();
+        assert!(cfg.per_ssid.contains_key("café-📶"));
+    }
+
+    #[test]
+    fn v12_ssid_keys_with_backslash_escape_round_trip() {
+        // TOML basic strings honour `\\` as a backslash escape.
+        let toml_str = r#"
+[per_ssid."weird\\name"]
+aggressiveness_profile = "min"
+"#;
+        let raw: RawConfig = toml::from_str(toml_str).unwrap();
+        raw.validate_ranges().unwrap();
+        let cfg = raw.resolve();
+        assert!(cfg.per_ssid.contains_key("weird\\name"));
+    }
+
+    // ---- closest_match / levenshtein helpers ----
+
+    #[test]
+    fn levenshtein_known_distances() {
+        assert_eq!(super::levenshtein("kitten", "sitting"), 3);
+        assert_eq!(super::levenshtein("abc", "abc"), 0);
+        assert_eq!(super::levenshtein("", "abc"), 3);
+        assert_eq!(super::levenshtein("abc", ""), 3);
+    }
+
+    #[test]
+    fn closest_match_picks_nearest_known() {
+        let names = vec!["off", "min", "low", "med", "high", "agr"];
+        assert_eq!(super::closest_match("hgh", &names), Some("high"));
+        assert_eq!(super::closest_match("loww", &names), Some("low"));
+        // Way off → no suggestion.
+        assert_eq!(super::closest_match("zzzzzzz", &names), None);
     }
 }
