@@ -162,16 +162,19 @@ pub fn edit(config: Option<&Path>) -> Result<u8> {
 }
 
 pub fn validate(json: bool, config: Option<&Path>) -> Result<u8> {
+    // Roadmap Stream 7 / E9: route through `Config::default_or_loaded`
+    // so `proteus config validate` and the rest of the binary share one
+    // parse pipeline (toml::from_str + validate_ranges + resolve +
+    // Config::validate). Previously this function reimplemented the
+    // first two of those four steps and silently dropped the
+    // `validate_ranges` / `Config::validate` checks, so a config with
+    // an out-of-range `quorum_n` would be reported as "ok" here while
+    // every other entry point would bail.
     let path = super::config_path(config);
+    let path_missing =
+        matches!(fs::metadata(&path), Err(e) if e.kind() == std::io::ErrorKind::NotFound);
     let mut errors = Vec::new();
-    let raw = match fs::read_to_string(&path) {
-        Ok(s) => s,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
-    };
-    if !raw.is_empty()
-        && let Err(e) = parse_config_text(&raw)
-    {
+    if !path_missing && let Err(e) = Config::default_or_loaded(&path) {
         errors.push(format!("{e:#}"));
     }
     let ok = errors.is_empty();
@@ -182,7 +185,7 @@ pub fn validate(json: bool, config: Option<&Path>) -> Result<u8> {
             errors,
         })?;
     } else if ok {
-        if raw.is_empty() {
+        if path_missing {
             println!("(empty / missing config — defaults in effect)");
         }
         println!("ok: {}", path.display());
@@ -703,13 +706,28 @@ mod tests {
         // still lands but the warning surfaces on stderr. Here we just
         // assert the write itself succeeds and does not regress, since
         // capturing stderr in unit tests is fragile.
-        let mut doc = default_document().unwrap();
-        let head = doc.as_table_mut().get_mut("mac").unwrap();
-        let mac_table = head.as_table_mut().unwrap();
+        //
+        // Roadmap Stream 7 / P7 (Wave 1 carryover from Stream 2): the
+        // previous shape `doc.as_table_mut().get_mut("mac").unwrap()`
+        // panics in test output rather than failing the assertion with a
+        // useful message if the default schema ever drops the [mac]
+        // section. Replace with a structured `expect`-style lookup so a
+        // future schema rename surfaces the actual cause instead of a
+        // bare `unwrap` line number.
+        let mut doc = default_document().expect("default document parses");
+        let head = doc
+            .as_table_mut()
+            .get_mut("mac")
+            .expect("default schema must contain a [mac] section");
+        let mac_table = head
+            .as_table_mut()
+            .expect("[mac] must be a table in the default schema");
         mac_table["enabled"] = Item::Value(Value::from("no"));
-        set_in_doc(&mut doc, "mac.enabled", Value::from(false)).unwrap();
+        set_in_doc(&mut doc, "mac.enabled", Value::from(false))
+            .expect("set_in_doc on [mac] must succeed");
         let serialised = doc.to_string();
-        let cfg = parse_config_text(&serialised).unwrap();
+        let cfg =
+            parse_config_text(&serialised).expect("re-parsing serialised default must succeed");
         assert!(!cfg.mac.enabled);
     }
 

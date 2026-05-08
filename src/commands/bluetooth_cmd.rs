@@ -211,12 +211,16 @@ pub fn apply(yes: bool, state_path: Option<&Path>, config_path: Option<&Path>) -
     let active_persona =
         crate::persona::active_for(&config, None, crate::persona::resolve::default_user_root());
     let result = rt.block_on(async {
-        let mut outcomes = Vec::new();
+        let mut outcomes: Vec<bt_apply::AdapterApplyResult> = Vec::new();
         for a in &adapters {
             let alias =
                 bt_alias::select_alias_with_persona(&config.bluetooth, active_persona.as_ref())?;
-            let outcome = bt_apply::apply_one(&conn, a, &config.bluetooth, &alias).await?;
-            outcomes.push(outcome);
+            // Roadmap Stream 7 / NEV2.4: route through the resilient
+            // wrapper so a hot-unplugged adapter is logged at warn!
+            // and skipped instead of failing the whole sweep with a
+            // misleading `error!` line.
+            let res = bt_apply::apply_one_resilient(&conn, a, &config.bluetooth, &alias).await?;
+            outcomes.push(res);
         }
         Ok::<_, anyhow::Error>(outcomes)
     });
@@ -227,15 +231,22 @@ pub fn apply(yes: bool, state_path: Option<&Path>, config_path: Option<&Path>) -
             // unchanged originals.
             state.save(&state_path)?;
             for o in &outcomes {
-                println!(
-                    "adapter {}: alias={} discoverable={} rpa={:?}",
-                    o.hci,
-                    o.alias_after.as_deref().unwrap_or("?"),
-                    bool_str(o.discoverable_after),
-                    o.rpa_action
-                );
-                for n in &o.notes {
-                    println!("  note: {n}");
+                match o {
+                    bt_apply::AdapterApplyResult::Done(o) => {
+                        println!(
+                            "adapter {}: alias={} discoverable={} rpa={:?}",
+                            o.hci,
+                            o.alias_after.as_deref().unwrap_or("?"),
+                            bool_str(o.discoverable_after),
+                            o.rpa_action
+                        );
+                        for n in &o.notes {
+                            println!("  note: {n}");
+                        }
+                    }
+                    bt_apply::AdapterApplyResult::Gone { hci, detail } => {
+                        println!("adapter {hci}: skipped ({detail})");
+                    }
                 }
             }
             Ok(exit::SUCCESS)

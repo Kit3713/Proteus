@@ -417,7 +417,7 @@ fn check_libc() -> Check {
 }
 
 fn check_distro() -> Check {
-    let (id, version) = read_os_release();
+    let (id, version, read_err) = read_os_release();
     let id_lower = id.to_ascii_lowercase();
     let version_num: u32 = version
         .split(|c: char| !c.is_ascii_digit())
@@ -425,11 +425,19 @@ fn check_distro() -> Check {
         .and_then(|s| s.parse().ok())
         .unwrap_or(0);
     if id.is_empty() {
+        // Roadmap Stream 7 / E8: when the probe failed, surface *why*
+        // — "missing" and "unreadable" need different remediations
+        // (operator just runs without /etc/os-release, vs. a permissions
+        // problem worth flagging).
+        let message = match read_err {
+            Some(e) => format!("/etc/os-release unreadable: {e}"),
+            None => "/etc/os-release missing or empty".into(),
+        };
         return Check {
             category: "system",
             name: "distro",
             status: Status::Skip,
-            message: "/etc/os-release missing or unreadable".into(),
+            message,
             remediation: None,
         };
     }
@@ -817,6 +825,16 @@ fn check_iface_managers(sys: &status_cmd::SystemInfo) -> Check {
 
 fn push_backend(out: &mut Vec<Check>, config_path: Option<&Path>) {
     let cfg_path = super::config_path(config_path);
+    // Roadmap Stream 7 / E8: a config that fails to load was previously
+    // smothered by `unwrap_or_default()` here — the operator running
+    // `proteus doctor` to figure out why their config wasn't taking
+    // effect would see backend = `auto` regardless of what they set.
+    // The `files::config_file` check above already surfaces the actual
+    // parse error; we just need to fall back to defaults silently and
+    // tag the backend `selected` line so the source of the answer is
+    // visible. `default_or_loaded` returns `Self::default()` for the
+    // NotFound case, so falling back to default here only kicks in on
+    // genuine read/parse errors.
     let cfg = crate::config::Config::default_or_loaded(&cfg_path).unwrap_or_default();
     let matrix = backend_matrix();
     let available: Vec<&'static str> = matrix
@@ -1135,8 +1153,24 @@ fn read_first_line(path: &str) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-fn read_os_release() -> (String, String) {
-    let raw = std::fs::read_to_string("/etc/os-release").unwrap_or_default();
+/// Read `/etc/os-release` and pull the `ID=` / `VERSION_ID=` lines.
+///
+/// Roadmap Stream 7 / E7 + E8: previously this swallowed every read
+/// failure with `.unwrap_or_default()`. The "no os-release" path is
+/// legitimate (containers, sealed builds), but a permission-denied
+/// read on a present file deserves a breadcrumb. We now return the
+/// underlying io error (when the file is present-but-unreadable) so
+/// `check_distro` can surface a useful message instead of silently
+/// reporting "/etc/os-release missing or unreadable" without saying
+/// which.
+fn read_os_release() -> (String, String, Option<String>) {
+    let raw = match std::fs::read_to_string("/etc/os-release") {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return (String::new(), String::new(), None);
+        }
+        Err(e) => return (String::new(), String::new(), Some(e.to_string())),
+    };
     let mut id = String::new();
     let mut version = String::new();
     for line in raw.lines() {
@@ -1147,7 +1181,7 @@ fn read_os_release() -> (String, String) {
             version = strip_quotes(v).to_string();
         }
     }
-    (id, version)
+    (id, version, None)
 }
 
 fn strip_quotes(s: &str) -> &str {
