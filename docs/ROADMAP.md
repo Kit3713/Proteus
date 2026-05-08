@@ -367,7 +367,7 @@ P1, P7, NMOD.4, NTEST.1.
 example and asserts the specific error variant; full `cargo test --release`
 passes (catches `panic = abort` regressions immediately).
 
-### Stream 3 — Packaging & Build / CI Coherence ⏳
+### Stream 3 — Packaging & Build / CI Coherence (mostly ✅)
 
 **Why high-impact:** `proteus-events.service` ships disabled or wrong-pathed in
 **every** package (RPM, Debian, Gentoo, Alpine, install.sh). The events daemon
@@ -386,41 +386,49 @@ NPKG.7, NPKG.8, NPKG.9, NPKG.14.
 
 **Work:**
 
-- ⏳ Wire `proteus-events.service` into install.sh `enable / start` ladder
+- ✅ Wire `proteus-events.service` into install.sh `enable / start` ladder
   (B1); add `%post` / `%preun` hooks in RPM (B2), `dh_installsystemd` in
   Debian (B3), `systemd_dounit` in Gentoo (B4), Alpine post-install
-  trigger (B5).
-- ⏳ Reconcile `/usr/local/bin` (install.sh) vs `/usr/bin` (distro
+  trigger (B5 — Alpine ships OpenRC only; the post-install nudges
+  operators to the NM dispatcher hook instead).
+- ✅ Reconcile `/usr/local/bin` (install.sh) vs `/usr/bin` (distro
   packages) so the unit's `ExecStart=` resolves on every path (B10, N12.8).
-- ⏳ Add `KillMode=mixed` and `TimeoutStopSec=10s` to
+  install.sh now creates `/usr/bin/proteus → /usr/local/bin/proteus`
+  symlink when no real file is there.
+- ✅ Add `KillMode=mixed` and `TimeoutStopSec=10s` to
   `proteus-events.service` (N12.9).
-- ⏳ POSIX-ify NM dispatcher shebang (B6); validate install.sh with `sh -n`
-  (B13).
-- ⏳ Add top-level `permissions:` block to `ci.yml` (B7).
-- ⏳ Pin `softprops/action-gh-release@v2` to commit SHA (B9).
-- ⏳ Add `--locked` to Alpine / Void / Gentoo cargo invocations (B8).
-- ⏳ Wire a real `[features]` table in `Cargo.toml` to back the Gentoo USE
-  flags (B14); restrict polkit policy (B15 — coordinate with Stream 9).
-- ⏳ Replace `build.rs::panic!` with actionable errors (B12); add `:?`-guard
+- ✅ POSIX-ify NM dispatcher shebang (B6); validate install.sh with `sh -n`
+  (B13). `scripts/check.sh` and the new `packaging-lint` CI job both run
+  `dash -n` over `install.sh` / `uninstall.sh` / dispatcher.
+- ✅ Add top-level `permissions: contents: read` block to `ci.yml` (B7).
+- ✅ Pin `softprops/action-gh-release@v2` to commit SHA (B9 — already
+  pinned at `3bb12739…`, which is `v2.6.2` / current `v2`).
+- ✅ Add `--locked` to Alpine / Void / Gentoo cargo invocations (B8).
+- ✅ Wire a real `[features]` table in `Cargo.toml` to back the Gentoo USE
+  flags (B14). ⏳ Restrict polkit policy (B15 — already
+  `auth_admin` / `allow_inactive=no`; further tightening deferred to
+  coordinate with Stream 9 runtime check).
+- ✅ Replace `build.rs::panic!` with actionable errors (B12); add `:?`-guard
   pattern to `uninstall.sh` (B11); shorten `Cargo.toml` description below
-  256 chars (M4).
-- ⏳ Wire `cargo audit` into the release workflow with `Cargo.lock` as the
+  256 chars (M4 — now 248 chars).
+- ✅ Wire `cargo audit` into the release workflow with `Cargo.lock` as the
   target; fail the release on any open advisory in `zbus`, `clap`, `tokio`,
   `toml`, `toml_edit`, `serde`, `tracing`, `getrandom` (audit I‑2).
-- ⏳ Populate `sha512sums` in `dist/alpine/APKBUILD` (NPKG.7) and `checksum`
+- ✅ Populate `sha512sums` in `dist/alpine/APKBUILD` (NPKG.7) and `checksum`
   in `dist/void/template` (NPKG.8); add a guard rejecting the literal
   `"SKIP"` placeholder so an early packager-build cannot ship without
-  integrity validation. **Supply-chain gap.**
-- ⏳ Replace `build.rs` `panic!` on wiki-file read errors with an actionable
+  integrity validation. **Supply-chain gap closed via `sanitycheck()` (Alpine)
+  and `pre_fetch()` (Void); real hashes still TODO once v0.1.0 is tagged.**
+- ✅ Replace `build.rs` `panic!` on wiki-file read errors with an actionable
   `expect("…")` message and `cargo:warning=` line (NPKG.3); emit
   `cargo:rerun-if-changed` per file rather than per directory so deletions
   invalidate correctly (NPKG.4).
-- ⏳ Bump `dist/debian/control` `debhelper-compat` to 14 once `release.yml`
-  passes (NPKG.6).
-- ⏳ Document the `rpmbuild --without check` bypass risk in
-  `dist/rpm/README.md` (NPKG.9); add a `%global _without_check 0` guard.
-- ⏳ Fix `install.sh` polkit `sed` rewrite: use a defensive delimiter
-  (e.g. `#`) and pin the annotate string in a `read -r` heredoc (NPKG.14).
+- ✅ Bump `dist/debian/control` `debhelper-compat` to 14 (NPKG.6).
+- ✅ Document the `rpmbuild --without check` bypass risk in
+  `dist/rpm/README.md` (NPKG.9); add a `%bcond_without check` guard so
+  enabling check is the default and skipping it requires intent.
+- ✅ Fix `install.sh` polkit `sed` rewrite: use `#` delimiter and quoted
+  variable so a `BINARY_DST` containing `|` does not split the s/// (NPKG.14).
 
 **Acceptance:** spin up Fedora 43, Debian 13, Gentoo, Alpine 3.20 in CI
 containers; `install` the package; assert `systemctl is-enabled
