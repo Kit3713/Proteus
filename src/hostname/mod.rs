@@ -104,8 +104,18 @@ fn validate_label(label: &str, full: &str) -> Result<()> {
             MAX_LABEL_LEN
         ));
     }
+    // Roadmap P2: never index by `bytes[0]` / `bytes[bytes.len() - 1]` —
+    // a future caller that drops the empty-label early-return above would
+    // turn this into a bounds panic. `first()` / `last()` return `Option`
+    // so any such regression surfaces as a structured error instead.
     let bytes = label.as_bytes();
-    if bytes[0] == b'-' || bytes[bytes.len() - 1] == b'-' {
+    let leading = bytes.first().copied().ok_or_else(|| {
+        anyhow!("hostname '{full}' has an empty label (label has no first byte)")
+    })?;
+    let trailing = bytes.last().copied().ok_or_else(|| {
+        anyhow!("hostname '{full}' has an empty label (label has no last byte)")
+    })?;
+    if leading == b'-' || trailing == b'-' {
         return Err(anyhow!(
             "hostname '{full}' label '{label}' has a leading or trailing hyphen"
         ));
@@ -308,6 +318,36 @@ mod tests {
         ] {
             assert!(validate_hostname(name).is_ok(), "should accept '{name}'");
         }
+    }
+
+    /// Roadmap P2: empty-label and all-dot inputs must structured-error
+    /// rather than panic on bounds. Drives a small property-style sweep
+    /// of pathological label shapes through the validator.
+    #[test]
+    fn validator_handles_empty_and_all_dot_inputs_without_panic() {
+        // Each of these should return Err, never panic.
+        let cases: &[&str] = &[
+            "",
+            ".",
+            "..",
+            "...",
+            "....",
+            ".host",
+            "host.",
+            ".host.",
+            "a..b",
+            "a...b",
+            "a.b.",
+            ".a.b",
+        ];
+        for c in cases {
+            let r = validate_hostname(c);
+            assert!(r.is_err(), "expected Err for {c:?}");
+        }
+        // Direct exercise of the label validator with an empty label, in
+        // case someone removes the up-front guard in `validate_hostname`.
+        let r = validate_label("", "outer.");
+        assert!(r.is_err(), "validate_label(\"\") must Err, not panic");
     }
 
     #[test]
