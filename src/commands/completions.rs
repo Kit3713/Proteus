@@ -81,4 +81,93 @@ mod tests {
         assert!(ZSH.contains("proteus"));
         assert!(FISH.contains("proteus"));
     }
+
+    /// Assert every needle appears in all three bundled completion scripts.
+    fn assert_bundled_scripts_contain(kind: &str, needles: &[&str]) {
+        for needle in needles {
+            assert!(
+                BASH.contains(needle),
+                "bash completion missing {kind} '{needle}'"
+            );
+            assert!(
+                ZSH.contains(needle),
+                "zsh completion missing {kind} '{needle}'"
+            );
+            assert!(
+                FISH.contains(needle),
+                "fish completion missing {kind} '{needle}'"
+            );
+        }
+    }
+
+    /// Regression guard for issues #285 and #291 — the bundled scripts
+    /// drifted to the v0.1.0 surface and missed roughly half of `Command`.
+    /// The list is a representative cross-section, not an enumeration:
+    /// adding a new subcommand should not force a test edit unless that
+    /// subcommand is one of the top-level feature areas.
+    #[test]
+    fn bundled_scripts_cover_current_subcommand_surface() {
+        assert_bundled_scripts_contain(
+            "subcommand",
+            &[
+                "session",
+                "doctor",
+                "probe",
+                "pin",
+                "unpin",
+                "kill",
+                "resume",
+                "nft",
+                "portal",
+                "rf",
+                "persona",
+                "ssid",
+                "events",
+                "timer",
+                "bluetooth",
+                "dhcp",
+                "ipv6",
+                "hostname",
+                "wiki",
+                "completions",
+                "rotate-if-needed",
+            ],
+        );
+    }
+
+    /// Wiki page names are hard-coded into each completion script so TAB
+    /// works without running `proteus wiki list`. Catch drift between
+    /// `wiki/*.md` and the bundled lists at test time.
+    #[test]
+    fn bundled_scripts_cover_current_wiki_pages() {
+        assert_bundled_scripts_contain(
+            "wiki page",
+            &[
+                "intro",
+                "quickstart",
+                "concepts",
+                "mac-recipes",
+                "rf-fingerprinting",
+                "personas",
+                "per-ssid",
+                "doctor",
+                "kill-switch",
+                "timer",
+                "profiles",
+                "discovery",
+                "stack-fingerprint",
+                "captive-portals",
+                "dhcp",
+                "ipv6",
+                "hostname-recipes",
+                "enterprise-wifi",
+                "dns",
+                "threat-model",
+                "internals",
+                "troubleshooting",
+                "faq",
+                "glossary",
+            ],
+        );
+    }
 }

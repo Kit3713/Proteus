@@ -50,18 +50,30 @@ Fish picks them up on the next shell start; no `source` needed.
 
 Each script completes:
 
-- All subcommands present in `src/cli.rs`.
-- Global flags (`-v`, `-q`, `--config`, `--state`, `--no-color`, `-h`, `-V`).
-- `--json` on read commands (`status`, `current`, `original`, `show-config`,
-  `show-defaults`, `diff`).
-- `--yes` on mutating commands (`apply`, `revert`, `rotate`, `reset`,
-  `uninstall`).
-- `--iface` on `current` and `rotate`, with interface name suggestions
-  pulled from `ip link`.
-- `--purge` on `uninstall`.
-- Wiki page names for `wiki <page>` and `help <feature>`.
+- All subcommands present in `src/cli/command.rs` (status, session,
+  current, original, show-config, show-defaults, apply, revert, rotate,
+  rotate-if-needed, pin, unpin, diff, dry-run, reset, uninstall,
+  bluetooth, hostname, ipv6, enterprise-wifi, stack, dns, resolved, ntp,
+  dhcp, wiki, help, timer, config, doctor, probe, kill, resume, nft,
+  portal, rf, persona, ssid, events, completions).
+- Global flags (`-v`, `-q`, `--config`, `--state`, `--no-color`,
+  `--format`, `-h`, `-V`).
+- `--json` on read commands (`status`, `session`, `current`, `original`,
+  `show-config`, `show-defaults`, `diff`, `doctor`, `probe`).
+- `--yes` on mutating commands (`apply`, `revert`, `rotate`,
+  `rotate-if-needed`, `reset`, `uninstall`, `resume`, `kill`).
+- `--watch` / `--interval` on `status`, `session`, `current`.
+- `--iface` on `current`, `rotate`, `rotate-if-needed`, `dhcp renew`,
+  with interface names pulled from `ip link`.
+- `--purge` on `uninstall`, `--dry-run` on `reset`, `--explain` on
+  `rotate`, `--quick` on `doctor`/`probe`, `--mac` on `pin`,
+  `--cooldown`/`--ssid` on `rotate-if-needed`.
+- Wiki page names for `wiki <page>` and `help <feature>` — full embedded
+  set sourced from `wiki/*.md`.
+- Action enums for nested commands (e.g. `bluetooth {status,apply,revert}`,
+  `config {show,get,set,enable,disable,edit,validate,reset,keys,set-profile}`,
+  `persona {list,show,use,clear,current,random,new,edit,validate,import,export}`,
+  `timer {status,list,enable,disable,set,reset,logs}`).
+- Shell argument for `completions` (`bash`, `zsh`, `fish`).
 - Interface names + NetworkManager connection profiles for `pin`/`unpin`
   (the latter via `nmcli` when available).
-
-The wiki page list is static and matches the planned set of pages
-(some land in later phases).
