@@ -42,12 +42,19 @@ pub const TIMERS: &[TimerSpec] = &[
         default: "5m",
         description: "Probe-driven rotation check interval.",
     },
+    // Issue #352: the artifact shipped under `dist/systemd/` is
+    // `proteus-resume.service` (a sleep.target hook), not a `.timer`.
+    // `proteus timer enable resume` previously asked systemctl to
+    // operate on `proteus-resume.timer` — a unit name that doesn't
+    // exist anywhere in the package — so every timer subcommand on
+    // `resume` failed with "Unit … could not be found." Match the
+    // shipped unit and treat it as a oneshot service like `boot`.
     TimerSpec {
         short: "resume",
-        unit: "proteus-resume.timer",
-        kind: TimerKind::Timer,
-        default: "off",
-        description: "Rotate on resume from suspend.",
+        unit: "proteus-resume.service",
+        kind: TimerKind::BootOneshot,
+        default: "boot",
+        description: "Rotate on resume from suspend (sleep.target hook).",
     },
     TimerSpec {
         short: "boot",
@@ -564,7 +571,25 @@ mod tests {
         assert_eq!(resolve("rotate").unwrap().unit, "proteus-rotate.timer");
         assert_eq!(resolve("check").unwrap().unit, "proteus-check.timer");
         assert_eq!(resolve("boot").unwrap().unit, "proteus-boot.service");
-        assert_eq!(resolve("resume").unwrap().unit, "proteus-resume.timer");
+        // Issue #352: `proteus-resume.service` is the artifact shipped in
+        // `dist/systemd/`, not a `.timer`. The mapping must match the
+        // installed unit name or every `proteus timer * resume` call
+        // hits "Unit could not be found".
+        assert_eq!(resolve("resume").unwrap().unit, "proteus-resume.service");
+    }
+
+    /// Issue #352: pin that the shipped unit referenced by `resume` is
+    /// the actual file in `dist/systemd/`. If a future refactor
+    /// rearranges the dist layout this test catches the mismatch
+    /// before users do.
+    #[test]
+    fn resume_short_name_targets_a_unit_that_actually_exists() {
+        let spec = resolve("resume").unwrap();
+        assert_eq!(spec.unit, "proteus-resume.service");
+        // The kind switches to BootOneshot so timer-only operations like
+        // "set cadence" surface a proper error instead of writing a
+        // .timer drop-in for a unit that has no .timer artifact.
+        assert!(matches!(spec.kind, TimerKind::BootOneshot));
     }
 
     #[test]
