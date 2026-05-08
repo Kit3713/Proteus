@@ -12,9 +12,19 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+# Canonical install path is /usr/bin/proteus (distro packages: RPM, Debian,
+# Gentoo, Alpine, Void). The install.sh path lays the binary down at
+# /usr/local/bin/proteus and creates a /usr/bin/proteus symlink so that this
+# unit's ExecStart= resolves on every install path (issues B10, N12.8).
 ExecStart=/usr/bin/proteus events run
 Restart=on-failure
 RestartSec=5s
+# N12.9: stop the daemon and any subprocess it spawned (e.g. the captive-
+# portal sampler) under one SIGTERM, then SIGKILL after the grace window if
+# anything is still alive. Without KillMode=mixed, child processes survive
+# `systemctl stop` and orphan into PID 1.
+KillMode=mixed
+TimeoutStopSec=10s
 User=root
 
 # Hardening (see systemd.exec(5)). Issue #228: shared strict profile across
