@@ -451,6 +451,10 @@ mod tests {
     /// Round-trip: `set` writes a field; reloading the config picks it
     /// up. Mirrors what the user sees from `proteus ssid set foo persona
     /// iphone-15 --yes` followed by `proteus ssid show foo`.
+    ///
+    /// Issue #302: also covers the "missing file is fine" path —
+    /// `path` does not exist before the first `write_field` call, and
+    /// the writer must create it (same shape as `proteus config edit`).
     #[test]
     fn set_persists_through_to_loaded_config() {
         let dir = std::env::temp_dir().join(format!(
@@ -461,8 +465,11 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("config.toml");
+        // Precondition (issue #302): file does not exist; writer creates it.
+        assert!(!path.exists());
 
         write_field(&path, "my-wifi", "persona", "iphone-15").unwrap();
+        assert!(path.exists(), "writer must create the file");
         let cfg = Config::default_or_loaded(&path).unwrap();
         let entry = cfg.per_ssid.get("my-wifi").expect("entry written");
         assert_eq!(entry.persona.as_deref(), Some("iphone-15"));

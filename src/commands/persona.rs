@@ -521,4 +521,27 @@ mod tests {
             _ => panic!("wrong action"),
         }
     }
+
+    /// Issue #302: `write_active_to_config` is the inner writer for
+    /// `persona use` / `persona clear`. It must accept a `--config`
+    /// path that does not yet exist by treating "missing file" as
+    /// "empty doc, will be created on write" — same shape as
+    /// `proteus config edit`.
+    #[test]
+    fn write_active_to_config_creates_missing_file() {
+        let dir = std::env::temp_dir().join(format!(
+            "proteus-persona-missing-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        assert!(!path.exists());
+        write_active_to_config(Some("randomizer-med"), Some(&path)).unwrap();
+        assert!(path.exists());
+        let cfg = Config::default_or_loaded(&path).unwrap();
+        assert_eq!(cfg.persona.active.as_deref(), Some("randomizer-med"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

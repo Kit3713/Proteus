@@ -209,28 +209,42 @@ pub fn reset(section: Option<&str>, yes: bool, config: Option<&Path>) -> Result<
         return Ok(exit::PERMISSION_ERROR);
     }
     let path = super::config_path(config);
-    let defaults_doc = default_document()?;
     match section {
         None => {
-            super::write_atomic(&path, defaults_doc.to_string().as_bytes())?;
+            // Issue #304 (regression of #131): reset must NOT serialize
+            // the resolved-defaults document — that re-introduces every
+            // built-in value as an explicit override on disk, which is
+            // exactly the override-only-if-present model's failure mode.
+            // The defaults live in code; the file should only carry user
+            // overrides. Write a near-empty header so the file exists,
+            // is readable, and signals "no overrides — defaults apply".
+            super::write_atomic(&path, MINIMAL_RESET_BODY.as_bytes())?;
             println!("reset entire config to defaults: {}", path.display());
         }
         Some(name) => {
+            let defaults_doc = default_document()?;
+            if defaults_doc.get(name).is_none() {
+                eprintln!("proteus: unknown section '{name}' (try `proteus config keys`)");
+                return Ok(exit::CONFIG_ERROR);
+            }
+            // Per-section reset: drop the user's overrides for that
+            // section so it falls back to the default at load time.
+            // Same shape as full-reset (file only carries overrides).
             let mut doc = load_or_empty_document(&path)?;
-            let default_section = match defaults_doc.get(name) {
-                Some(it) => it.clone(),
-                None => {
-                    eprintln!("proteus: unknown section '{name}' (try `proteus config keys`)");
-                    return Ok(exit::CONFIG_ERROR);
-                }
-            };
-            doc[name] = default_section;
+            doc.as_table_mut().remove(name);
             super::write_atomic(&path, doc.to_string().as_bytes())?;
             println!("reset section [{name}] to defaults: {}", path.display());
         }
     }
     Ok(exit::SUCCESS)
 }
+
+/// Body written by `proteus config reset` (no section). Just a header
+/// comment so the file exists and is obviously a Proteus artefact, with
+/// zero per-knob overrides. Resolution at load time fills every knob from
+/// the profile baseline (see `Config::default_or_loaded` + #131 / #304).
+const MINIMAL_RESET_BODY: &str = "# Proteus config — reset to defaults.\n\
+     # Add per-knob overrides below (see `proteus config keys`).\n";
 
 pub fn keys(json: bool) -> Result<u8> {
     let entries = enumerate_keys()?;
@@ -775,5 +789,62 @@ mod tests {
         assert!(section_has_enabled("hostname"));
         assert!(!section_has_enabled("dns"));
         assert!(!section_has_enabled("nonexistent"));
+    }
+
+    /// Issue #304 (regression of #131): the body written by `proteus
+    /// config reset` (no section) MUST NOT contain every default —
+    /// otherwise every built-in becomes an explicit override on disk.
+    /// The minimal body parses as TOML and resolves to zero overrides.
+    #[test]
+    fn reset_minimal_body_has_no_overrides() {
+        let body = MINIMAL_RESET_BODY;
+        // Header comments only — no `[mac]`, `[probes]`, etc. sections.
+        assert!(!body.contains("[mac]"), "{body}");
+        assert!(!body.contains("[probes]"), "{body}");
+        assert!(!body.contains("[timers"), "{body}");
+        for line in body.lines().filter(|l| !l.trim().is_empty()) {
+            assert!(
+                line.trim_start().starts_with('#'),
+                "non-comment line: {line:?}"
+            );
+        }
+        // Round-trips through the resolver as zero overrides.
+        let raw: crate::config::RawConfig =
+            toml::from_str(body).expect("minimal reset body parses as TOML");
+        assert!(!raw.has_overrides());
+    }
+
+    /// Per-section reset must drop the user's overrides for that section
+    /// rather than re-explicit-set every default key. After reset, the
+    /// section is absent from the on-disk file (so it falls back to the
+    /// profile baseline at load time).
+    #[test]
+    fn per_section_reset_removes_section_from_doc() {
+        let mut doc = default_document().unwrap();
+        // Simulate a user override in [mac].
+        set_in_doc(&mut doc, "mac.enabled", Value::from(false)).unwrap();
+        set_in_doc(&mut doc, "mac.rotation_interval", Value::from("99h")).unwrap();
+        // The reset path drops the whole table: `doc.as_table_mut().remove("mac")`.
+        doc.as_table_mut().remove("mac");
+        let s = doc.to_string();
+        // No [mac] section header survives.
+        assert!(
+            !s.contains("[mac]"),
+            "[mac] table should be removed after section reset:\n{s}"
+        );
+        // The doc still parses and resolves to a valid config (mac falls
+        // back to the profile baseline).
+        let cfg = parse_config_text(&s).unwrap();
+        // mac.enabled comes from the profile baseline, not the user's
+        // false override — that's the override-only-if-present model.
+        let baseline = crate::profile::Profile::default().baseline();
+        assert_eq!(
+            cfg.mac.enabled, baseline.mac.enabled,
+            "mac.enabled must match profile baseline after section reset"
+        );
+        assert_eq!(
+            cfg.mac.rotation_interval, baseline.mac.rotation_interval,
+            "mac.rotation_interval must match profile baseline after section reset"
+        );
     }
 }
