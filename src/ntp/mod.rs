@@ -21,7 +21,7 @@ use serde::Serialize;
 
 use crate::commands;
 use crate::config::NtpConfig;
-use crate::dns::apply::sha256_hex;
+use crate::crypto::sha256;
 use crate::version;
 
 pub const PROTEUS_NTP_DROPIN_NAME: &str = "10-proteus.conf";
@@ -270,7 +270,7 @@ pub fn render_body(cfg: &NtpConfig) -> String {
 /// Full file contents: managed-file header + sha256 of body + body.
 pub fn render_dropin(cfg: &NtpConfig) -> String {
     let body = render_body(cfg);
-    let sha = sha256_hex(body.as_bytes());
+    let sha = sha256::hex_digest(body.as_bytes());
     format!(
         "# managed by proteus v{version}\n# do not edit; manage via /etc/proteus/config.toml or `proteus ntp apply`\n# sha256:{sha}\n{body}",
         version = version::VERSION,
@@ -444,7 +444,7 @@ mod tests {
     fn render_dropin_includes_sha_of_body() {
         let c = cfg();
         let body = render_body(&c);
-        let expected = sha256_hex(body.as_bytes());
+        let expected = sha256::hex_digest(body.as_bytes());
         let full = render_dropin(&c);
         assert!(full.contains(&format!("sha256:{expected}")));
         assert!(full.contains("# managed by proteus"));

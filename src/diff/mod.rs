@@ -21,13 +21,12 @@
 //!
 //! Pure read-only. Never writes; never asks for root.
 
-pub mod sha256;
-
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
 use crate::config::Config;
+use crate::crypto::sha256;
 use crate::state::State;
 
 pub const SCHEMA_VERSION: u32 = 1;

@@ -193,6 +193,9 @@ fn feature_table(
     let dns_state = dns_ecs_state(config);
     let dhcp_state = dhcp_state(state, config);
     let portal_state = captive_portal_state(state, config);
+    let probes_state = probes_state(config);
+    let discovery_state = discovery_silence_state(config);
+    let rf_state = rf_tx_power_state(state, config);
     vec![
         FeatureStatus {
             name: "mac-rotation",
@@ -206,8 +209,8 @@ fn feature_table(
         },
         FeatureStatus {
             name: "probes",
-            state: "not implemented".into(),
-            note: "phase C".into(),
+            state: probes_state.0,
+            note: probes_state.1,
         },
         FeatureStatus {
             name: "captive-portals",
@@ -241,8 +244,8 @@ fn feature_table(
         },
         FeatureStatus {
             name: "discovery-silence",
-            state: "not implemented".into(),
-            note: "phase E".into(),
+            state: discovery_state.0,
+            note: discovery_state.1,
         },
         FeatureStatus {
             name: "stack-fingerprint",
@@ -251,10 +254,103 @@ fn feature_table(
         },
         FeatureStatus {
             name: "rf-tx-power",
-            state: "not implemented".into(),
-            note: "phase E".into(),
+            state: rf_state.0,
+            note: rf_state.1,
         },
     ]
+}
+
+/// Quorum-probe feature: shipped in phase C. The probe runner is always
+/// available via `proteus probe`; the only knobs the operator tunes are
+/// `[probes]` quorum + endpoint pool, so "configured" reflects whether
+/// the endpoint pool is non-empty.
+fn probes_state(config: &Config) -> (String, String) {
+    if config.probes.endpoints.is_empty() {
+        return (
+            "idle".to_string(),
+            "no probe endpoints configured ([probes] endpoints is empty)".to_string(),
+        );
+    }
+    (
+        "configured".to_string(),
+        format!(
+            "{n} endpoint(s); quorum {q}/{t}; run `proteus probe` to test",
+            n = config.probes.endpoints.len(),
+            q = config.probes.quorum_n,
+            t = config.probes.quorum_total,
+        ),
+    )
+}
+
+/// Discovery-silence feature: shipped via the resolved drop-in
+/// (`MulticastDNS=no` / `LLMNR=no`) and the nft `discovery_drops` chain
+/// (`ssdp_block` / `wsd_block`). All four knobs default off; reports
+/// `idle` when none are on, `applied` when the resolved drop-in is on
+/// disk, `configured` otherwise (knobs on but apply hasn't run yet).
+fn discovery_silence_state(config: &Config) -> (String, String) {
+    let mut on: Vec<&'static str> = Vec::new();
+    if config.resolved.mdns_off {
+        on.push("mdns");
+    }
+    if config.resolved.llmnr_off {
+        on.push("llmnr");
+    }
+    if config.discovery.ssdp_block {
+        on.push("ssdp");
+    }
+    if config.discovery.wsd_block {
+        on.push("wsd");
+    }
+    if on.is_empty() {
+        return (
+            "idle".to_string(),
+            "every [discovery]/[resolved] silence knob is off".to_string(),
+        );
+    }
+    let resolved_dropin =
+        crate::dns::resolved::dropin_present(&crate::dns::Paths::system_default());
+    if resolved_dropin {
+        return (
+            "applied".to_string(),
+            format!("{} silenced; see `proteus resolved status`", on.join(",")),
+        );
+    }
+    (
+        "configured".to_string(),
+        format!(
+            "{}; run `proteus apply` (resolved + nft) to install",
+            on.join(",")
+        ),
+    )
+}
+
+/// RF TX-power-reduce feature: shipped via `proteus rf apply`. `applied`
+/// when at least one originals row has been captured (i.e. apply has run
+/// and revert hasn't cleaned up yet); `idle` until then.
+fn rf_tx_power_state(state: Option<&State>, config: &Config) -> (String, String) {
+    if !config.rf.tx_power_reduce {
+        return (
+            "idle".to_string(),
+            "disabled in config (rf.tx_power_reduce = false)".to_string(),
+        );
+    }
+    let captured = state.map(|s| !s.originals.rf.is_empty()).unwrap_or(false);
+    if captured {
+        return (
+            "applied".to_string(),
+            format!(
+                "TX power reduced by {db} dB; see `proteus rf status`",
+                db = config.rf.tx_power_reduction_db,
+            ),
+        );
+    }
+    (
+        "idle".to_string(),
+        format!(
+            "configured ({db} dB reduction); run `proteus rf apply` to install",
+            db = config.rf.tx_power_reduction_db,
+        ),
+    )
 }
 
 fn stack_state(state: Option<&State>, config: &Config) -> (String, String) {

@@ -17,6 +17,7 @@ use serde::Serialize;
 
 use crate::commands;
 use crate::config::Config;
+use crate::crypto::sha256;
 use crate::exit;
 use crate::stack::{self, DROPIN_PATH};
 use crate::state::State;
@@ -52,7 +53,7 @@ pub fn status(json: bool, state_path: Option<&Path>, config_path: Option<&Path>)
     let ifaces = stack::detect_managed_interfaces();
     let lines = stack::lines_for(&config.stack, &ifaces);
     let body = stack::render_body(&lines);
-    let expected_sha = stack::sha256::hex(body.as_bytes());
+    let expected_sha = sha256::hex_digest(body.as_bytes());
 
     let mut notes = Vec::new();
     let dropin_present = Path::new(DROPIN_PATH).exists();
