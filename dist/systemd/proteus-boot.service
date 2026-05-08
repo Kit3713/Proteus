@@ -34,7 +34,7 @@ MemoryDenyWriteExecute=true
 SystemCallArchitectures=native
 
 # CAP_NET_ADMIN: nftables + sysctl writes for L2/L3 rotation.
-# CAP_NET_RAW:   ICMP probe fallback (phase C).
+# CAP_NET_RAW:   ICMP probe fallback.
 # CAP_NET_BIND_SERVICE: bind to privileged ports if probe targets require it.
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW CAP_NET_BIND_SERVICE
 AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW

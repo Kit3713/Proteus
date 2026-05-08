@@ -366,9 +366,9 @@ async fn read_nm_iface(
     })
 }
 
-/// Backend-trait version of [`apply_nm_one`]. Roadmap M1: the per-
-/// iface IPv6 NM update goes through the trait so the same code path
-/// drives nm / networkd / raw once those grow real implementations.
+/// Per-iface IPv6 NM update routed through the backend trait so the
+/// same code path drives nm / networkd / raw once those grow real
+/// implementations.
 async fn apply_nm_one_via_backend(
     backend: &dyn NetworkBackend,
     devices: &[BackendDevice],
@@ -430,52 +430,6 @@ where
         let devices = backend.list_devices().await.ok()?;
         Some(body(backend, devices).await)
     })
-}
-
-#[allow(dead_code)]
-async fn apply_nm_one(
-    conn: &zbus::Connection,
-    devices: &[DeviceInfo],
-    iface: &str,
-) -> NmApplyOutcome {
-    let Some(dev) = devices.iter().find(|d| d.interface == iface) else {
-        return NmApplyOutcome::Skipped("no NM device".into());
-    };
-    if !matches!(dev.kind, DeviceKind::Wifi | DeviceKind::Ethernet) {
-        return NmApplyOutcome::Skipped(format!("unsupported kind {:?}", dev.kind));
-    }
-    if dev.connections.is_empty() {
-        return NmApplyOutcome::Skipped("no connection profile".into());
-    }
-    // Issue #122: apply IPv6 privacy/temporary-address settings to every
-    // connection profile bound to this device, not just the first one,
-    // otherwise roaming surfaces the un-touched profile's defaults.
-    let mut primary: Option<String> = None;
-    let mut last_err: Option<String> = None;
-    for path in &dev.connections {
-        let connection = nm::apply::read_connection_id(conn, path)
-            .await
-            .ok()
-            .flatten();
-        match crate::ipv6::nm::apply_settings(conn, path, &Default::default()).await {
-            Ok(()) => {
-                if primary.is_none() {
-                    primary = connection;
-                }
-            }
-            Err(e) => {
-                last_err = Some(format!("update failed: {e:#}"));
-                continue;
-            }
-        }
-    }
-    if primary.is_some() {
-        NmApplyOutcome::Applied {
-            connection: primary,
-        }
-    } else {
-        NmApplyOutcome::Skipped(last_err.unwrap_or_else(|| "all profiles failed".into()))
-    }
 }
 
 fn managed_iface_names() -> Vec<(String, String)> {

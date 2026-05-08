@@ -29,8 +29,8 @@ with `aarch64-linux-gnu-strip` and enforces the same 4 MB cap as x86_64.
 The aarch64 artifact is not exercised on a real ARM runner in CI — there is
 no GitHub-hosted ARM runner available to the project today. The cross-build
 catches dependency churn and link-level breakage. Functional verification
-on aarch64 still relies on the user reporting issues; the wiki page
-`troubleshooting` will note this once Phase F lands.
+on aarch64 still relies on the user reporting issues; see the wiki
+`troubleshooting` page for known-good configurations.
 
 ## Unsupported architectures
 

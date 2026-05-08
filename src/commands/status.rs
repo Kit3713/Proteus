@@ -260,10 +260,10 @@ fn feature_table(
     ]
 }
 
-/// Quorum-probe feature: shipped in phase C. The probe runner is always
-/// available via `proteus probe`; the only knobs the operator tunes are
-/// `[probes]` quorum + endpoint pool, so "configured" reflects whether
-/// the endpoint pool is non-empty.
+/// Quorum-probe state. The probe runner is always available via
+/// `proteus probe`; the only knobs the operator tunes are `[probes]`
+/// quorum + endpoint pool, so "configured" reflects whether the
+/// endpoint pool is non-empty.
 fn probes_state(config: &Config) -> (String, String) {
     if config.probes.endpoints.is_empty() {
         return (

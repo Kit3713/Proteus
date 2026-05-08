@@ -17,7 +17,7 @@
 	<use>
 		<flag name="bluetooth">Enable Bluetooth alias + RPA support via <pkg>net-wireless/bluez</pkg></flag>
 		<flag name="enterprise-wifi">Enable WPA-Enterprise / 802.1X identifier rotation via <pkg>net-wireless/wpa_supplicant</pkg></flag>
-		<flag name="nft">Enable discovery-silencing nftables rules (Phase E)</flag>
+		<flag name="nft">Enable discovery-silencing nftables rules</flag>
 		<flag name="openrc">Install OpenRC service + periodic shims</flag>
 		<flag name="systemd">Install systemd timers, services, and resume hook</flag>
 	</use>

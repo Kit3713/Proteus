@@ -2,7 +2,7 @@
 
 //! Captive portal detector + classifier.
 //!
-//! Phase C. Pure std-net (no reqwest) HTTP/1.0 GET against a known endpoint
+//! Pure std-net (no reqwest) HTTP/1.0 GET against a known endpoint
 //! (default `nmcheck.gnome.org`). Compares the body to an expected string and
 //! classifies the path as `clear`, `portal-required`, `portal-authed`, or
 //! `unknown`.

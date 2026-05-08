@@ -2,10 +2,10 @@
 
 //! DNS feature: ECS-strip on systemd-resolved with detect-and-defer.
 //!
-//! Phase D ships exactly one knob: `EDNSClientSubnet=no` written to a
-//! drop-in under `/etc/systemd/resolved.conf.d/`. Anything that suggests
-//! the user already runs a more-specialized DNS-privacy tool causes
-//! Proteus to bow out cleanly — the user's setup wins, every time.
+//! Ships exactly one knob: `EDNSClientSubnet=no` written to a drop-in
+//! under `/etc/systemd/resolved.conf.d/`. Anything that suggests the
+//! user already runs a more-specialized DNS-privacy tool causes Proteus
+//! to bow out cleanly — the user's setup wins, every time.
 //!
 //! See `wiki/dns.md` and `wiki/concepts.md` (detect-and-defer) for the
 //! design rationale.

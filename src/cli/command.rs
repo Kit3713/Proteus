@@ -87,10 +87,10 @@ pub enum Command {
         #[arg(long)]
         explain: bool,
     },
-    /// Rotate the MAC iff the cooldown window has elapsed
-    /// (Roadmap Milestone 1, issue #206-C). Designed to be called by
-    /// the NetworkManager dispatcher so it stops sed-parsing
-    /// `proteus current --json`. Returns a typed
+    /// Rotate the MAC iff the cooldown window has elapsed.
+    ///
+    /// Designed to be called by the NetworkManager dispatcher so it
+    /// stops sed-parsing `proteus current --json`. Returns a typed
     /// [`crate::backend::RotateOutcome`] as a single stdout line plus
     /// a deterministic exit code (`0` for rotated/skipped/no-factory,
     /// `70` for backend-unavailable).
