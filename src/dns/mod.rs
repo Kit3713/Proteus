@@ -160,8 +160,12 @@ impl RuntimeProbe for SystemProbe {
             Ok(o) => o,
             Err(_) => return false,
         };
-        let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        matches!(s.as_str(), "active" | "activating" | "reloading")
+        // R5: `systemctl is-active` only ever emits ASCII state words
+        // ("active", "inactive", "failed", ...). Compare directly against
+        // the byte slice; no need to allocate a `String` via
+        // `from_utf8_lossy().to_string()` for a 6-byte token.
+        let trimmed = out.stdout.trim_ascii();
+        matches!(trimmed, b"active" | b"activating" | b"reloading")
     }
 
     fn process_is_running(&self, name: &str) -> bool {
