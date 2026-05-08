@@ -38,7 +38,7 @@ Same family of problem.
 
 - `discovery.ssdp_block = true` blocks KDE Connect's SSDP-based discovery. Default is `false` — if you set it true, set it back.
 - `sudo proteus apply` after editing.
-- KDE Connect also uses mDNS in newer releases; if you've enabled mDNS responder blocking for some reason, that'll bite too. Check `discovery.mdns_responder` in your config.
+- KDE Connect also uses mDNS in newer releases; if you've enabled mDNS-announcement silencing for some reason, that'll bite too. Check `discovery.mdns_silence` in your config.
 
 ## "My corporate Wi-Fi rejects me"
 
