@@ -1,16 +1,16 @@
 # Contributing to Proteus
 
-Thanks for considering. Proteus is a small, focused project — see status in the [README](README.md) — so the most useful contributions vary by phase.
+Thanks for considering. Proteus is a small, focused project — see status in the [README](README.md). The major build-out is landed; v0.4 is bug-and-vulnerability-hunt only.
 
 ## What helps right now
 
-The project is pre-release. The v1 plan is in [`docs/PLAN.md`](docs/PLAN.md). The most useful contributions today:
-
-- Read the plan and open an issue or discussion if a phase looks wrong-shaped, missing, or scope-creeping.
-- Suggest concrete improvements to the threat model — what's overlooked, what's overclaimed.
-- File a feature suggestion only if it fits the local controllable fingerprint reduction scope. The plan and [`docs/PRIOR-ART.md`](docs/PRIOR-ART.md) explain what's in and what's deliberately out (DNS resolution policy, TLS/browser fingerprints, tracker blocking, etc. — all delegated to dedicated tools).
-
-Code contributions are welcome once Phase A (the skeleton) lands.
+- **Real-world testing** — `proteus doctor` + `proteus apply` on coffee-shop / hotel / conference / airport networks; report bugs via the issue template (highest-value contribution today).
+- **Independent security review** — eyes on [`wiki/threat-model.md`](wiki/threat-model.md) and the DBus surface enumerated in [`docs/security/dbus-surface.md`](docs/security/dbus-surface.md).
+- **Persona contributions** — `data/personas/*.toml` is open for community PRs to grow the catalogue. See [`wiki/personas.md`](wiki/personas.md) for the schema.
+- **Distro packaging** — Alpine, Void, Gentoo packagers, plus AUR / Copr / Debian unstable submission sponsors needed. Recipes live under `dist/`.
+- **Threat-model improvements** — what's overlooked, what's overclaimed.
+- **Wiki polish** — voice should match [`wiki/intro.md`](wiki/intro.md).
+- File a feature suggestion only if it fits the local controllable fingerprint reduction scope. [`docs/PLAN.md`](docs/PLAN.md) and [`docs/PRIOR-ART.md`](docs/PRIOR-ART.md) explain what's in and what's deliberately out (DNS resolution policy, TLS/browser fingerprints, tracker blocking, etc. — all delegated to dedicated tools).
 
 ## Scope
 
@@ -33,25 +33,24 @@ Features that don't fit (please open an issue elsewhere):
 
 Requires:
 
-- Rust stable (latest)
-- A Linux dev host with systemd, NetworkManager, and BlueZ — Fedora 43+ is the primary target
-
-Once Phase A is in:
+- Rust stable, MSRV 1.85 (Edition 2024). The repo pins `1.93.0` via `rust-toolchain.toml`.
+- A Linux dev host with systemd, NetworkManager, and BlueZ — Fedora 43+ is the primary target.
 
 ```sh
 git clone https://github.com/Kit3713/Proteus.git
 cd Proteus
-cargo build
-cargo test
+cargo build --release --locked
+cargo test --locked
 ```
 
-Privileged integration tests run in a Podman + systemd container and are gated behind `RUN_PRIVILEGED_TESTS=1`. Documented in `docs/PLAN.md` phase G.
+Privileged integration tests run in a Podman + systemd container and are gated behind `RUN_PRIVILEGED_TESTS=1`. See [`tests/integration/`](tests/integration/) and the integration scenarios under `tests/integration/scenarios/`.
 
 ## Style and quality bar
 
-- `cargo fmt` clean
-- `cargo clippy --all-targets -- -D warnings` clean
-- Binary stays under 4 MB stripped (release-time hard cap in `release.yml`) — any dependency that adds more than 200 KB needs justification in the PR
+- `cargo fmt --check` clean
+- `cargo clippy --all-targets --locked -- -D warnings` clean
+- `cargo test --locked` passes (the wiki-bundling test verifies every embedded page parses)
+- Binary stays under the release-time cap in `.github/workflows/release.yml` — any dependency that adds more than 200 KB needs justification in the PR
 - New feature flags ship with their wiki page and `proteus help <feature>` text in the same PR
 - New error paths include a `→ see: proteus wiki <page>` or `→ run: proteus help <feature>` hint where applicable
 - Anything that touches privileged operations is covered by an integration test

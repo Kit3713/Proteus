@@ -25,9 +25,11 @@ rpmdev-setuptree
 # Drop the spec into the SPECS dir.
 cp dist/rpm/proteus.spec ~/rpmbuild/SPECS/
 
-# Fetch (or stage) the source tarball. Until v0.1.0 is tagged on GitHub,
-# generate one from the current checkout instead:
-git archive --format=tar.gz --prefix=Proteus-0.1.0/ -o ~/rpmbuild/SOURCES/proteus-0.1.0.tar.gz HEAD
+# Stage a source tarball. The release pipeline fetches the tagged tarball;
+# for a local build, generate one from the current checkout (substitute
+# the version recorded in Cargo.toml for `<ver>`):
+VER=$(grep '^version = ' Cargo.toml | head -1 | tr -d '"' | awk '{print $3}')
+git archive --format=tar.gz --prefix="Proteus-${VER}/" -o ~/rpmbuild/SOURCES/proteus-"${VER}".tar.gz HEAD
 
 # Build a binary RPM (-bb) plus its source RPM (-bs); use -ba for both.
 rpmbuild -ba ~/rpmbuild/SPECS/proteus.spec
@@ -38,7 +40,7 @@ The output lands under `~/rpmbuild/RPMS/<arch>/` and `~/rpmbuild/SRPMS/`.
 ## Install the resulting RPM
 
 ```sh
-sudo dnf install ~/rpmbuild/RPMS/x86_64/proteus-0.1.0-1.fc43.x86_64.rpm
+sudo dnf install ~/rpmbuild/RPMS/x86_64/proteus-*-1.fc43.x86_64.rpm
 ```
 
 Same caveats as the Arch package: timers are **not** auto-enabled. The
@@ -62,10 +64,10 @@ sudo usermod -aG mock "$USER" && newgrp mock
 rpmbuild -bs ~/rpmbuild/SPECS/proteus.spec
 
 # Then build it in a Fedora 43 chroot.
-mock -r fedora-43-x86_64 ~/rpmbuild/SRPMS/proteus-0.1.0-1.fc43.src.rpm
+mock -r fedora-43-x86_64 ~/rpmbuild/SRPMS/proteus-*-1.fc43.src.rpm
 
 # aarch64 cross-build (slower, qemu-user under the hood):
-mock -r fedora-43-aarch64 ~/rpmbuild/SRPMS/proteus-0.1.0-1.fc43.src.rpm
+mock -r fedora-43-aarch64 ~/rpmbuild/SRPMS/proteus-*-1.fc43.src.rpm
 ```
 
 Built RPMs land in `/var/lib/mock/fedora-43-x86_64/result/`.
@@ -113,8 +115,8 @@ someone reports a working build there.
 
 EPEL 9 / 10 (RHEL 9 / 10) is in scope for a future minor release once:
 
-- Phase A's `cargo build --release --frozen` is verified against the EPEL
-  Rust toolchain (currently lags Fedora — confirm `rust >= 1.85`).
+- `cargo build --release --frozen` is verified against the EPEL Rust
+  toolchain (currently lags Fedora — confirm `rust >= 1.85`).
 - The `systemd-rpm-macros` BR works on EL (it does as of EPEL 9).
 - The `Recommends:` weak deps are reviewed — older `dnf` honors them, but
   some EL admins disable weak deps and we should make sure the package is
@@ -134,26 +136,27 @@ rpmlint dist/rpm/proteus.spec
 rpmspec --parse dist/rpm/proteus.spec > /dev/null
 
 # Full build, dependency resolution, and chroot install in one shot.
-mock -r fedora-43-x86_64 ~/rpmbuild/SRPMS/proteus-0.1.0-1.fc43.src.rpm
+mock -r fedora-43-x86_64 ~/rpmbuild/SRPMS/proteus-*-1.fc43.src.rpm
 ```
 
 ## Notes for packagers
 
 - `Version:` mirrors `Cargo.toml`'s `version`. Bump in lockstep with
   `proteus.rpkg` and `dist/arch/PKGBUILD`.
-- Source0 points at `v$version` on GitHub. Until v0.1.0 is tagged, use
-  `git archive` (see "Build the RPM locally") or rely on the Copr custom
-  method (which builds from the current git checkout via `rpkg`).
+- Source0 points at `v$version` on GitHub. For local builds before a
+  tag is pushed, use `git archive` (see "Build the RPM locally") or
+  rely on the Copr custom method (which builds from the current git
+  checkout via `rpkg`).
 - `%cargo_build` honors Fedora's vendored-crate rules. If the Rust SIG
   ever objects to network access during `%build`, switch to
   `cargo build --release --offline` plus a vendored tarball.
 - `Cargo.lock` is committed, so `--frozen` builds are deterministic.
 - The release profile in `Cargo.toml` already does `strip = true`; no
   explicit `%{__strip}` call is needed.
-- `%check` runs `cargo test --release --lib` (Milestone 5). Integration
-  tests need a privileged systemd container (Phase G) and aren't lib
-  tests; if Copr hits a flake we haven't reproduced locally, rebuild
-  the SRPM with `rpmbuild --without check ...` to skip.
+- `%check` runs `cargo test --release --lib`. Integration tests need a
+  privileged systemd container and aren't lib tests; if Copr hits a flake
+  we haven't reproduced locally, rebuild the SRPM with `rpmbuild --without
+  check ...` to skip.
 - The NM dispatcher hook is intentionally **not** marked
   `%config(noreplace)`: it's a script that ships with the package, not a
   user config. If the dispatcher logic changes in a new release, RPM
@@ -178,4 +181,3 @@ matrix.
 - `dist/systemd/README.md` — what the timers and services actually do.
 - `dist/networkmanager/README.md` — dispatcher hook architecture.
 - `dist/polkit/README.md` — polkit policy purpose.
-- `docs/PLAN.md` — phase F notes the packaging stubs.

@@ -93,23 +93,23 @@ Notes:
 
 - `originals.*` is sacred. Written once on the first `proteus apply`, never updated afterwards. `proteus reset` does not touch it. Only `proteus uninstall --purge` removes it. This is the source of truth for `proteus revert`.
 - `managed.*` reflects the current state of Proteus-managed mutations. `proteus apply` recomputes and updates this; `proteus rotate` updates the relevant interface entry; `proteus revert` clears it.
-- File permissions: `0600`, owned by root. Reads require root for the full file; non-root can read `schema_version` and `proteus_version` only (TBD; phase G).
+- File permissions: `0600`, owned by root. Reads require root for the full file.
 - Atomic writes: Proteus writes to a tmp file in `/var/lib/proteus/` and renames atomically over the destination. A crash mid-write leaves the previous state intact.
-- Schema versioning: `schema_version: 1` for the v1.0 release. Increment on breaking changes; old versions migrate forward, never backward. A wrapper should refuse to parse a schema version higher than it was built against.
+- Schema versioning: `schema_version` is carried on every state.json. Increment on breaking changes; old versions migrate forward via the ladder in `src/state.rs::migrate_state`, never backward. A wrapper should refuse to parse a schema version higher than it was built against.
 
-The phase A struct in `src/state.rs` is a flatter provisional shape (`original_macs`, `original_hostname`, `captured_by_version`, `captured_at`). The shape above is the v1.0 target; phase B+ migrates the on-disk file under `schema_version: 1`.
+The current on-disk struct in `src/state.rs` is a flatter shape (`original_macs`, `original_hostname`, `captured_by_version`, `captured_at`, plus `managed` and `known_portal_ssids`). The shape above is the v1.0 target; the migration ladder is what bridges them.
 
 ## Managed-file headers
 
 Every file Proteus writes under `/etc/` carries a 3-line header:
 
 ```text
-# managed by proteus v0.1.0
+# managed by proteus v0.4.0-beta1
 # do not edit; manage via /etc/proteus/config.toml or `proteus apply`
 # sha256:abc123...  (sha256 of the body content; checked by `proteus diff`)
 ```
 
-`proteus diff` (phase G) reads the file, recomputes the sha256 over the body (everything after the header), and flags drift. Drift means someone edited the file by hand, or another tool did. The diff output names the file and the expected vs actual hash; the operator decides whether to re-apply, accept the local change by removing the file from Proteus management, or back the whole thing out with `proteus revert`.
+`proteus diff` reads the file, recomputes the sha256 over the body (everything after the header), and flags drift. Drift means someone edited the file by hand, or another tool did. The diff output names the file and the expected vs actual hash; the operator decides whether to re-apply, accept the local change by removing the file from Proteus management, or back the whole thing out with `proteus revert`.
 
 This is an edit-detection / tamper-hint signal, not an integrity guarantee. Header and body sit in the same root-owned file, so anyone with write access can recompute the header alongside the body and the check will pass. Treat the SHA the same way you treat the `# do not edit` line: a discoverability marker for honest drift (manual edits, another tool stomping the file), not a defence against an active adversary who already has root.
 
@@ -121,22 +121,23 @@ Proteus tags NM connections it modifies with `connection.user-data`:
 
 ```text
 proteus.managed=true
-proteus.applied-version=0.1.0
+proteus.applied-version=0.4.0-beta1
 proteus.applied-at=2026-05-06T14:34:56Z
 ```
 
 `nmcli -g connection.user-data connection show <name>` to inspect. A wrapper that wants to enumerate Proteus-managed connections without parsing `state.json` can grep for `proteus.managed=true` here. The authoritative list is still `state.json`; this tag exists so the connection itself is self-describing if `state.json` is lost.
 
-## DBus interfaces used (Phase B+)
+## DBus interfaces used
 
 Proteus uses zbus to talk to:
 
-- `org.freedesktop.NetworkManager` — ipv4/ipv6 settings, `cloned-mac-address`, `dhcp-*`, `802-1x.anonymous-identity`, per-connection user-data tagging.
+- `org.freedesktop.NetworkManager` — ipv4/ipv6 settings, `cloned-mac-address`, `dhcp-*`, `802-1x.anonymous-identity`, per-connection user-data tagging, and the connection-up / portal-auth signals consumed by the events daemon.
 - `org.bluez` — adapter alias, `Discoverable`, BLE Resolvable Private Address mode.
 - `org.freedesktop.hostname1` — hostname (kernel), pretty hostname, transient hostname.
+- `org.freedesktop.network1` — used by `backend::networkd` for systemd-networkd-driven hosts.
 - NOT `org.freedesktop.timedate1`. NTP normalization is a `systemd-timesyncd` config drop-in, not a DBus call. The dbus interface only toggles NTP on/off; it does not let you point at a specific server set, which is what Proteus needs.
 
-No `nmcli` shelling, no `bluetoothctl` shelling, no `hostnamectl` shelling. Everything goes through dbus. A wrapper that wants to mirror Proteus state can subscribe to the same dbus signals.
+No `nmcli` shelling, no `bluetoothctl` shelling, no `hostnamectl` shelling. Everything goes through dbus. A wrapper that wants to mirror Proteus state can subscribe to the same dbus signals. The full enumerated DBus surface (every method called, every property read, every signal subscribed-to with arg validation guarantees) is in `docs/security/dbus-surface.md`.
 
 ## sysfs and procfs paths read
 
@@ -158,14 +159,16 @@ Reading these does not require root. `proteus current` and `proteus status` work
 Exhaustive list. Anything outside this list, Proteus has not modified.
 
 - `/var/lib/proteus/state.json` — written by every mutating command.
-- `/etc/sysctl.d/95-proteus.conf` — written; phase E.
-- `/etc/systemd/resolved.conf.d/10-proteus-no-ecs.conf` — written; phase D.
-- `/etc/systemd/resolved.conf.d/10-proteus-discovery.conf` — written; phase E.
-- `/etc/systemd/timesyncd.conf.d/10-proteus.conf` — written; phase E.
-- nftables table `inet proteus` — created; phase E. Lives in the kernel, not on disk; `nft list table inet proteus` to inspect.
-- NetworkManager per-connection settings — written via DBus; phases B and D.
-- Hostname — written via the `hostname1` DBus interface; phase D.
-- Bluetooth adapter alias — written via the BlueZ DBus interface; phase B.
+- `/var/lib/proteus/.lock` — advisory `flock(2)` for serializing concurrent runs.
+- `/etc/sysctl.d/95-proteus.conf` — written by `stack apply`.
+- `/etc/systemd/resolved.conf.d/10-proteus-no-ecs.conf` — written by `dns apply`.
+- `/etc/systemd/resolved.conf.d/10-proteus-mdns-llmnr.conf` — written by `resolved apply`.
+- `/etc/systemd/timesyncd.conf.d/10-proteus.conf` — written by `ntp apply`.
+- nftables table `inet proteus` — created by `nft apply`. Lives in the kernel, not on disk; `nft list table inet proteus` to inspect.
+- NetworkManager per-connection settings — written via DBus by the MAC / DHCP / IPv6 / 802.1X paths.
+- Hostname — written via the `hostname1` DBus interface.
+- Bluetooth adapter alias — written via the BlueZ DBus interface.
+- systemd unit drop-ins under `/etc/systemd/system/proteus-*.timer.d/override.conf` — written by `proteus timer set`.
 
 Notably absent: `/etc/ssh/`, `/etc/ssl/`, `/etc/crypto-policies/`, `/etc/machine-id`, `/etc/resolv.conf`. Proteus does not touch any of these.
 

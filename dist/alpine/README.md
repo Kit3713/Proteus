@@ -36,7 +36,7 @@ cd Proteus/dist/alpine
 abuild -F -r
 ```
 
-The resulting `.apk` lands in `~/packages/<repo>/<arch>/proteus-0.1.0-r0.apk`.
+The resulting `.apk` lands in `~/packages/<repo>/<arch>/proteus-0.4.0-beta1-r0.apk`.
 
 [2]: https://wiki.alpinelinux.org/wiki/Creating_an_Alpine_package
 
@@ -45,7 +45,7 @@ The resulting `.apk` lands in `~/packages/<repo>/<arch>/proteus-0.1.0-r0.apk`.
 After installing the produced `.apk`:
 
 ```sh
-apk add ./proteus-0.1.0-r0.apk
+apk add ./proteus-0.4.0-beta1-r0.apk
 ldd /usr/bin/proteus               # should show musl + libdbus-1
 proteus doctor                      # should report 'init system: openrc' + 'libc: musl'
 ```

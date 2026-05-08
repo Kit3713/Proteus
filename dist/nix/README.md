@@ -43,7 +43,7 @@ Nix config.
 | `services.proteus.timer.rotate.enable` | `true`  | Enable the 2h scheduled rotation timer.               |
 | `services.proteus.timer.check.enable`  | `true`  | Enable the 5m probe-driven check timer.               |
 
-The full config schema lives in `proteus wiki config` (phase F). Anything
+The full config schema lives in `proteus wiki config`. Anything
 the binary accepts in TOML, you can write here as a Nix attrset.
 
 ## Ad-hoc usage

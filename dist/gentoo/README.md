@@ -11,7 +11,7 @@ PR merged yet.
 
 | File                              | Purpose                              |
 | --------------------------------- | ------------------------------------ |
-| `proteus-0.1.0.ebuild`            | The ebuild itself.                   |
+| `proteus-<version>.ebuild`        | The ebuild itself; rename per release tag. |
 | `metadata.xml`                    | Package metadata + USE-flag descs.   |
 
 ## USE flags
@@ -29,20 +29,19 @@ selected so the rotation cadence actually has a driver.
 
 ## Build locally
 
-In a Gentoo system or chroot with a personal overlay set up:
+In a Gentoo system or chroot with a personal overlay set up. Substitute `<ver>` for the version of the ebuild file you have (e.g. `0.4.0-beta1`):
 
 ```sh
-# Add to ~/myoverlay/net-misc/proteus/proteus-0.1.0.ebuild and metadata.xml
 mkdir -p /var/db/repos/myoverlay/net-misc/proteus
-cp dist/gentoo/proteus-0.1.0.ebuild  /var/db/repos/myoverlay/net-misc/proteus/
+cp dist/gentoo/proteus-<ver>.ebuild  /var/db/repos/myoverlay/net-misc/proteus/
 cp dist/gentoo/metadata.xml          /var/db/repos/myoverlay/net-misc/proteus/
 
 # Generate Manifest (needs network for the GitHub tarball).
 cd /var/db/repos/myoverlay/net-misc/proteus
-ebuild proteus-0.1.0.ebuild manifest
+ebuild proteus-<ver>.ebuild manifest
 
 # Build with tests.
-FEATURES=test emerge --usepkg=n =net-misc/proteus-0.1.0
+FEATURES=test emerge --usepkg=n =net-misc/proteus-<ver>
 ```
 
 ## Verification step

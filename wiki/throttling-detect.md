@@ -68,11 +68,11 @@ The asymmetry is the same one the probe quorum encodes (see `proteus wiki probes
 
 Several existing v1 features partially cover the throttling problem without trying to detect it directly.
 
-- **Probe-driven rotation** (Phase C). If connectivity actually fails — quorum of probes can't reach the public anycast targets — Proteus rotates. Throttling that doesn't break connectivity is invisible to this. Throttling that does break connectivity is handled the same way any outage is handled.
-- **Captive-portal aware rotation** (Phase C). Proteus does not rotate behind a portal, so we don't make throttling worse by triggering re-auth loops on networks that bind throttling to authenticated sessions.
-- **Manual `proteus rotate`** (Phase B). If you suspect throttling, you can rotate explicitly. This is the today-answer. Cross-ref `proteus wiki rotation`.
-- **`proteus status` per-feature visibility** (Phase A). You can see what Proteus has done; if your throughput is bad, you can diagnose whether Proteus is the cause without guessing.
-- **Scheduled rotation cadence** (Phase C). The default 2h interval means even unnoticed throttling gets a fresh MAC twice a work session. Not a detector, but a passive defense against per-MAC throttle buckets that accumulate over hours.
+- **Probe-driven rotation.** If connectivity actually fails — quorum of probes can't reach the public anycast targets — Proteus rotates. Throttling that doesn't break connectivity is invisible to this. Throttling that does break connectivity is handled the same way any outage is handled.
+- **Captive-portal aware rotation.** Proteus does not rotate behind a portal, so we don't make throttling worse by triggering re-auth loops on networks that bind throttling to authenticated sessions.
+- **Manual `proteus rotate`.** If you suspect throttling, you can rotate explicitly. Cross-ref `proteus wiki rotation`.
+- **`proteus status` per-feature visibility.** You can see what Proteus has done; if your throughput is bad, you can diagnose whether Proteus is the cause without guessing.
+- **Scheduled rotation cadence.** The default 2h interval means even unnoticed throttling gets a fresh MAC twice a work session. Not a detector, but a passive defense against per-MAC throttle buckets that accumulate over hours.
 
 The pattern: Proteus reacts to clear signals (no Internet, captive portal detected, user said rotate), and refuses to react to ambiguous signals (slow, weird, vibes-bad). That ambiguous space is exactly where throttling detection lives.
 
@@ -93,7 +93,7 @@ The general shape: any throttling-detection feature in Proteus would need to be 
 
 - **Tor** for traffic correlation defense and to bypass throttling that targets your specific identifiers. The exit relay is what the network throttles, and you don't share an identifier with that exit across sessions.
 - **Mullvad VPN** or another reputable VPN — same story, less anonymous than Tor but faster and friendlier for high-bandwidth use. The VPN endpoint is what the network throttles.
-- **Manual rotation when you suspect bullshit.** `sudo proteus rotate` (Phase B once landed). Costs you nothing if you're wrong, gets you a fresh MAC if you're right.
+- **Manual rotation when you suspect bullshit.** `sudo proteus rotate --yes`. Costs you nothing if you're wrong, gets you a fresh MAC if you're right.
 - **Network observation tools.** `mtr` for path diagnostics and where packet loss appears, `iperf3` for throughput baselines against a server you control, `tcpdump` for packet-level observation, `dig @1.1.1.1 example.com` cross-referenced against your local resolver to spot DNS divergence. None of these are Proteus's job, all of them tell you more about whether you're actually throttled than a heuristic in Proteus could.
 - **A second transport.** If you have LTE plus Wi-Fi, fetch the same resource over both and compare. Manual, but definitive for content-rewriting questions.
 

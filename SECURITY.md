@@ -4,14 +4,15 @@ Proteus erases network-layer identifiers. A vulnerability in Proteus is a real p
 
 ## Supported versions
 
-Pre-release. Only `main` is supported today — there are no tagged releases yet. Fix the bug there and the fix lands for everyone.
+Beta. The latest pre-release on `main` is the only supported line. Fix the bug there and the fix lands for everyone.
 
 Once v1.0.0 ships, the latest minor of the latest major is the only supported line. Older lines do not get backports.
 
-| Version | Supported          |
-| ------- | ------------------ |
-| `main`  | yes (pre-release)  |
-| < 1.0   | no released builds |
+| Version          | Supported               |
+| ---------------- | ----------------------- |
+| `main`           | yes (pre-release)       |
+| `v0.4.x` (beta)  | yes (latest beta line)  |
+| `< v0.4`         | no — upgrade to `v0.4`  |
 
 ## Reporting a vulnerability
 

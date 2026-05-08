@@ -1,8 +1,8 @@
 # Proteus shell completions
 
 Hand-written completion scripts for `proteus`. Each is small,
-re-source-able, and covers the phase A subcommand surface plus the
-flags listed in `src/cli.rs`.
+re-source-able, and covers every subcommand in `src/cli.rs`. Regenerate
+the bundled scripts from the binary with `proteus completions <bash|zsh|fish>`.
 
 `install.sh` installs these to standard system paths automatically.
 The instructions below are for manual installation or per-user use.
@@ -77,3 +77,6 @@ Each script completes:
 - Shell argument for `completions` (`bash`, `zsh`, `fish`).
 - Interface names + NetworkManager connection profiles for `pin`/`unpin`
   (the latter via `nmcli` when available).
+
+The wiki page list is static and matches the embedded wiki at the
+binary's build time.

@@ -1,5 +1,15 @@
 # Proteus
 
+> **Status (2026-05).** This is the original design plan written before
+> Phase A. Phases A–G shipped during the v0.1 cycle (see
+> [`ROADMAP-v0.1.md`](ROADMAP-v0.1.md) for the archived detail). The
+> v0.3 cycle "Reach + Persona" (see [`ROADMAP.md`](ROADMAP.md)) shipped
+> the `NetworkBackend` abstraction, persona / per-SSID modes, RF
+> finishing, distro reach, and ergonomics on top of Phase G. v0.4 is
+> bug-and-vulnerability hunt only. The text below is preserved as the
+> design rationale; cross-check claims like "deferred to v2" against
+> the roadmap and CHANGELOG before quoting.
+
 A Rust CLI for Linux that reduces every fingerprint the local OS can control on join and transmit — L2 through L4 network identifiers, network-joining protocol chatter, and the OS-controllable parts of the L1 RF surface. MAC addresses, DHCP options, IPv6 derivations, hostname, mDNS chatter, TCP fingerprint quirks, Bluetooth name, captive-portal correlation, plus opt-in TX power reduction and probe-request privacy. It rotates MACs on a schedule (default 2h) and on probe-driven connectivity loss (default every 5m). Single binary, embedded wiki, runs on Fedora 43+ with systemd + NetworkManager.
 
 Named after the shapeshifter.

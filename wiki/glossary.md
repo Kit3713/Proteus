@@ -123,9 +123,6 @@ The UPnP discovery protocol on UDP/1900, multicast to `239.255.255.250`. Used by
 ## Stable-privacy address (RFC 7217)
 An IPv6 IID derived deterministically from the MAC plus a network-scoped secret key, so the IID stays stable per network but does not leak the MAC and does not correlate across networks. The default IID derivation in modern Linux stacks; Proteus prefers it over EUI-64. See `proteus wiki ipv6`.
 
-## Stub command
-Proteus's pattern for subcommands that parse with full clap help in earlier phases but exit with `not yet implemented in this phase, see phase X` until their phase ships. Lets the CLI surface stay stable from phase A. See `proteus wiki cli`.
-
 ## systemd-resolved
 The systemd DNS resolver and stub listener on `127.0.0.53`. Proteus's ECS-strip and mDNS/LLMNR disables ship as drop-ins under `/etc/systemd/resolved.conf.d/`, and only when no other resolver tool is detected. See `proteus wiki dns` and `proteus wiki discovery`.
 

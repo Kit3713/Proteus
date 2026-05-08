@@ -114,11 +114,10 @@ If you tune `[rotation] interval` away from the default, `proteus timer set rota
 
 ## Deferred to a future version
 
-Things Proteus could plausibly do but does not in v1. Listed here so you do not assume they exist.
+Things Proteus could plausibly do but does not yet. Listed here so you do not assume they exist.
 
-- **Per-SSID profiles.** Different rotation cadence, hostname policy, or DHCP option set per network. The config schema reserves the namespace. Useful for "treat home Wi-Fi differently from the airport." Deferred to v2.
 - **Bluetooth BR/EDR (classic) BD_ADDR rotation.** Per-vendor HCI commands with bricking risk. Deferred until there is a known-good chipset matrix. See the Bluetooth section above.
-- **macOS / Windows ports.** The CLI, config, and wiki layers stay portable thanks to the `Platform` trait. No commitment, no v1 work.
+- **macOS / Windows ports.** The CLI, config, and wiki layers stay portable thanks to the `NetworkBackend` trait. No commitment, no v1 work.
 - **A GUI.** Proteus is CLI-first. The CLI is designed to be wrappable so someone can build a GUI later without forking.
 - **Telemetry, update checks, analytics.** Never. Not deferred — actively refused. Proteus does not phone home.
 - **A "stealth" mode that disables logging.** No. Proteus logs to journald so you can audit what it did. Logging is a feature, not a leak.
@@ -204,7 +203,7 @@ If you find a place in Proteus's documentation, error messages, or marketing tha
 
 ## Personas
 
-Persona mode (roadmap Milestone 2; see `proteus wiki personas` for the field manual) is the second of Proteus's two stealth strategies. Where the entropy-based randomizer disappears you into noise, persona mode shapes every fingerprint Proteus already controls to look like one specific real device — iPhone 15, MacBook Air M3, Samsung TV, ESP32-class IoT widget. Both modes coexist in the same binary and use the same loader; the user picks which one their threat model wants via `proteus persona use <id>` (or `proteus persona clear` to drop back to plain randomizer).
+Persona mode (see `proteus wiki personas` for the field manual) is the second of Proteus's two stealth strategies. Where the entropy-based randomizer disappears you into noise, persona mode shapes every fingerprint Proteus already controls to look like one specific real device — iPhone 15, MacBook Air M3, Samsung TV, ESP32-class IoT widget. Both modes coexist in the same binary and use the same loader; the user picks which one their threat model wants via `proteus persona use <id>` (or `proteus persona clear` to drop back to plain randomizer).
 
 What persona mode defeats:
 
@@ -230,4 +229,4 @@ Net: persona mode shifts you from "that one Linux laptop" to "another iPhone on 
 - `proteus wiki rf-fingerprinting` — RF L1 limits in detail. What a swappable USB adapter buys you and what TX power reduction does not.
 - `proteus wiki bluetooth` — BR/EDR rotation limits in detail. The per-vendor HCI mess and why BLE RPA is the supported path.
 - `proteus wiki dns` — the one ECS-strip knob and its hard guard. The detect-and-defer rule for dnscrypt-proxy, Pi-hole, AdGuard Home, custom resolv.conf.
-- `proteus wiki verifying` — tcpdump, avahi-browse, and nmap recipes to confirm Proteus is doing what it claims. Lands in phase F.
+- `proteus wiki verifying` — tcpdump, avahi-browse, and nmap recipes to confirm Proteus is doing what it claims.
