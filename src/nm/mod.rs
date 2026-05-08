@@ -157,11 +157,41 @@ pub async fn list_devices(conn: &zbus::Connection) -> Result<Vec<DeviceInfo>> {
             .path(path.clone())?
             .build()
             .await?;
-        let iface = dev.interface().await.unwrap_or_default();
-        let dt = dev.device_type().await.unwrap_or(0);
+        // Issue #248: previously every property read used `unwrap_or_default()`,
+        // which silently produced ghost devices (empty iface name, kind
+        // `Other(0)`, no connections) when NM raced a `Removed` signal
+        // against our enumeration. The ghost would then be silently
+        // skipped by every downstream consumer with no log line — the
+        // operator never knew a rotation had been swallowed. Now: any
+        // single property failing skips the device with a logged warning
+        // that names the device path AND the property that failed, so
+        // a `journalctl -t proteus` grep is enough to debug it.
+        macro_rules! read_or_skip {
+            ($call:expr, $prop:literal) => {
+                match $call.await {
+                    Ok(v) => v,
+                    Err(e) => {
+                        tracing::warn!(
+                            device = %path.as_str(),
+                            property = $prop,
+                            "NM device property read failed; skipping device: {e}"
+                        );
+                        continue;
+                    }
+                }
+            };
+        }
+        let iface: String = read_or_skip!(dev.interface(), "Interface");
+        let dt: u32 = read_or_skip!(dev.device_type(), "DeviceType");
+        // HwAddress is allowed to be missing — virtual / non-L2 devices
+        // legitimately don't expose one. We propagate `None` rather than
+        // skip the device. A real DBus failure is still distinguishable
+        // from "the property doesn't exist" because `.ok()` returns
+        // `None` for both — but the operator path that cares (rotate)
+        // surfaces the missing-MAC condition with its own clear error.
         let hw = dev.hw_address().await.ok();
-        let managed = dev.managed().await.unwrap_or(false);
-        let conns = dev.available_connections().await.unwrap_or_default();
+        let managed: bool = read_or_skip!(dev.managed(), "Managed");
+        let conns = read_or_skip!(dev.available_connections(), "AvailableConnections");
         out.push(DeviceInfo {
             interface: iface,
             kind: DeviceKind::from_nm(dt),

@@ -152,7 +152,23 @@ pub async fn detect_service(conn: &zbus::Connection) -> bool {
         Ok(b) => b,
         Err(_) => return false,
     };
-    proxy.name_has_owner(bus).await.unwrap_or(false)
+    // Issue #248: previously this swallowed the DBus error silently,
+    // which meant a transient bus failure looked identical to "BlueZ
+    // is not running." Surface the error at debug level so an operator
+    // hunting "why didn't BT detect work?" has a journal line to find.
+    // We still return `false` because the caller can't act on a transient
+    // DBus error any differently from "service absent" — but at least
+    // the failure is observable now.
+    match proxy.name_has_owner(bus).await {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::debug!(
+                service = "org.bluez",
+                "DBus NameHasOwner check failed; treating as not running: {e}"
+            );
+            false
+        }
+    }
 }
 
 /// Connect to the system bus and list adapters, returning `Ok(None)` when
