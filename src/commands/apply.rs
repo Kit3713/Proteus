@@ -64,21 +64,40 @@ impl Tally {
 }
 
 pub fn run(yes: bool, state_path: Option<&Path>, config_path: Option<&Path>) -> Result<u8> {
-    if let Err(code) = super::require_yes(yes, "'apply' is mutating", "proteus help apply") {
-        return Ok(code);
-    }
+    // root check first — every other failure mode below is a no-op for
+    // a non-root caller, so surfacing the privilege error first keeps
+    // the message clean.
     if let Err(e) = super::require_root() {
         eprintln!("proteus: {e}");
         return Ok(exit::PERMISSION_ERROR);
     }
+
+    // NMOD.1 (high): load and validate the config BEFORE acquiring the
+    // state lock. The previous shape took the lock first, then loaded +
+    // validated. Combined with C1 / N12.13 (HELD mutex held across retry
+    // sleep) a misconfigured per-SSID block could starve the rotate
+    // timer for the full 5 s budget on every retry — the lock sat idle
+    // while the validator returned an error. With load-before-lock, a
+    // typo'd config fails fast and the lock is never taken.
+    let cfg_path = super::config_path(config_path);
+    let config = Config::default_or_loaded(&cfg_path)?;
+
+    // NMOD.2: the `--yes` gate must run AFTER config validation so a user
+    // with a typo'd `[per_ssid]` block sees the parse error before the
+    // confirmation prompt. Without this reorder the operator confirms,
+    // then the validator rejects — the "confirmation = mutation
+    // imminent" invariant breaks because no mutation actually happens.
+    if let Err(code) = super::require_yes(yes, "'apply' is mutating", "proteus help apply") {
+        return Ok(code);
+    }
+
     // Issue #126: serialize concurrent mutating runs on <state-dir>/.lock.
+    // Acquired AFTER config validation (NMOD.1) so a misconfig never
+    // pins the lock budget.
     let _lock = match super::acquire_state_lock_or_print(state_path) {
         Ok(g) => g,
         Err(code) => return Ok(code),
     };
-
-    let cfg_path = super::config_path(config_path);
-    let config = Config::default_or_loaded(&cfg_path)?;
 
     // Roadmap Milestone 1: resolve the backend once at the top of the
     // apply cycle. Per-feature runners select again internally (each
@@ -462,12 +481,17 @@ fn summarize_timer_report(report: &crate::timer::ReconcileReport) -> String {
         .join(", ")
 }
 
+/// C3: subprocesses called from the apply orchestrator must not block
+/// the lock-holding caller forever. A wedged `systemctl daemon-reload`
+/// or `nft` can otherwise hang `proteus apply` (and the rotate-timer
+/// dispatcher behind it) indefinitely. 30 s is an order of magnitude
+/// past the longest legitimate `systemctl` reload + restart cycle on
+/// the workstations Proteus targets.
+const SUBPROCESS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 fn systemctl(args: &[&str]) -> anyhow::Result<()> {
-    use anyhow::{Context, anyhow};
-    let output = std::process::Command::new("systemctl")
-        .args(args)
-        .output()
-        .context("invoking systemctl")?;
+    use anyhow::anyhow;
+    let output = run_with_timeout("systemctl", args, SUBPROCESS_TIMEOUT)?;
     if output.status.success() {
         return Ok(());
     }
@@ -478,6 +502,66 @@ fn systemctl(args: &[&str]) -> anyhow::Result<()> {
         output.status,
         stderr.trim()
     ))
+}
+
+/// C3: spawn `program args...`, wait up to `timeout`, kill on overrun.
+/// Returns the captured output on a normal exit, or an `Err` if the
+/// child hangs past the budget. The kill is best-effort — a child that
+/// resists SIGKILL is the kernel's problem at that point, but we still
+/// surface a clean error to the caller so the lock is released.
+pub(crate) fn run_with_timeout(
+    program: &str,
+    args: &[&str],
+    timeout: std::time::Duration,
+) -> anyhow::Result<std::process::Output> {
+    use anyhow::{Context, anyhow};
+    use std::io::Read;
+    use std::process::{Command, Stdio};
+
+    let mut child = Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .with_context(|| format!("spawning {program}"))?;
+
+    let start = std::time::Instant::now();
+    let poll = std::time::Duration::from_millis(50);
+    loop {
+        match child
+            .try_wait()
+            .with_context(|| format!("polling {program}"))?
+        {
+            Some(status) => {
+                let mut stdout = Vec::new();
+                let mut stderr = Vec::new();
+                if let Some(mut s) = child.stdout.take() {
+                    let _ = s.read_to_end(&mut stdout);
+                }
+                if let Some(mut s) = child.stderr.take() {
+                    let _ = s.read_to_end(&mut stderr);
+                }
+                return Ok(std::process::Output {
+                    status,
+                    stdout,
+                    stderr,
+                });
+            }
+            None => {
+                if start.elapsed() >= timeout {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(anyhow!(
+                        "{program} {} timed out after {}s",
+                        args.join(" "),
+                        timeout.as_secs()
+                    ));
+                }
+                std::thread::sleep(poll);
+            }
+        }
+    }
 }
 
 /// Map an exit-code-returning command result into a component report. Any

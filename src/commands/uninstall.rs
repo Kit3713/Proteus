@@ -272,10 +272,32 @@ mod tests {
         assert_eq!(resolve_binary_path(alt), alt.to_path_buf());
     }
 
+    /// S1: every test that mutates `std::env` must take this mutex before
+    /// touching `set_var` / `remove_var`. cargo runs tests in parallel by
+    /// default, so two tests racing on the same env keys can interleave
+    /// reads and writes — the consequence in 2024-edition Rust is "UB
+    /// per std::env safety contract", and on a real CI runner has shown
+    /// up as flaky test failures in unrelated suites.
+    static ENV_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// S1: re-acquire the env serial mutex even after a poisoned lock so
+    /// a panic in one env-mutating test doesn't take down every other
+    /// env-mutating test in the same process.
+    fn env_serial() -> std::sync::MutexGuard<'static, ()> {
+        ENV_SERIAL.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     #[test]
     fn layout_honors_env_overrides() {
-        // Safety: env mutation needs unsafe in 2024 edition; the keys here
-        // are unique to this test so cross-test bleed is unlikely.
+        // S1: serialize against any other test in this module that
+        // touches the same env keys — `unsafe { set_var }` racing with
+        // `Layout::from_env()` (which calls `var_os`) violates the
+        // 2024-edition env safety contract.
+        let _serial = env_serial();
+
+        // Safety: env mutation needs unsafe in 2024 edition; ENV_SERIAL
+        // above is the harness that makes this safe under cargo's
+        // default parallel test runner.
         //
         // Security audit M-2 / N-0: in production the env vars are
         // ignored entirely (see `env_path_ignored_in_production_shape`).
