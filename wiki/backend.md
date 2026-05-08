@@ -1,6 +1,6 @@
 Proteus controls a Linux host's network identifiers through a `NetworkBackend` trait that abstracts over NetworkManager, systemd-networkd, and raw `ip`+`iw` calls. This page is the user-facing view of that abstraction — what each backend covers, how `proteus` picks one at runtime, how to pin a choice, and what to expect when the host doesn't ship NM at all.
 
-The roadmap rationale lives in `docs/ROADMAP.md` Milestone 1; this page is the day-to-day operator's reference.
+The roadmap rationale lives in `docs/ROADMAP-v0.3.md` Milestone 1; this page is the day-to-day operator's reference.
 
 ## What a backend is
 
@@ -14,7 +14,7 @@ Three impls ship today:
 | `networkd` | 🚧 partial | `/run/systemd/network` exists | `org.freedesktop.network1` DBus + `/etc/systemd/network/*.network` drop-ins |
 | `raw` | 🚧 partial | `/sbin/ip` or `/usr/bin/ip` exists | direct `ip`/`iw`/`wpa_supplicant`/`iwd` calls |
 
-"Partial" means the read paths return sensible defaults and the trait compiles, but the mutating writes (set cloned MAC, set DHCP options, write 802.1X anonymous identity, renew lease) still bail with `"backend::<name>: not yet implemented (Milestone 1 follow-up)"`. Track the full implementations in `docs/ROADMAP.md`.
+"Partial" means the read paths return sensible defaults and the trait compiles, but the mutating writes (set cloned MAC, set DHCP options, write 802.1X anonymous identity, renew lease) still bail with `"backend::<name>: not yet implemented (Milestone 1 follow-up)"`. Track the full implementations in `docs/ROADMAP-v0.3.md`.
 
 ## Selection at runtime
 
@@ -90,4 +90,4 @@ The `nm.sh` scenario exercises the full feature set against a podman container r
 - The `read_factory_mac` path always delegates to `mac::factory::permanent_address` — there's no per-backend factory-MAC source. Backends differ in how they *write* the cloned MAC, not in how they read the burned-in one.
 - DHCP option 55 (parameter request list) is honoured by the schema and the persona-fingerprint surface, but NM exposes no direct setter for it; the persona's `parameter_request_list` is logged at debug level today and will land on the wire when networkd's native dhclient.conf path goes live (Milestone 1 follow-up).
 
-The roadmap (`docs/ROADMAP.md` Milestone 1) tracks the gaps. New backends are welcomed via the same trait; community contributions are tracked in `CONTRIBUTING.md`.
+The roadmap (`docs/ROADMAP-v0.3.md` Milestone 1) tracks the gaps. New backends are welcomed via the same trait; community contributions are tracked in `CONTRIBUTING.md`.

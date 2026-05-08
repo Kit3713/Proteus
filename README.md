@@ -19,9 +19,9 @@ What has shipped on `main`:
   - **M4 Fingerprint hardening + RF + rotation triggers.** `proteus resolved` (mDNS+LLMNR off), `proteus ntp` (timesyncd normalization, detect-and-defer), nftables `extra_drops` chain. `proteus rf scan/chipset` + per-scan MAC randomization. `proteus dhcp renew`. Event-driven framework (`proteus events run`) under a hardened systemd unit.
   - **M5 Distro reach.** Init-system abstraction (`Systemd`/`Openrc`/`Runit`/`Sysvinit`), aarch64 + armv7 cross-compile matrix, packaging recipes for Alpine APKBUILD + Void template + Gentoo ebuild + AUR `-bin`/`-git` + Copr spec polish + Debian submission-prep.
   - **M6 Ergonomics + bug-fix queue.** Short aliases (`proteus s/r/a`), `--watch` mode, `proteus completions <bash|zsh|fish>`, `LOCK_BUSY` exit code, `State::schema_version` migration ladder, 13 bug-fix items closed. [wiki/troubleshooting.md](wiki/troubleshooting.md) symptom matrix. [docs/security/dbus-surface.md](docs/security/dbus-surface.md) audit artifact.
-- **v0.4 cycle "Bug + vulnerability hunt"** — no new features. The May 2026 vulnerability hunt cluster (30+ issues) plus three critical-for-beta fixes (#276 packaging version sync, #284 `Mac::from_str` panic, #297 `timer set` newline injection) ship in `v0.4.0-beta1`.
+- **v0.4.x cycle "Hardening Across Streams"** — no new features. `v0.4.0-beta1` shipped the May 2026 vulnerability-hunt cluster (30+ issues) plus three critical-for-beta fixes (#276 packaging version sync, #284 `Mac::from_str` panic, #297 `timer set` newline injection). The remaining ~75 items from [`docs/ISSUES.md`](docs/ISSUES.md) — including 4 critical CLI confirmation bypasses and 21 high-severity findings — land across ten parallelisable streams in [`docs/ROADMAP.md`](docs/ROADMAP.md). The cycle stays inside `0.4.x-beta` until every Critical and High row has a `fixed-in` version.
 
-See [CHANGELOG.md](CHANGELOG.md) for the full list and [docs/ROADMAP.md](docs/ROADMAP.md) for the operational view.
+See [CHANGELOG.md](CHANGELOG.md) for the full list and [docs/ROADMAP.md](docs/ROADMAP.md) for the operational view. Prior cycles: [docs/ROADMAP-v0.3.md](docs/ROADMAP-v0.3.md), [docs/ROADMAP-v0.1.md](docs/ROADMAP-v0.1.md).
 
 ## What it does
 
@@ -166,7 +166,8 @@ Suggested entry points:
 Project-level docs:
 
 - [docs/PLAN.md](docs/PLAN.md) — what is being built and in what order
-- [docs/ROADMAP.md](docs/ROADMAP.md) — operational status by phase
+- [docs/ROADMAP.md](docs/ROADMAP.md) — operational status by stream
+- [docs/ISSUES.md](docs/ISSUES.md) — full issue inventory feeding the v0.4.x cycle
 - [docs/PRIOR-ART.md](docs/PRIOR-ART.md) — what already exists and where Proteus fits
 - [CHANGELOG.md](CHANGELOG.md) — release notes per version
 - [SECURITY.md](SECURITY.md) — how to report vulnerabilities
@@ -174,7 +175,7 @@ Project-level docs:
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). The major phases are landed; the open frontiers right now are real-world testing on diverse Wi-Fi (coffee shops, hotels, conferences with quirky DHCP servers), independent security review of the threat model + DBus surface, and distro adoption (AUR/Copr/Debian-unstable submissions need a packager sponsor). [docs/ROADMAP.md](docs/ROADMAP.md) marks every item; pick something flagged planned and open an issue first if it is non-trivial.
+See [CONTRIBUTING.md](CONTRIBUTING.md). The major phases are landed; v0.4.x is hardening across ten parallel streams (see [docs/ROADMAP.md](docs/ROADMAP.md)). The streams are partitioned by file area, so multiple contributors can work simultaneously without merge conflict. The open frontiers folded into Stream 10 are real-world testing on diverse Wi-Fi (coffee shops, hotels, conferences with quirky DHCP servers), independent security review of the threat model + DBus surface, and distro adoption (AUR/Copr/Debian-unstable submissions need a packager sponsor). Pick any ⏳ row and open an issue first if it is non-trivial.
 
 ## License
 

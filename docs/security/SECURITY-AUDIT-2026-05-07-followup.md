@@ -1,38 +1,27 @@
-# Security audit follow-up — 2026-05-07 (v0.2.7-alpha)
+# Security audit follow-up — 2026-05-07 (v0.2.7-alpha) (ARCHIVED)
 
-> **Maintainer note (2026-05-08).** This document is preserved verbatim as the
-> v0.2.7-alpha re-audit record. The status table below brings the findings
-> forward to the v0.4.2-beta release window. Original finding text is
-> unchanged. Cross-reference with
-> [`SECURITY-AUDIT-2026-05-07.md`](./SECURITY-AUDIT-2026-05-07.md).
+> **Archived 2026-05-08.** This document is preserved verbatim as the
+> v0.2.7-alpha re-audit record. **Live status tracking has moved to
+> [`docs/ROADMAP.md`](../ROADMAP.md).** Do not update status against this
+> file; resolve work against the roadmap streams listed in the
+> "Source-of-truth migration" section there. The original audit at
+> [`SECURITY-AUDIT-2026-05-07.md`](./SECURITY-AUDIT-2026-05-07.md) is also
+> archived.
 
-## Status table (added 2026-05-08)
+## Where the open findings now live
 
-| ID | Severity | Status on `main` (v0.4.2-beta prep) | Reference |
-|----|----------|--------------------------------------|-----------|
-| N‑0 | High (regression of M‑2) | **OPEN.** `PROTEUS_*_DIR` env-var hardening in flight for v0.4.2-beta. |  in flight  |
-| N‑1 | Low | **OPEN.** `ethtool -P <iface>` validation in `mac/factory.rs` tracked for v0.4.2-beta. |  in flight  |
-| N‑2 | Low | **Fixed.** Terminal-escape sanitization for SSID / NM connection IDs (echo/print sanitization). | PR #224 |
-| N‑3 | Low | **Partial.** Lockfile mode now `0o600` (perms fixed); `O_NOFOLLOW` symlink TOCTOU still tracked for v0.4.2-beta. | PR #310 (perms); symlink in flight |
-| T‑1 | Test failure (non-security) | **Fixed.** `captured_factory_mac_persists_to_disk` test no longer trips on host-state in CI; `capture_original_mac` test path threads through `permanent_address_under` with a sandboxed sysfs root. | (closed; verify in v0.4.2-beta1 run) |
+This follow-up filed five new IDs (N-0 through N-3, plus T-1). N-2 and T-1
+landed in `main`. The remaining three are absorbed into the roadmap:
 
----
+| ID | Severity | Roadmap home |
+|----|----------|--------------|
+| N‑0 (regression of M‑2) | High | [Roadmap Stream 9](../ROADMAP.md) — `PROTEUS_*_DIR` env hardening |
+| N‑1 | Low | [Roadmap Stream 4](../ROADMAP.md) — `ethtool -P` iface validation |
+| N‑3 (residual) | Low | [Roadmap Stream 5](../ROADMAP.md) — `O_NOFOLLOW` on `state_lock` open |
 
-## Status of the v0.1.0-alpha findings
-
-| ID | Status | Verifier |
-|----|--------|----------|
-| H‑1 | **Fixed.** `proteus portal open` no longer auto-launches `xdg-open`; it prints the URL and refuses any non-`http(s)` scheme. `try_xdg_open` is gone. | `src/commands/portal.rs:170-191`, commit `dd41608` |
-| H‑2 | **Fixed.** `write_atomic` now uses `OpenOptions::create_new` (`O_CREAT\|O_EXCL`), an 8-byte `getrandom` random suffix, mode `0o600`, RAII tempfile cleanup, parent-dir fsync. Single hardened helper used by all callers. | `src/commands/mod.rs:174-237`, commit `3d4af8d` |
-| M‑1 | **Fixed.** `ipv6::write_sysctl` now calls `validate_iface_name`, which mirrors kernel `dev_valid_name()` (≤15 bytes, no `/`, NUL, whitespace, `:`, no `.`/`..`); `read_snapshot` calls it too. | `src/ipv6/mod.rs:157-201`, commit `8315bcd` |
-| M‑2 | **NOT FIXED.** See N‑0 below — `Layout::from_env()` still reads `PROTEUS_CONFIG_DIR` / `PROTEUS_STATE_DIR` / `PROTEUS_SYSTEMD_DIR` in the production code path with no `cfg(test)` gate and no allowlist. | `src/commands/uninstall.rs:55,99-121` |
-| M‑3 | **Fixed.** `parse_http_url` rejects host or path with any byte `< 0x20` or `0x7F` via `is_request_safe`. | `src/captive_portal/mod.rs:265-287`, commit `dd41608` |
-| L‑1 | Not directly addressed — modulo bias remains in MAC OUI / BT alias selection. Still cosmetic. | `src/mac/generator.rs`, `src/bluetooth/alias.rs` |
-| L‑2 | **Fixed.** `parse_interval` rejects `\n \r \0 [ ]`; `annotate_disable_reason` strips CR/LF from the user-supplied reason. | `src/timer/mod.rs:111-122`, `src/commands/config_cmd.rs:336-353`, commit `d1241b6` |
-| L‑3 | **Partially fixed.** `is_safe_iface` added in `src/rf/mod.rs` and `src/kill_switch/mod.rs`. **Missed call site** flagged in N‑1 below. | commit `dd41608` |
-| L‑4 | **Documented, not eliminated.** A warning is printed when `$HOME != /root`. The actual privilege drop / allowlist was deferred. Acceptable mitigation if documented in the wiki. | `src/commands/config_cmd.rs:120-141`, commit `d1241b6` |
-| I‑1 | Not addressed — three SHA-256 copies still exist (`src/dns/apply.rs`, `src/stack/sha256.rs`, `src/diff/sha256.rs`, plus a fourth in `src/ipv6/mod.rs:230+`). Cosmetic. |
-| I‑2 | Not visible in commit log. |
+The original-audit findings re-checked here (H-1 through I-2) are also covered
+in the parent file's archival header. Use the finding text below for
+implementation context; do not file a new issue against this file.
 
 ---
 

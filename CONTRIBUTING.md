@@ -1,6 +1,6 @@
 # Contributing to Proteus
 
-Thanks for considering. Proteus is a small, focused project — see status in the [README](README.md). The major build-out is landed; v0.4 is bug-and-vulnerability-hunt only.
+Thanks for considering. Proteus is a small, focused project — see status in the [README](README.md). The major build-out is landed; v0.4.x is the "Hardening Across Streams" cycle — ten parallelisable workstreams partitioned by file area so multiple contributors can land changes simultaneously without merge conflict. See [`docs/ROADMAP.md`](docs/ROADMAP.md) for the stream map and the unfixed-issue inventory in [`docs/ISSUES.md`](docs/ISSUES.md).
 
 ## What helps right now
 

@@ -2,7 +2,7 @@ Persona mode is the second of Proteus's two stealth strategies. Where the existi
 
 This page is the field manual: what persona mode does and does not defeat, the schema, how to author your own, the built-in catalogue, and the verification checklist.
 
-For the design rationale, see `docs/ROADMAP.md` (Milestone 2 of the v0.3 cycle). For the threat-model boundary in plain English, see `proteus wiki threat-model`.
+For the design rationale, see `docs/ROADMAP-v0.3.md` (Milestone 2 of the v0.3 cycle). For the threat-model boundary in plain English, see `proteus wiki threat-model`.
 
 ## What persona mode is
 
