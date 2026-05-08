@@ -324,8 +324,14 @@ mod tests {
     /// `PERMISSION_ERROR`. Together with the disabled-config test above
     /// this pins the gate-ordering: config errors print before privilege
     /// errors so `--force` users see the right message.
+    ///
+    /// Skipped when EUID=0 (CI containers run as root) — the gate
+    /// branch we're pinning is unreachable there.
     #[test]
     fn run_with_force_clears_config_gate_then_hits_root_gate() {
+        if super::super::read_uid() == Some(0) {
+            return;
+        }
         let dir = std::env::temp_dir().join(format!("proteus-events-force-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
         let cfg_path = dir.join("config.toml");
@@ -340,8 +346,14 @@ mod tests {
     /// Issue #223 mirror: `[events] enabled = true` clears the config
     /// gate without `--force` and lands on the same root gate. Pins the
     /// opt-in flag's semantics through the new privilege check.
+    ///
+    /// Skipped when EUID=0 (CI containers run as root) — the gate
+    /// branch we're pinning is unreachable there.
     #[test]
     fn run_with_enabled_true_clears_config_gate_then_hits_root_gate() {
+        if super::super::read_uid() == Some(0) {
+            return;
+        }
         let dir =
             std::env::temp_dir().join(format!("proteus-events-enabled-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);

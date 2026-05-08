@@ -526,11 +526,17 @@ mod tests {
 
     /// Issue #235: `kill_status` now requires root to match reality
     /// (state.json is mode 0600 in /var/lib/proteus mode 0700). The
-    /// cargo-test process is non-root, so the gate returns
+    /// cargo-test process is normally non-root, so the gate returns
     /// `PERMISSION_ERROR` before the state file is even read; the
     /// test pins the gate's existence and exit code.
+    ///
+    /// Skipped when EUID=0 (CI containers run as root) — the gate
+    /// branch we're pinning is unreachable there.
     #[test]
     fn status_returns_permission_error_when_not_root() {
+        if super::super::read_uid() == Some(0) {
+            return;
+        }
         let path = temp_state_path("status-clean");
         let code = kill_status(true, Some(&path)).unwrap();
         assert_eq!(code, exit::PERMISSION_ERROR);
@@ -541,8 +547,14 @@ mod tests {
     /// state.json, the non-root path returns `PERMISSION_ERROR` (the
     /// gate fires before `State::load`). State round-trip is exercised
     /// elsewhere — this test just pins the privilege check.
+    ///
+    /// Skipped when EUID=0 (CI containers run as root) — the gate
+    /// branch we're pinning is unreachable there.
     #[test]
     fn status_returns_permission_error_with_populated_state() {
+        if super::super::read_uid() == Some(0) {
+            return;
+        }
         let path = temp_state_path("status-active");
         let s = State {
             kill_switch: KillSwitchState {
