@@ -937,12 +937,38 @@ fn validate_timer_interval(field: &str, s: &str) -> Result<()> {
 /// `per_ssid.rs::parse_duration` accepts (`30s`/`5m`/`2h`/`1d`).
 /// Centralised so the load-time validator and the SSID `set` writer
 /// stay in lock-step.
+///
+/// Issue N12.5 / GH#272 sibling: previously this used
+/// `s.split_at(s.len() - 1)` which slices on a byte boundary. A trailing
+/// multibyte UTF-8 character (e.g. `5µ`) lands the split mid-codepoint and
+/// panics. With `panic = abort` set crate-wide a hostile or hand-edited
+/// `[per_ssid.<x>] rotate_interval = "5µ"` would abort the process at
+/// config-load time. Split on the last *char* boundary via `char_indices`
+/// and reject any non-ASCII suffix as off-format.
+///
+/// P1: a length check via `s.len() < 2` is byte-based; an input that is a
+/// single multibyte character has byte-length >= 2 and would have passed
+/// the old guard. The `char_indices` approach inherently handles that
+/// case — `next_back()` returns `None` on empty, and the unit-length check
+/// rejects multibyte suffixes — so the function never reaches the
+/// would-panic split.
 pub(crate) fn is_valid_per_ssid_duration(s: &str) -> bool {
     let s = s.trim();
-    if s.len() < 2 {
+    if s.is_empty() {
         return false;
     }
-    let (num, unit) = s.split_at(s.len() - 1);
+    // Find the last char boundary; bail if there is no char (empty after trim).
+    let Some((last_idx, _)) = s.char_indices().next_back() else {
+        return false;
+    };
+    if last_idx == 0 {
+        // Single character only — no numeric prefix, off-format.
+        return false;
+    }
+    let (num, unit) = s.split_at(last_idx);
+    if unit.len() != 1 || !unit.is_ascii() {
+        return false;
+    }
     let Ok(n) = num.parse::<u64>() else {
         return false;
     };
