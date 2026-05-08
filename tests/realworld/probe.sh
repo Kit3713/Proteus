@@ -97,12 +97,26 @@ if command -v nmcli >/dev/null 2>&1; then
 fi
 
 if command -v iw >/dev/null 2>&1; then
-  for iface in $(ls /sys/class/net 2>/dev/null); do
-    if [ -d "/sys/class/net/$iface/phy80211" ]; then
-      run "iw-link-$iface" iw dev "$iface" link || true
-      run "iw-info-$iface" iw dev "$iface" info || true
+  # Roadmap NTEST.3: guard the sysfs walk. Without `/sys/class/net` mounted
+  # (containers without a netns, restricted sandboxes, certain CI runners)
+  # the previous loop ran zero iterations and the script "passed" without
+  # ever probing iw. Surface the skip so a silent regression here is loud
+  # in the run log instead of a blank spot.
+  if [ ! -d /sys/class/net ]; then
+    echo "skip: iw probes — /sys/class/net not present (no netns mounted?)" >&2
+  else
+    found_any_wifi=0
+    for iface in $(ls /sys/class/net 2>/dev/null); do
+      if [ -d "/sys/class/net/$iface/phy80211" ]; then
+        found_any_wifi=1
+        run "iw-link-$iface" iw dev "$iface" link || true
+        run "iw-info-$iface" iw dev "$iface" info || true
+      fi
+    done
+    if [ "$found_any_wifi" -eq 0 ]; then
+      echo "skip: iw probes — no phy80211 interfaces under /sys/class/net" >&2
     fi
-  done
+  fi
 fi
 
 run dig dig +short @1.1.1.1 example.com || true
