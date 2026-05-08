@@ -578,7 +578,7 @@ Stream 9), S1, audit N‑3 (residual), NEV2.3, NMOD.1, NMOD.2, NBE.6.
 assert no thread blocks more than 5 s; assert no `panic = abort` is
 triggered.
 
-### Stream 6 — Panic Hardening ⏳
+### Stream 6 — Panic Hardening ✅
 
 **Files (disjoint from all other streams):** `src/hostname/mod.rs`,
 `src/diff/mod.rs`, `src/commands/mod.rs` (SHA verification path only),
@@ -589,20 +589,20 @@ Stream 4 does not touch this function).
 
 **Work:**
 
-- ⏳ Empty-label hostname validator: replace bounds-panic with structured
+- ✅ Empty-label hostname validator: replace bounds-panic with structured
   error (P2).
-- ⏳ `.file_name().unwrap()` sites in diff and SHA verify: handle `..` /
+- ✅ `.file_name().unwrap()` sites in diff and SHA verify: handle `..` /
   trailing-slash paths (P3, P4).
-- ⏳ Off-by-one in CRLF body slice (P5); probe `as u8` truncation guard
+- ✅ Off-by-one in CRLF body slice (P5); probe `as u8` truncation guard
   (P6).
-- ⏳ `proteus diff` reads target files unbounded → cap to 64 MiB and
+- ✅ `proteus diff` reads target files unbounded → cap to 64 MiB and
   surface a clear error past that (N12.10).
-- ⏳ `proteus diff`: cross-reference `state.json`'s tracked-paths set
+- ✅ `proteus diff`: cross-reference `state.json`'s tracked-paths set
   against the filesystem and emit a "missing" entry per absent file in the
   diff report (NMOD.3). Currently `compute_managed_file_drift` only walks
   the filesystem, so files Proteus once managed but the operator deleted
   are silently invisible.
-- ⏳ `tests/realworld/probe.sh`: pre-check `[ -d /sys/class/net ]` and skip
+- ✅ `tests/realworld/probe.sh`: pre-check `[ -d /sys/class/net ]` and skip
   with a clear message when `/sys` is not mounted (NTEST.3) — currently the
   loop runs zero times and the script "passes" with no probing.
 

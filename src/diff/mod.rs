@@ -73,7 +73,7 @@ pub fn build_report(config: &Config, state: Option<&State>, etc_root: &Path) -> 
     Report {
         schema_version: SCHEMA_VERSION,
         config_drift: compute_config_drift(config),
-        managed_file_drift: compute_managed_file_drift(etc_root),
+        managed_file_drift: compute_managed_file_drift_with_state(etc_root, state),
         state_summary: summarize_state(state),
     }
 }
@@ -211,18 +211,145 @@ fn known_managed_paths(etc_root: &Path) -> Vec<PathBuf> {
     out
 }
 
+/// Roadmap N12.10: cap any single managed file we read for `proteus diff` at
+/// 64 MiB. Proteus drop-ins are routinely <2 KiB; a multi-megabyte file is a
+/// strong signal that the path was clobbered (or symlinked) into something we
+/// shouldn't fully buffer. `read_capped` reads up to `MAX_DIFF_FILE_BYTES + 1`
+/// so we can detect the over-cap case without allocating an unbounded body.
+pub const MAX_DIFF_FILE_BYTES: u64 = 64 * 1024 * 1024;
+
+fn read_capped(path: &Path, cap: u64) -> std::io::Result<Vec<u8>> {
+    use std::io::Read;
+    let f = std::fs::File::open(path)?;
+    // Read up to `cap + 1` bytes; if the +1 byte materializes the file is
+    // larger than our budget and we surface FileTooLarge.
+    let mut limited = f.take(cap.saturating_add(1));
+    let mut buf = Vec::new();
+    limited.read_to_end(&mut buf)?;
+    if buf.len() as u64 > cap {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::FileTooLarge,
+            format!(
+                "{} exceeds the {}-byte diff cap; refusing to fully buffer",
+                path.display(),
+                cap
+            ),
+        ));
+    }
+    Ok(buf)
+}
+
 pub fn compute_managed_file_drift(etc_root: &Path) -> Vec<FileDrift> {
+    compute_managed_file_drift_with_state(etc_root, None)
+}
+
+/// Roadmap NMOD.3: cross-reference `state.json`'s applied-originals markers
+/// against the filesystem. The previous `compute_managed_file_drift`
+/// silently skipped paths that were missing from disk — which means a
+/// Proteus-managed file the operator deleted (manually or via a packaged
+/// uninstall that didn't go through `proteus`) wouldn't surface in
+/// `proteus diff` at all. Now, when `state` indicates we've applied that
+/// surface (sysctls touched, IPv6 originals captured, NM dispatcher writers
+/// run, timesyncd timesync'd), the absence of the corresponding file is
+/// reported as a missing-drift entry.
+pub fn compute_managed_file_drift_with_state(
+    etc_root: &Path,
+    state: Option<&State>,
+) -> Vec<FileDrift> {
     let mut out = Vec::new();
-    for path in known_managed_paths(etc_root) {
-        let bytes = match std::fs::read(&path) {
+    let expected_present: std::collections::BTreeSet<PathBuf> =
+        expected_managed_paths(etc_root, state);
+    let known = known_managed_paths(etc_root);
+    let mut visited: std::collections::BTreeSet<PathBuf> = std::collections::BTreeSet::new();
+    for path in known {
+        visited.insert(path.clone());
+        let bytes = match read_capped(&path, MAX_DIFF_FILE_BYTES) {
             Ok(b) => b,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                // NMOD.3: only surface this as drift if state.json said we
+                // ever applied this surface. Otherwise it's "not yet
+                // applied", which is the original silently-skip behaviour.
+                if expected_present.contains(&path) {
+                    out.push(FileDrift {
+                        path: path.display().to_string(),
+                        expected_sha: None,
+                        actual_sha: String::new(),
+                        drift: true,
+                        reason: "missing on disk (state.json says proteus applied this)"
+                            .to_string(),
+                    });
+                }
+                continue;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::FileTooLarge => {
+                // N12.10: surface the cap as drift so the operator sees
+                // exactly which file blew the budget instead of a silent skip.
+                out.push(FileDrift {
+                    path: path.display().to_string(),
+                    expected_sha: None,
+                    actual_sha: String::new(),
+                    drift: true,
+                    reason: format!("file exceeds {}-byte diff cap: {e}", MAX_DIFF_FILE_BYTES),
+                });
+                continue;
+            }
             Err(e) => {
                 tracing::warn!("skip {}: {e}", path.display());
                 continue;
             }
         };
         out.push(check_file(&path, &bytes));
+    }
+    // NMOD.3 second half: any expected-by-state path that wasn't in the
+    // known glob (e.g. a resolved drop-in whose name no longer matches the
+    // current naming convention) is reported missing too. Avoids hiding
+    // stragglers behind the fact that the directory walk found nothing.
+    for path in &expected_present {
+        if visited.contains(path) {
+            continue;
+        }
+        if path.exists() {
+            // Path is present but didn't surface from the glob walk — fall
+            // through and check it directly.
+            match read_capped(path, MAX_DIFF_FILE_BYTES) {
+                Ok(b) => out.push(check_file(path, &b)),
+                Err(e) => tracing::warn!("nmod.3 fallback skip {}: {e}", path.display()),
+            }
+        } else {
+            out.push(FileDrift {
+                path: path.display().to_string(),
+                expected_sha: None,
+                actual_sha: String::new(),
+                drift: true,
+                reason: "missing on disk (state.json says proteus applied this)".to_string(),
+            });
+        }
+    }
+    out
+}
+
+/// Build the set of `/etc/` paths that `state.json` implies should currently
+/// exist. The mapping is keyed on the `Originals` markers `proteus apply`
+/// writes when it first touches each surface — every entry here corresponds
+/// to a real on-disk drop-in that `apply` lays down once the marker is set.
+fn expected_managed_paths(
+    etc_root: &Path,
+    state: Option<&State>,
+) -> std::collections::BTreeSet<PathBuf> {
+    let mut out = std::collections::BTreeSet::new();
+    let Some(state) = state else { return out };
+    let join = |suffix: &str| etc_root.join(suffix.trim_start_matches('/'));
+    if !state.originals.sysctls.is_empty() {
+        out.insert(join("/etc/sysctl.d/95-proteus.conf"));
+    }
+    if !state.originals.ipv6.is_empty() {
+        out.insert(join("/etc/sysctl.d/96-proteus-ipv6.conf"));
+    }
+    if !state.originals.connections.is_empty() {
+        // `apply` lays the dispatcher down the first time any connection is
+        // managed. If state has connection originals, we expect the script
+        // to be present too.
+        out.insert(join("/etc/NetworkManager/dispatcher.d/01-proteus"));
     }
     out
 }
@@ -450,6 +577,37 @@ mod tests {
         assert_eq!(drift.reason, "manually-installed (not managed by proteus)");
     }
 
+    /// Roadmap N12.10: a managed-path file larger than the 64 MiB diff cap
+    /// must surface as drift with a clear reason rather than the previous
+    /// unbounded `std::fs::read` that would happily allocate gigabytes for
+    /// a clobbered drop-in. We use a tiny cap here to keep the test fast;
+    /// the production constant is `MAX_DIFF_FILE_BYTES` (64 MiB).
+    #[test]
+    fn read_capped_rejects_oversize_file() {
+        let tmp = tempdir_path();
+        let path = tmp.join("big.conf");
+        // 8 KiB of data, cap at 1 KiB — must surface FileTooLarge.
+        std::fs::write(&path, vec![b'x'; 8 * 1024]).unwrap();
+        let err = read_capped(&path, 1024).expect_err("should reject oversize");
+        assert_eq!(err.kind(), std::io::ErrorKind::FileTooLarge);
+        // A small file under the cap reads cleanly.
+        let small = tmp.join("small.conf");
+        std::fs::write(&small, b"hello").unwrap();
+        let bytes = read_capped(&small, 1024).unwrap();
+        assert_eq!(bytes, b"hello");
+        // Boundary: file exactly at the cap reads cleanly.
+        let exact = tmp.join("exact.conf");
+        std::fs::write(&exact, vec![b'y'; 1024]).unwrap();
+        let bytes = read_capped(&exact, 1024).unwrap();
+        assert_eq!(bytes.len(), 1024);
+        // Boundary: file one byte over the cap fails.
+        let over = tmp.join("over.conf");
+        std::fs::write(&over, vec![b'z'; 1025]).unwrap();
+        let err = read_capped(&over, 1024).expect_err("should reject 1-over");
+        assert_eq!(err.kind(), std::io::ErrorKind::FileTooLarge);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
     #[test]
     fn known_paths_walks_glob_directories() {
         // Build a fake /etc/ tree under tmp.
@@ -464,9 +622,12 @@ mod tests {
         std::fs::write(sys_d.join("override.conf"), b"x").unwrap();
 
         let paths = known_managed_paths(&tmp);
+        // Roadmap P3: `Path::file_name()` returns `None` for paths that end
+        // in `..` or a trailing separator. Skip those rather than panic so
+        // a future caller passing such a path doesn't take the test down.
         let names: Vec<String> = paths
             .iter()
-            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
             .collect();
         assert!(
             names.contains(&"10-proteus-no-ecs.conf".to_string()),
@@ -481,6 +642,44 @@ mod tests {
             "non-proteus drop-in must not be claimed: {names:?}"
         );
         // Cleanup
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Roadmap NMOD.3: when state.json indicates a surface was applied
+    /// but the corresponding on-disk file was deleted out from under
+    /// proteus, the drift report must surface a "missing" entry.
+    #[test]
+    fn drift_reports_missing_file_when_state_says_applied() {
+        let tmp = tempdir_path();
+        // No on-disk files at all.
+        let mut state = State::default();
+        state
+            .originals
+            .sysctls
+            .insert("net.ipv4.ip_forward".to_string(), "1".to_string());
+        let drifts = compute_managed_file_drift_with_state(&tmp, Some(&state));
+        // The expected sysctl drop-in is missing — it must show up as drift.
+        assert!(
+            drifts
+                .iter()
+                .any(|d| d.path.ends_with("95-proteus.conf")
+                    && d.drift
+                    && d.reason.contains("missing on disk")),
+            "expected missing-sysctl drift, got {drifts:?}"
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Without a state hint, a missing managed file is still silently
+    /// skipped — that's the documented "not yet applied" path.
+    #[test]
+    fn drift_silently_skips_missing_file_without_state_hint() {
+        let tmp = tempdir_path();
+        let drifts = compute_managed_file_drift_with_state(&tmp, None);
+        assert!(
+            drifts.is_empty(),
+            "without state hint, missing files should be silently skipped, got {drifts:?}"
+        );
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
