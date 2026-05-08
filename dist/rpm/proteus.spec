@@ -1,5 +1,5 @@
 Name:           proteus
-Version:        0.4.0~beta1
+Version:        0.4.2~beta
 Release:        1%{?dist}
 Summary:        Erase network-layer identifiers your Linux laptop hands out on every join
 
@@ -111,6 +111,15 @@ install -dm700 %{buildroot}%{_sharedstatedir}/proteus
 %systemd_postun_with_restart proteus-rotate.timer proteus-check.timer proteus-boot.service proteus-resume.service
 
 %changelog
+* Fri May 08 2026 Kit3713 <noreply@example.com> - 0.4.2~beta-1
+- v0.4.2-beta: closes remainder of May 2026 audit tree (#279, #285-306) +
+  three audit follow-up findings (PROTEUS_*_DIR env-var lockdown, iface
+  validation on ethtool/iw, iw/ip `--` defense-in-depth). Persona export
+  safety parity, quarantine preserves originals, cross-layer persona
+  consistency, randomized rotation cadence, SHA-256 deduplicated,
+  completions regenerated, packaging dropped clashing debian/compat.
+- %systemd_post + %preun + %postun_with_restart now include
+  proteus-boot.service alongside the timers and resume.service.
 * Fri May 08 2026 Kit3713 <noreply@example.com> - 0.4.0~beta1-1
 - v0.4.0-beta1: closes May 2026 vulnerability hunt cluster (#225-#275 +
   #276/#284/#297). Persona schema validation, output sanitization, PATH

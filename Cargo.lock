@@ -470,7 +470,7 @@ dependencies = [
 
 [[package]]
 name = "proteus"
-version = "0.4.0-beta1"
+version = "0.4.2-beta"
 dependencies = [
  "anyhow",
  "clap",
