@@ -18,7 +18,7 @@ use serde::Serialize;
 use crate::cli::SsidAction;
 use crate::config::{Config, PerSsidPolicy};
 use crate::exit;
-use crate::per_ssid::{self, EffectivePolicy};
+use crate::per_ssid::{self, display_ssid, validate_ssid, EffectivePolicy};
 use crate::profile::Profile;
 
 /// Top-level dispatch for `proteus ssid ...`.
@@ -70,8 +70,11 @@ fn list(json: bool, config_override: Option<&Path>) -> Result<u8> {
         println!("(no per-SSID entries; every SSID falls through to global config)");
         return Ok(exit::SUCCESS);
     }
+    // Issue #224: SSIDs are attacker-controlled (hostile AP can broadcast
+    // arbitrary 8-bit bytes including ANSI escapes). Sanitize at every
+    // render site so the operator's terminal can't be repainted.
     for e in &entries {
-        println!("[{}]", e.ssid);
+        println!("[{}]", display_ssid(&e.ssid));
         if let Some(v) = &e.persona {
             println!("  persona:                {v}");
         }
@@ -112,7 +115,8 @@ fn show(ssid: &str, json: bool, config_override: Option<&Path>) -> Result<u8> {
         super::print_json(&report)?;
         return Ok(exit::SUCCESS);
     }
-    println!("ssid:                   {}", report.ssid);
+    // Issue #224: sanitize the network-supplied SSID before printing.
+    println!("ssid:                   {}", display_ssid(&report.ssid));
     println!("  profile:              {}", report.profile);
     match &report.persona {
         Some(p) => println!("  persona:              {p}"),
@@ -171,13 +175,16 @@ fn set(ssid: &str, key: &str, value: &str, yes: bool, config_override: Option<&P
     ) {
         return Ok(code);
     }
-    if ssid.is_empty() {
-        eprintln!("proteus: ssid must not be empty");
+    // Issue #224: hard-reject SSIDs containing NUL or that are empty;
+    // both are encoding bugs or hostile input.
+    if let Err(msg) = validate_ssid(ssid) {
+        eprintln!("proteus: {msg}");
         return Ok(exit::CONFIG_ERROR);
     }
     if !KNOWN_KEYS.contains(&key) {
         eprintln!(
-            "proteus: unknown ssid key '{key}'; expected one of: {}",
+            "proteus: unknown ssid key '{}'; expected one of: {}",
+            display_ssid(key),
             KNOWN_KEYS.join(", ")
         );
         return Ok(exit::CONFIG_ERROR);
@@ -186,13 +193,23 @@ fn set(ssid: &str, key: &str, value: &str, yes: bool, config_override: Option<&P
     // rather than later in the resolver's silent fall-through.
     if key == "aggressiveness_profile" && Profile::parse(value).is_none() {
         eprintln!(
-            "proteus: invalid aggressiveness_profile '{value}'; expected one of off|min|low|med|high|agr"
+            "proteus: invalid aggressiveness_profile '{}'; expected one of off|min|low|med|high|agr",
+            display_ssid(value)
         );
         return Ok(exit::CONFIG_ERROR);
     }
     let path = super::config_path(config_override);
     write_field(&path, ssid, key, value)?;
-    println!("set per_ssid.\"{ssid}\".{key} = \"{value}\" in {}", path.display());
+    // Issue #224: ssid + value can carry attacker-controlled bytes.
+    // Sanitize for the human echo; the on-disk TOML form goes through
+    // `toml_edit::value` which encodes safely.
+    println!(
+        "set per_ssid.\"{}\".{} = \"{}\" in {}",
+        display_ssid(ssid),
+        key,
+        display_ssid(value),
+        path.display()
+    );
     Ok(exit::SUCCESS)
 }
 
@@ -208,16 +225,18 @@ fn clear(ssid: &str, yes: bool, config_override: Option<&Path>) -> Result<u8> {
     ) {
         return Ok(code);
     }
-    if ssid.is_empty() {
-        eprintln!("proteus: ssid must not be empty");
+    // Issue #224: same SSID validation as `set`.
+    if let Err(msg) = validate_ssid(ssid) {
+        eprintln!("proteus: {msg}");
         return Ok(exit::CONFIG_ERROR);
     }
     let path = super::config_path(config_override);
     let removed = drop_block(&path, ssid)?;
+    let safe = display_ssid(ssid);
     if removed {
-        println!("cleared per_ssid.\"{ssid}\" in {}", path.display());
+        println!("cleared per_ssid.\"{safe}\" in {}", path.display());
     } else {
-        println!("(no per_ssid.\"{ssid}\" block to clear)");
+        println!("(no per_ssid.\"{safe}\" block to clear)");
     }
     Ok(exit::SUCCESS)
 }

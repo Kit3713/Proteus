@@ -97,10 +97,15 @@ impl EventHandler for RotateOnTriggerHandler {
             && let Some(cfg) = self.load_config()
         {
             let policy = crate::per_ssid::resolve_for_ssid(&cfg, ssid);
+            // Issue #224: SSIDs are attacker-controlled. Sanitize before
+            // logging so journald renders something the operator can read
+            // without a hostile AP redrawing their terminal via the
+            // `journalctl` viewer.
+            let ssid_safe = crate::per_ssid::display_ssid(ssid);
             tracing::info!(
                 kind = trigger.kind(),
                 iface = iface.as_str(),
-                ssid = ssid.as_str(),
+                ssid = ssid_safe.as_str(),
                 persona = policy.persona.as_deref().unwrap_or("-"),
                 profile = ?policy.profile,
                 pinned = policy.pin_mac.is_some(),
@@ -139,6 +144,17 @@ pub fn run(
             cfg_path.display()
         );
         return Ok(exit::CONFIG_ERROR);
+    }
+
+    // Issue #223: the daemon mutates state through the rotation handler
+    // and (once Milestone 4c lands the active rotate body) needs root for
+    // the netlink + DBus + nft writes. Mirroring `apply` / `rotate` /
+    // `uninstall` keeps the privilege story consistent — config errors
+    // still print first so a non-root operator sees the right message
+    // when they forget `--force`.
+    if let Err(e) = super::require_root() {
+        eprintln!("proteus: {e}");
+        return Ok(exit::PERMISSION_ERROR);
     }
 
     let registry = EventRegistry::shared();
@@ -299,11 +315,13 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// `--force true` ignores the master switch and runs through to
-    /// the smoke-test exit (`--once-after-secs 1`). This is the
-    /// shape `cargo run -- events run --help` will demonstrate.
+    /// Issue #223: `--force true` clears the config gate. As non-root
+    /// the next gate (the new `require_root` check) returns
+    /// `PERMISSION_ERROR`. Together with the disabled-config test above
+    /// this pins the gate-ordering: config errors print before privilege
+    /// errors so `--force` users see the right message.
     #[test]
-    fn run_with_force_and_once_after_secs_returns_success() {
+    fn run_with_force_clears_config_gate_then_hits_root_gate() {
         let dir = std::env::temp_dir().join(format!(
             "proteus-events-force-{}",
             std::process::id()
@@ -312,15 +330,17 @@ mod tests {
         let cfg_path = dir.join("config.toml");
         std::fs::write(&cfg_path, "profile = \"med\"\n[events]\nenabled = false\n").unwrap();
         let rc = run(true, 0, 1, None, Some(&cfg_path)).unwrap();
-        assert_eq!(rc, exit::SUCCESS);
+        // The cargo-test process is non-root; once `--force` clears the
+        // config gate, `require_root` returns PERMISSION_ERROR.
+        assert_eq!(rc, exit::PERMISSION_ERROR);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// `[events] enabled = true` allows `--force false`. Pin the
-    /// happy path so a future config refactor can't regress the opt-in
-    /// flag's semantics.
+    /// Issue #223 mirror: `[events] enabled = true` clears the config
+    /// gate without `--force` and lands on the same root gate. Pins the
+    /// opt-in flag's semantics through the new privilege check.
     #[test]
-    fn run_with_enabled_true_does_not_require_force() {
+    fn run_with_enabled_true_clears_config_gate_then_hits_root_gate() {
         let dir = std::env::temp_dir().join(format!(
             "proteus-events-enabled-{}",
             std::process::id()
@@ -329,7 +349,7 @@ mod tests {
         let cfg_path = dir.join("config.toml");
         std::fs::write(&cfg_path, "profile = \"med\"\n[events]\nenabled = true\n").unwrap();
         let rc = run(false, 0, 1, None, Some(&cfg_path)).unwrap();
-        assert_eq!(rc, exit::SUCCESS);
+        assert_eq!(rc, exit::PERMISSION_ERROR);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -59,17 +59,28 @@ use thiserror::Error;
 /// orchestrator run doesn't lose a contention race to a quickly-retrying
 /// follow-up dispatcher invocation.
 const DEFAULT_LOCK_BUDGET_MS: u64 = 5_000;
+/// Issue #221: hard cap on `PROTEUS_LOCK_TIMEOUT_MS` so absurd values
+/// don't overflow the budget→attempts conversion. The systemd drop-in
+/// sets 10s; 1h is far past any legitimate use.
+const MAX_LOCK_BUDGET_MS: u64 = 60 * 60 * 1000;
 const RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(100);
 
 /// Resolve the retry budget from `PROTEUS_LOCK_TIMEOUT_MS` (falling back
 /// to [`DEFAULT_LOCK_BUDGET_MS`]) and convert it to a retry-attempt count.
 /// Pulled out so tests can exercise the parser without spawning a process.
+///
+/// Issue #221: the budget is clamped to [granularity_ms, MAX_LOCK_BUDGET_MS]
+/// before the divide, so a hostile or fat-fingered `PROTEUS_LOCK_TIMEOUT_MS`
+/// like `u64::MAX` can no longer overflow the `+ granularity_ms - 1` step
+/// (debug panic / release wrap to ~0 attempts → instant Busy DoS). The 1h
+/// upper bound is generous: the documented systemd drop-in sets 10s.
 fn retry_attempts_from_env(get: impl Fn(&str) -> Option<String>) -> u32 {
     let budget_ms = get("PROTEUS_LOCK_TIMEOUT_MS")
         .and_then(|s| s.parse::<u64>().ok())
         .unwrap_or(DEFAULT_LOCK_BUDGET_MS);
     let granularity_ms = RETRY_DELAY.as_millis() as u64;
-    let attempts = (budget_ms.max(granularity_ms) + granularity_ms - 1) / granularity_ms;
+    let budget_ms = budget_ms.clamp(granularity_ms, MAX_LOCK_BUDGET_MS);
+    let attempts = budget_ms.div_ceil(granularity_ms);
     attempts.min(u32::MAX as u64) as u32
 }
 
@@ -330,6 +341,26 @@ mod tests {
         // Garbage input falls back to default.
         let attempts = retry_attempts_from_env(|_| Some("not-a-number".to_string()));
         assert_eq!(attempts, 50);
+    }
+
+    /// Issue #221: hostile or fat-fingered `PROTEUS_LOCK_TIMEOUT_MS`
+    /// values must not overflow the budget→attempts conversion. The
+    /// previous shape `(budget_ms + granularity_ms - 1) / granularity_ms`
+    /// either panicked in debug (`+ granularity_ms - 1` overflows) or
+    /// wrapped to a tiny number in release (instant Busy DoS).
+    #[test]
+    fn retry_attempts_from_env_clamps_oversized_budget() {
+        // u64::MAX → clamped to MAX_LOCK_BUDGET_MS (1h) → 36000 attempts.
+        let attempts = retry_attempts_from_env(|_| Some(u64::MAX.to_string()));
+        assert_eq!(attempts, 36_000);
+
+        // Exactly at the cap: 1h budget = 3_600_000 ms / 100 ms = 36000 attempts.
+        let attempts = retry_attempts_from_env(|_| Some("3600000".to_string()));
+        assert_eq!(attempts, 36_000);
+
+        // One past the cap stays at the cap.
+        let attempts = retry_attempts_from_env(|_| Some("3600001".to_string()));
+        assert_eq!(attempts, 36_000);
     }
 
     /// Issue #206-B regression: a sequence of acquire-drop cycles must

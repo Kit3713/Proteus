@@ -254,6 +254,24 @@ impl State {
         };
         match serde_json::from_slice::<State>(&bytes) {
             Ok(mut state) => {
+                // Issue #218: refuse to load a state file written by a newer
+                // Proteus. Without this, `serde(default)` silently drops the
+                // unknown fields on parse and the next save writes the
+                // truncated shape back, losing the v(N+1) data forever.
+                // Bailing forces the operator to either upgrade the binary
+                // or restore from backup — the alpha-cycle promise is "no
+                // silent state loss," not "every binary version reads every
+                // future state."
+                if state.schema_version > CURRENT_SCHEMA_VERSION {
+                    anyhow::bail!(
+                        "{} has schema_version {} but this proteus binary supports \
+                         up to {}; install a newer proteus or restore state from \
+                         backup before continuing",
+                        path.display(),
+                        state.schema_version,
+                        CURRENT_SCHEMA_VERSION,
+                    );
+                }
                 migrate_state(&mut state);
                 Ok(Some(state))
             }
@@ -277,10 +295,17 @@ impl State {
     }
 
     pub fn save(&self, path: &Path) -> Result<()> {
-        // Always stamp the current schema version on write so we know what
-        // shape the file is in next time `migrate_state` runs.
+        // Issue #218: never downgrade the on-disk schema_version. Stamp
+        // max(self.schema_version, CURRENT_SCHEMA_VERSION) so the only
+        // way `schema_version` decreases is if an operator manually edits
+        // state.json. The load-side guard refuses files newer than the
+        // running binary, so in practice `self.schema_version` is always
+        // <= CURRENT after `load`/`migrate_state`; this max() is the
+        // defensive belt for callers that build a State from scratch and
+        // happen to set a higher version (e.g. a v(N+1) field migration
+        // that bumps the version mid-run before saving).
         let mut to_write = self.clone();
-        to_write.schema_version = CURRENT_SCHEMA_VERSION;
+        to_write.schema_version = self.schema_version.max(CURRENT_SCHEMA_VERSION);
         let bytes = serde_json::to_vec_pretty(&to_write)?;
         commands::write_atomic(path, &bytes)
     }
@@ -470,6 +495,62 @@ mod tests {
             "expected exactly one quarantined file, got {quarantines:?}"
         );
 
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Issue #218: a state file written by a newer Proteus must not be
+    /// silently downgraded. `load` bails so the operator notices, rather
+    /// than letting `serde(default)` drop the unknown fields and the next
+    /// `save` truncate them on disk.
+    #[test]
+    fn load_refuses_newer_schema_version() {
+        let dir =
+            std::env::temp_dir().join(format!("proteus-state-newer-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("state.json");
+        let future = CURRENT_SCHEMA_VERSION + 1;
+        fs::write(
+            &path,
+            format!(r#"{{"schema_version": {future}, "original_macs": {{}}}}"#),
+        )
+        .unwrap();
+
+        let err = State::load(&path).expect_err("newer schema must error");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("schema_version") && msg.contains(&future.to_string()),
+            "error must name the offending version: {msg}"
+        );
+        // The bad file is preserved on disk — the operator handles the
+        // downgrade story explicitly. (Contrast with the corrupt-parse
+        // path which quarantines so reads keep working.)
+        assert!(path.exists(), "newer-schema file must be preserved");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Issue #218: `save` preserves a schema_version higher than
+    /// `CURRENT_SCHEMA_VERSION` so a v(N+1) migration that bumps the
+    /// version mid-run doesn't get clobbered back to N. (In practice
+    /// `load` refuses such files, so this exercises the defensive
+    /// belt.)
+    #[test]
+    fn save_does_not_downgrade_schema_version() {
+        let dir =
+            std::env::temp_dir().join(format!("proteus-state-no-down-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("state.json");
+        let mut s = State::default();
+        let future = CURRENT_SCHEMA_VERSION + 5;
+        s.schema_version = future;
+        s.save(&path).unwrap();
+        let bytes = fs::read(&path).unwrap();
+        let json = std::str::from_utf8(&bytes).unwrap();
+        assert!(
+            json.contains(&format!("\"schema_version\": {future}")),
+            "save must preserve >CURRENT schema_version: {json}"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 

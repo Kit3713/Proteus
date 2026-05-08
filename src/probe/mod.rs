@@ -178,9 +178,15 @@ fn endpoint_error(target: &str, started: Instant, error: String) -> EndpointResu
 /// per the wiki's "asymmetric cost" argument. `portal-suspected` is reserved
 /// for the captive-portal classifier (separate module, lands later);
 /// `proteus probe` returns `inconclusive` instead of guessing.
+///
+/// Issue #220: counts are saturating-cast to `u8`, not truncating. With more
+/// than 255 endpoints configured the previous `len() as u8` wrapped to
+/// `len % 256`, which could flip Clear/Down arbitrarily. Saturating means a
+/// 300-endpoint round still classifies cleanly: every count above 255 becomes
+/// 255, and the `quorum_n` threshold (also `u8`) reads correctly.
 pub fn classify(results: &[EndpointResult], quorum_n: u8) -> Classification {
-    let total = results.len() as u8;
-    let successes = results.iter().filter(|r| r.ok).count() as u8;
+    let total = saturate_u8(results.len());
+    let successes = saturate_u8(results.iter().filter(|r| r.ok).count());
     let failures = total.saturating_sub(successes);
     if successes >= quorum_n {
         Classification::Clear
@@ -194,8 +200,10 @@ pub fn classify(results: &[EndpointResult], quorum_n: u8) -> Classification {
 /// Build the full report from results + quorum config. `quorum_total` is
 /// stored on the report for wrappers that display "x of N"; the classifier
 /// uses the result vector as the authoritative count.
+///
+/// Issue #220: same saturating-cast story as `classify`.
 pub fn build_report(results: Vec<EndpointResult>, quorum_n: u8, quorum_total: u8) -> ProbeReport {
-    let successes = results.iter().filter(|r| r.ok).count() as u8;
+    let successes = saturate_u8(results.iter().filter(|r| r.ok).count());
     let classification = classify(&results, quorum_n);
     ProbeReport {
         schema_version: 1,
@@ -205,6 +213,14 @@ pub fn build_report(results: Vec<EndpointResult>, quorum_n: u8, quorum_total: u8
         quorum_total,
         successes,
     }
+}
+
+/// Saturating cast `usize -> u8` for probe counts. Pulled out so the
+/// debug_assert in `classify` and the matching call in `build_report`
+/// share one definition.
+#[inline]
+fn saturate_u8(n: usize) -> u8 {
+    n.min(u8::MAX as usize) as u8
 }
 
 #[cfg(test)]
@@ -225,6 +241,42 @@ mod tests {
     fn classify_clear_when_quorum_succeeds() {
         let r = vec![ep("a", true), ep("b", true), ep("c", true), ep("d", false)];
         assert_eq!(classify(&r, 3), Classification::Clear);
+    }
+
+    /// Issue #220: with more than 255 endpoints the previous `len() as u8`
+    /// truncated to `len % 256`, flipping Clear/Down classifications.
+    /// The saturating cast makes a 300-endpoint round still classify
+    /// cleanly: every count above 255 reads as 255 against the u8 quorum
+    /// threshold, so an all-pass round reports Clear (not Inconclusive
+    /// or Down).
+    #[test]
+    fn classify_saturates_above_255_endpoints() {
+        let r: Vec<_> = (0..300).map(|i| ep(&format!("h{i}"), true)).collect();
+        assert_eq!(classify(&r, 3), Classification::Clear);
+
+        let r: Vec<_> = (0..300).map(|i| ep(&format!("h{i}"), false)).collect();
+        assert_eq!(classify(&r, 3), Classification::Down);
+    }
+
+    /// Companion: exactly 255 endpoints classify cleanly. Pins the
+    /// boundary so the saturating cast doesn't drift to `<` somewhere.
+    #[test]
+    fn classify_at_255_endpoints_is_clean() {
+        let r: Vec<_> = (0..255).map(|i| ep(&format!("h{i}"), true)).collect();
+        assert_eq!(classify(&r, 3), Classification::Clear);
+        let r: Vec<_> = (0..255).map(|i| ep(&format!("h{i}"), false)).collect();
+        assert_eq!(classify(&r, 3), Classification::Down);
+    }
+
+    /// `build_report` shares the saturating-cast story with `classify`.
+    /// At >255 successes the report's `successes` field reads 255 and
+    /// the classification still surfaces correctly.
+    #[test]
+    fn build_report_saturates_successes_above_255() {
+        let r: Vec<_> = (0..300).map(|i| ep(&format!("h{i}"), true)).collect();
+        let report = build_report(r, 3, 3);
+        assert_eq!(report.successes, u8::MAX);
+        assert_eq!(report.classification, Classification::Clear);
     }
 
     #[test]

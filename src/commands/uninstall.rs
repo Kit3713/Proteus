@@ -24,11 +24,11 @@ const DEFAULT_SYSTEMD_DIR: &str = "/etc/systemd/system";
 pub(crate) const UNITS: &[&str] = &[
     "proteus-rotate.timer",
     "proteus-check.timer",
-    "proteus-resume.timer",
     "proteus-rotate.service",
     "proteus-check.service",
     "proteus-resume.service",
     "proteus-boot.service",
+    "proteus-events.service",
 ];
 
 /// Drop-ins Proteus writes outside `/etc/proteus/`. Mirrors `wiki/uninstall.md`.
@@ -36,6 +36,21 @@ pub(crate) const EXTERNAL_DROPINS: &[&str] = &[
     "/etc/sysctl.d/95-proteus.conf",
     "/etc/sysctl.d/96-proteus-ipv6.conf",
     "/etc/systemd/timesyncd.conf.d/10-proteus.conf",
+];
+
+/// Issue #216: `install.sh` deploys these two integration files outside
+/// `/etc/proteus/` and they were missing from the uninstall path. Each
+/// uninstall run removes them best-effort so `proteus uninstall` (with
+/// or without `--purge`) actually returns the system to a pre-Proteus
+/// state. Mirrored in `uninstall.sh`'s shell fallback (issue #219).
+///
+/// - The NM dispatcher hook fires on every connection event; left on
+///   disk it would call a removed binary on every connect.
+/// - The polkit policy registers actions for a binary that no longer
+///   exists; left on disk it surfaces ghost prompts.
+pub(crate) const EXTERNAL_FILES: &[&str] = &[
+    "/etc/NetworkManager/dispatcher.d/01-proteus",
+    "/usr/share/polkit-1/actions/com.kit3713.proteus.policy",
 ];
 
 const RESOLVED_DROPIN_DIR: &str = "/etc/systemd/resolved.conf.d";
@@ -199,6 +214,13 @@ fn revert_best_effort(warns: &mut Vec<String>) {
             }
         }
         note(path, outcome, warns);
+    }
+    // Issue #216: NM dispatcher hook + polkit policy. Best-effort —
+    // `note` silently skips missing files, so this is safe to run on
+    // partial installs.
+    for p in EXTERNAL_FILES {
+        let path = Path::new(p);
+        note(path, remove_file_opt(path), warns);
     }
     let resolved_dropin_removed = remove_resolved_dropins(warns);
     let _ = run_quiet("nft", &["delete", "table", "inet", "proteus"]);

@@ -50,6 +50,14 @@ pub trait Device {
     /// fallback.
     #[zbus(property, name = "ActiveConnection")]
     fn active_connection(&self) -> zbus::Result<zbus::zvariant::OwnedObjectPath>;
+    /// Issue #217: NM device state integer (100 == Activated, etc.). The
+    /// connection-up event source polls this every 2s to detect the
+    /// any-prior → Activated transition that the dispatcher signal
+    /// surfaces synchronously elsewhere. Naming with explicit `name =
+    /// "State"` keeps the Rust accessor `state()` aligned with the
+    /// DBus property without colliding with anything else on the proxy.
+    #[zbus(property, name = "State")]
+    fn state(&self) -> zbus::Result<u32>;
     /// Re-apply the connection's current settings to the running device
     /// without bringing the link down. NM 1.2+. The empty-dict / version=0
     /// / flags=0 form (the one Proteus uses for DHCP renew) tells NM "use
