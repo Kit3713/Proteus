@@ -291,7 +291,26 @@ async fn poll_state_property(
     mut stop_rx: tokio::sync::oneshot::Receiver<()>,
 ) {
     use std::time::Duration;
-    let mut last: Option<u32> = None;
+    // GH#355: seed `last` with the device's *initial* state before
+    // entering the edge-detection loop. Previously `last` started as
+    // `None`, so an iface that was already in `Activated` at daemon
+    // startup fired a spurious `ConnectionUp` on the first poll — the
+    // dispatcher script would then redundantly rotate at boot.
+    //
+    // Reading the state once here primes `last` without firing.
+    // If the read fails on startup we fall back to the legacy
+    // `None` seed: the next round will pick up the real state and
+    // (yes) fire the spurious edge — but only when the property
+    // read intermittently fails, which is rare enough that the
+    // dispatcher-side debounce handles it.
+    let mut last: Option<u32> = read_device_state(dev).await;
+    if last.is_some() {
+        tracing::debug!(
+            initial_state = ?last,
+            "nm-connection-up: seeded edge detector with initial Device.State \
+             (GH#355: avoids firing spurious ConnectionUp on daemon startup)"
+        );
+    }
     loop {
         let state = match read_device_state(dev).await {
             Some(s) => s,

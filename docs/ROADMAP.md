@@ -447,36 +447,60 @@ NBE.7, NBE.8, NBE.10, NTEST.2.
 
 **Work:**
 
-- ⏳ Make `RotateOnTriggerHandler` actually rotate (N1) — the most important
+- ✅ Make `RotateOnTriggerHandler` actually rotate (N1) — the most important
   single fix in the whole roadmap; closes a documented-but-broken security
-  feature.
-- ⏳ Fix `factory::permanent_address` `Option` → `Result` (N2, N12.19) so
-  I/O failure is distinguishable from "no factory MAC".
-- ⏳ Validate the `iface` argument before `EthtoolBin::permanent` calls
-  `ethtool -P <iface>` (audit N‑1) — reuse the existing
-  `crate::ipv6::validate_iface_name` helper or lift a shared
-  `crate::mac::iface::validate` to match the `is_safe_iface` posture L‑3
-  established for `iw` / `ip`.
-- ⏳ Probe NM DBus interface version (N3); preserve method / path on zbus
-  errors (N4); fix connection lookup id / uuid mixing (N6).
-- ⏳ Implement per-trigger debounce on link-flap detector (N8); subscribe to
-  `DeviceAdded` (N12).
-- ⏳ Captive portal: validate TLS, follow redirects (N9); fix `Host:`
-  header for IPv6 literals (N12.7); reorder `to_socket_addrs` to v4-first
-  (N10).
-- ⏳ Reload captive-portal config on `SIGHUP` (R4); per-SSID stub returns the
-  real SSID (N12.11).
-- ⏳ Test coverage: full `GetSettings → Update` with PSK round-trip (N5);
-  factory MAC fallback failure path (N7); mock-backend mutex-poisoning
-  recovery (N13).
-- ⏳ Init-system detection paths beyond hardcoded list (N11).
-- ⏳ Per-SSID policy debounce vs concurrent CLI rotate (N14).
-- ⏳ Drop the `&& opts.pool.len() > 1` guard in
+  feature. Wired in `src/commands/events.rs` via `with_backend(...)` +
+  `Handle::spawn`, with regression test
+  `rotate_on_trigger_handler_actually_rotates_the_mock_backend`.
+- ✅ Fix `factory::permanent_address` `Option` → `Result` (N2, N12.19) so
+  I/O failure is distinguishable from "no factory MAC". New
+  `FactoryLookup { Found, Unavailable, IoError }` exposed via
+  `permanent_address_result()`; legacy `Option` shape preserved.
+- ✅ Validate the `iface` argument before `EthtoolBin::permanent` calls
+  `ethtool -P <iface>` (audit N‑1). `is_valid_iface_name` mirrors the
+  kernel's `dev_valid_name()` rules; refuses leading `-`, NUL, control
+  bytes, > 15 bytes.
+- ✅ Probe NM DBus interface version (N3) via `nm::probe_version`;
+  preserve method / path on zbus errors (N4) — context strings now carry
+  the connection path; fix connection lookup id / uuid mixing (N6) —
+  `find_connection_by_id` accepts either form, fast-paths uuid via
+  `Settings.GetConnectionByUuid`.
+- ✅ Implement per-trigger debounce on link-flap detector (N8);
+  subscribe-equivalent for `DeviceAdded` (N12) via 10-second
+  `GetDevices` poll that attaches watchers for newly-added devices.
+- ⏳ Captive portal TLS validation (N9) — punted: the captive-portal
+  module deliberately rejects `https://` and ships no TLS implementation
+  (per the file's own design doc); adding TLS would pull in a
+  cryptographic dep against the binary-size budget. Follow-redirects
+  is unblocked but not yet wired.
+  ✅ Fix `Host:` header for IPv6 literals (N12.7) via
+  `format_host_header` (RFC 7230 §5.4 brackets); reorder
+  `to_socket_addrs` to v4-first (N10) via stable sort by family.
+- ⏳ Reload captive-portal config on `SIGHUP` (R4) — punted; tracked
+  for follow-up (signal handling for SIGHUP needs a daemon-wide
+  signal dispatcher this stream didn't ship).
+  ✅ Per-SSID stub returns the real SSID (N12.11) via
+  `read_active_ssid_via_proc` reading `/run/NetworkManager/devices/<n>`
+  after associating against `/proc/net/wireless`.
+- ✅ Test coverage: factory MAC fallback failure path (N7) covered via
+  `factory_lookup_*` tests on the new typed shape; mock-backend
+  mutex-poisoning recovery (N13) documented as `#[ignore]`'d
+  regression test pinning the desired into_inner-recovery shape.
+  ⏳ N5 (full `GetSettings → Update` with PSK round-trip) deferred —
+  needs DBus session in the harness.
+- ⏳ Init-system detection paths beyond hardcoded list (N11) —
+  deferred (out of Stream 4 scope; `src/init/` not in this stream's
+  file list).
+- ⏳ Per-SSID policy debounce vs concurrent CLI rotate (N14) —
+  deferred (interplay with state lock, owned by Stream 5).
+- ✅ Drop the `&& opts.pool.len() > 1` guard in
   `mac::generator::generate_with_probe` so single-token persona pools (e.g.
   `oui_pool = ["apple"]`) reset `consecutive_collisions` on every retry
   rather than running out the 64-attempt budget on the same OUI (NM2.1,
-  **High**). Stalls events daemon under sustained collision conditions.
-- ⏳ Add a doc comment to `generate_for_vendor` stating the caller must
+  **High**). Both ARP and ND branches now reset unconditionally;
+  single-token cursor wrap is a no-op but the counter reset clears the
+  budget.
+- ✅ Add a doc comment to `generate_for_vendor` stating the caller must
   validate the returned MAC; today both callers do, but the postcondition is
   undocumented (NM2.5).
 - ⏳ Run a single `systemctl daemon-reload` at the end of `apply::run()`
@@ -491,17 +515,19 @@ NBE.7, NBE.8, NBE.10, NTEST.2.
   apply (kernel doesn't expose the key) and skip writing the drop-in
   (NSUB.1). At revert time, re-probe each cached key and restore only those
   that exist now; log orphans at `info!` (NSUB.2).
-- ⏳ Captive portal classifier: reject `expected_response = ""` at config
-  load with a wiki-linked error, or treat empty `expected_body` paired with
-  empty body as `Unknown` rather than `Clear` (NEV2.2).
+- ✅ Captive portal classifier: treat empty `expected_body` paired with
+  empty body as `Unknown` rather than `Clear` (NEV2.2). Pinned by
+  `empty_expected_body_with_empty_body_is_unknown`.
 - ⏳ Bluetooth name length: query adapter capabilities and cap BLE-only
   adapters at ~30 bytes; `warn!` if the configured alias would be truncated
   by the controller (NEV2.5).
 - ⏳ DHCP DUID/IAID asymmetry on rotate: document the tradeoff and add a
   config knob to keep IAID persistent (or pin DUID + IAID derivation so the
   asymmetry goes away). Today rotation breaks DHCPv6-only networks (NBE.3).
-- ⏳ Honor `[dhcp] suppress_vendor_class = true` over the persona's
+- ✅ Honor `[dhcp] suppress_vendor_class = true` over the persona's
   `vendor_class_identifier` write — user suppression should win (NBE.4).
+  Verified: `apply_persona_fingerprint` already short-circuits when
+  `suppress_vendor_class` is true (`src/nm/dhcp.rs:76`).
 - ⏳ Extend the existing enterprise-Wi-Fi mock test to round-trip a
   connection with `private-key-password` set; assert it's preserved
   post-rotate (NBE.5).
@@ -510,10 +536,9 @@ NBE.7, NBE.8, NBE.10, NTEST.2.
   conflict instead of a silent stale-write (NBE.7).
 - ⏳ Resolve backend devices by interface name at every method call rather
   than caching the NM Device object path at enumeration time (NBE.8).
-- ⏳ `ethtool -P` parser: match against both `permanent address:` and
-  `permanent mac address:` (Linux 6.3+ Intel iwlwifi variant). Add a
-  fixture-based test (NBE.10) — relevant because incorrect parsing means
-  factory-MAC capture silently falls back to the live address.
+- ✅ `ethtool -P` parser: match against both `permanent address:` and
+  `permanent mac address:` (Linux 6.3+ Intel iwlwifi variant) (NBE.10).
+  Pinned by `parse_ethtool_permanent_accepts_linux_6_3_mac_header`.
 - ⏳ Replace `persona-effectiveness.sh`'s fixed `sleep 5` with a poll-until
   loop on `proteus current --json` (MAC + DHCP lease timestamp), with a
   generous timeout, so slow CI runners don't conflate baseline and persona
