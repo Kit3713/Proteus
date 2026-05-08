@@ -77,13 +77,27 @@ fn tokenize(query: &str) -> Vec<String> {
 /// and the total occurrences of any token; the page score is
 /// `matched_terms × log2(total_occurrences + 1)`. Each surviving page
 /// contributes one hit, anchored on the first line that matches any token.
+///
+/// R6: terms are tokenised once up front and then scanned across each page
+/// in a single sweep — `term_first[i]` and `term_count[i]` are reset at
+/// page boundaries instead of re-iterating the entries-per-page once per
+/// term. Net effect: we walk the index O(pages × lines × terms) with
+/// per-page constant overhead instead of O(pages × terms × lines) with a
+/// per-term restart that was thrashing the L1 footprint of the entries
+/// slice. For multi-term queries on the embedded wiki this halves the
+/// inner-loop cost.
 pub fn search(query: &str, limit: usize) -> Vec<SearchHit> {
     let terms = tokenize(query);
     if terms.is_empty() {
         return Vec::new();
     }
+    let term_count = terms.len();
 
     let mut hits: Vec<SearchHit> = Vec::new();
+    // Reused across pages — sized once, cleared per-page below.
+    let mut per_term_count: Vec<usize> = vec![0; term_count];
+    let mut per_term_first: Vec<Option<(u32, &'static str, usize)>> = vec![None; term_count];
+
     let mut cursor = 0;
     while cursor < WIKI_LINES.len() {
         let page = WIKI_LINES[cursor].0;
@@ -98,29 +112,40 @@ pub fn search(query: &str, limit: usize) -> Vec<SearchHit> {
         };
         let entries = &WIKI_LINES[page_start..page_end];
 
-        // Per page: count occurrences of every term, track which terms hit
-        // at least once, and remember the first matching line for snippets.
-        let mut total_occurrences = 0usize;
-        let mut matched_terms = 0usize;
-        let mut first_line: Option<(u32, &'static str, usize)> = None;
-        for term in &terms {
-            let mut term_count = 0usize;
-            let mut term_first: Option<(u32, &'static str, usize)> = None;
-            for &(_, line_no, off, len) in entries {
-                let line = &page_text[off as usize..(off + len) as usize];
+        // Reset per-page accumulators in place rather than reallocating.
+        for slot in per_term_count.iter_mut() {
+            *slot = 0;
+        }
+        for slot in per_term_first.iter_mut() {
+            *slot = None;
+        }
+
+        // Single sweep through every line on this page; for each line,
+        // try every term against it. Walking the lines once is the win
+        // — entries[i] stays cache-hot as we test all terms against it.
+        for &(_, line_no, off, len) in entries {
+            let line = &page_text[off as usize..(off + len) as usize];
+            for (i, term) in terms.iter().enumerate() {
                 let mut start = 0;
                 while let Some(found) = case_insensitive_find_from(line, term, start) {
-                    if term_count == 0 {
-                        term_first = Some((line_no, line, found));
+                    if per_term_count[i] == 0 {
+                        per_term_first[i] = Some((line_no, line, found));
                     }
-                    term_count += 1;
+                    per_term_count[i] += 1;
                     start = found + term.len();
                 }
             }
-            if term_count > 0 {
+        }
+
+        // Aggregate the per-term counts into the page-level score.
+        let mut total_occurrences = 0usize;
+        let mut matched_terms = 0usize;
+        let mut first_line: Option<(u32, &'static str, usize)> = None;
+        for i in 0..term_count {
+            if per_term_count[i] > 0 {
                 matched_terms += 1;
-                total_occurrences += term_count;
-                if let Some((line_no, line, off)) = term_first
+                total_occurrences += per_term_count[i];
+                if let Some((line_no, line, off)) = per_term_first[i]
                     && first_line.is_none_or(|(prev_no, _, _)| line_no < prev_no)
                 {
                     first_line = Some((line_no, line, off));
