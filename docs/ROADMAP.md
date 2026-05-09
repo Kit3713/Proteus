@@ -176,7 +176,7 @@ flagged with "= ID"):
 | #359 | medium | 9 | new — 5 distinct iface validator definitions across modules; consolidate |
 | #358 | medium | 9 | new — `ipv6::write_sysctl` `key` and `value` parameters unvalidated (latent path traversal beyond M-1) |
 | #357 | medium | 9 | new — terminal-escape via SSID echo in `session` and `portal {mark,list,unmark}` (N-2 partial fix) |
-| #355 | medium | 4 | new — `events nm-connection-up` poll fallback fires spurious `ConnectionUp` on daemon startup |
+| #355 ✅ | medium | 4 | `events nm-connection-up` poll fallback no longer fires spurious `ConnectionUp` on daemon startup — `is_activation_edge` in `src/events/source/nm_connection_up.rs` requires the detector to have observed at least one prior reading before any rising edge fires |
 | #354 | high | 5 | new — `--state <path>` chmods parent dir to `0700`, system-bricking footgun (e.g. `--state /tmp/x` → `chmod /tmp 0700`) |
 | #352 | medium | 1 | new — `timer resume` short-name maps to non-existent `proteus-resume.timer` (artifact is `.service`); `enable/disable/set/reset/status resume` all target a unit that doesn't exist |
 | #342 | high | 9 | new — path traversal in `persona {new,edit,show,use}` via unvalidated `<id>` (mirror of NEV2.1) |
@@ -461,15 +461,27 @@ NBE.7, NBE.8, NBE.10, NTEST.2.
   errors (N4); fix connection lookup id / uuid mixing (N6).
 - ⏳ Implement per-trigger debounce on link-flap detector (N8); subscribe to
   `DeviceAdded` (N12).
-- ⏳ Captive portal: validate TLS, follow redirects (N9); fix `Host:`
-  header for IPv6 literals (N12.7); reorder `to_socket_addrs` to v4-first
-  (N10).
-- ⏳ Reload captive-portal config on `SIGHUP` (R4); per-SSID stub returns the
-  real SSID (N12.11).
+- 🚧 Captive portal: validate TLS, follow redirects (N9). HTTP-only
+  redirect-following landed in `src/captive_portal/mod.rs`
+  (`http_get_following`, bounded at 5 hops). TLS validation
+  **deferred** — captive_portal forbids TLS deps (no `rustls` /
+  `webpki-roots` in `Cargo.toml`) and adding one is a maintainer
+  design call. https → unfollowable surfaces as `PortalRequired`
+  with the validated target attached. Fix `Host:` header for IPv6
+  literals (N12.7); reorder `to_socket_addrs` to v4-first (N10).
+- ✅ Reload captive-portal config on `SIGHUP` (R4) — primitive
+  `CaptivePortalReload` (`Arc<RwLock<CaptivePortalConfig>>`) shipped
+  in `src/captive_portal/mod.rs`; SIGHUP wiring is Group A's job
+  in `src/commands/events.rs`. Per-SSID stub returns the real SSID
+  (N12.11).
 - ⏳ Test coverage: full `GetSettings → Update` with PSK round-trip (N5);
   factory MAC fallback failure path (N7); mock-backend mutex-poisoning
   recovery (N13).
-- ⏳ Init-system detection paths beyond hardcoded list (N11).
+- ✅ Init-system detection paths beyond hardcoded list (N11). Added
+  `src/init/posix_fallback.rs` with detection + artifact rendering
+  for s6, dinit, and a generic POSIX fallback. `select::detect`
+  walks Systemd → OpenRC → Runit → SysVinit → s6 → dinit →
+  posix-fallback → Systemd (default).
 - ⏳ Per-SSID policy debounce vs concurrent CLI rotate (N14).
 - ⏳ Drop the `&& opts.pool.len() > 1` guard in
   `mac::generator::generate_with_probe` so single-token persona pools (e.g.
@@ -494,9 +506,12 @@ NBE.7, NBE.8, NBE.10, NTEST.2.
 - ⏳ Captive portal classifier: reject `expected_response = ""` at config
   load with a wiki-linked error, or treat empty `expected_body` paired with
   empty body as `Unknown` rather than `Clear` (NEV2.2).
-- ⏳ Bluetooth name length: query adapter capabilities and cap BLE-only
-  adapters at ~30 bytes; `warn!` if the configured alias would be truncated
-  by the controller (NEV2.5).
+- ✅ Bluetooth name length: query adapter capabilities and cap
+  BLE-only adapters at ~30 bytes; `warn!` if the configured alias
+  would be truncated by the controller (NEV2.5). Helper
+  `recommend_alias_byte_cap` in `src/bluetooth/apply.rs` keys off
+  `Adapter1.AddressType == "random"`; warning fires from
+  `apply_one` before the BlueZ write.
 - ⏳ DHCP DUID/IAID asymmetry on rotate: document the tradeoff and add a
   config knob to keep IAID persistent (or pin DUID + IAID derivation so the
   asymmetry goes away). Today rotation breaks DHCPv6-only networks (NBE.3).
@@ -688,16 +703,29 @@ L‑3 (residual), audit I‑1, NEV2.1.
 
 **Work:**
 
-- ⏳ Validate `Location` header per RFC (S2); enforce `mode(0o600)` on
-  lock file (S3).
+- ✅ Validate `Location` header per RFC (S2) — `validate_location_header`
+  in `src/captive_portal/mod.rs` rejects CR/LF/NUL/control bytes,
+  caps length at 4 KiB, and requires absolute or scheme-/root-relative
+  refs. Wired into the redirect classifier and the redirect-following
+  GET path. Enforce `mode(0o600)` on lock file (S3).
 - ⏳ Open-by-fd then `unlinkat` for resolved drop-in cleanup, closing the
-  TOCTOU (S5); join host + path through a single percent-encoder for HTTP
-  request line (S6).
+  TOCTOU (S5).
+- ✅ Join host + path through a single percent-encoder for HTTP
+  request line (S6) — `request_line_builder` in
+  `src/captive_portal/mod.rs` runs both fields through
+  `percent_encode_request_target` / `percent_encode_request_safe`
+  before the request blob is assembled.
 - ⏳ Restrict polkit policy to `unix-group:wheel` / `sudo` and add a runtime
   check in `proteus doctor` (S7, B15 — Stream 3 owns the file, Stream 9
   owns the policy text).
-- ⏳ Expand the safety comment on `OwnedFd::from_raw_fd` (S9); strict MAC
-  separator parser (S10).
+- ✅ Expand the safety comment on `OwnedFd::from_raw_fd` (S9) —
+  `src/events/source/link_flap.rs::netlink::open_netlink` now
+  documents ownership handover, close-once invariant, kernel
+  concurrent-close semantics, and the future-`OwnedFd::from_raw_fd_checked`
+  migration path. The roadmap originally cited
+  `events/source/reg_domain.rs` but the real `from_raw_fd` site is
+  in `link_flap.rs` (reg_domain shares the helper module).
+- ⏳ Strict MAC separator parser (S10).
 - ⏳ Sanitize NM dict values before tracing (S8) — coordinate with Stream
   4's error-context preservation (N4).
 - ⏳ Harden `Layout::from_env()` in `src/commands/uninstall.rs` so
