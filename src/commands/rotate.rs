@@ -597,11 +597,22 @@ pub fn run_if_needed(
         eprintln!("proteus: {e}");
         return Ok(exit::PERMISSION_ERROR);
     }
-    // GH#381: pass `state_path` through to the backend's
-    // `rotate_if_needed` so the cooldown read AND the inner
-    // `commands::rotate::run` book-keeping land on the same on-disk
-    // file. Pre-fix, `_state_unused` discarded the operator's choice
-    // and the cooldown read hardcoded `crate::commands::DEFAULT_STATE_PATH`.
+    // Issue #381: the state-path threading from the CLI ends here. The
+    // backend trait's `rotate_if_needed` doesn't yet accept a state path,
+    // so the cooldown read-back inside `backend/nm.rs::rotate_if_needed_inner`
+    // hardcodes `crate::commands::DEFAULT_STATE_PATH`. Surface a warning
+    // when an explicit `--state` was passed so the operator at least
+    // sees that their override was dropped — the proper fix needs a
+    // trait-signature change (Stream 5 / state-lock work) and is
+    // tracked there. TODO(#381): remove this warning when the backend
+    // trait grows a `state_path` parameter.
+    if state_path.is_some() {
+        tracing::warn!(
+            "--state is currently ignored by `rotate-if-needed`; cooldown reads \
+             {} (see #381)",
+            crate::commands::DEFAULT_STATE_PATH
+        );
+    }
     let config_path = super::config_path(config_path);
     let config = Config::default_or_loaded(&config_path).unwrap_or_default();
 
@@ -616,14 +627,13 @@ pub fn run_if_needed(
     if let Some(p) = &policy
         && p.pin_mac.is_some()
     {
-        // Issue #367: sanitize the dispatcher-supplied iface before echo.
-        let iface_label = display_safe(iface.unwrap_or("(no iface)"));
+        let iface_label = iface.unwrap_or("(no iface)");
         if explain {
             // Issue #378: surface the policy that drove the skip so the
             // dispatcher's logger sees *why* this iface was excluded.
             println!(
                 "explain rotate-if-needed: ssid={} per-SSID pin_mac is set → skipping (no rotation)",
-                display_safe(ssid.unwrap_or("(none)"))
+                ssid.unwrap_or("(none)")
             );
         }
         println!("skipped {iface_label}: pinned by per-SSID policy");

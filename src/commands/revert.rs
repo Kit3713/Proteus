@@ -54,19 +54,6 @@ pub fn run(yes: bool, state_path: Option<&Path>) -> Result<u8> {
     };
 
     let mut warns: Vec<String> = Vec::new();
-    // NCMD2.4: prune state-cached uuids that no longer exist in NM's live
-    // `Settings.ListConnections`. NM uuids are recyclable — if the user
-    // deleted a profile and re-created one with the same display id, the
-    // stale cached snapshot would otherwise overwrite an unrelated
-    // profile. Skip uuids missing from the live set with `warn!`; per-
-    // feature revert paths (dhcp, enterprise-wifi) already iterate the
-    // live connection list, so they'll naturally no-op for stale state.
-    // Best-effort: a DBus failure leaves state unchanged and the existing
-    // per-feature flow continues.
-    if let Err(e) = validate_cached_connection_uuids(&mut warns) {
-        tracing::debug!("NCMD2.4 validation skipped: {e:#}");
-    }
-
     revert_best_effort(state_path, &mut warns);
 
     if warns.is_empty() {
