@@ -21,6 +21,7 @@
 //! still has something to render.
 
 pub mod openrc;
+pub mod posix_fallback;
 pub mod runit;
 pub mod select;
 pub mod systemd;
