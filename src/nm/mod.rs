@@ -102,6 +102,15 @@ pub trait Connection {
     /// dict before calling `Update` to avoid clobbering the secrets store.
     fn get_secrets(&self, setting_name: &str) -> zbus::Result<ConnectionSettings>;
     fn update(&self, settings: ConnectionSettings) -> zbus::Result<()>;
+    /// NBE.7: monotonic version counter NM bumps on every `Update`. Pass
+    /// the current value into `Device.Reapply` so a concurrent `nmcli
+    /// connection modify` between our read and our reapply surfaces as
+    /// a DBus `InvalidArguments` (NM's documented version-mismatch
+    /// signal) rather than silently overwriting the in-flight edit.
+    /// NM 1.20+; older NM doesn't expose the property and the Reapply
+    /// fall-through with `version=0` is the only path available.
+    #[zbus(property, name = "VersionId")]
+    fn version_id(&self) -> zbus::Result<u64>;
 }
 
 // NetworkManager device-type integer constants (subset).
@@ -171,10 +180,16 @@ pub async fn list_devices(conn: &zbus::Connection) -> Result<Vec<DeviceInfo>> {
                 match $call.await {
                     Ok(v) => v,
                     Err(e) => {
+                        // S8: NM property-read errors can echo
+                        // connection-setting values verbatim. Route
+                        // through `display_string` before tracing so an
+                        // attacker-controlled string in the dict can't
+                        // redraw `journalctl -t proteus`.
+                        let safe = crate::display::display_string(&format!("{e:#}"));
                         tracing::warn!(
                             device = %path.as_str(),
                             property = $prop,
-                            "NM device property read failed; skipping device: {e}"
+                            "NM device property read failed; skipping device: {safe}"
                         );
                         continue;
                     }
@@ -303,13 +318,52 @@ pub async fn update_with_secrets(
         // None of these is a reason to abort the update — they just mean
         // there's nothing to merge for that section. A real DBus failure on
         // the subsequent `update` call still surfaces.
+        //
+        // E6: previously every GetSecrets error landed at `debug!`,
+        // which hides genuine secret-store breakage from the operator.
+        // The new shape distinguishes the documented "nothing to merge"
+        // cases (NoSecrets / InvalidProperty / PermissionDenied) from
+        // real failures (DBus disconnect, NM crash mid-call). Real
+        // failures land at `error!` with method + path context so the
+        // operator can see WHY the merge skipped — pre-fix, a hostile
+        // edge could feed `Update` a stripped dict and silently wipe
+        // secrets while the journal showed only "returned no secrets to
+        // merge". Builds on Stream 4's preserve-method-context (N4).
         match proxy.get_secrets(section).await {
             Ok(s) => merge_secrets(&mut settings, &s),
             Err(e) => {
-                tracing::debug!(
-                    section = section,
-                    "GetSecrets returned no secrets to merge: {e}"
-                );
+                // S8: NM error messages can echo connection-setting
+                // values verbatim ("Could not parse value 'foo' for key
+                // …"). For an enterprise-Wi-Fi connection that's
+                // attacker-influenced — the AP supplies the realm /
+                // anonymous-identity, the dispatcher feeds it through
+                // GetSettings, and an unsanitized error message reaches
+                // journald with embedded ANSI / BiDi controls. Route
+                // every dict-influenced byte through `display_string`
+                // before tracing so a hostile peer can't redraw the
+                // operator's terminal via `journalctl -t proteus`.
+                let raw = format!("{e:#}");
+                let safe = crate::display::display_string(&raw);
+                let benign = raw.contains("NoSecrets")
+                    || raw.contains("InvalidProperty")
+                    || raw.contains("PermissionDenied")
+                    || raw.contains("not found")
+                    || raw.contains("does not exist");
+                if benign {
+                    tracing::debug!(
+                        method = "Settings.Connection.GetSecrets",
+                        path = %connection_path.as_str(),
+                        section = section,
+                        "GetSecrets returned no secrets to merge: {safe}"
+                    );
+                } else {
+                    tracing::error!(
+                        method = "Settings.Connection.GetSecrets",
+                        path = %connection_path.as_str(),
+                        section = section,
+                        "GetSecrets failed with non-benign error; secret may be wiped on Update: {safe}"
+                    );
+                }
             }
         }
     }
