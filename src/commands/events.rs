@@ -111,7 +111,12 @@ impl EventHandler for RotateOnTriggerHandler {
             // without a hostile AP redrawing their terminal via the
             // `journalctl` viewer.
             let ssid_safe = crate::per_ssid::display_ssid(ssid);
-            tracing::info!(
+            // E2: demoted from info to debug. Per-trigger success-path
+            // logging fires on every `connection-up`, which on a busy
+            // dispatcher easily hits journald rate limits. The shutdown
+            // / startup / budget-reached lines stay at info because
+            // they're once-per-run, not per-trigger.
+            tracing::debug!(
                 kind = trigger.kind(),
                 iface = iface.as_str(),
                 ssid = ssid_safe.as_str(),
@@ -124,7 +129,13 @@ impl EventHandler for RotateOnTriggerHandler {
             return Ok(());
         }
 
-        tracing::info!(
+        // E2: demoted from info to debug — trigger observation is the
+        // hot path; the operator wants to know the daemon is alive
+        // (info: "events daemon started" / "trigger budget reached"
+        // are kept at info because they're once-per-run). Per-trigger
+        // success-path lines fire on every connection-up which on a
+        // busy dispatcher easily hits journald rate limits.
+        tracing::debug!(
             kind = trigger.kind(),
             "events: trigger observed; rotating via backend"
         );
