@@ -245,4 +245,109 @@ mod tests {
         );
         assert_eq!(settings.get(SECTION).map(|s| s.len()), Some(1));
     }
+
+    /// NBE.5: round-trip `private-key-password` through the
+    /// merge-secrets → settings-write path. Pre-fix, the test surface
+    /// only covered `password` (the PEAP/TTLS inner password); EAP-TLS
+    /// connections store their key passphrase under
+    /// `private-key-password`, which is in the same `802-1x` section
+    /// but a different key. A regression that stripped the key on
+    /// `Update` would silently break the user's auth on next
+    /// reconnect — the symptom (failed 802.1X handshake) is far from
+    /// the cause (stale `Update` round trip).
+    ///
+    /// The test mimics the rotation path: starts from a settings dict
+    /// that has the public 802-1x fields (eap, identity, anonymous-
+    /// identity), simulates `GetSettings` having stripped both
+    /// `password` and `private-key-password`, then asserts both
+    /// secrets land back in the merged dict.
+    #[test]
+    fn merge_secrets_round_trips_private_key_password() {
+        let mut settings = ConnectionSettings::new();
+        let section = settings.entry(SECTION.to_string()).or_default();
+        section.insert("eap".to_string(), owned_str("tls"));
+        section.insert("identity".to_string(), owned_str("alice@example.edu"));
+        section.insert(
+            ANONYMOUS_IDENTITY_KEY.to_string(),
+            owned_str("anonymous@example.edu"),
+        );
+
+        // `GetSecrets("802-1x")` returns BOTH the inner-password (for
+        // PEAP-MSCHAPv2-style configs) and the private-key-password
+        // (for EAP-TLS). On a real EAP-TLS-only profile only the
+        // private-key-password is present; the test simulates the
+        // worst-case "both present" so the merge handles either or
+        // both consistently.
+        let mut secrets = ConnectionSettings::new();
+        let secret_section = secrets.entry(SECTION.to_string()).or_default();
+        secret_section.insert("password".to_string(), owned_str("hunter2"));
+        secret_section.insert(
+            "private-key-password".to_string(),
+            owned_str("EAP-TLS-key-pass-phrase-do-not-leak"),
+        );
+
+        merge_secrets(&mut settings, &secrets);
+
+        // Public fields preserved verbatim — anonymous-identity write
+        // didn't get clobbered by the merge.
+        assert_eq!(
+            str_at(&settings, SECTION, ANONYMOUS_IDENTITY_KEY).as_deref(),
+            Some("anonymous@example.edu"),
+        );
+        assert_eq!(
+            str_at(&settings, SECTION, "identity").as_deref(),
+            Some("alice@example.edu"),
+        );
+        assert_eq!(
+            str_at(&settings, SECTION, "eap").as_deref(),
+            Some("tls"),
+            "the eap method must survive the merge — the round trip is read-modify-write",
+        );
+
+        // Both secrets reach the merged settings.
+        assert_eq!(
+            str_at(&settings, SECTION, "password").as_deref(),
+            Some("hunter2"),
+        );
+        assert_eq!(
+            str_at(&settings, SECTION, "private-key-password").as_deref(),
+            Some("EAP-TLS-key-pass-phrase-do-not-leak"),
+            "private-key-password must round-trip; without it NM wipes the EAP-TLS \
+             key passphrase on next Update and the user's auth silently breaks"
+        );
+    }
+
+    /// NBE.5 sibling: the merge must not invent a `private-key-password`
+    /// when the secrets dict has none. A connection that uses inner
+    /// `password` only (PEAP/TTLS) must stay PEAP-only after the
+    /// merge — no spurious key passphrase appears under the merged
+    /// dict.
+    #[test]
+    fn merge_secrets_does_not_invent_private_key_password() {
+        let mut settings = ConnectionSettings::new();
+        settings
+            .entry(SECTION.to_string())
+            .or_default()
+            .insert("eap".to_string(), owned_str("peap"));
+
+        let mut secrets = ConnectionSettings::new();
+        secrets
+            .entry(SECTION.to_string())
+            .or_default()
+            .insert("password".to_string(), owned_str("hunter2"));
+
+        merge_secrets(&mut settings, &secrets);
+
+        assert!(
+            settings
+                .get(SECTION)
+                .and_then(|s| s.get("private-key-password"))
+                .is_none(),
+            "merge must not synthesize private-key-password when secrets dict has none"
+        );
+        assert_eq!(
+            str_at(&settings, SECTION, "password").as_deref(),
+            Some("hunter2"),
+        );
+    }
 }
