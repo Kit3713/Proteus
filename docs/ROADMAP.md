@@ -62,11 +62,11 @@ mapping for fast lookup. None of these were addressed by the current
 | NM2.5 | low | 4 | `generate_for_vendor` postcondition doc |
 | NM2.7 | low | 1 | `mac::plan::preview_mac` ignores OUI pool |
 | NCMD2.1 | medium | 1 | `proteus doctor` exit code conflates Warn + Fail |
-| NCMD2.3 | medium | 4 | `apply` skips `daemon-reload` on dns/stack/ipv6/resolved |
-| NCMD2.4 | medium | 4 | revert mis-targets deleted / recycled NM uuids |
+| NCMD2.3 | medium | 4 | ✅ `apply` skips `daemon-reload` on dns/stack/ipv6/resolved |
+| NCMD2.4 | medium | 4 | ✅ revert mis-targets deleted / recycled NM uuids |
 | NCMD2.5 | low | 1 | `status --json` outputs U+FFFD on non-UTF-8 ifaces |
-| NSUB.1 | medium | 4 | `[stack]` apply silently no-ops kernel-unsupported keys |
-| NSUB.2 | medium | 4 | `[stack]` revert leaves orphaned hardened sysctls |
+| NSUB.1 | medium | 4 | ✅ `[stack]` apply silently no-ops kernel-unsupported keys |
+| NSUB.2 | medium | 4 | ✅ `[stack]` revert leaves orphaned hardened sysctls |
 | NEV2.1 | medium | 9 | `wiki::get_page` lacks input validation |
 | NEV2.2 | medium | 4 | captive portal misclassifies empty-body 200 as Clear |
 | NEV2.3 | medium | 5 | hostname DBus calls have no timeout |
@@ -163,7 +163,7 @@ flagged with "= ID"):
 | #382 | medium | 2 | new — `iot-generic.toml` `oui_pool` has tokens `Vendor::from_pool_token` doesn't know — silent LAA degrade |
 | #381 | medium | 1 | ✅ Wave 3 Group A — backend trait `rotate_if_needed` now takes `state_path: Option<&Path>`; cooldown read + inner rotate honour operator's `--state` |
 | #380 | medium | 9 | new — `persona list` prints unvalidated `display_name`/`notes` — terminal injection |
-| #379 | medium | 4 | new — `apply` not idempotent — `build_forbidden` always adds `current_mac` to forbidden set |
+| #379 | medium | 4 | ✅ `apply` not idempotent — `build_forbidden` always adds `current_mac` to forbidden set |
 | #374 | medium | 9 | new — `persona list` prints `display_name` byte-for-byte — ANSI/control/BiDi injection |
 | #373 | medium | 9 | new — `portal mark/unmark` print raw SSID via `println!` — same N-2 family, four sites |
 | #367 | medium | 9 | new — terminal-escape passthrough via raw `iface` echo in `rotate{,-if-needed}` (N-2 third site) |
@@ -521,15 +521,15 @@ NBE.7, NBE.8, NBE.10, NTEST.2.
 - ⏳ Add a doc comment to `generate_for_vendor` stating the caller must
   validate the returned MAC; today both callers do, but the postcondition is
   undocumented (NM2.5).
-- ⏳ Run a single `systemctl daemon-reload` at the end of `apply::run()`
+- ✅ Run a single `systemctl daemon-reload` at the end of `apply::run()`
   after dns / stack / resolved / ipv6 drop-ins are written, so the
   documented effect actually materializes without a manual reload (NCMD2.3).
-- ⏳ Validate cached NM uuids against the live `Settings.ListConnections`
+- ✅ Validate cached NM uuids against the live `Settings.ListConnections`
   before invoking restore in `revert`; drop missing uuids with `warn!`,
   reject restore when uuid is present but the SSID/id has changed (NCMD2.4
   — guards against NM uuid recycling silently corrupting an unrelated
   profile). Builds on the N6 fix.
-- ⏳ Surface `warn!` when `read_sysctl(key)` returns `None` during `[stack]`
+- ✅ Surface `warn!` when `read_sysctl(key)` returns `None` during `[stack]`
   apply (kernel doesn't expose the key) and skip writing the drop-in
   (NSUB.1). At revert time, re-probe each cached key and restore only those
   that exist now; log orphans at `info!` (NSUB.2).
@@ -751,9 +751,10 @@ L‑3 (residual), audit I‑1, NEV2.1.
   in `src/captive_portal/mod.rs` rejects CR/LF/NUL/control bytes,
   caps length at 4 KiB, and requires absolute or scheme-/root-relative
   refs. Wired into the redirect classifier and the redirect-following
-  GET path. Enforce `mode(0o600)` on lock file (S3).
-- ⏳ Open-by-fd then `unlinkat` for resolved drop-in cleanup, closing the
-  TOCTOU (S5).
+  GET path. ⏳ Enforce `mode(0o600)` on lock file (S3).
+- ✅ Open-by-fd then `unlinkat` for resolved drop-in cleanup, closing the
+  TOCTOU (S5, Wave 3 Group C — `remove_resolved_dropins` in
+  `src/commands/revert.rs`).
 - ✅ Join host + path through a single percent-encoder for HTTP
   request line (S6) — `request_line_builder` in
   `src/captive_portal/mod.rs` runs both fields through

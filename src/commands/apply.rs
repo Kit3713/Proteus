@@ -97,11 +97,105 @@ pub fn run(yes: bool, state_path: Option<&Path>, config_path: Option<&Path>) -> 
 
     let reports = orchestrate(&config, state_path, config_path);
 
+    // NCMD2.3: a single `systemctl daemon-reload` after every per-feature
+    // apply is done. dns / stack / resolved / ipv6 each write drop-ins under
+    // /etc/systemd/, but their per-feature `apply` paths don't reload — the
+    // documented effect ("apply lands the config") only materialises after
+    // the unit-file cache rebuilds. Run it once here so the operator never
+    // has to invoke a manual reload. Failure is non-fatal: drop-ins are on
+    // disk and will be picked up on next boot regardless.
+    let reload_note = systemctl_daemon_reload_after_apply(&reports);
+
     let tally = print_summary(&reports);
+    if let Some(note) = reload_note {
+        println!("{note}");
+    }
     if tally.failed > 0 {
         Ok(exit::GENERIC_ERROR)
     } else {
         Ok(exit::SUCCESS)
+    }
+}
+
+/// Run `systemctl daemon-reload` once after orchestration so freshly-written
+/// drop-ins under `/etc/systemd/` (resolved.conf.d, timesyncd.conf.d, …)
+/// take effect without a manual reload (NCMD2.3). Skipped when systemd
+/// isn't running (CI containers, dev shells) since there's nothing to
+/// reload. Bounded by a hard subprocess timeout so a wedged systemd can't
+/// hang the apply cycle. Returns a one-line note for the summary, or
+/// `None` when the reload was skipped.
+fn systemctl_daemon_reload_after_apply(reports: &[ComponentReport]) -> Option<String> {
+    if !std::path::Path::new("/run/systemd/system").is_dir() {
+        return None;
+    }
+    // Skip when nothing the reload would care about actually got applied —
+    // a pure-skip cycle never wrote a drop-in, so the reload is busywork.
+    let drop_in_owners = ["dns", "resolved", "stack", "ipv6", "ntp"];
+    let any_applied = reports
+        .iter()
+        .any(|r| drop_in_owners.contains(&r.name) && r.status == Status::Applied);
+    if !any_applied {
+        return None;
+    }
+    match systemctl_with_timeout(&["daemon-reload"], std::time::Duration::from_secs(10)) {
+        Ok(()) => Some("daemon-reload: ok".to_string()),
+        Err(e) => {
+            tracing::warn!("apply: systemctl daemon-reload failed: {e:#}");
+            Some(format!("daemon-reload: failed ({e:#})"))
+        }
+    }
+}
+
+/// Spawn `systemctl <args>` with a hard wall-clock timeout. If the timeout
+/// elapses we send SIGKILL and return a `TimedOut`-style error so the
+/// caller can surface a clear note. Used by `daemon-reload` so a wedged
+/// pid 1 can't hang `proteus apply`.
+fn systemctl_with_timeout(args: &[&str], timeout: std::time::Duration) -> anyhow::Result<()> {
+    use anyhow::{Context, anyhow};
+    use std::process::{Command, Stdio};
+    use std::thread;
+    use std::time::Instant;
+
+    let mut child = Command::new("systemctl")
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .context("spawning systemctl")?;
+
+    let deadline = Instant::now() + timeout;
+    loop {
+        match child.try_wait().context("waiting on systemctl")? {
+            Some(status) => {
+                if status.success() {
+                    return Ok(());
+                }
+                // Drain stderr for the diagnostic.
+                let mut buf = String::new();
+                if let Some(mut s) = child.stderr.take() {
+                    use std::io::Read;
+                    let _ = s.read_to_string(&mut buf);
+                }
+                return Err(anyhow!(
+                    "systemctl {} exited with {status}: {}",
+                    args.join(" "),
+                    buf.trim()
+                ));
+            }
+            None => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(anyhow!(
+                        "systemctl {} timed out after {}s",
+                        args.join(" "),
+                        timeout.as_secs()
+                    ));
+                }
+                thread::sleep(std::time::Duration::from_millis(50));
+            }
+        }
     }
 }
 

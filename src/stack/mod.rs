@@ -124,7 +124,15 @@ pub fn render_header(body_sha_hex: &str) -> String {
 /// + interfaces. Idempotent: same inputs → byte-identical output.
 pub fn render_dropin(cfg: &StackConfig, ifaces: &[String]) -> String {
     let lines = lines_for(cfg, ifaces);
-    let body = render_body(&lines);
+    render_dropin_from_lines(&lines)
+}
+
+/// Render the drop-in from a pre-built [`SysctlLine`] vector. Splits out
+/// the rendering half of [`render_dropin`] so callers that filter lines
+/// (NSUB.1: skip kernel-unsupported keys before write) don't have to
+/// re-derive the full set from `(cfg, ifaces)`.
+pub fn render_dropin_from_lines(lines: &[SysctlLine]) -> String {
+    let body = render_body(lines);
     let sha = sha256::hex_digest(body.as_bytes());
     let header = render_header(&sha);
     format!("{header}{body}")

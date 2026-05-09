@@ -264,7 +264,7 @@ async fn rotate_one<P: Probe + ?Sized>(
     persist_capture_metadata(state);
     state.save(state_path)?;
 
-    let forbidden = build_forbidden(state, dev.hw_address.as_deref());
+    let forbidden = build_forbidden(state, &dev.iface, dev.hw_address.as_deref());
     // Roadmap M2 "Integration": when a persona is active, its `oui_pool`
     // and `mac_byte_pattern` shape the generator. Falling back to the
     // global `[mac] oui_pool` keeps the v0.2.x slider behaviour the
@@ -419,23 +419,46 @@ fn persist_capture_metadata(state: &mut State) {
     }
 }
 
-fn build_forbidden(state: &State, hw: Option<&str>) -> HashSet<Mac> {
+/// GH#379: forbid every sacred-original MAC and every OTHER interface's
+/// currently-applied clone, but NOT this interface's own live MAC. The
+/// previous shape always added the device's current `hw` to the
+/// forbidden set, which made `apply` non-idempotent: a re-run with no
+/// config changes had to pick a different MAC, because the one we'd
+/// just set was now off-limits.
+///
+/// The current MAC for the iface being rotated is implicitly a valid
+/// candidate again — the generator may re-pick it. The change is
+/// observable as: two back-to-back `apply` runs against an unchanged
+/// system can land on the same MAC. Originals and other-iface clones
+/// remain forbidden so cross-iface collisions are still impossible.
+fn build_forbidden(state: &State, iface: &str, hw: Option<&str>) -> HashSet<Mac> {
     let mut set = HashSet::new();
+    // Sacred originals: every captured factory MAC is permanently off
+    // the candidate list. Includes this iface's own factory MAC, so the
+    // generator can never accidentally pick it.
     for mac_str in state.original_macs.values() {
         if let Ok(m) = mac_str.parse::<Mac>() {
             set.insert(m);
         }
     }
-    if let Some(h) = hw
-        && let Ok(m) = h.parse::<Mac>()
-    {
-        set.insert(m);
-    }
-    for rec in state.managed.interfaces.values() {
+    // Other interfaces' clones: forbid them so two ifaces never end up
+    // sharing a MAC. Skip THIS iface's record so a re-apply can re-pick
+    // the current value (idempotency).
+    for (rec_iface, rec) in &state.managed.interfaces {
+        if rec_iface == iface {
+            continue;
+        }
         if let Some(m) = rec.current_mac.as_ref().and_then(|s| s.parse::<Mac>().ok()) {
             set.insert(m);
         }
     }
+    // `hw` (the live driver-reported MAC) is intentionally NOT added.
+    // Pre-#379 it was — that's exactly the non-idempotency. On a first
+    // rotation `hw` equals the factory MAC, which is already covered
+    // by the `original_macs` loop above. On a subsequent rotation it
+    // equals this iface's current_mac, which we want to leave
+    // pickable.
+    let _ = hw;
     set
 }
 
