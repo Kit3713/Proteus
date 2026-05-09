@@ -14,12 +14,14 @@
 //!
 //! Idempotent: re-running on an already-reverted system does nothing.
 
+use std::collections::BTreeSet;
 use std::path::Path;
 use std::process::Command;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 use crate::exit;
+use crate::state::State;
 
 /// Drop-ins Proteus writes outside `/etc/proteus/`. Mirrors `wiki/uninstall.md`
 /// and the install script. `pub(crate)` so the dry-run preview iterates the
@@ -50,6 +52,20 @@ pub fn run(yes: bool) -> Result<u8> {
     };
 
     let mut warns: Vec<String> = Vec::new();
+
+    // NCMD2.4: prune state-cached uuids that no longer exist in NM's live
+    // `Settings.ListConnections`. NM uuids are recyclable — if the user
+    // deleted a profile and re-created one with the same display id, the
+    // stale cached snapshot would otherwise overwrite an unrelated
+    // profile. Skip uuids missing from the live set with `warn!`; per-
+    // feature revert paths (dhcp, enterprise-wifi) already iterate the
+    // live connection list, so they'll naturally no-op for stale state.
+    // Best-effort: a DBus failure leaves state unchanged and the existing
+    // per-feature flow continues.
+    if let Err(e) = validate_cached_connection_uuids(&mut warns) {
+        tracing::debug!("NCMD2.4 validation skipped: {e:#}");
+    }
+
     revert_best_effort(&mut warns);
 
     if warns.is_empty() {
@@ -158,17 +174,162 @@ pub(crate) fn revert_best_effort(warns: &mut Vec<String>) {
     }
 }
 
+/// NCMD2.4: validate every uuid cached in `state.originals.connections`
+/// and `state.managed.connections` against the live
+/// `org.freedesktop.NetworkManager.Settings.ListConnections` answer.
+/// Drop missing uuids with `warn!` so a recycled-uuid scenario can't
+/// overwrite an unrelated profile. Best-effort: when DBus / NM is
+/// unreachable we leave state untouched and let the existing per-feature
+/// revert (which already iterates live connections) carry on.
+///
+/// Returns `Ok(())` on a clean validation OR a clean defer (NM absent);
+/// `Err(...)` only if loading state itself fails — callers treat that as
+/// debug-level and continue.
+pub(crate) fn validate_cached_connection_uuids(warns: &mut Vec<String>) -> Result<()> {
+    let state_path = super::state_path(None);
+    let mut state = match State::load(&state_path)? {
+        Some(s) => s,
+        None => return Ok(()),
+    };
+    if state.originals.connections.is_empty() && state.managed.connections.is_empty() {
+        return Ok(());
+    }
+
+    let live_uuids = match probe_live_nm_connection_uuids() {
+        Ok(set) => set,
+        Err(e) => {
+            // NM not running, polkit denied, or DBus unreachable. The
+            // per-feature revert paths handle the missing-NM case
+            // independently — fall through quietly.
+            tracing::debug!("NCMD2.4: skipping uuid validation (NM unreachable): {e:#}");
+            return Ok(());
+        }
+    };
+
+    let stale_originals: Vec<String> = state
+        .originals
+        .connections
+        .keys()
+        .filter(|u| !live_uuids.contains(*u))
+        .cloned()
+        .collect();
+    let stale_managed: Vec<String> = state
+        .managed
+        .connections
+        .keys()
+        .filter(|u| !live_uuids.contains(*u))
+        .cloned()
+        .collect();
+
+    if stale_originals.is_empty() && stale_managed.is_empty() {
+        return Ok(());
+    }
+
+    for uuid in &stale_originals {
+        tracing::warn!(
+            uuid = %uuid,
+            "NCMD2.4: dropping cached connection-originals snapshot — uuid no longer in NetworkManager"
+        );
+        warns.push(format!(
+            "originals[{uuid}]: dropped (uuid no longer in NetworkManager — possibly deleted)"
+        ));
+        state.originals.connections.remove(uuid);
+    }
+    for uuid in &stale_managed {
+        tracing::warn!(
+            uuid = %uuid,
+            "NCMD2.4: dropping cached managed-connection record — uuid no longer in NetworkManager"
+        );
+        warns.push(format!(
+            "managed[{uuid}]: dropped (uuid no longer in NetworkManager — possibly deleted)"
+        ));
+        state.managed.connections.remove(uuid);
+    }
+
+    state
+        .save(&state_path)
+        .context("persisting NCMD2.4 cached-uuid prune")?;
+    Ok(())
+}
+
+/// Build the set of live `connection.uuid` strings NetworkManager knows
+/// about right now. Uses `Settings.ListConnections` then `GetSettings`
+/// per profile to extract `connection.uuid`. Failures bubble — the
+/// caller treats them as "skip validation."
+fn probe_live_nm_connection_uuids() -> Result<BTreeSet<String>> {
+    use crate::nm::{self, dhcp as nmdhcp};
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("starting tokio runtime for NCMD2.4 validation")?;
+    rt.block_on(async {
+        let conn = zbus::Connection::system()
+            .await
+            .context("connecting to system DBus")?;
+        let settings_proxy = nm::SettingsProxy::new(&conn)
+            .await
+            .context("connecting to NetworkManager Settings")?;
+        let paths = settings_proxy
+            .list_connections()
+            .await
+            .context("calling Settings.ListConnections")?;
+        let mut out = BTreeSet::new();
+        for path in paths {
+            let settings = match nmdhcp::get_settings(&conn, &path).await {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::debug!(
+                        path = %path.as_str(),
+                        "NCMD2.4: GetSettings skipped: {e:#}"
+                    );
+                    continue;
+                }
+            };
+            if let Some(uuid) = nmdhcp::connection_uuid(&settings) {
+                out.insert(uuid);
+            }
+        }
+        Ok(out)
+    })
+}
+
 /// Resolved drop-ins are name-prefixed so the per-link files Proteus
 /// writes can be wiped without scanning every conf file in the directory.
 /// Returns `true` if at least one matching file was actually removed —
 /// callers use that to decide whether to reload `systemd-resolved`.
+///
+/// S5: open the directory once with `O_DIRECTORY | O_NOFOLLOW`, then
+/// `unlinkat(dirfd, name, 0)` for each matching entry — closes the
+/// TOCTOU window where an attacker could swap the parent directory for
+/// a symlink between `read_dir` and `remove_file`. The filename match
+/// stays in user-space, so `is_proteus_resolved_dropin` still gates
+/// which entries we touch.
 fn remove_resolved_dropins(warns: &mut Vec<String>) -> bool {
+    use std::os::unix::io::AsRawFd;
+
     let dir = Path::new(RESOLVED_DROPIN_DIR);
+    // Open the dir as a fd with O_DIRECTORY (refuses to open non-dirs)
+    // + O_NOFOLLOW (refuses to follow if the path component itself is
+    // a symlink). Subsequent unlinkat calls reference the fd, so a
+    // post-open swap of the parent dir does not redirect our removes.
+    let dir_file = match open_dir_secure(dir) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return false,
+        Err(e) => {
+            warns.push(format!("{}: open: {e}", dir.display()));
+            return false;
+        }
+    };
+    let dirfd = dir_file.as_raw_fd();
+    // Read entries via `std::fs::read_dir` (a separate open, but the
+    // unlink path uses our pinned dirfd — that's the half that matters
+    // for the TOCTOU). Reading by name keeps the matcher pure ASCII.
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return false,
         Err(e) => {
-            warns.push(format!("{}: {e}", dir.display()));
+            warns.push(format!("{}: read_dir: {e}", dir.display()));
             return false;
         }
     };
@@ -176,16 +337,52 @@ fn remove_resolved_dropins(warns: &mut Vec<String>) -> bool {
     for entry in entries.flatten() {
         let name = entry.file_name();
         let s = name.to_string_lossy();
-        if is_proteus_resolved_dropin(&s) {
-            let path = entry.path();
-            let outcome = remove_file_opt(&path);
-            if matches!(outcome, Ok(true)) {
-                removed_any = true;
-            }
-            note(&path, outcome, warns);
+        if !is_proteus_resolved_dropin(&s) {
+            continue;
         }
+        let display_path = entry.path();
+        let outcome = unlinkat_relative(dirfd, &name);
+        if matches!(outcome, Ok(true)) {
+            removed_any = true;
+        }
+        note(&display_path, outcome, warns);
     }
     removed_any
+}
+
+/// Open `dir` as a directory file descriptor with `O_DIRECTORY |
+/// O_NOFOLLOW`. The returned `File` keeps the fd alive for the
+/// duration of the cleanup pass; the caller passes its raw fd into
+/// `unlinkat` rather than going through path lookup again.
+fn open_dir_secure(dir: &Path) -> std::io::Result<std::fs::File> {
+    use std::fs::OpenOptions;
+    use std::os::unix::fs::OpenOptionsExt;
+    OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
+        .open(dir)
+}
+
+/// `unlinkat(dirfd, name, 0)` wrapper. Returns `Ok(true)` on success,
+/// `Ok(false)` when the entry was already gone (ENOENT), and `Err`
+/// otherwise — mirrors the [`Outcome`] shape that `note` consumes.
+fn unlinkat_relative(dirfd: i32, name: &std::ffi::OsStr) -> Outcome {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+
+    let cname = CString::new(name.as_bytes())
+        .map_err(|e| std::io::Error::other(format!("nul in name: {e}")))?;
+    // SAFETY: `dirfd` is a valid open directory fd held by the caller's
+    // `File` for the duration of this call; `cname` outlives the syscall.
+    let rc = unsafe { libc::unlinkat(dirfd, cname.as_ptr(), 0) };
+    if rc == 0 {
+        return Ok(true);
+    }
+    let err = std::io::Error::last_os_error();
+    if err.kind() == std::io::ErrorKind::NotFound {
+        return Ok(false);
+    }
+    Err(err)
 }
 
 /// Pulled out so the matcher (prefix + `.conf` suffix) is unit-testable.
