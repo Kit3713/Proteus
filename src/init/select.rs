@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Init-system selection. Walks Systemd → OpenRC → Runit → SysVinit
-//! and returns the first whose `detect()` reports true.
+//! Init-system selection. Walks Systemd → OpenRC → Runit → SysVinit →
+//! s6 → dinit → POSIX-fallback and returns the first whose `detect()`
+//! reports true.
 //!
 //! Systemd is the priority pick because (a) it's the primary target
 //! for the project, (b) it's also the only init that runs on
@@ -11,7 +12,17 @@
 //! detects (e.g. a sealed container with none of these probes
 //! visible) is also systemd, since that produces the most
 //! informative error from a downstream consumer.
+//!
+//! N11: the s6 / dinit / POSIX-fallback tail expands the hardcoded
+//! list to cover Artix-s6, Adelie, Chimera, and a generic
+//! "unknown but POSIX-compliant" host. The fallback rendering is a
+//! plain shell script in `/usr/local/libexec/proteus` so an
+//! installer always has something concrete to write, even on a
+//! host where Proteus cannot identify the init.
 
+use std::path::PathBuf;
+
+use super::posix_fallback::{PosixFallback, PosixFlavor};
 use super::{InitSystem, openrc::Openrc, runit::Runit, systemd::Systemd, sysvinit::Sysvinit};
 
 /// Resolve which init system this host is using. Returns the first
@@ -34,6 +45,17 @@ pub fn detect() -> Box<dyn InitSystem> {
     if sysvinit.detect() {
         return Box::new(sysvinit);
     }
+    // N11 — extended detection beyond the original four. Probe in
+    // specificity order: a host with `/etc/s6/` and `/sbin/init`
+    // should be classified as s6, not as posix-fallback.
+    let root = PathBuf::from("/");
+    if let Some(flavor) = PosixFallback::detect_flavor(&root) {
+        return Box::new(PosixFallback::new(flavor));
+    }
+    let posix_unknown = PosixFallback::new(PosixFlavor::Unknown);
+    if posix_unknown.detect() {
+        return Box::new(posix_unknown);
+    }
     Box::new(Systemd::new())
 }
 
@@ -47,6 +69,16 @@ pub fn available_systems() -> Vec<(&'static str, bool)> {
         ("openrc", Openrc::new().detect()),
         ("runit", Runit::new().detect()),
         ("sysvinit", Sysvinit::new().detect()),
+        // N11: the new tail. `s6` / `dinit` / `posix-fallback` are
+        // mutually exclusive in practice (a Chimera host has dinit
+        // and not s6, etc.), but we report all three so the doctor
+        // matrix is unambiguous.
+        ("s6", PosixFallback::new(PosixFlavor::S6).detect()),
+        ("dinit", PosixFallback::new(PosixFlavor::Dinit).detect()),
+        (
+            "posix-fallback",
+            PosixFallback::new(PosixFlavor::Unknown).detect(),
+        ),
     ]
 }
 
@@ -61,19 +93,32 @@ mod tests {
         let chosen = detect();
         let n = chosen.name();
         assert!(
-            ["systemd", "openrc", "runit", "sysvinit"].contains(&n),
+            [
+                "systemd",
+                "openrc",
+                "runit",
+                "sysvinit",
+                "s6",
+                "dinit",
+                "posix-fallback",
+            ]
+            .contains(&n),
             "unexpected init name: {n}"
         );
     }
 
     #[test]
-    fn available_systems_orders_systemd_first() {
+    fn available_systems_includes_n11_extensions() {
         let m = available_systems();
-        assert_eq!(m.len(), 4);
+        // N11 extended the matrix from 4 → 7 entries.
+        assert_eq!(m.len(), 7);
         assert_eq!(m[0].0, "systemd");
         assert_eq!(m[1].0, "openrc");
         assert_eq!(m[2].0, "runit");
         assert_eq!(m[3].0, "sysvinit");
+        assert_eq!(m[4].0, "s6");
+        assert_eq!(m[5].0, "dinit");
+        assert_eq!(m[6].0, "posix-fallback");
     }
 
     #[test]

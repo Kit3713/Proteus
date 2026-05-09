@@ -132,11 +132,42 @@ pub fn apply(yes: bool, state_path: Option<&Path>, config_path: Option<&Path>) -
     let mut state = State::load_or_default(&state_path)?;
 
     let ifaces = stack::detect_managed_interfaces();
-    let lines = stack::lines_for(&config.stack, &ifaces);
+    let raw_lines = stack::lines_for(&config.stack, &ifaces);
 
-    // Cache live values *before* writing — this is the revert anchor. Empty
-    // string means "key did not exist on this kernel". Never overwrite an
-    // existing capture; first apply wins.
+    // NSUB.1: probe each key's `/proc/sys/...` node before writing.
+    // A `None` answer means the running kernel doesn't expose the key
+    // (e.g. IPv6 hardening on a kernel built without IPv6, NDP knobs
+    // on an interface that vanished between iface-detect and write).
+    // sysctl.d lines for missing keys log silently at boot and on
+    // `sysctl --system`; surfacing the skip here gives the operator a
+    // chance to drop the unsupported toggle from `[stack]` instead of
+    // wondering why an entry never lands. Skipped keys are NOT cached
+    // as originals — there's nothing to restore on revert.
+    let mut lines = Vec::with_capacity(raw_lines.len());
+    let mut skipped = Vec::new();
+    for l in raw_lines {
+        match stack::read_sysctl(&l.key) {
+            Some(_) => lines.push(l),
+            None => {
+                tracing::warn!(
+                    key = %l.key,
+                    "stack apply: kernel does not expose sysctl key; dropping from drop-in"
+                );
+                skipped.push(l.key.clone());
+            }
+        }
+    }
+    if !skipped.is_empty() {
+        eprintln!(
+            "stack apply: skipping {} kernel-unsupported sysctl key(s): {}",
+            skipped.len(),
+            skipped.join(", ")
+        );
+    }
+
+    // Cache live values *before* writing — this is the revert anchor.
+    // Never overwrite an existing capture; first apply wins. Only keys
+    // that survived the NSUB.1 probe end up here.
     for l in &lines {
         if state.originals.sysctls.contains_key(&l.key) {
             continue;
@@ -152,7 +183,9 @@ pub fn apply(yes: bool, state_path: Option<&Path>, config_path: Option<&Path>) -
     persist_capture_metadata(&mut state);
     state.save(&state_path)?;
 
-    let rendered = stack::render_dropin(&config.stack, &ifaces);
+    // NSUB.1: render from the kernel-supported subset only so the
+    // drop-in never carries lines `sysctl --system` will reject.
+    let rendered = stack::render_dropin_from_lines(&lines);
 
     if let Err(e) = write_dropin(&rendered) {
         eprintln!("proteus: writing {DROPIN_PATH} failed: {e:#}");
@@ -187,17 +220,28 @@ pub fn revert(yes: bool, state_path: Option<&Path>) -> Result<u8> {
         Ok(g) => g,
         Err(code) => return Ok(code),
     };
+    let state_path_resolved = commands::state_path(state_path);
     match fs::remove_file(DROPIN_PATH) {
         Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             println!("no drop-in at {DROPIN_PATH}; nothing to remove");
-            return Ok(exit::SUCCESS);
+            // Still try the cached-originals restore below so a partial-state
+            // re-run can finish what the previous revert started.
         }
         Err(e) => {
             eprintln!("proteus: removing {DROPIN_PATH} failed: {e}");
             return Ok(exit::GENERIC_ERROR);
         }
     }
+
+    // NSUB.2: walk the cached `state.originals.sysctls` and restore each
+    // key that the running kernel still exposes. Orphan keys (cached but
+    // not on the live kernel — module unloaded, IPv6 disabled at boot,
+    // hot-unplugged interface, etc.) are logged at `info!` and dropped
+    // from the cache so a later apply doesn't carry them forward. Empty
+    // captures mean "key was absent at first apply" — we never wrote it,
+    // so there's nothing to restore.
+    let restored = restore_cached_originals(&state_path_resolved);
 
     // Defaults restore on reboot; `sysctl --system` re-reads the remaining
     // drop-ins now so the live values fall back to whatever the rest of the
@@ -207,8 +251,77 @@ pub fn revert(yes: bool, state_path: Option<&Path>) -> Result<u8> {
         eprintln!("proteus: removed {DROPIN_PATH} but sysctl reload failed: {e:#}");
         return Ok(exit::GENERIC_ERROR);
     }
-    println!("removed {DROPIN_PATH} and reloaded sysctl defaults");
+    match restored {
+        Ok((wrote, orphans)) => {
+            println!(
+                "removed {DROPIN_PATH} and reloaded sysctl defaults; restored {wrote} cached originals, dropped {orphans} orphan(s)"
+            );
+        }
+        Err(e) => {
+            eprintln!(
+                "proteus: removed {DROPIN_PATH} and reloaded sysctl defaults; cached-originals restore failed: {e:#}"
+            );
+        }
+    }
     Ok(exit::SUCCESS)
+}
+
+/// NSUB.2 implementation. Re-probes each cached sysctl key, restores the
+/// captured value when the key is still live, drops orphans at `info!`.
+/// Returns `(restored_count, orphan_count)` for the summary line.
+fn restore_cached_originals(state_path: &Path) -> Result<(usize, usize)> {
+    let mut state = match State::load(state_path)? {
+        Some(s) => s,
+        None => return Ok((0, 0)),
+    };
+    if state.originals.sysctls.is_empty() {
+        return Ok((0, 0));
+    }
+    let mut orphans: Vec<String> = Vec::new();
+    let mut restored = 0usize;
+    for (key, captured) in &state.originals.sysctls {
+        if stack::read_sysctl(key).is_none() {
+            tracing::info!(
+                key = %key,
+                "stack revert: cached sysctl key no longer exposed by kernel; dropping orphan"
+            );
+            orphans.push(key.clone());
+            continue;
+        }
+        if captured.is_empty() {
+            // Key was absent at first apply; we never wrote it, so
+            // there's nothing meaningful to restore.
+            continue;
+        }
+        if let Err(e) = write_sysctl(key, captured) {
+            tracing::warn!(
+                key = %key,
+                value = %captured,
+                "stack revert: failed to restore cached sysctl: {e:#}"
+            );
+            continue;
+        }
+        restored += 1;
+    }
+    let orphan_count = orphans.len();
+    for key in &orphans {
+        state.originals.sysctls.remove(key);
+    }
+    if !orphans.is_empty() {
+        state
+            .save(state_path)
+            .context("persisting NSUB.2 orphan cleanup")?;
+    }
+    Ok((restored, orphan_count))
+}
+
+/// Write `value` to `/proc/sys/<dotted.key.replaced.with.slash>`. Mirrors
+/// the read path in [`stack::read_sysctl`] but in the opposite direction.
+/// Used by NSUB.2 to restore cached originals.
+fn write_sysctl(key: &str, value: &str) -> Result<()> {
+    let path = format!("/proc/sys/{}", key.replace('.', "/"));
+    fs::write(&path, value.as_bytes()).with_context(|| format!("writing {value} to {path}"))?;
+    Ok(())
 }
 
 fn write_dropin(body: &str) -> Result<()> {

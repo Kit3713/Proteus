@@ -14,6 +14,7 @@ pub mod dry_run;
 pub mod enterprise_wifi;
 pub mod events;
 pub mod hostname;
+pub mod iface;
 pub mod init;
 pub mod ipv6;
 pub mod kill_switch;

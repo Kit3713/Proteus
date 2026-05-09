@@ -102,6 +102,15 @@ pub trait Connection {
     /// dict before calling `Update` to avoid clobbering the secrets store.
     fn get_secrets(&self, setting_name: &str) -> zbus::Result<ConnectionSettings>;
     fn update(&self, settings: ConnectionSettings) -> zbus::Result<()>;
+    /// NBE.7: monotonic version counter NM bumps on every `Update`. Pass
+    /// the current value into `Device.Reapply` so a concurrent `nmcli
+    /// connection modify` between our read and our reapply surfaces as
+    /// a DBus `InvalidArguments` (NM's documented version-mismatch
+    /// signal) rather than silently overwriting the in-flight edit.
+    /// NM 1.20+; older NM doesn't expose the property and the Reapply
+    /// fall-through with `version=0` is the only path available.
+    #[zbus(property, name = "VersionId")]
+    fn version_id(&self) -> zbus::Result<u64>;
 }
 
 // NetworkManager device-type integer constants (subset).
@@ -143,14 +152,64 @@ impl DeviceKind {
     }
 }
 
+/// N3: probe the running NM's introspected DBus interface version so
+/// callers can fall back gracefully on a `Reapply`/`Disconnect` etc.
+/// branch when the running daemon predates the method. NM's
+/// `org.freedesktop.NetworkManager.Version` property is a string like
+/// `"1.42.4"`. Returns `None` if the property read errors (older NM
+/// /
+///                                                       a host that
+/// declines the introspection); callers should treat `None` as
+/// "assume modern" but can downgrade if they want to.
+pub async fn probe_version(conn: &zbus::Connection) -> Option<String> {
+    // The proxy doesn't declare `Version` as a typed property, but a
+    // raw `Properties.Get` works against any NM that exposes the root
+    // interface (every supported version does). We dispatch through
+    // the standard freedesktop properties proxy to stay version-agnostic.
+    use zbus::zvariant::Value;
+    let props = match zbus::fdo::PropertiesProxy::builder(conn)
+        .destination("org.freedesktop.NetworkManager")
+        .ok()?
+        .path("/org/freedesktop/NetworkManager")
+        .ok()?
+        .build()
+        .await
+    {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::debug!("nm probe_version: properties proxy failed: {e}");
+            return None;
+        }
+    };
+    let owned = match props
+        .get("org.freedesktop.NetworkManager".try_into().ok()?, "Version")
+        .await
+    {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::debug!("nm probe_version: Properties.Get(Version) failed: {e}");
+            return None;
+        }
+    };
+    // OwnedValue derefs into Value via the standard Deref impl; use the
+    // same pattern as `extract_str` elsewhere in this module.
+    let v: &Value = &owned;
+    if let Value::Str(s) = v {
+        Some(s.as_str().to_string())
+    } else {
+        None
+    }
+}
+
 pub async fn list_devices(conn: &zbus::Connection) -> Result<Vec<DeviceInfo>> {
-    let nm = NetworkManagerProxy::new(conn)
-        .await
-        .context("connecting to NetworkManager DBus")?;
-    let paths = nm
-        .get_devices()
-        .await
-        .context("calling NetworkManager.GetDevices")?;
+    let nm = NetworkManagerProxy::new(conn).await.context(
+        "connecting to NetworkManager DBus root proxy at \
+                  /org/freedesktop/NetworkManager",
+    )?;
+    let paths = nm.get_devices().await.context(
+        "calling NetworkManager.GetDevices on \
+                  /org/freedesktop/NetworkManager",
+    )?;
     let mut out = Vec::with_capacity(paths.len());
     for path in paths {
         let dev = DeviceProxy::builder(conn)
@@ -171,10 +230,16 @@ pub async fn list_devices(conn: &zbus::Connection) -> Result<Vec<DeviceInfo>> {
                 match $call.await {
                     Ok(v) => v,
                     Err(e) => {
+                        // S8: NM property-read errors can echo
+                        // connection-setting values verbatim. Route
+                        // through `display_string` before tracing so an
+                        // attacker-controlled string in the dict can't
+                        // redraw `journalctl -t proteus`.
+                        let safe = crate::display::display_string(&format!("{e:#}"));
                         tracing::warn!(
                             device = %path.as_str(),
                             property = $prop,
-                            "NM device property read failed; skipping device: {e}"
+                            "NM device property read failed; skipping device: {safe}"
                         );
                         continue;
                     }
@@ -290,7 +355,17 @@ pub async fn update_with_secrets(
     let proxy = ConnectionProxy::builder(conn)
         .path(connection_path.clone())?
         .build()
-        .await?;
+        .await
+        .with_context(|| {
+            // N4: include the connection path in the error context so an
+            // operator chasing a Settings.Connection failure can see which
+            // profile (and therefore which iface) tripped without grepping
+            // a separate journald line.
+            format!(
+                "building Settings.Connection proxy on path {}",
+                connection_path.as_str()
+            )
+        })?;
     for section in SECRET_SECTIONS {
         // GetSecrets failure modes we tolerate:
         //
@@ -303,20 +378,61 @@ pub async fn update_with_secrets(
         // None of these is a reason to abort the update — they just mean
         // there's nothing to merge for that section. A real DBus failure on
         // the subsequent `update` call still surfaces.
+        //
+        // E6: previously every GetSecrets error landed at `debug!`,
+        // which hides genuine secret-store breakage from the operator.
+        // The new shape distinguishes the documented "nothing to merge"
+        // cases (NoSecrets / InvalidProperty / PermissionDenied) from
+        // real failures (DBus disconnect, NM crash mid-call). Real
+        // failures land at `error!` with method + path context so the
+        // operator can see WHY the merge skipped — pre-fix, a hostile
+        // edge could feed `Update` a stripped dict and silently wipe
+        // secrets while the journal showed only "returned no secrets to
+        // merge". Builds on Stream 4's preserve-method-context (N4).
         match proxy.get_secrets(section).await {
             Ok(s) => merge_secrets(&mut settings, &s),
             Err(e) => {
-                tracing::debug!(
-                    section = section,
-                    "GetSecrets returned no secrets to merge: {e}"
-                );
+                // S8: NM error messages can echo connection-setting
+                // values verbatim ("Could not parse value 'foo' for key
+                // …"). For an enterprise-Wi-Fi connection that's
+                // attacker-influenced — the AP supplies the realm /
+                // anonymous-identity, the dispatcher feeds it through
+                // GetSettings, and an unsanitized error message reaches
+                // journald with embedded ANSI / BiDi controls. Route
+                // every dict-influenced byte through `display_string`
+                // before tracing so a hostile peer can't redraw the
+                // operator's terminal via `journalctl -t proteus`.
+                let raw = format!("{e:#}");
+                let safe = crate::display::display_string(&raw);
+                let benign = raw.contains("NoSecrets")
+                    || raw.contains("InvalidProperty")
+                    || raw.contains("PermissionDenied")
+                    || raw.contains("not found")
+                    || raw.contains("does not exist");
+                if benign {
+                    tracing::debug!(
+                        method = "Settings.Connection.GetSecrets",
+                        path = %connection_path.as_str(),
+                        section = section,
+                        "GetSecrets returned no secrets to merge: {safe}"
+                    );
+                } else {
+                    tracing::error!(
+                        method = "Settings.Connection.GetSecrets",
+                        path = %connection_path.as_str(),
+                        section = section,
+                        "GetSecrets failed with non-benign error; secret may be wiped on Update: {safe}"
+                    );
+                }
             }
         }
     }
-    proxy
-        .update(settings)
-        .await
-        .context("calling Settings.Connection.Update")?;
+    proxy.update(settings).await.with_context(|| {
+        format!(
+            "calling Settings.Connection.Update on {}",
+            connection_path.as_str()
+        )
+    })?;
     Ok(())
 }
 

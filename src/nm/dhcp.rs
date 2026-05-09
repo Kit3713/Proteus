@@ -124,11 +124,18 @@ pub fn apply_persona_fingerprint(
 
 /// Mutate `settings` in place to apply Proteus DHCP suppression, honoring
 /// which knobs are enabled in config. Returns true if anything changed.
+///
+/// NBE.3: when `keep_iaid_stable` is true, IAID is pinned to NM's
+/// `"stable"` derivation (constant per-iface) while DUID still rotates.
+/// The default (`false`) keeps the existing both-rotate behaviour for
+/// strongest unlinkability. See [`crate::config::DhcpConfig::keep_iaid_stable_across_rotation`]
+/// for the tradeoff.
 pub fn apply_dhcp_settings(
     settings: &mut ConnectionSettings,
     suppress_hostname: bool,
     suppress_vendor_class: bool,
     rotate_client_id: bool,
+    keep_iaid_stable: bool,
 ) -> Result<bool> {
     let mut changed = false;
     if suppress_hostname {
@@ -146,7 +153,11 @@ pub fn apply_dhcp_settings(
     if rotate_client_id {
         changed |= set_str(settings, SECTION_IPV4, KEY_DHCP_CLIENT_ID, "mac")?;
         changed |= set_str(settings, SECTION_IPV6, KEY_DHCP_DUID, "ll")?;
-        changed |= set_str(settings, SECTION_IPV6, KEY_DHCP_IAID, "mac")?;
+        // NBE.3: pick `"stable"` (DUID-derived, per-iface, persistent
+        // across MAC rotations) vs `"mac"` (rotates with the MAC).
+        // Default is the historical "mac" behaviour.
+        let iaid_value = if keep_iaid_stable { "stable" } else { "mac" };
+        changed |= set_str(settings, SECTION_IPV6, KEY_DHCP_IAID, iaid_value)?;
     }
     Ok(changed)
 }
@@ -505,15 +516,37 @@ pub async fn renew_lease(
         Err(_) => return Ok(RenewOutcome::NoActiveConnection),
     };
 
-    // Empty settings dict + version=0 + flags=0 tells NM to use the
-    // currently-stored connection settings as-is. NM's documented
-    // contract for that combination is "kick DHCP without changing
-    // anything" — no settings round trip, no L2 disturb.
+    // NBE.7: read the connection's current `version_id` and pass it to
+    // Reapply so a concurrent `nmcli connection modify` between our
+    // active-connection lookup and our reapply call surfaces as a DBus
+    // version-mismatch error instead of a silent stale-write that loses
+    // the operator's edit. NM 1.20+ accepts the explicit version; older
+    // NM doesn't expose `Settings.Connection.VersionId` at all so we
+    // fall back to the legacy `version=0` ("use current settings as-is")
+    // contract — the version-mismatch protection is a strict upgrade
+    // that doesn't break older NM compat.
+    let version_id: u64 = match read_active_connection_path(conn, &active_path).await {
+        Ok(connection_path) => match ConnectionProxy::builder(conn).path(connection_path) {
+            Ok(builder) => match builder.build().await {
+                Ok(proxy) => proxy.version_id().await.unwrap_or(0),
+                Err(_) => 0,
+            },
+            Err(_) => 0,
+        },
+        Err(_) => 0,
+    };
+
+    // Empty settings dict + the live `version_id` + flags=0 tells NM to
+    // use the currently-stored connection settings as-is, but only if
+    // they haven't been mutated since we observed `version_id`. NM's
+    // documented contract for the empty dict is "kick DHCP without
+    // changing anything"; the version arg gates against concurrent edits.
     let empty: ConnectionSettings = HashMap::new();
-    match dev.reapply(empty, 0, 0).await {
+    match dev.reapply(empty, version_id, 0).await {
         Ok(()) => Ok(RenewOutcome::Reapplied),
         Err(e) => {
             tracing::debug!(
+                version_id,
                 "Device.Reapply rejected ({e:#}); falling back to Disconnect+ActivateConnection"
             );
             renew_via_disconnect_activate(conn, device_path, &active_path).await
@@ -587,7 +620,7 @@ mod tests {
     #[test]
     fn apply_full_changes_all_keys() {
         let mut s = empty_settings();
-        let changed = apply_dhcp_settings(&mut s, true, true, true).unwrap();
+        let changed = apply_dhcp_settings(&mut s, true, true, true, false).unwrap();
         assert!(changed);
         let ipv4 = s.get(SECTION_IPV4).expect("ipv4 section created");
         let send: &Value = ipv4.get(KEY_DHCP_SEND_HOSTNAME).unwrap();
@@ -612,20 +645,57 @@ mod tests {
     #[test]
     fn apply_idempotent_when_already_set() {
         let mut s = empty_settings();
-        apply_dhcp_settings(&mut s, true, true, true).unwrap();
-        let again = apply_dhcp_settings(&mut s, true, true, true).unwrap();
+        apply_dhcp_settings(&mut s, true, true, true, false).unwrap();
+        let again = apply_dhcp_settings(&mut s, true, true, true, false).unwrap();
         assert!(!again, "second apply should be a no-op");
     }
 
     #[test]
     fn apply_partial_skips_disabled_categories() {
         let mut s = empty_settings();
-        apply_dhcp_settings(&mut s, false, true, false).unwrap();
+        apply_dhcp_settings(&mut s, false, true, false, false).unwrap();
         let ipv4 = s.get(SECTION_IPV4).expect("ipv4 set for vendor-class");
         assert!(ipv4.get(KEY_DHCP_SEND_HOSTNAME).is_none());
         assert!(ipv4.get(KEY_DHCP_CLIENT_ID).is_none());
         assert!(ipv4.contains_key(KEY_DHCP_VENDOR_CLASS_IDENTIFIER));
         assert!(!s.contains_key(SECTION_IPV6));
+    }
+
+    /// NBE.3: when `keep_iaid_stable` is true and `rotate_client_id`
+    /// is true, the IAID lands as `"stable"` (NM's DUID-derived,
+    /// per-iface-stable mode) instead of the rotating `"mac"` value.
+    /// The DUID itself still rotates (`"ll"`) because that's what
+    /// breaks the link-layer DHCPv6 client identity.
+    #[test]
+    fn apply_with_keep_iaid_stable_pins_iaid_to_stable() {
+        let mut s = empty_settings();
+        apply_dhcp_settings(&mut s, false, false, true, true).unwrap();
+        let ipv6 = s.get(SECTION_IPV6).expect("ipv6 set for client-id rotate");
+        let duid: &Value = ipv6.get(KEY_DHCP_DUID).unwrap();
+        assert!(
+            matches!(duid, Value::Str(s) if s.as_str() == "ll"),
+            "DUID must still rotate (ll); only IAID pins under keep_iaid_stable",
+        );
+        let iaid: &Value = ipv6.get(KEY_DHCP_IAID).unwrap();
+        assert!(
+            matches!(iaid, Value::Str(s) if s.as_str() == "stable"),
+            "IAID must land as 'stable' under keep_iaid_stable=true, got {iaid:?}"
+        );
+    }
+
+    /// NBE.3 sibling: with `keep_iaid_stable = false` (the historical
+    /// default) the IAID still lands as `"mac"`. Pin the contract so a
+    /// future refactor can't accidentally flip the default.
+    #[test]
+    fn apply_default_keeps_iaid_rotating_with_mac() {
+        let mut s = empty_settings();
+        apply_dhcp_settings(&mut s, false, false, true, false).unwrap();
+        let ipv6 = s.get(SECTION_IPV6).expect("ipv6 set for client-id rotate");
+        let iaid: &Value = ipv6.get(KEY_DHCP_IAID).unwrap();
+        assert!(
+            matches!(iaid, Value::Str(s) if s.as_str() == "mac"),
+            "default IAID must rotate (mac), got {iaid:?}"
+        );
     }
 
     #[test]
@@ -662,7 +732,7 @@ mod tests {
         let snap = snapshot_dhcp(&s);
         // Apply suppression, then revert with the snapshot, then check that
         // the result snapshot matches the original one.
-        apply_dhcp_settings(&mut s, true, true, true).unwrap();
+        apply_dhcp_settings(&mut s, true, true, true, false).unwrap();
         revert_dhcp_settings(&mut s, &snap).unwrap();
         let after = snapshot_dhcp(&s);
         assert_eq!(after, snap);
@@ -727,7 +797,7 @@ mod tests {
         // the wire.
         let mut s = empty_settings();
         let p = persona_with_dhcp("iPhone", "", "");
-        let _ = apply_dhcp_settings(&mut s, true, true, true).unwrap();
+        let _ = apply_dhcp_settings(&mut s, true, true, true, false).unwrap();
         // After suppression: vendor class is empty.
         assert_eq!(
             extract_str(&s, SECTION_IPV4, KEY_DHCP_VENDOR_CLASS_IDENTIFIER).as_deref(),
@@ -750,7 +820,7 @@ mod tests {
         // option actually leaves the box.
         let mut s = empty_settings();
         let p = persona_with_dhcp("iPhone", "alexs-iphone", "");
-        let _ = apply_dhcp_settings(&mut s, true, true, true).unwrap();
+        let _ = apply_dhcp_settings(&mut s, true, true, true, false).unwrap();
         // After suppression: send_hostname is false.
         assert_eq!(
             extract_bool(&s, SECTION_IPV4, KEY_DHCP_SEND_HOSTNAME),
@@ -786,7 +856,7 @@ mod tests {
         let mut s = empty_settings();
         let p = persona_with_dhcp("", "alexs-iphone", "");
         // Suppression first, then persona with suppress_hostname=true.
-        let _ = apply_dhcp_settings(&mut s, true, false, false).unwrap();
+        let _ = apply_dhcp_settings(&mut s, true, false, false, false).unwrap();
         apply_persona_fingerprint(&mut s, &p, true, false).unwrap();
         assert_eq!(
             extract_bool(&s, SECTION_IPV4, KEY_DHCP_SEND_HOSTNAME),

@@ -135,11 +135,20 @@ async fn subscribe_loop(
         }
     };
 
-    // Snapshot the current device list and subscribe per-device. New
-    // devices added after this point won't be picked up until the
-    // daemon restarts — acceptable trade-off for now; NM exposes a
-    // `DeviceAdded` signal we'd subscribe to in a follow-up.
-    let paths = nm.get_devices().await.unwrap_or_default();
+    // N12: snapshot the device list on entry, then poll
+    // `GetDevices()` every 10 s to pick up `DeviceAdded` events.
+    // We use a periodic refresh rather than subscribing to NM's
+    // signal-stream so we don't change the public proxy surface
+    // mid-milestone. The 10 s cadence is generous enough to catch
+    // a USB-Wi-Fi insertion (modprobe + udev + NM enumeration take
+    // ~5 s on a modern kernel) without spamming the bus.
+    //
+    // Previously the device list was a one-shot snapshot at startup
+    // and any device added afterwards was invisible to the daemon
+    // until the next process restart — the issue the roadmap
+    // explicitly calls out.
+    use std::collections::HashSet;
+    let mut tracked: HashSet<String> = HashSet::new();
     // Issue #256: each per-device watcher gets its own stop channel
     // so the parent can drain them within a deadline before
     // resorting to abort. Previously the parent only called `abort()`
@@ -148,43 +157,77 @@ async fn subscribe_loop(
     // stop receiver in the same `tokio::time::timeout` shape the
     // portal-auth source uses.
     let mut watchers: Vec<Watcher> = Vec::new();
-    for path in paths {
-        let builder = match DeviceProxy::builder(conn).path(path.clone()) {
-            Ok(b) => b,
-            Err(e) => {
-                tracing::debug!(
-                    ?path,
-                    "nm-connection-up: skipping device proxy builder: {e}"
-                );
-                continue;
-            }
-        };
-        let dev = match builder.build().await {
-            Ok(d) => d,
-            Err(e) => {
-                tracing::debug!(?path, "nm-connection-up: skipping device proxy: {e}");
-                continue;
-            }
-        };
-        let registry = Arc::clone(&registry);
-        let (watcher_tx, watcher_rx) = tokio::sync::oneshot::channel::<()>();
-        let join = tokio::spawn(async move {
-            // The signal-stream API on a generated zbus proxy is
-            // `dev.receive_<signal_name>()`. zbus 5.x exposes
-            // `Device.StateChanged` via the introspection-driven
-            // builder; if the signal isn't on the proxy at compile
-            // time we degrade to a polling fallback that reads the
-            // `State` property every 2 s. Both branches forward to
-            // `fire_connection_up` so the test seam is consistent.
-            poll_state_property(&dev, registry, watcher_rx).await;
-        });
-        watchers.push(Watcher {
-            join,
-            stop: watcher_tx,
-        });
-    }
 
-    let _ = stop.await;
+    // Race the refresh tick against the daemon's stop signal.
+    // `tokio::select!` would be cleaner but the surrounding stop
+    // receiver is `&mut`; we keep the explicit timeout pattern to
+    // match the rest of the file.
+    let refresh_period = std::time::Duration::from_secs(10);
+
+    loop {
+        // Refresh the device list. Failed enumerations log + carry
+        // on; the daemon stays alive across NM hiccups.
+        let paths = match nm.get_devices().await {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::debug!("nm-connection-up: GetDevices refresh failed: {e}");
+                Vec::new()
+            }
+        };
+        for path in paths {
+            let key = path.as_str().to_string();
+            if tracked.contains(&key) {
+                continue;
+            }
+            let builder = match DeviceProxy::builder(conn).path(path.clone()) {
+                Ok(b) => b,
+                Err(e) => {
+                    tracing::debug!(
+                        ?path,
+                        "nm-connection-up: skipping device proxy builder: {e}"
+                    );
+                    continue;
+                }
+            };
+            let dev = match builder.build().await {
+                Ok(d) => d,
+                Err(e) => {
+                    tracing::debug!(?path, "nm-connection-up: skipping device proxy: {e}");
+                    continue;
+                }
+            };
+            tracked.insert(key);
+            tracing::debug!(?path, "nm-connection-up: subscribing to new device");
+            let registry = Arc::clone(&registry);
+            let (watcher_tx, watcher_rx) = tokio::sync::oneshot::channel::<()>();
+            let join = tokio::spawn(async move {
+                // The signal-stream API on a generated zbus proxy is
+                // `dev.receive_<signal_name>()`. zbus 5.x exposes
+                // `Device.StateChanged` via the introspection-driven
+                // builder; if the signal isn't on the proxy at compile
+                // time we degrade to a polling fallback that reads
+                // the `State` property every 2 s. Both branches
+                // forward to `fire_connection_up` so the test seam
+                // is consistent.
+                poll_state_property(&dev, registry, watcher_rx).await;
+            });
+            watchers.push(Watcher {
+                join,
+                stop: watcher_tx,
+            });
+        }
+
+        // Wait for either the refresh interval to elapse or the
+        // daemon's stop signal to fire. `try_recv` then sleep is
+        // simpler than a `select!` against a `&mut` receiver and
+        // matches the cadence on the link-flap source.
+        match tokio::time::timeout(refresh_period, &mut *stop).await {
+            Ok(_) => break, // stop signal fired
+            Err(_) => {
+                // timeout elapsed — loop and re-enumerate
+            }
+        }
+    }
     drain_watchers(watchers, std::time::Duration::from_secs(5)).await;
     Ok(())
 }
@@ -248,7 +291,12 @@ async fn poll_state_property(
     mut stop_rx: tokio::sync::oneshot::Receiver<()>,
 ) {
     use std::time::Duration;
+    // GH#355: seed the edge detector with the first observed state so
+    // the daemon does not synthesize a spurious `ConnectionUp` for
+    // every device that happened to be `Activated` at daemon start.
+    // See `is_activation_edge` for the full discussion.
     let mut last: Option<u32> = None;
+    let mut seeded = false;
     loop {
         let state = match read_device_state(dev).await {
             Some(s) => s,
@@ -269,7 +317,7 @@ async fn poll_state_property(
             }
         };
         let prev = last.replace(state);
-        if state == NM_DEVICE_STATE_ACTIVATED && prev != Some(NM_DEVICE_STATE_ACTIVATED) {
+        if is_activation_edge(seeded, prev, state) {
             let iface = dev.interface().await.unwrap_or_default();
             // SSID resolution is best-effort — we shell out to
             // `/proc/net/wireless` only as a last resort because the
@@ -277,6 +325,7 @@ async fn poll_state_property(
             let ssid = read_active_ssid_via_proc(&iface);
             let _ = registry.fire(RotationTrigger::ConnectionUp { iface, ssid });
         }
+        seeded = true;
         if tokio::time::timeout(Duration::from_secs(2), &mut stop_rx)
             .await
             .is_ok()
@@ -284,6 +333,29 @@ async fn poll_state_property(
             return;
         }
     }
+}
+
+/// Pure edge-detector for the poll-state fallback. Returns `true`
+/// only for a *real* Activated edge — not the synthetic edge that
+/// shows up the first time the daemon observes an already-connected
+/// device.
+///
+/// GH#355: previously the loop body was
+/// `state == Activated && prev != Some(Activated)`. With
+/// `last: Option<u32> = None`, the very first poll on an
+/// already-Activated NIC fired a fake `ConnectionUp` because `prev`
+/// was `None` rather than `Some(Activated)`. The fix is to require
+/// the detector to have observed at least one prior reading before
+/// any edge is allowed to fire.
+///
+/// `seeded` is `false` on the first call (no prior reading yet),
+/// `true` thereafter. `prev` is the value `last` held *before* the
+/// current state was stored; `state` is the freshly-read value.
+pub(crate) fn is_activation_edge(seeded: bool, prev: Option<u32>, state: u32) -> bool {
+    if !seeded {
+        return false;
+    }
+    state == NM_DEVICE_STATE_ACTIVATED && prev != Some(NM_DEVICE_STATE_ACTIVATED)
 }
 
 /// Read `Device.State` over DBus. Returns `None` on transient errors
@@ -305,21 +377,76 @@ async fn read_device_state(dev: &crate::nm::DeviceProxy<'_>) -> Option<u32> {
 /// only carries link metrics; we use its presence as a strong hint
 /// that we *should* be able to read the SSID, then fall back to
 /// `/sys/class/net/<iface>/wireless` for the SSID itself when the
-/// kernel exposes it. Most production hosts will see `None` until the
-/// follow-up adds NM ActiveConnection lookup; for now the
-/// `RotationTrigger` carries enough information (the iface) for the
-/// rotation handler to do its job.
+/// kernel exposes it.
+///
+/// N12.11: previously this stub always returned `None`, leaving the
+/// per-SSID policy resolution unable to act on any trigger. Now we
+/// read the SSID from the standard kernel surface
+/// (`/sys/class/net/<iface>/phy80211/ssid` is non-canonical; the
+/// reliable userspace path is `iwgetid -r` but we avoid spawning a
+/// subprocess on the hot path). We instead walk
+/// `/proc/net/wireless` to confirm the iface is associated, then
+/// fall back to reading the SSID from `/run/NetworkManager/devices/<n>`
+/// when the NM dispatcher has populated it. Either way the absence of
+/// an SSID is still a soft `None` — handlers degrade to the global
+/// policy.
 fn read_active_ssid_via_proc(iface: &str) -> Option<String> {
-    if iface.is_empty() {
+    if iface.is_empty() || !is_safe_iface_name(iface) {
         return None;
     }
-    let _ = std::fs::read_to_string("/proc/net/wireless").ok()?;
-    // Reading the SSID from sysfs is iface-specific and the kernel
-    // path varies by driver; we deliberately stop here rather than
-    // shell out to `iw`/`iwconfig`. The absence of an SSID does not
-    // change the trigger semantics — the registry handler keys off
-    // the iface.
+    // Confirm the iface appears in `/proc/net/wireless` — that's
+    // the cheapest "is this a Wi-Fi iface that's currently
+    // associated" check the kernel exposes without a CAP_NET_ADMIN
+    // probe. Lines look like:
+    //   wlan0: 0000   72.  -38.  -256        0      0      0     12        0        0
+    let proc_wireless = std::fs::read_to_string("/proc/net/wireless").ok()?;
+    let prefix = format!("{iface}:");
+    let associated = proc_wireless
+        .lines()
+        .any(|line| line.trim_start().starts_with(&prefix));
+    if !associated {
+        return None;
+    }
+    // NM's run-state directory carries a per-iface key file with
+    // `MANAGED=...` and (when associated) a `SSID=` entry. We read
+    // it best-effort. The path layout:
+    //   /run/NetworkManager/devices/N
+    // where N is the NM device index, not the iface name. Walk the
+    // dir and pick the file whose contents include `IFACE=<iface>`.
+    let entries = std::fs::read_dir("/run/NetworkManager/devices").ok()?;
+    for entry in entries.flatten() {
+        let Ok(content) = std::fs::read_to_string(entry.path()) else {
+            continue;
+        };
+        let mut matches_iface = false;
+        let mut ssid: Option<String> = None;
+        for line in content.lines() {
+            if let Some(v) = line.strip_prefix("IFACE=")
+                && v == iface
+            {
+                matches_iface = true;
+            }
+            if let Some(v) = line.strip_prefix("SSID=") {
+                ssid = Some(v.to_string());
+            }
+        }
+        if matches_iface {
+            return ssid;
+        }
+    }
     None
+}
+
+/// Defensive iface-name validator for the `/proc/net/wireless` /
+/// `/run/NetworkManager/devices` lookup path. Refuses anything that
+/// could escape a path or carry an unprintable.
+fn is_safe_iface_name(iface: &str) -> bool {
+    !iface.is_empty()
+        && iface.len() <= 15
+        && !iface.starts_with('-')
+        && iface
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'.' || b == b'-')
 }
 
 /// Test double for `NmConnectionUpSource`. Tests push synthetic
@@ -512,5 +639,67 @@ mod tests {
         let reg = EventRegistry::new();
         NmConnectionUpSource::new().start(&reg).unwrap();
         assert_eq!(reg.handler_count(), 0);
+    }
+
+    /// GH#355 regression: the very first poll of an already-Activated
+    /// device must NOT count as an activation edge. Previously the
+    /// daemon would fire a spurious `ConnectionUp` on every connected
+    /// NIC at startup, before any real network event had happened.
+    #[test]
+    fn gh355_first_poll_of_activated_device_does_not_fire() {
+        // Initial state: not seeded, prev = None, state = Activated.
+        assert!(!is_activation_edge(false, None, NM_DEVICE_STATE_ACTIVATED));
+    }
+
+    /// GH#355: the first poll of a non-Activated device also must
+    /// not fire — there's no edge to detect yet.
+    #[test]
+    fn gh355_first_poll_of_disconnected_device_does_not_fire() {
+        assert!(!is_activation_edge(false, None, 30));
+    }
+
+    /// Once seeded, a transition from anything-not-Activated into
+    /// Activated *is* a real edge and fires.
+    #[test]
+    fn gh355_real_transition_after_seeding_fires() {
+        // Seeded with state=30 (Disconnected), now state=100 (Activated).
+        assert!(is_activation_edge(
+            true,
+            Some(30),
+            NM_DEVICE_STATE_ACTIVATED
+        ));
+        // Seeded with state=50 (Config), now state=100 (Activated).
+        assert!(is_activation_edge(
+            true,
+            Some(50),
+            NM_DEVICE_STATE_ACTIVATED
+        ));
+        // Seeded with state=80 (IpCheck), now state=100 (Activated).
+        assert!(is_activation_edge(
+            true,
+            Some(80),
+            NM_DEVICE_STATE_ACTIVATED
+        ));
+    }
+
+    /// Activated → Activated holds the line — no edge.
+    #[test]
+    fn gh355_activated_to_activated_does_not_fire() {
+        assert!(!is_activation_edge(
+            true,
+            Some(NM_DEVICE_STATE_ACTIVATED),
+            NM_DEVICE_STATE_ACTIVATED
+        ));
+    }
+
+    /// Activated → Disconnected (e.g. a real disconnect) does not
+    /// fire `ConnectionUp` — that's only for the rising edge.
+    #[test]
+    fn gh355_falling_edge_does_not_fire_connection_up() {
+        assert!(!is_activation_edge(
+            true,
+            Some(NM_DEVICE_STATE_ACTIVATED),
+            30
+        ));
     }
 }

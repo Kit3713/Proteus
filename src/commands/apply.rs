@@ -64,21 +64,40 @@ impl Tally {
 }
 
 pub fn run(yes: bool, state_path: Option<&Path>, config_path: Option<&Path>) -> Result<u8> {
-    if let Err(code) = super::require_yes(yes, "'apply' is mutating", "proteus help apply") {
-        return Ok(code);
-    }
+    // root check first — every other failure mode below is a no-op for
+    // a non-root caller, so surfacing the privilege error first keeps
+    // the message clean.
     if let Err(e) = super::require_root() {
         eprintln!("proteus: {e}");
         return Ok(exit::PERMISSION_ERROR);
     }
+
+    // NMOD.1 (high): load and validate the config BEFORE acquiring the
+    // state lock. The previous shape took the lock first, then loaded +
+    // validated. Combined with C1 / N12.13 (HELD mutex held across retry
+    // sleep) a misconfigured per-SSID block could starve the rotate
+    // timer for the full 5 s budget on every retry — the lock sat idle
+    // while the validator returned an error. With load-before-lock, a
+    // typo'd config fails fast and the lock is never taken.
+    let cfg_path = super::config_path(config_path);
+    let config = Config::default_or_loaded(&cfg_path)?;
+
+    // NMOD.2: the `--yes` gate must run AFTER config validation so a user
+    // with a typo'd `[per_ssid]` block sees the parse error before the
+    // confirmation prompt. Without this reorder the operator confirms,
+    // then the validator rejects — the "confirmation = mutation
+    // imminent" invariant breaks because no mutation actually happens.
+    if let Err(code) = super::require_yes(yes, "'apply' is mutating", "proteus help apply") {
+        return Ok(code);
+    }
+
     // Issue #126: serialize concurrent mutating runs on <state-dir>/.lock.
+    // Acquired AFTER config validation (NMOD.1) so a misconfig never
+    // pins the lock budget.
     let _lock = match super::acquire_state_lock_or_print(state_path) {
         Ok(g) => g,
         Err(code) => return Ok(code),
     };
-
-    let cfg_path = super::config_path(config_path);
-    let config = Config::default_or_loaded(&cfg_path)?;
 
     // Roadmap Milestone 1: resolve the backend once at the top of the
     // apply cycle. Per-feature runners select again internally (each
@@ -97,11 +116,105 @@ pub fn run(yes: bool, state_path: Option<&Path>, config_path: Option<&Path>) -> 
 
     let reports = orchestrate(&config, state_path, config_path);
 
+    // NCMD2.3: a single `systemctl daemon-reload` after every per-feature
+    // apply is done. dns / stack / resolved / ipv6 each write drop-ins under
+    // /etc/systemd/, but their per-feature `apply` paths don't reload — the
+    // documented effect ("apply lands the config") only materialises after
+    // the unit-file cache rebuilds. Run it once here so the operator never
+    // has to invoke a manual reload. Failure is non-fatal: drop-ins are on
+    // disk and will be picked up on next boot regardless.
+    let reload_note = systemctl_daemon_reload_after_apply(&reports);
+
     let tally = print_summary(&reports);
+    if let Some(note) = reload_note {
+        println!("{note}");
+    }
     if tally.failed > 0 {
         Ok(exit::GENERIC_ERROR)
     } else {
         Ok(exit::SUCCESS)
+    }
+}
+
+/// Run `systemctl daemon-reload` once after orchestration so freshly-written
+/// drop-ins under `/etc/systemd/` (resolved.conf.d, timesyncd.conf.d, …)
+/// take effect without a manual reload (NCMD2.3). Skipped when systemd
+/// isn't running (CI containers, dev shells) since there's nothing to
+/// reload. Bounded by a hard subprocess timeout so a wedged systemd can't
+/// hang the apply cycle. Returns a one-line note for the summary, or
+/// `None` when the reload was skipped.
+fn systemctl_daemon_reload_after_apply(reports: &[ComponentReport]) -> Option<String> {
+    if !std::path::Path::new("/run/systemd/system").is_dir() {
+        return None;
+    }
+    // Skip when nothing the reload would care about actually got applied —
+    // a pure-skip cycle never wrote a drop-in, so the reload is busywork.
+    let drop_in_owners = ["dns", "resolved", "stack", "ipv6", "ntp"];
+    let any_applied = reports
+        .iter()
+        .any(|r| drop_in_owners.contains(&r.name) && r.status == Status::Applied);
+    if !any_applied {
+        return None;
+    }
+    match systemctl_with_timeout(&["daemon-reload"], std::time::Duration::from_secs(10)) {
+        Ok(()) => Some("daemon-reload: ok".to_string()),
+        Err(e) => {
+            tracing::warn!("apply: systemctl daemon-reload failed: {e:#}");
+            Some(format!("daemon-reload: failed ({e:#})"))
+        }
+    }
+}
+
+/// Spawn `systemctl <args>` with a hard wall-clock timeout. If the timeout
+/// elapses we send SIGKILL and return a `TimedOut`-style error so the
+/// caller can surface a clear note. Used by `daemon-reload` so a wedged
+/// pid 1 can't hang `proteus apply`.
+fn systemctl_with_timeout(args: &[&str], timeout: std::time::Duration) -> anyhow::Result<()> {
+    use anyhow::{Context, anyhow};
+    use std::process::{Command, Stdio};
+    use std::thread;
+    use std::time::Instant;
+
+    let mut child = Command::new("systemctl")
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .context("spawning systemctl")?;
+
+    let deadline = Instant::now() + timeout;
+    loop {
+        match child.try_wait().context("waiting on systemctl")? {
+            Some(status) => {
+                if status.success() {
+                    return Ok(());
+                }
+                // Drain stderr for the diagnostic.
+                let mut buf = String::new();
+                if let Some(mut s) = child.stderr.take() {
+                    use std::io::Read;
+                    let _ = s.read_to_string(&mut buf);
+                }
+                return Err(anyhow!(
+                    "systemctl {} exited with {status}: {}",
+                    args.join(" "),
+                    buf.trim()
+                ));
+            }
+            None => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(anyhow!(
+                        "systemctl {} timed out after {}s",
+                        args.join(" "),
+                        timeout.as_secs()
+                    ));
+                }
+                thread::sleep(std::time::Duration::from_millis(50));
+            }
+        }
     }
 }
 
@@ -127,7 +240,10 @@ pub(crate) fn preflight_backend(config: &Config) -> anyhow::Result<&'static str>
         .context("starting tokio runtime")?;
     let backend = rt.block_on(async { crate::backend::select::select(&driver).await })?;
     let name = backend.name();
-    tracing::info!(driver = %driver, resolved = %name, "apply: backend preflight ok");
+    // Roadmap Stream 7 / E1: success-path breadcrumbs go to debug so the
+    // default-verbosity stderr stays empty for a clean apply. Operators
+    // hunting for the resolved backend re-enable with `-v` or RUST_LOG.
+    tracing::debug!(driver = %driver, resolved = %name, "apply: backend preflight ok");
     Ok(name)
 }
 
@@ -462,12 +578,17 @@ fn summarize_timer_report(report: &crate::timer::ReconcileReport) -> String {
         .join(", ")
 }
 
+/// C3: subprocesses called from the apply orchestrator must not block
+/// the lock-holding caller forever. A wedged `systemctl daemon-reload`
+/// or `nft` can otherwise hang `proteus apply` (and the rotate-timer
+/// dispatcher behind it) indefinitely. 30 s is an order of magnitude
+/// past the longest legitimate `systemctl` reload + restart cycle on
+/// the workstations Proteus targets.
+const SUBPROCESS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 fn systemctl(args: &[&str]) -> anyhow::Result<()> {
-    use anyhow::{Context, anyhow};
-    let output = std::process::Command::new("systemctl")
-        .args(args)
-        .output()
-        .context("invoking systemctl")?;
+    use anyhow::anyhow;
+    let output = run_with_timeout("systemctl", args, SUBPROCESS_TIMEOUT)?;
     if output.status.success() {
         return Ok(());
     }
@@ -478,6 +599,66 @@ fn systemctl(args: &[&str]) -> anyhow::Result<()> {
         output.status,
         stderr.trim()
     ))
+}
+
+/// C3: spawn `program args...`, wait up to `timeout`, kill on overrun.
+/// Returns the captured output on a normal exit, or an `Err` if the
+/// child hangs past the budget. The kill is best-effort — a child that
+/// resists SIGKILL is the kernel's problem at that point, but we still
+/// surface a clean error to the caller so the lock is released.
+pub(crate) fn run_with_timeout(
+    program: &str,
+    args: &[&str],
+    timeout: std::time::Duration,
+) -> anyhow::Result<std::process::Output> {
+    use anyhow::{Context, anyhow};
+    use std::io::Read;
+    use std::process::{Command, Stdio};
+
+    let mut child = Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .with_context(|| format!("spawning {program}"))?;
+
+    let start = std::time::Instant::now();
+    let poll = std::time::Duration::from_millis(50);
+    loop {
+        match child
+            .try_wait()
+            .with_context(|| format!("polling {program}"))?
+        {
+            Some(status) => {
+                let mut stdout = Vec::new();
+                let mut stderr = Vec::new();
+                if let Some(mut s) = child.stdout.take() {
+                    let _ = s.read_to_end(&mut stdout);
+                }
+                if let Some(mut s) = child.stderr.take() {
+                    let _ = s.read_to_end(&mut stderr);
+                }
+                return Ok(std::process::Output {
+                    status,
+                    stdout,
+                    stderr,
+                });
+            }
+            None => {
+                if start.elapsed() >= timeout {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(anyhow!(
+                        "{program} {} timed out after {}s",
+                        args.join(" "),
+                        timeout.as_secs()
+                    ));
+                }
+                std::thread::sleep(poll);
+            }
+        }
+    }
 }
 
 /// Map an exit-code-returning command result into a component report. Any
@@ -765,6 +946,43 @@ mod tests {
         let merged = merge_dhcp_with_renew(primary, Ok(exit::GENERIC_ERROR));
         assert_eq!(merged.status, Status::Failed);
         assert!(merged.note.contains("renew failed"));
+    }
+
+    /// Roadmap Stream 7 / E1 acceptance: at default verbosity (no `-v`,
+    /// no `RUST_LOG`), the success path of `apply` emits zero events
+    /// from this module. Concretely: every `tracing::*!` in this file
+    /// must be at debug or trace level on the success path. Pin this
+    /// by source inspection — the production code (everything before
+    /// `mod tests`) must contain no `info!` calls outside of comments
+    /// / strings, since those propagate to stderr at the default INFO
+    /// level. New success-path breadcrumbs must use `debug!` so the
+    /// default stderr stays empty.
+    #[test]
+    fn success_path_emits_no_info_level_tracing_events() {
+        let src = include_str!("apply.rs");
+        // Cut at the test module boundary so the test's own `tracing`
+        // strings (in assertion messages) don't trigger.
+        let prod = src
+            .split_once("\n#[cfg(test)]\n")
+            .map(|(prod, _)| prod)
+            .unwrap_or(src);
+        let mut without_comments = String::with_capacity(prod.len());
+        for line in prod.lines() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("//") || trimmed.starts_with("///") {
+                continue;
+            }
+            without_comments.push_str(line);
+            without_comments.push('\n');
+        }
+        // `info!` is the discipline-violating level on the success
+        // path; `warn!` / `error!` are still allowed for failure-path
+        // diagnostics elsewhere in the file (none today).
+        assert!(
+            !without_comments.contains("tracing::info!"),
+            "src/commands/apply.rs must not call tracing::info! on the success path (Stream 7 / E1). \
+             Use `debug!` for breadcrumbs so default-verbosity stderr stays empty."
+        );
     }
 
     #[test]

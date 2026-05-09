@@ -80,11 +80,19 @@ impl FromStr for Mac {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         // Accept colon, dash, or no separator (12 hex chars).
+        // S10: strict canonical form — reject mixed separators
+        // (e.g. `aa:bb-cc:dd-ee:ff`) so a typo doesn't get silently
+        // normalised into a valid MAC. The check runs first so the
+        // error names the offending shape, rather than landing as a
+        // generic "WrongOctetCount" downstream.
         // Issue #284: drop any non-ASCII char during cleaning so byte-indexed
         // slicing below is safe. A multi-byte UTF-8 codepoint that satisfies
         // the old `*c != ':' && *c != '-'` filter would survive into `cleaned`,
         // make `cleaned.len()` (bytes) hit 12 with N<6 logical hex pairs, and
         // panic on `&cleaned[i*2..i*2+2]` at a non-char-boundary index.
+        if s.contains(':') && s.contains('-') {
+            return Err(MacError::BadOctet(s.to_string()));
+        }
         let cleaned: String = s
             .chars()
             .filter(|c| *c != ':' && *c != '-' && c.is_ascii())
@@ -199,5 +207,35 @@ mod tests {
     fn assignable_unicast_passes() {
         let m = Mac::new([0x00, 0x1B, 0x21, 0x12, 0x34, 0x56]);
         assert!(m.validate_assignable().is_ok());
+    }
+
+    /// S10: strict separator parser. Mixed `:`/`-` in the same input
+    /// is indistinguishable from a typo and silently accepting it
+    /// removes a useful operator-error signal.
+    #[test]
+    fn rejects_mixed_separators_strict_canonical_form() {
+        for s in [
+            "aa:bb-cc:dd-ee:ff",
+            "aa-bb:cc-dd:ee-ff",
+            "aa:bb:cc-dd:ee:ff",
+            "aa-bb-cc:dd-ee-ff",
+        ] {
+            let r: Result<Mac, _> = s.parse();
+            assert!(
+                r.is_err(),
+                "mixed-separator input '{s}' must be rejected, got {:?}",
+                r
+            );
+        }
+    }
+
+    /// S10: but a single canonical separator must still parse — pin
+    /// the contract so the strict check doesn't become "reject every
+    /// MAC with a separator".
+    #[test]
+    fn accepts_single_separator_canonical_forms() {
+        assert!("aa:bb:cc:dd:ee:ff".parse::<Mac>().is_ok());
+        assert!("aa-bb-cc-dd-ee-ff".parse::<Mac>().is_ok());
+        assert!("aabbccddeeff".parse::<Mac>().is_ok());
     }
 }

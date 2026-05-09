@@ -25,20 +25,55 @@ pub const STATE_DIR_MODE: u32 = 0o700;
 /// without a mode) can match the same root-only posture (issue #275).
 pub const STATE_FILE_MODE: u32 = 0o600;
 
+/// Canonical Proteus state directory. Pre-existing directories at this
+/// exact path are tightened to [`STATE_DIR_MODE`] on every call so a
+/// pre-#275 install with a 0o755 dir can't drift wider than 0o700.
+/// Anywhere else (operator-supplied `--state /custom/path`), Proteus
+/// only chmods directories it actually created itself.
+///
+/// GH #354 / GH #363: the previous shape unconditionally chmodded the
+/// parent of `state.json` to 0o700. With `--state /tmp/x` the parent is
+/// `/tmp`, and `chmod 0700 /tmp` system-bricks every other process on
+/// the box. Constraining the chmod to "the canonical dir, or a dir we
+/// just created" closes that footgun.
+const CANONICAL_STATE_DIR: &str = "/var/lib/proteus";
+
 /// Ensure `dir` exists and is owned by root with mode [`STATE_DIR_MODE`].
 /// Idempotent: safe to call when the dir is already correct, when it
-/// exists with a wrong mode (gets re-chmodded), or when it doesn't yet
-/// exist (gets created with the target mode).
+/// exists with a wrong mode (gets re-chmodded if Proteus owns it), or
+/// when it doesn't yet exist (gets created with the target mode).
 ///
 /// Issue #275: do **not** trust umask. Callers reach this both at first
-/// install (cold dir) and on every mutating command (warm dir), so a
-/// pre-existing 0o755 directory must be tightened on next run rather
-/// than left for the operator to spot.
+/// install (cold dir) and on every mutating command (warm dir).
+///
+/// GH #354 / GH #363: do **not** chmod operator-supplied directories
+/// that we did not create ourselves. If the caller passed
+/// `--state /tmp/x` (with `/tmp/x` already present, or
+/// `--state /tmp/x/state.json` where `/tmp/x` already exists), this
+/// function will create what's missing under it and chmod only the
+/// freshly-created leg of the path. The CANONICAL_STATE_DIR is a
+/// special case: that path *is* Proteus territory and gets the
+/// pre-#275 idempotent re-tighten so a wider mode never persists on a
+/// real install.
 pub fn ensure_state_dir_secure(dir: &Path) -> Result<()> {
+    let already_existed = dir.exists();
     fs::create_dir_all(dir).with_context(|| format!("creating state dir {}", dir.display()))?;
-    let perms = fs::Permissions::from_mode(STATE_DIR_MODE);
-    fs::set_permissions(dir, perms)
-        .with_context(|| format!("chmod 0{STATE_DIR_MODE:o} on state dir {}", dir.display()))?;
+
+    // Chmod policy:
+    // - We just created it now → tighten to 0o700.
+    // - Path is the canonical /var/lib/proteus → keep idempotent #275
+    //   tighten so a pre-existing wider mode is corrected on next run.
+    // - Otherwise (operator-supplied custom path that already existed) →
+    //   leave the directory's mode alone. The state.json itself is
+    //   landed at 0o600 by `write_atomic`, which is the actual secret-
+    //   bearing surface; chmodding the parent on every save is what
+    //   bricks systems when `--state` points into a shared dir.
+    let is_canonical = dir == Path::new(CANONICAL_STATE_DIR);
+    if !already_existed || is_canonical {
+        let perms = fs::Permissions::from_mode(STATE_DIR_MODE);
+        fs::set_permissions(dir, perms)
+            .with_context(|| format!("chmod 0{STATE_DIR_MODE:o} on state dir {}", dir.display()))?;
+    }
     Ok(())
 }
 
@@ -333,9 +368,24 @@ impl State {
                 // best-effort-parses the bad bytes via serde_json::Value;
                 // anything it can't extract stays at its default.
                 let recovered = recover_originals(&bytes);
-                // Best-effort rename; if it fails the next apply will overwrite
-                // via write_atomic, so we still degrade to a recovered state.
-                let _ = fs::rename(path, &quarantine);
+                // C5 / S4: surface rename failures to the caller. The
+                // previous `let _ = ...` shape silently no-op'd on a
+                // read-only filesystem, leaving the corrupt file in
+                // place; the next load re-quarantined forever. We now
+                // emit a warning with the real errno so the operator
+                // can act, while still falling back to the recovered
+                // state so read-only commands keep working.
+                if let Err(e) = fs::rename(path, &quarantine) {
+                    tracing::warn!(
+                        "state.json quarantine rename failed ({e}); corrupt file left at {} \
+                         and will be re-detected on next load. Operator may need to remove it \
+                         manually or fix permissions on {}",
+                        path.display(),
+                        path.parent()
+                            .map(|p| p.display().to_string())
+                            .unwrap_or_else(|| ".".into()),
+                    );
+                }
                 if recovered.has_any_originals() {
                     tracing::warn!(
                         "state.json quarantine: recovered originals cache (hostname / BT alias / MAC) — revert can still restore the pre-Proteus values"
@@ -388,16 +438,14 @@ impl State {
             ensure_state_dir_secure(parent)?;
         }
         commands::write_atomic(path, &bytes)?;
-        // Belt-and-braces: re-assert the file mode after write_atomic in
-        // case a future refactor of write_atomic ever drops the .mode(0o600)
-        // hint. Idempotent and cheap — a single fchmod equivalent.
-        let perms = fs::Permissions::from_mode(STATE_FILE_MODE);
-        fs::set_permissions(path, perms).with_context(|| {
-            format!(
-                "chmod 0{STATE_FILE_MODE:o} on state file {}",
-                path.display()
-            )
-        })?;
+        // N12.16: do NOT re-chmod the path here. `write_atomic` already
+        // creates the temp file with `O_CREAT | O_EXCL` and `mode(0o600)`,
+        // and renames it over the destination. A second `set_permissions`
+        // by-path is racy (TOCTOU between rename and chmod) and is
+        // semantically a no-op when `write_atomic` is correct. If a future
+        // refactor ever drops the `.mode()` on `write_atomic`, the
+        // `STATE_FILE_MODE` constant + the explicit O_CREAT|O_EXCL contract
+        // is the place to assert that — not a defensive chmod here.
         Ok(())
     }
 }
@@ -421,6 +469,20 @@ fn migrate_state(state: &mut State) {
         migrate_known_portals_to_per_ssid(state);
         state.schema_version = 2;
     }
+    // N12.17: case-fold UUID-shaped connection keys to lowercase on every
+    // load, regardless of schema version. NM emits lowercase RFC-4122
+    // uuids; a state.json restored from a tool that uppercased hex would
+    // otherwise silently miss on next-rotate lookups. Idempotent — a
+    // no-op when every key is already lowercase.
+    //
+    // C9: this is also where a cross-system state-restore quietly drops
+    // entries — UUIDs from the source system don't match anything on the
+    // target NM, so the next apply re-captures originals from scratch.
+    // Documented behaviour: by design, fail-safe; never silent
+    // corruption. See CURRENT_SCHEMA_VERSION for the deprecation
+    // policy.
+    fold_uuid_keys_to_lowercase(&mut state.originals.connections);
+    fold_uuid_keys_to_lowercase(&mut state.managed.connections);
 }
 
 /// Roadmap Milestone 3: each entry in `state.known_portal_ssids` becomes
@@ -446,9 +508,37 @@ fn migrate_known_portals_to_per_ssid(state: &mut State) {
 /// entries on load: they cannot be safely remapped without contacting NM,
 /// and the next `proteus apply` re-captures originals correctly. Alpha
 /// state is not durable across this kind of structural change.
+///
+/// N12.17: NM emits lowercase RFC-4122 uuids. A state file with
+/// uppercase hex (manual edit, restored from a tool that uppercases)
+/// passed `is_uuid_shape` historically (which accepts `[0-9a-fA-F]`)
+/// but later string-equality lookups against fresh NM uuids missed →
+/// silent data loss for `proteus revert`. Fold to lowercase here so
+/// the cache survives a wild edit.
 fn migrate_connection_keys_to_uuid(state: &mut State) {
+    fold_uuid_keys_to_lowercase(&mut state.originals.connections);
+    fold_uuid_keys_to_lowercase(&mut state.managed.connections);
     state.originals.connections.retain(|k, _| is_uuid_shape(k));
     state.managed.connections.retain(|k, _| is_uuid_shape(k));
+}
+
+/// N12.17 helper: rebuild the map with every UUID-shaped key folded to
+/// ASCII lowercase. Non-UUID-shaped keys are left untouched (they get
+/// dropped a moment later by the retain-shape filter). Idempotent.
+fn fold_uuid_keys_to_lowercase<V>(map: &mut BTreeMap<String, V>) {
+    let needs_fold = map
+        .keys()
+        .any(|k| is_uuid_shape(k) && k.bytes().any(|b| b.is_ascii_uppercase()));
+    if !needs_fold {
+        return;
+    }
+    let drained: Vec<(String, V)> = std::mem::take(map).into_iter().collect();
+    for (mut k, v) in drained {
+        if is_uuid_shape(&k) {
+            k.make_ascii_lowercase();
+        }
+        map.insert(k, v);
+    }
 }
 
 /// NM uuids are RFC-4122 — 36 chars: `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`.
@@ -833,29 +923,51 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
-    /// Issue #275: a pre-existing 0o755 dir (e.g. left over by an older
-    /// install with a permissive umask) must be tightened on every
-    /// call, not left alone for the operator to spot.
+    /// GH #354 / GH #363: a pre-existing operator-supplied directory
+    /// must be left alone — Proteus does not chmod paths it didn't
+    /// create. The previous behaviour (always re-tighten) bricks
+    /// `--state /tmp/x` invocations by chmodding /tmp 0o700.
     #[test]
-    fn ensure_state_dir_secure_tightens_existing_dir() {
+    fn ensure_state_dir_secure_does_not_tighten_foreign_existing_dir() {
         let dir = std::env::temp_dir().join(format!(
-            "proteus-state-mode-tighten-{}-{}",
+            "proteus-state-mode-foreign-{}-{}",
             std::process::id(),
             line!()
         ));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
-        // Simulate the pre-#275 misconfigured-dir bug: world-readable
-        // and group-writable.
-        fs::set_permissions(&dir, fs::Permissions::from_mode(0o775)).unwrap();
-        let pre = fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
-        assert_eq!(pre, 0o775, "test fixture: dir should start at 0o775");
+        // Simulate operator-supplied dir at the conventional umask of 0o755.
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
 
-        ensure_state_dir_secure(&dir).expect("tighten existing dir");
+        ensure_state_dir_secure(&dir).expect("noop on foreign existing dir");
+        let post = fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            post, 0o755,
+            "ensure_state_dir_secure must NOT chmod a pre-existing operator-supplied dir; got 0o{post:o}"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// GH #354 / GH #363: the chmod on canonical Proteus dir is still
+    /// idempotent — issue #275's tighten-on-every-run guarantee for
+    /// `/var/lib/proteus` is preserved. We can't actually mutate
+    /// `/var/lib/proteus` in unit tests (it's root-only on prod
+    /// systems), so this test only pins the policy via the leaf-creation
+    /// path: a dir Proteus just created must always come back at 0o700.
+    #[test]
+    fn ensure_state_dir_secure_chmods_freshly_created_dirs() {
+        let dir = std::env::temp_dir().join(format!(
+            "proteus-state-mode-fresh-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+
+        ensure_state_dir_secure(&dir).expect("create with 0o700");
         let post = fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
         assert_eq!(
             post, STATE_DIR_MODE,
-            "ensure_state_dir_secure must re-chmod an existing dir to 0o700, got 0o{post:o}"
+            "freshly-created state dir must be 0o700, got 0o{post:o}"
         );
         let _ = fs::remove_dir_all(&dir);
     }
@@ -1022,6 +1134,61 @@ mod tests {
             recovered.managed.interfaces.is_empty(),
             "recover_originals must only pull sacred fields, not managed"
         );
+    }
+
+    /// N12.17: state.json with uppercase RFC-4122 UUID keys must be
+    /// folded to lowercase during migration so subsequent NM lookups
+    /// (which always use lowercase) hit the cache.
+    #[test]
+    fn migrate_state_lowercases_uppercase_uuid_keys() {
+        let mut s = State::default();
+        let upper = "AABBCCDD-EEFF-1122-3344-556677889900".to_string();
+        s.originals.connections.insert(
+            upper.clone(),
+            ConnectionOriginals {
+                anonymous_identity: Some("anon".into()),
+                ..Default::default()
+            },
+        );
+        s.managed.connections.insert(
+            upper.clone(),
+            ConnectionRecord {
+                current_mac: Some("aa:bb:cc:dd:ee:ff".into()),
+                ..Default::default()
+            },
+        );
+        s.schema_version = CURRENT_SCHEMA_VERSION;
+
+        migrate_state(&mut s);
+
+        let lower = upper.to_ascii_lowercase();
+        assert!(
+            s.originals.connections.contains_key(&lower),
+            "uppercase originals key must be folded to lowercase"
+        );
+        assert!(
+            !s.originals.connections.contains_key(&upper),
+            "uppercase originals key must be removed after fold"
+        );
+        assert!(
+            s.managed.connections.contains_key(&lower),
+            "uppercase managed key must be folded to lowercase"
+        );
+    }
+
+    /// N12.17 idempotence: a state with already-lowercase keys does not
+    /// allocate a new map.
+    #[test]
+    fn migrate_state_idempotent_on_lowercase_uuids() {
+        let mut s = State::default();
+        let lower = "aabbccdd-eeff-1122-3344-556677889900".to_string();
+        s.managed
+            .connections
+            .insert(lower.clone(), ConnectionRecord::default());
+        s.schema_version = CURRENT_SCHEMA_VERSION;
+        migrate_state(&mut s);
+        assert!(s.managed.connections.contains_key(&lower));
+        assert_eq!(s.managed.connections.len(), 1);
     }
 
     /// Issue #290 — a corrupt state file with no originals fields at all

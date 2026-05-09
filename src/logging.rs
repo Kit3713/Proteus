@@ -93,24 +93,52 @@ fn parse_rust_log(s: &str, fallback: LevelFilter) -> Targets {
     // leading bare-level token and feed it through `with_default` instead.
     let mut default = fallback;
     let mut directives: Vec<&str> = Vec::new();
+    let mut bad_bare: Vec<&str> = Vec::new();
     for part in s.split(',') {
         let part = part.trim();
         if part.is_empty() {
             continue;
         }
-        if !part.contains('=')
-            && let Ok(level) = LevelFilter::from_str(part)
-        {
-            default = level;
-            continue;
+        if !part.contains('=') {
+            match LevelFilter::from_str(part) {
+                Ok(level) => {
+                    default = level;
+                    continue;
+                }
+                Err(_) => {
+                    // Bare token that isn't a level (e.g. `RUST_LOG=DBUG`).
+                    // Stash it for a single-line warning after the loop —
+                    // proteus has no logger installed yet at this point, so
+                    // we route through stderr directly.
+                    bad_bare.push(part);
+                    continue;
+                }
+            }
         }
         directives.push(part);
     }
-    let targets = if directives.is_empty() {
-        Targets::new()
-    } else {
-        Targets::from_str(&directives.join(",")).unwrap_or_else(|_| Targets::new())
+    let targets = match Targets::from_str(&directives.join(",")) {
+        Ok(t) => t,
+        Err(e) if !directives.is_empty() => {
+            // Roadmap Stream 7 / E3: silently dropping a malformed
+            // `RUST_LOG` directive used to leave operators staring at a
+            // surprise default-level filter. Surface it on stderr exactly
+            // once and continue with the requested global default so the
+            // run still produces output.
+            eprintln!(
+                "proteus: warning: ignoring malformed RUST_LOG directives ({}): {e}",
+                directives.join(",")
+            );
+            Targets::new()
+        }
+        Err(_) => Targets::new(),
     };
+    if !bad_bare.is_empty() {
+        eprintln!(
+            "proteus: warning: ignoring unknown RUST_LOG token(s): {}",
+            bad_bare.join(", ")
+        );
+    }
     targets.with_default(default)
 }
 
@@ -190,5 +218,29 @@ mod tests {
         let t = build_filter(Level::INFO, Some("proteus=debug"));
         assert!(t.would_enable("proteus", &Level::DEBUG));
         assert!(!t.would_enable("proteus", &Level::TRACE));
+    }
+
+    /// Roadmap Stream 7 / E3: a malformed bare token (`DBUG`) must not
+    /// silently downgrade the filter. The fallback level still applies so
+    /// the process keeps logging at the user's requested verbosity, and
+    /// the diagnostic goes to stderr (not asserted here — capturing
+    /// stderr in a unit test is fragile — but the parse must not panic
+    /// or replace the fallback with `OFF`).
+    #[test]
+    fn parse_rust_log_malformed_bare_token_falls_back() {
+        let t = parse_rust_log("DBUG", LevelFilter::WARN);
+        assert!(t.would_enable("anything", &Level::WARN));
+        assert!(!t.would_enable("anything", &Level::INFO));
+    }
+
+    #[test]
+    fn parse_rust_log_malformed_directive_is_ignored() {
+        // `=garbage` is a target=level directive whose level doesn't
+        // parse. Targets::from_str rejects the whole list, so we must
+        // gracefully fall back to the requested default rather than
+        // dropping to the implicit `Targets::new()` which silences
+        // everything below ERROR.
+        let t = parse_rust_log("=garbage", LevelFilter::INFO);
+        assert!(t.would_enable("proteus", &Level::INFO));
     }
 }
