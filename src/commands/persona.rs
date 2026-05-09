@@ -19,6 +19,7 @@ use serde::Serialize;
 
 use crate::cli::PersonaAction;
 use crate::config::Config;
+use crate::display::display_safe;
 use crate::exit;
 use crate::persona::{Persona, PersonaCategory, PersonaKind, PersonaSource, PersonaSummary, load};
 
@@ -26,6 +27,66 @@ use crate::persona::{Persona, PersonaCategory, PersonaKind, PersonaSource, Perso
 /// `proteus config edit` so the two commands have identical fallback
 /// ordering (#244).
 const DEFAULT_EDITOR: &str = "vi";
+
+/// Issue GH#342 — path-traversal hardening on `persona {new,edit,show,use}`.
+/// The id flows into `<root>/<id>.toml` via [`load::user_path`]. Without a
+/// strict allow-list a caller could pass `../../etc/passwd` and the loader
+/// would stat / write under `/etc/passwd.toml` (or, with explicit chars,
+/// land at the literal `/etc/passwd`). Mirror the kebab-case rule that
+/// the persona-schema validator enforces on the on-disk `id` field.
+///
+/// The grammar is intentionally narrower than what `Persona.id` itself
+/// allows (`load::is_kebab_case`): we accept ASCII letters, digits, `-`,
+/// and `_`, refuse leading/trailing `-` or `_`, and refuse the literal
+/// `.` and `..`. The `_` makes `is_valid_persona_id` a defense-in-depth
+/// gate: a hand-authored persona file with an underscore in its id would
+/// already be rejected at load by `is_kebab_case`, so this check just
+/// stops the path-traversal attack on its way *to* the loader.
+fn is_valid_persona_id(id: &str) -> bool {
+    if id.is_empty() || id == "." || id == ".." {
+        return false;
+    }
+    // Cap length so an attacker can't smuggle a multi-kilobyte path
+    // through here. 64 bytes is well above any persona id we ship.
+    if id.len() > 64 {
+        return false;
+    }
+    let bytes = id.as_bytes();
+    let first = bytes[0];
+    let last = bytes[bytes.len() - 1];
+    if first == b'-' || first == b'_' || last == b'-' || last == b'_' {
+        return false;
+    }
+    bytes
+        .iter()
+        .all(|b| b.is_ascii_alphanumeric() || *b == b'-' || *b == b'_')
+}
+
+/// Reject + report. Returns `Err(rc)` shape: callers `Ok(rc)?` style isn't
+/// readable here, so we keep the explicit `if let` at the call site.
+fn reject_invalid_id(id: &str) -> u8 {
+    // Sanitize for the error message: an attacker-crafted id may itself
+    // contain ANSI escapes.
+    eprintln!(
+        "proteus: invalid persona id '{}': must match [A-Za-z0-9_-], 1..=64 chars, no leading/trailing '-'/'_'",
+        display_safe(id),
+    );
+    exit::CONFIG_ERROR
+}
+
+/// GH#361 helper — reject `$EDITOR` / `$VISUAL` values containing control
+/// bytes. Non-ASCII passes through (some operators legitimately use
+/// editor names with extended chars in their PATH); only NUL and the C0
+/// range are refused. The `OsStr` form handles both UTF-8 and platform-
+/// encoded byte content uniformly.
+fn is_safe_editor_value(v: &std::ffi::OsStr) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+    let bytes = v.as_bytes();
+    if bytes.is_empty() {
+        return false;
+    }
+    !bytes.iter().any(|b| *b == 0 || (*b < 0x20) || *b == 0x7f)
+}
 
 /// Top-level dispatch for `proteus persona ...`.
 pub fn run(action: PersonaAction, config_override: Option<&Path>) -> Result<u8> {
@@ -89,15 +150,22 @@ fn list(kind: Option<&str>, category: Option<&str>, json: bool, user_root: &Path
         println!("(no personas match the filter)");
         return Ok(exit::SUCCESS);
     }
+    // Issues #374/#380: persona display_name and notes can come from
+    // user-authored TOML under /etc/proteus/personas/. Even though the
+    // schema validator (`persona/load.rs::schema_check`) rejects control
+    // bytes in DHCP strings, it does NOT yet do so for free-form
+    // display_name / notes — and a hand-edit can plant ANSI/BiDi there.
+    // Sanitize on the way out. The id is kebab-case-validated at load
+    // time, but defense-in-depth: route it through display_safe too.
     for s in &all {
         let marker = if s.valid { "" } else { " [INVALID]" };
         println!(
             "{:<28} {:<10} {:<8} {:<7}  {}{marker}",
-            s.id,
+            display_safe(&s.id),
             s.kind.name(),
             s.category.name(),
             s.source.name(),
-            s.display_name,
+            display_safe(&s.display_name),
         );
     }
     Ok(exit::SUCCESS)
@@ -126,8 +194,15 @@ struct ShowReport {
 }
 
 fn show(id: &str, json: bool, user_root: &Path) -> Result<u8> {
+    // GH#342: gate path-component args before they reach the loader.
+    if !is_valid_persona_id(id) {
+        return Ok(reject_invalid_id(id));
+    }
     let Some((p, src)) = load::load(id, user_root)? else {
-        eprintln!("proteus: persona '{id}' not found (try `proteus persona list`)");
+        eprintln!(
+            "proteus: persona '{}' not found (try `proteus persona list`)",
+            display_safe(id)
+        );
         return Ok(exit::CONFIG_ERROR);
     };
     if json {
@@ -163,12 +238,19 @@ fn use_persona(
     ) {
         return Ok(code);
     }
+    // GH#342: gate path-component args before they reach the loader.
+    if !is_valid_persona_id(id) {
+        return Ok(reject_invalid_id(id));
+    }
     if load::load(id, user_root)?.is_none() {
-        eprintln!("proteus: persona '{id}' not found (try `proteus persona list`)");
+        eprintln!(
+            "proteus: persona '{}' not found (try `proteus persona list`)",
+            display_safe(id)
+        );
         return Ok(exit::CONFIG_ERROR);
     }
     write_active_to_config(Some(id), config_override)?;
-    println!("active persona is now '{id}'");
+    println!("active persona is now '{}'", display_safe(id));
     if apply {
         // The persona-shaping integration is live (roadmap M2
         // "Integration"), but `--apply` doesn't auto-rerun the
@@ -343,8 +425,16 @@ fn new(id: &str, from: &str, yes: bool, user_root: &Path) -> Result<u8> {
     ) {
         return Ok(code);
     }
+    // GH#342: both `id` (target file name) and `from` (loader path
+    // component) flow into `<root>/<*>.toml` paths. Gate both.
+    if !is_valid_persona_id(id) {
+        return Ok(reject_invalid_id(id));
+    }
+    if !is_valid_persona_id(from) {
+        return Ok(reject_invalid_id(from));
+    }
     let Some((mut p, _)) = load::load(from, user_root)? else {
-        eprintln!("proteus: source persona '{from}' not found");
+        eprintln!("proteus: source persona '{}' not found", display_safe(from));
         return Ok(exit::CONFIG_ERROR);
     };
     p.id = id.to_string();
@@ -367,32 +457,63 @@ fn edit(id: &str, user_root: &Path) -> Result<u8> {
         eprintln!("proteus: {e}");
         return Ok(exit::PERMISSION_ERROR);
     }
+    // GH#342: gate path-component arg before joining with user_root.
+    if !is_valid_persona_id(id) {
+        return Ok(reject_invalid_id(id));
+    }
     let path = load::user_path(user_root, id);
     if !path.exists() {
         eprintln!(
-            "proteus: {} does not exist (use `proteus persona new {id} --from <existing>` first)",
-            path.display()
+            "proteus: {} does not exist (use `proteus persona new {} --from <existing>` first)",
+            path.display(),
+            display_safe(id),
         );
         return Ok(exit::CONFIG_ERROR);
     }
-    // Issues #230 / #244: same HOME-not-/root warning as `proteus config
-    // edit`. `sudo -E` (or env_keep) preserves HOME, which makes the
-    // editor's plugins / autoloads run as root from the user's HOME — an
-    // arbitrary-code-as-root path from a malicious dotfile. Surface the
-    // risk so the operator can choose `sudo -H proteus persona edit`.
+    // GH#361 — `persona edit` previously ran $EDITOR as root with the
+    // caller's $HOME, making the editor's plugins / autoloads execute
+    // root-owned code from a user-writable dotfile. Refuse the run when
+    // we detect this shape rather than just warning. The mitigations:
+    //   1. `sudo -H proteus persona edit ...` — sudo resets HOME to root's.
+    //   2. SUDO_USER unset (direct root login) — HOME is /root by build
+    //      convention.
+    //   3. `proteus persona edit ...` invoked as a non-root user — the
+    //      `require_root` gate above already refused.
+    // Issues #230 / #244 also asked for a warning here; we KEEP the
+    // warning text for diagnosability but bump the policy from "warn and
+    // continue" to "warn and refuse" because root-as-user-editor is the
+    // class of bug `sudo -H` solves and we shouldn't ship the foot-gun
+    // (the existing `--yes`-style override is `sudo -H`).
     if std::env::var_os("HOME").is_some_and(|h| h != *"/root") {
         eprintln!(
-            "proteus: warning: $HOME is not /root — your editor's plugins / autoloads will run as root"
+            "proteus: refusing to launch editor: $HOME is not /root, so the editor's \
+             plugins / autoloads would run as root from a user-writable directory."
         );
         eprintln!(
-            "proteus: prefer `sudo -H proteus persona edit` (drops HOME) or edit the file manually"
+            "proteus: re-run with `sudo -H proteus persona edit ...` (drops HOME) \
+             or edit {} manually.",
+            path.display()
         );
+        return Ok(exit::PERMISSION_ERROR);
     }
     // Issue #244: $VISUAL beats $EDITOR; fall back to vi when neither is
     // set. Same precedence as `proteus config edit`.
-    let editor = std::env::var_os("VISUAL")
-        .or_else(|| std::env::var_os("EDITOR"))
-        .unwrap_or_else(|| OsString::from(DEFAULT_EDITOR));
+    //
+    // GH#361: refuse an obviously-attacker-shaped $EDITOR/$VISUAL
+    // (newline / NUL / shell metacharacters). The OsString form means
+    // we can't regex it, but we can check for control bytes which is
+    // enough to catch the documented attack shape (an attacker-set
+    // EDITOR injecting a fresh argv via `\n`).
+    let editor_var = std::env::var_os("VISUAL").or_else(|| std::env::var_os("EDITOR"));
+    let editor = if let Some(v) = editor_var {
+        if !is_safe_editor_value(&v) {
+            eprintln!("proteus: refusing to spawn editor: $VISUAL/$EDITOR contains control bytes.");
+            return Ok(exit::CONFIG_ERROR);
+        }
+        v
+    } else {
+        OsString::from(DEFAULT_EDITOR)
+    };
     let status = std::process::Command::new(&editor)
         .arg(&path)
         .status()

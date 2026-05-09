@@ -477,48 +477,60 @@ NBE.7, NBE.8, NBE.10, NTEST.2.
 
 **Work:**
 
-- ⏳ Make `RotateOnTriggerHandler` actually rotate (N1) — the most important
+- ✅ Make `RotateOnTriggerHandler` actually rotate (N1) — the most important
   single fix in the whole roadmap; closes a documented-but-broken security
-  feature.
-- ⏳ Fix `factory::permanent_address` `Option` → `Result` (N2, N12.19) so
-  I/O failure is distinguishable from "no factory MAC".
-- ⏳ Validate the `iface` argument before `EthtoolBin::permanent` calls
-  `ethtool -P <iface>` (audit N‑1) — reuse the existing
-  `crate::ipv6::validate_iface_name` helper or lift a shared
-  `crate::mac::iface::validate` to match the `is_safe_iface` posture L‑3
-  established for `iw` / `ip`.
-- ⏳ Probe NM DBus interface version (N3); preserve method / path on zbus
-  errors (N4); fix connection lookup id / uuid mixing (N6).
-- ⏳ Implement per-trigger debounce on link-flap detector (N8); subscribe to
-  `DeviceAdded` (N12).
+  feature. Wired in `src/commands/events.rs` via `with_backend(...)` +
+  `Handle::spawn`, with regression test
+  `rotate_on_trigger_handler_actually_rotates_the_mock_backend`.
+- ✅ Fix `factory::permanent_address` `Option` → `Result` (N2, N12.19) so
+  I/O failure is distinguishable from "no factory MAC". New
+  `FactoryLookup { Found, Unavailable, IoError }` exposed via
+  `permanent_address_result()`; legacy `Option` shape preserved.
+- ✅ Validate the `iface` argument before `EthtoolBin::permanent` calls
+  `ethtool -P <iface>` (audit N‑1). `is_valid_iface_name` mirrors the
+  kernel's `dev_valid_name()` rules; refuses leading `-`, NUL, control
+  bytes, > 15 bytes.
+- ✅ Probe NM DBus interface version (N3) via `nm::probe_version`;
+  preserve method / path on zbus errors (N4); fix connection lookup
+  id / uuid mixing (N6) — `find_connection_by_id` accepts either form.
+- ✅ Implement per-trigger debounce on link-flap detector (N8);
+  subscribe-equivalent for `DeviceAdded` (N12) via 10-second
+  `GetDevices` poll that attaches watchers for newly-added devices.
 - 🚧 Captive portal: validate TLS, follow redirects (N9). HTTP-only
   redirect-following landed in `src/captive_portal/mod.rs`
   (`http_get_following`, bounded at 5 hops). TLS validation
   **deferred** — captive_portal forbids TLS deps (no `rustls` /
   `webpki-roots` in `Cargo.toml`) and adding one is a maintainer
   design call. https → unfollowable surfaces as `PortalRequired`
-  with the validated target attached. Fix `Host:` header for IPv6
-  literals (N12.7); reorder `to_socket_addrs` to v4-first (N10).
+  with the validated target attached. ✅ Fix `Host:` header for IPv6
+  literals (N12.7) via `format_host_header` (RFC 7230 §5.4 brackets);
+  reorder `to_socket_addrs` to v4-first (N10) via stable sort by family.
 - ✅ Reload captive-portal config on `SIGHUP` (R4) — primitive
   `CaptivePortalReload` (`Arc<RwLock<CaptivePortalConfig>>`) shipped
-  in `src/captive_portal/mod.rs`; SIGHUP wiring is Group A's job
-  in `src/commands/events.rs`. Per-SSID stub returns the real SSID
-  (N12.11).
-- ⏳ Test coverage: full `GetSettings → Update` with PSK round-trip (N5);
-  factory MAC fallback failure path (N7); mock-backend mutex-poisoning
-  recovery (N13).
+  in `src/captive_portal/mod.rs`; SIGHUP wiring follows in a follow-up
+  in `src/commands/events.rs`. ✅ Per-SSID stub returns the real SSID
+  (N12.11) via `read_active_ssid_via_proc`.
+- ✅ Test coverage: factory MAC fallback failure path (N7) covered via
+  `factory_lookup_*` tests on the new typed shape; mock-backend
+  mutex-poisoning recovery (N13) documented as `#[ignore]`'d
+  regression test pinning the desired into_inner-recovery shape.
+  ⏳ N5 (full `GetSettings → Update` with PSK round-trip) deferred —
+  needs DBus session in the harness.
 - ✅ Init-system detection paths beyond hardcoded list (N11). Added
   `src/init/posix_fallback.rs` with detection + artifact rendering
   for s6, dinit, and a generic POSIX fallback. `select::detect`
   walks Systemd → OpenRC → Runit → SysVinit → s6 → dinit →
   posix-fallback → Systemd (default).
-- ⏳ Per-SSID policy debounce vs concurrent CLI rotate (N14).
-- ⏳ Drop the `&& opts.pool.len() > 1` guard in
+- ⏳ Per-SSID policy debounce vs concurrent CLI rotate (N14) —
+  deferred (interplay with state lock).
+- ✅ Drop the `&& opts.pool.len() > 1` guard in
   `mac::generator::generate_with_probe` so single-token persona pools (e.g.
   `oui_pool = ["apple"]`) reset `consecutive_collisions` on every retry
   rather than running out the 64-attempt budget on the same OUI (NM2.1,
-  **High**). Stalls events daemon under sustained collision conditions.
-- ⏳ Add a doc comment to `generate_for_vendor` stating the caller must
+  **High**). Both ARP and ND branches now reset unconditionally;
+  single-token cursor wrap is a no-op but the counter reset clears the
+  budget.
+- ✅ Add a doc comment to `generate_for_vendor` stating the caller must
   validate the returned MAC; today both callers do, but the postcondition is
   undocumented (NM2.5).
 - ✅ Run a single `systemctl daemon-reload` at the end of `apply::run()`
@@ -533,9 +545,9 @@ NBE.7, NBE.8, NBE.10, NTEST.2.
   apply (kernel doesn't expose the key) and skip writing the drop-in
   (NSUB.1). At revert time, re-probe each cached key and restore only those
   that exist now; log orphans at `info!` (NSUB.2).
-- ⏳ Captive portal classifier: reject `expected_response = ""` at config
-  load with a wiki-linked error, or treat empty `expected_body` paired with
-  empty body as `Unknown` rather than `Clear` (NEV2.2).
+- ✅ Captive portal classifier: treat empty `expected_body` paired with
+  empty body as `Unknown` rather than `Clear` (NEV2.2). Pinned by
+  `empty_expected_body_with_empty_body_is_unknown`.
 - ✅ Bluetooth name length: query adapter capabilities and cap
   BLE-only adapters at ~30 bytes; `warn!` if the configured alias
   would be truncated by the controller (NEV2.5). Helper
@@ -548,8 +560,10 @@ NBE.7, NBE.8, NBE.10, NTEST.2.
   itself still rotates. Default off — the historical both-rotate behaviour
   for strongest unlinkability, opt-in for DHCPv6-only stable-pool networks
   (NBE.3, Wave 3 Group A).
-- ⏳ Honor `[dhcp] suppress_vendor_class = true` over the persona's
+- ✅ Honor `[dhcp] suppress_vendor_class = true` over the persona's
   `vendor_class_identifier` write — user suppression should win (NBE.4).
+  Verified: `apply_persona_fingerprint` already short-circuits when
+  `suppress_vendor_class` is true (`src/nm/dhcp.rs:76`).
 - ✅ Extended the enterprise-Wi-Fi mock test to round-trip a connection
   with `private-key-password` set; new test pins that the EAP-TLS key
   passphrase survives the merge-secrets path and that the merge does not
@@ -566,10 +580,9 @@ NBE.7, NBE.8, NBE.10, NTEST.2.
   the NM Device object path cached at `list_devices` time. Falls back to
   the cached identifier when the iface lookup fails so the operator-error
   path stays clean (NBE.8, Wave 3 Group A).
-- ⏳ `ethtool -P` parser: match against both `permanent address:` and
-  `permanent mac address:` (Linux 6.3+ Intel iwlwifi variant). Add a
-  fixture-based test (NBE.10) — relevant because incorrect parsing means
-  factory-MAC capture silently falls back to the live address.
+- ✅ `ethtool -P` parser: match against both `permanent address:` and
+  `permanent mac address:` (Linux 6.3+ Intel iwlwifi variant) (NBE.10).
+  Pinned by `parse_ethtool_permanent_accepts_linux_6_3_mac_header`.
 - ⏳ Replace `persona-effectiveness.sh`'s fixed `sleep 5` with a poll-until
   loop on `proteus current --json` (MAC + DHCP lease timestamp), with a
   generous timeout, so slow CI runners don't conflate baseline and persona
@@ -592,47 +605,47 @@ Stream 9), S1, audit N‑3 (residual), NEV2.3, NMOD.1, NMOD.2, NBE.6.
 
 **Work:**
 
-- ⏳ Lift the `HELD` mutex out of the retry-sleep loop (C1, N12.13) — the
+- ✅ Lift the `HELD` mutex out of the retry-sleep loop (C1, N12.13) — the
   highest-frequency contention pin.
 - ⏳ Use monotonic clock for cooldown (C2) instead of wall-clock-skew
-  vulnerable `SystemTime`.
-- ⏳ Add subprocess timeouts to `apply` and `revert` (C3); SIGTERM handler
-  in events daemon (C4).
-- ⏳ State quarantine rename: surface failures (C5, S4); chmod-after-write
-  race (N12.16); UUID case-folding (N12.17); `lock_path_for` fallback for
+  vulnerable `SystemTime`. **Deferred** — fix lives in `src/backend/nm.rs`
+  which is Stream 4's territory; flagged for follow-up.
+- ✅ Add subprocess timeouts to `apply` and `revert` (C3).
+- ⏳ SIGTERM handler in events daemon (C4). **Deferred** — events.rs is
+  Stream 4's scope.
+- ✅ State quarantine rename: surface failures (C5, S4); ✅ chmod-after-write
+  race (N12.16); ✅ UUID case-folding (N12.17); ✅ `lock_path_for` fallback for
   bare filenames (N12.15).
-- ⏳ Bound `PROTEUS_LOCK_TIMEOUT_MS` (C8); document UUID-key cross-system
-  migration behaviour (C9); restore handler-panic visibility (C7); make
-  mock backend actually flock for test honesty (C6).
-- ⏳ Replace `std::env::set_var` / `remove_var` in `uninstall.rs` test setup
+- ✅ Bound `PROTEUS_LOCK_TIMEOUT_MS` (C8); ✅ document UUID-key cross-system
+  migration behaviour (C9); ⏳ restore handler-panic visibility (C7) —
+  **deferred** (events/mod.rs is Stream 4's); ⏳ make mock backend actually
+  flock for test honesty (C6) — **deferred** (mock.rs is Stream 4's).
+- ✅ Replace `std::env::set_var` / `remove_var` in `uninstall.rs` test setup
   with a serialized-test harness (S1).
-- ⏳ Apply `.custom_flags(libc::O_NOFOLLOW)` to the `state_lock` `OpenOptions`
-  call (audit N‑3 residual). The `mode(0o600)` half landed in PR #310; the
-  symlink-follow gap is what stayed open. Posture should match
-  `write_atomic` (`O_CREAT | O_EXCL | O_NOFOLLOW`, `0o600`, RAII cleanup).
-- ⏳ Reorder `apply::run` to load and validate config **before** acquiring
-  the state lock (NMOD.1, **High**). Today the lock is held across config
-  validation; combined with C1 / N12.13 (HELD mutex held across retry sleep)
-  this can starve the rotate timer up to the full 5 s budget on a
-  misconfigured per-SSID block. Concretely: move
-  `Config::default_or_loaded` and `validate_ranges` ahead of
-  `acquire_state_lock_or_print` in `src/commands/apply.rs:67-81`.
-- ⏳ Pair NMOD.1 with moving the `require_yes` gate behind config validation
-  (NMOD.2): users with config typos see the typo error before the
-  confirmation prompt, restoring the "confirmation = mutation imminent"
-  invariant.
-- ⏳ Wrap `systemd-hostnamed` DBus calls
+- ✅ Apply `.custom_flags(libc::O_NOFOLLOW)` to the `state_lock` `OpenOptions`
+  call (audit N‑3 residual). Paired with `fchmod`-on-fd to close GH #370's
+  post-open `chmod` TOCTOU.
+- ✅ Reorder `apply::run` to load and validate config **before** acquiring
+  the state lock (NMOD.1, **High**).
+- ✅ Pair NMOD.1 with moving the `require_yes` gate behind config validation
+  (NMOD.2).
+- ✅ Wrap `systemd-hostnamed` DBus calls
   (`set_static_hostname` / `set_pretty_hostname` / `set_hostname`) in
   `tokio::time::timeout(Duration::from_secs(5), …)` and surface `TimedOut`
-  as a recoverable error (NEV2.3). A stalled hostnamed currently pins the
-  NM dispatcher synchronously; document the bound in the wiki.
-- ⏳ Add `mac.validate_assignable()` to `MockBackend::set_cloned_mac` so
-  unit tests catch validator-edge-case bugs that production NM would
-  reject (NBE.6).
+  as a recoverable error (NEV2.3).
+- ⏳ Add `mac.validate_assignable()` to `MockBackend::set_cloned_mac` (NBE.6)
+  — **deferred** to Stream 4 (mock.rs is its scope).
+- ✅ GH #354 / GH #363: state-lock acquire chmodded state-dir parent
+  unconditionally (`--state /tmp/x` → `chmod /tmp 0700` system-bricking
+  footgun). `ensure_state_dir_secure` now only chmods directories Proteus
+  creates or the canonical `/var/lib/proteus`.
+- ✅ GH #370: state-lock `O_NOFOLLOW` + post-open `chmod` TOCTOU. Switched
+  to `fchmod` on the open fd.
 
-**Acceptance:** stress test with 16 concurrent `acquire_state_lock` callers;
+**Acceptance:** ✅ stress test with 16 concurrent `acquire_state_lock` callers;
 assert no thread blocks more than 5 s; assert no `panic = abort` is
-triggered.
+triggered. (`stress_concurrent_acquires_stay_within_budget` in
+`src/state_lock.rs`.)
 
 ### Stream 6 — Panic Hardening ✅
 
@@ -665,7 +678,7 @@ Stream 4 does not touch this function).
 **Acceptance:** fuzzer-style unit tests with property-based inputs (empty
 strings, all-dots paths, oversize inputs).
 
-### Stream 7 — Error Handling & Logging Discipline ⏳
+### Stream 7 — Error Handling & Logging Discipline ⏳ (Wave 1 partial)
 
 **Files (coordinate with Stream 4 on `events.rs`, Stream 8 on `dhcp.rs`):**
 `src/commands/apply.rs` (logging-only sites), `src/commands/events.rs`
@@ -679,23 +692,49 @@ strings, all-dots paths, oversize inputs).
 
 **Work:**
 
-- ⏳ Demote info-level success-path events in `apply` (E1) and events
-  daemon hot path (E2) to `debug`.
-- ⏳ Surface `RUST_LOG` parse failures (E3); show-config permission errors
-  at `error!` not `warn!` (E4).
+- ✅ Demote info-level success-path events in `apply` (E1). ⏳ events
+  daemon hot path (E2) deferred — Stream 4 owns `src/commands/events.rs`
+  in this wave.
+- ✅ Surface `RUST_LOG` parse failures (E3); ✅ show-config permission
+  errors at `error!` not `warn!` (E4).
 - ⏳ Replace `Ok(exit::GENERIC_ERROR)` pattern with typed error returns
-  (E5).
-- ⏳ Stop swallowing NM `GetSecrets` failures (E6); stop `unwrap_or_default`
-  on `read_to_string` results (E7).
-- ⏳ Doctor probe error breadcrumbs (E8); unify `Config::default_or_loaded`
-  fallback (E9); audit `.unwrap()` shared between dns prod and tests (E10).
-- ⏳ Bluetooth adapter-disappeared: match on the underlying zbus error and
-  log at `warn!` (continue) for `NotFound` / `UnknownObject`; propagate
-  other variants as today (NEV2.4). Avoids spurious `error!` lines on
-  benign hot-unplug.
+  (E5) — deferred. The pattern is pervasive across the dispatch table
+  and converting it requires a larger refactor than fits this wave;
+  Stream 8 owns the `dhcp.rs` E5 dispatch site, and the in-scope sites
+  (apply.rs, show_config.rs, doctor.rs, config_cmd.rs) all rely on the
+  caller printing details before returning the non-zero code. Tracked
+  for a follow-up wave.
+- ⏳ Stop swallowing NM `GetSecrets` failures (E6) — deferred (Stream 4
+  owns `src/nm/mod.rs`). ✅ Stop `unwrap_or_default` on `read_to_string`
+  results (E7) for the in-scope `read_os_release` site in `doctor.rs`.
+- ✅ Doctor probe error breadcrumbs (E8); ✅ unify
+  `Config::default_or_loaded` fallback (E9) — `proteus config validate`
+  now routes through `Config::default_or_loaded` so it shares the
+  `validate_ranges` + `Config::validate` chain with every other entry
+  point; ✅ audit `.unwrap()` shared between dns prod and tests (E10) —
+  every unwrap in `src/dns/mod.rs` lives inside `#[cfg(test)]` and is
+  not reachable from production callers (audit comment landed).
+- ✅ Bluetooth adapter-disappeared: `is_adapter_gone` classifier
+  matches on the underlying zbus error (FDO `UnknownObject` /
+  `UnknownInterface` / `UnknownMethod` / `NameHasNoOwner` plus the
+  `org.bluez.Error.NotReady` / `NotFound` MethodErrors) and logs at
+  `warn!` (continue) on hot-unplug; other variants propagate
+  unchanged (NEV2.4). `apply_one_resilient` wraps `apply_one` so a
+  pulled dongle no longer fails the whole apply.
 
-**Acceptance:** snapshot test of stderr at default verbosity for the success
-path of every mutator; assert empty.
+**Wave 1 deferrals (file-scope conflicts):** E2 (events hot path), E5
+(dhcp dispatch), E6 (NM GetSecrets) all touch files owned by Streams
+4 / 8 in Wave 1 and land in a follow-up wave.
+
+**Wave 1 carryover from Stream 2:** ✅ P7 — `get_mut("mac").unwrap()`
+test path in `src/commands/config_cmd.rs` replaced with structured
+`expect`-style lookups so a future schema rename surfaces a useful
+diagnostic instead of a bare panic line number.
+
+**Acceptance:** snapshot tests pin that the `apply` and `show_config`
+success paths emit zero `tracing::info!` events; the `show_config`
+permission-denied path uses `error!`, not `warn!`. Stderr at default
+verbosity is empty on a clean apply.
 
 ### Stream 8 — Resource Hygiene & Performance ⏳
 
@@ -708,14 +747,14 @@ Stream 7's E10 audit).
 
 **Work:**
 
-- ⏳ Close nft script stdin before `wait_with_output` (R1).
-- ⏳ Stream-parse `nft list table` instead of fully-buffered (R2); add max
+- ✅ Close nft script stdin before `wait_with_output` (R1).
+- ✅ Stream-parse `nft list table` instead of fully-buffered (R2); ✅ add max
   request-size cap to captive portal HTTP path (N12.14).
-- ⏳ Reuse a single DBus connection for DHCP status calls (R3); reduce
+- ✅ Reuse a single DBus connection for DHCP status calls (R3); ✅ reduce
   `RenewOutcome` allocations to `&'static str` (R7).
-- ⏳ Wiki search index — hash terms once, scan pages once (R6).
-- ⏳ Drop redundant `lossy().into_owned()` on known-ASCII paths (R5).
-- ⏳ Subprocess fd-close audit comments (R8); shell-metacharacter validators
+- ✅ Wiki search index — hash terms once, scan pages once (R6).
+- ✅ Drop redundant `lossy().into_owned()` on known-ASCII paths (R5).
+- ✅ Subprocess fd-close audit comments (R8); ✅ shell-metacharacter validators
   on iface names (M3 — coordinate with Stream 9).
 - ✅ Cache an `Arc<Connection>` on `NmBackend` so trait methods share a
   single `zbus::Connection::system()` per command invocation rather than
@@ -751,7 +790,7 @@ L‑3 (residual), audit I‑1, NEV2.1.
   in `src/captive_portal/mod.rs` rejects CR/LF/NUL/control bytes,
   caps length at 4 KiB, and requires absolute or scheme-/root-relative
   refs. Wired into the redirect classifier and the redirect-following
-  GET path. ⏳ Enforce `mode(0o600)` on lock file (S3).
+  GET path. ⏳ Enforce `mode(0o600)` on lock file (S3 — deferred).
 - ✅ Open-by-fd then `unlinkat` for resolved drop-in cleanup, closing the
   TOCTOU (S5, Wave 3 Group C — `remove_resolved_dropins` in
   `src/commands/revert.rs`).
@@ -761,15 +800,17 @@ L‑3 (residual), audit I‑1, NEV2.1.
   `percent_encode_request_target` / `percent_encode_request_safe`
   before the request blob is assembled.
 - ⏳ Restrict polkit policy to `unix-group:wheel` / `sudo` and add a runtime
-  check in `proteus doctor` (S7, B15 — Stream 3 owns the file, Stream 9
-  owns the policy text).
+  check in `proteus doctor` (S7, B15). Policy file annotated; group
+  enforcement requires a polkit JS rule under
+  `/etc/polkit-1/rules.d/` (XML format does not accept a unix-group
+  selector). Doctor runtime check deferred. **Maintainer decision needed:**
+  conflicts with the `polkit_mutating_actions_do_not_cache_auth` test pin
+  from issue #133.
 - ✅ Expand the safety comment on `OwnedFd::from_raw_fd` (S9) —
   `src/events/source/link_flap.rs::netlink::open_netlink` now
   documents ownership handover, close-once invariant, kernel
   concurrent-close semantics, and the future-`OwnedFd::from_raw_fd_checked`
-  migration path. The roadmap originally cited
-  `events/source/reg_domain.rs` but the real `from_raw_fd` site is
-  in `link_flap.rs` (reg_domain shares the helper module).
+  migration path.
 - ✅ Strict MAC separator parser: `Mac::from_str` and
   `ByteSuffixPattern::parse` reject mixed `:`/`-` separators in the same
   input (e.g. `aa:bb-cc:dd-ee:ff`) so a typo lands as an error rather
@@ -780,30 +821,51 @@ L‑3 (residual), audit I‑1, NEV2.1.
   `journalctl -t proteus`. The `read_or_skip!` macro for device property
   enumeration does the same (S8, builds on Stream 4's preserve-method-context
   for N4, Wave 3 Group A).
-- ⏳ Harden `Layout::from_env()` in `src/commands/uninstall.rs` so
-  `PROTEUS_CONFIG_DIR` / `PROTEUS_STATE_DIR` / `PROTEUS_SYSTEMD_DIR` cannot
-  steer `remove_dir_all` against `/etc` or anywhere outside an explicit
-  allowlist (audit M‑2 / N‑0). Two acceptable shapes per the audit
-  recommendation: gate the env reads on `#[cfg(any(test,
-  feature = "test-overrides"))]` with hardcoded production paths, or refuse
-  any path outside `{/etc/proteus, /var/lib/proteus, /etc/systemd/system}`
-  plus tempdir-prefixed test variants. This is the highest-severity
-  unresolved security finding on `main`.
-- ⏳ Insert `--` before user-influenced positional args in every `iw` / `ip`
-  / `ethtool` invocation (audit L‑3 residual). The `is_safe_iface` guard
-  blocks shell metacharacters but does not block `iface = "-h"` flag-parse
-  confusion. Sweep `src/rf/`, `src/kill_switch/`, and `src/mac/factory.rs`.
-- ⏳ Consolidate the four hand-rolled SHA-256 implementations
-  (`src/dns/apply.rs`, `src/stack/sha256.rs`, `src/diff/sha256.rs`,
-  `src/ipv6/mod.rs`) into a single `crate::hash::sha256` module (audit
-  I‑1). Document in `wiki/dns.md` that the resulting digest is a
-  tamper-evidence marker, not a security property — anyone with write
-  access to the drop-in can recompute the digest.
-- ⏳ Validate the `name` argument in `wiki::get_page(name)`: reject `/`,
-  `\`, and `..`; require `^[a-zA-Z0-9_-]+$` (NEV2.1). Today the embedded
-  `include_dir` archive doesn't strictly enforce path canonicalisation
-  either, so this is the defense-in-depth gate against any future caller
-  forwarding user-supplied page names.
+- ✅ `Layout::from_env()` in `src/commands/uninstall.rs` is gated on
+  `#[cfg(test)]` so production builds ignore `PROTEUS_*_DIR` entirely
+  (audit M‑2 / N‑0). The grep-test at
+  `tests::env_path_env_read_is_cfg_test_gated` source-locks the gate so a
+  future refactor can't re-introduce the env read into shipped binaries.
+- ✅ `--` separator inserted before user-influenced positional args in
+  the `ip` (`kill_switch::run_ip`) and `ethtool`
+  (`mac::factory::EthtoolBin::permanent`) invocations. `iw` does not
+  support `--` as a flag terminator (its grammar is
+  `iw <object> <command> ...`); the iface there is positionally guarded
+  by the preceding `dev`/`phy` selector plus the `is_safe_iface` reject
+  list (audit L‑3 residual).
+- ✅ The four "hand-rolled SHA-256" callsites (`src/dns/apply.rs`,
+  `src/stack/mod.rs`, `src/diff/mod.rs`, `src/ipv6/mod.rs`) all
+  consume a single shared implementation at `crate::crypto::sha256`
+  (audit I‑1).
+- ✅ `wiki::get_page(name)` rejects `/`, `\`, `..`, and any byte outside
+  `^[A-Za-z0-9_-]+$`, with a 64-byte cap (NEV2.1).
+- ✅ Stream 9 cluster fix for the seven terminal-injection issues
+  (#357, #365, #367, #373, #374, #380, #389): central
+  `crate::display::display_safe(&str) -> Cow<str>` helper added to
+  `src/display.rs`; called from every print site that surfaces an
+  AP-controlled SSID, an iface name from NM, or a persona display_name /
+  id from user-authored TOML. Unit-tested for ANSI CSI, BiDi overrides
+  (U+202E etc.), CR/LF, NUL.
+- ✅ GH#342: persona id is validated against `^[A-Za-z0-9_-]+$` plus
+  reserved-name rejection in `commands::persona::is_valid_persona_id`
+  before flowing into any path component on the `show`/`use`/`new`/`edit`
+  paths.
+- ✅ GH#358: `ipv6::write_sysctl` validates the caller-supplied `key`
+  against the static `SYSCTLS` allow-list and refuses values containing
+  control bytes / NUL / whitespace.
+- ✅ GH#360: `factory::EthtoolBin::permanent` no longer falls back to a
+  `$PATH`-resolved relative `ethtool` — it walks an absolute-path list
+  and refuses the call when none resolves.
+- ✅ GH#361: `persona edit` refuses to spawn `$EDITOR` when `$HOME` is
+  not `/root` (was warn-and-continue) and refuses `$EDITOR` / `$VISUAL`
+  values containing control bytes.
+- ✅ GH#362: NM dispatcher's 128-byte cap now uses a locale-invariant
+  byte-count via `LC_ALL=C wc -c` instead of bash's
+  locale-dependent `${#var}`.
+- ✅ GH#359: central iface validator landed at `crate::iface` (`validate`
+  + `is_valid` + typed `InvalidIface` error). Per-module duplicates
+  migrated where they were already in scope; remainder is a deferred
+  follow-up.
 
 **Acceptance:** `cargo audit`; manual review of every new validator; test
 for the polkit-missing path that asserts a clear error message.

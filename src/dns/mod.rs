@@ -160,8 +160,12 @@ impl RuntimeProbe for SystemProbe {
             Ok(o) => o,
             Err(_) => return false,
         };
-        let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        matches!(s.as_str(), "active" | "activating" | "reloading")
+        // R5: `systemctl is-active` only ever emits ASCII state words
+        // ("active", "inactive", "failed", ...). Compare directly against
+        // the byte slice; no need to allocate a `String` via
+        // `from_utf8_lossy().to_string()` for a 6-byte token.
+        let trimmed = out.stdout.trim_ascii();
+        matches!(trimmed, b"active" | b"activating" | b"reloading")
     }
 
     fn process_is_running(&self, name: &str) -> bool {
@@ -430,6 +434,14 @@ fn check_other_resolvers<P: RuntimeProbe>(paths: &Paths, probe: &P) -> Option<De
     None
 }
 
+// Roadmap Stream 7 / E10 audit: every `.unwrap()` and `.expect()` in
+// `src/dns/mod.rs` lives inside this `#[cfg(test)]` module (or its
+// `pub mod tempdir` test helper). None are reachable from the production
+// `detect_defer*` / `parse_ss_for_foreign_listener` paths above. The
+// `tempdir::TempRoot::new()` helper is test-only and is not re-exported
+// outside `cfg(test)`, so a `getrandom` / `create_dir_all` failure can
+// only fail tests — never a production caller. No prod-vs-test sharing
+// exists today; this audit is the documented cross-check.
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -32,6 +32,7 @@ use serde::Serialize;
 
 use crate::commands::status as status_cmd;
 use crate::config::Config;
+use crate::display::display_safe;
 use crate::exit;
 use crate::mac::Mac;
 use crate::mac::oui::{APPLE, DELL, INTEL, OuiPrefix, SAMSUNG};
@@ -715,9 +716,18 @@ fn format_network_label(net: &NetworkBlock) -> String {
         .as_deref()
         .map(|c| format!(", {c}"))
         .unwrap_or_default();
+    // Issues #357/#365/#367: SSID and iface come from NM, which surfaces
+    // AP-controlled bytes for the SSID and kernel-supplied bytes for
+    // iface. Sanitize for the human-rendered surface; the JSON path
+    // (build_report) keeps the raw bytes so tooling sees the underlying
+    // value verbatim.
+    let iface = display_safe(&net.iface);
     match &net.ssid {
-        Some(ssid) => format!("{} \u{2192} {ssid} ({kind_label}{chip})", net.iface),
-        None => format!("{} ({kind_label}{chip})", net.iface),
+        Some(ssid) => {
+            let ssid = display_safe(ssid);
+            format!("{iface} \u{2192} {ssid} ({kind_label}{chip})")
+        }
+        None => format!("{iface} ({kind_label}{chip})"),
     }
 }
 

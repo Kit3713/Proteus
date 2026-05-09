@@ -43,7 +43,15 @@ impl ByteSuffixPattern {
                  use a single canonical form (aa:bb:cc, aa-bb-cc, or aabbcc)"
             );
         }
-        let cleaned: String = s
+        // GH#340: parse character-by-character so multibyte input
+        // (e.g. `"é:23:xx"`) errors instead of panicking inside the
+        // byte-indexed slice that the previous version used. The same
+        // panic class Stream 2 fixed for `is_valid_per_ssid_duration`
+        // — a `&str[i..j]` slice is illegal when `i` or `j` falls inside
+        // a multibyte char. The fix here is to gather the cleaned
+        // characters into a `Vec<char>` (so we know the count without
+        // worrying about byte boundaries) and read from the vec.
+        let cleaned: Vec<char> = s
             .chars()
             .filter(|c| !matches!(c, ':' | '-' | ' '))
             .collect();
@@ -55,12 +63,21 @@ impl ByteSuffixPattern {
         }
         let mut bytes: [Option<u8>; 3] = [None, None, None];
         for i in 0..3 {
-            let pair = &cleaned[i * 2..i * 2 + 2];
-            if pair.eq_ignore_ascii_case("xx") {
+            let c0 = cleaned[i * 2];
+            let c1 = cleaned[i * 2 + 1];
+            // Accept the literal `xx` (case-insensitive) as a "roll this
+            // byte" marker. Anything else must be two ASCII hex digits.
+            if (c0 == 'x' || c0 == 'X') && (c1 == 'x' || c1 == 'X') {
                 bytes[i] = None;
                 continue;
             }
-            let v = u8::from_str_radix(pair, 16)
+            // Multibyte input falls through here with non-ASCII chars
+            // that `from_str_radix` will reject — surfacing as a clean
+            // error rather than the byte-slice panic. Build the pair
+            // back into a String so the parser sees the canonical
+            // 2-char hex representation.
+            let pair: String = [c0, c1].iter().collect();
+            let v = u8::from_str_radix(&pair, 16)
                 .map_err(|_| anyhow!("mac_byte_pattern '{s}' has non-hex byte '{pair}'"))?;
             bytes[i] = Some(v);
         }
@@ -310,10 +327,22 @@ pub fn generate_with_probe<P: Probe + ?Sized>(
                     },
                 });
                 consecutive_collisions += 1;
-                if consecutive_collisions >= COLLISIONS_BEFORE_OUI_FALLBACK && opts.pool.len() > 1 {
+                if consecutive_collisions >= COLLISIONS_BEFORE_OUI_FALLBACK {
+                    // NM2.1 (high): drop the `pool.len() > 1` guard so a
+                    // single-token persona pool (`oui_pool = ["apple"]`)
+                    // also resets `consecutive_collisions` on every
+                    // adaptive-backoff threshold. Without this reset, a
+                    // sustained collision rate burned the full 64-attempt
+                    // budget on the same token and surfaced as a
+                    // generator failure under live conditions. With a
+                    // single-token pool the cursor wrap is a no-op
+                    // (`(0 + 1) % 1 == 0`) but the counter reset still
+                    // clears the budget so the loop can keep rolling
+                    // fresh entropy on the same OUI.
                     tracing::warn!(
                         token = %token,
                         next_token = %opts.pool[(token_cursor + 1) % opts.pool.len()],
+                        pool_len = opts.pool.len(),
                         "{COLLISIONS_BEFORE_OUI_FALLBACK} consecutive ARP collisions on token; \
                          advancing to next OUI in persona pool"
                     );
@@ -354,12 +383,16 @@ pub fn generate_with_probe<P: Probe + ?Sized>(
                         },
                     });
                     consecutive_collisions += 1;
-                    if consecutive_collisions >= COLLISIONS_BEFORE_OUI_FALLBACK
-                        && opts.pool.len() > 1
-                    {
+                    if consecutive_collisions >= COLLISIONS_BEFORE_OUI_FALLBACK {
+                        // NM2.1: same guard removal as the ARP branch
+                        // above. Single-token pools were stalling the
+                        // events daemon under sustained collision
+                        // because the consecutive-collisions counter
+                        // never got reset.
                         tracing::warn!(
                             token = %token,
                             next_token = %opts.pool[(token_cursor + 1) % opts.pool.len()],
+                            pool_len = opts.pool.len(),
                             "{COLLISIONS_BEFORE_OUI_FALLBACK} consecutive ND collisions; \
                              advancing to next OUI in persona pool"
                         );
@@ -414,6 +447,16 @@ pub fn generate_with_probe<P: Probe + ?Sized>(
 /// roll fresh from `getrandom`. Returns `Ok(None)` when entropy
 /// succeeds but the construction step is skipped (currently never —
 /// kept as the integration hook for future LAA quirks).
+///
+/// **Postcondition (NM2.5):** the returned MAC is *not* validated as
+/// assignable. The caller MUST call [`Mac::validate_assignable`] before
+/// surfacing the value or writing it to the backend. Both production
+/// callers in this file (`generate` and `generate_with_probe`) do so;
+/// the contract is documented here so a future caller can't silently
+/// skip the gate. The reason validation lives at the call site rather
+/// than here: the loop wants to *observe* a validation rejection (it
+/// records the rejection reason in `attempts` and re-rolls) rather
+/// than treating it as a generator failure.
 fn generate_for_vendor(vendor: Vendor, suffix: &ByteSuffixPattern) -> Result<Option<Mac>> {
     let mac = match vendor.prefixes() {
         Some(prefixes) => {
@@ -885,6 +928,43 @@ mod tests {
                 r.is_err(),
                 "mixed-separator pattern '{s}' must be rejected, got {:?}",
                 r
+            );
+        }
+    }
+
+    /// GH#340: `ByteSuffixPattern::parse` previously panicked on
+    /// multibyte input because it did byte-indexed slicing on a
+    /// `String` whose `len()` was the byte length, not the char
+    /// count. Stream 2 fixed the same panic class for
+    /// `is_valid_per_ssid_duration`; this is the mirror fix in
+    /// `src/mac/generator.rs`. The new parser reads one `char` at a
+    /// time and surfaces a clean error.
+    #[test]
+    fn byte_pattern_multibyte_input_errors_without_panic() {
+        // Each of these used to land in the `&cleaned[i*2..i*2+2]`
+        // panic. Now they bail with a structured error.
+        for input in [
+            "é:23:xx",   // multibyte char in the first byte slot
+            "01:é2:xx",  // multibyte char straddles a slot boundary
+            "🦀a:bb:cc", // emoji char is 4 bytes, would have bit-mangled
+            "00:00:0🦀", // multibyte at the tail
+            "x€:00:00",  // 3-byte char inside the `xx` literal slot
+        ] {
+            let r = ByteSuffixPattern::parse(input);
+            assert!(r.is_err(), "expected {input:?} to error cleanly");
+        }
+    }
+
+    /// GH#340 mirror: ASCII paths the new parser must continue to
+    /// accept exactly as before. Pin the canonical shapes so the
+    /// regression test above doesn't accidentally tighten the
+    /// accept set.
+    #[test]
+    fn byte_pattern_accepts_canonical_shapes_post_multibyte_fix() {
+        for input in ["xx:xx:xx", "01:23:xx", "AA-BB-CC", "deadbe", "00 00 00"] {
+            assert!(
+                ByteSuffixPattern::parse(input).is_ok(),
+                "expected {input:?} to parse"
             );
         }
     }

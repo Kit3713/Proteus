@@ -529,12 +529,27 @@ const MAX_TRACKED_IFACES: usize = 32;
 
 #[derive(Debug, Default)]
 struct FlapTable {
-    /// `iface → (last_touched, vec of (instant, up_after_change))`.
-    /// `last_touched` is the most recent `record` call for this
-    /// iface and drives both the windowed prune and the LRU
+    /// `iface → (last_touched, vec of (instant, up_after_change),
+    /// last_fired)`. `last_touched` is the most recent `record` call
+    /// for this iface and drives both the windowed prune and the LRU
     /// eviction. The transition vector itself is trimmed to the
-    /// configured window on every update.
-    inner: HashMap<String, (Instant, Vec<(Instant, bool)>)>,
+    /// configured window on every update. `last_fired` is N8: the
+    /// debounce timestamp — once a flap fires for an iface, the
+    /// detector refuses to fire again for that iface until the
+    /// debounce budget elapses, even if the noisy AP keeps thrashing
+    /// the link.
+    inner: HashMap<String, FlapEntry>,
+}
+
+#[derive(Debug, Clone)]
+struct FlapEntry {
+    last_touched: Instant,
+    transitions: Vec<(Instant, bool)>,
+    /// N8: last time a `LinkFlap` fired for this iface. `None` until
+    /// the first fire. Used to suppress repeat fires inside the same
+    /// detection window — a hostile (or just badly-flapping) AP
+    /// otherwise burns the rate-limiter's budget on one iface.
+    last_fired: Option<Instant>,
 }
 
 impl FlapTable {
@@ -545,7 +560,7 @@ impl FlapTable {
         // load-bearing eviction policy: the typical case (one or two
         // active interfaces, no spam) keeps memory near zero.
         let cutoff = now.checked_sub(window).unwrap_or(now);
-        self.inner.retain(|_, (touched, _)| *touched >= cutoff);
+        self.inner.retain(|_, e| e.last_touched >= cutoff);
         // Step 2: if we're still at the cap, evict the
         // least-recently-touched entry. The cap keeps memory bounded
         // even under a hostile "fresh iface every event" pattern.
@@ -553,33 +568,51 @@ impl FlapTable {
             if let Some(oldest_key) = self
                 .inner
                 .iter()
-                .min_by_key(|(_, (touched, _))| *touched)
+                .min_by_key(|(_, e)| e.last_touched)
                 .map(|(k, _)| k.clone())
             {
                 self.inner.remove(&oldest_key);
             }
         }
-        let slot = self
+        let entry = self
             .inner
             .entry(iface.to_string())
-            .or_insert_with(|| (now, Vec::new()));
-        slot.0 = now;
-        let entry = &mut slot.1;
+            .or_insert_with(|| FlapEntry {
+                last_touched: now,
+                transitions: Vec::new(),
+                last_fired: None,
+            });
+        entry.last_touched = now;
         // Trim entries outside the window so the ring stays small.
-        entry.retain(|(t, _)| *t >= cutoff);
+        entry.transitions.retain(|(t, _)| *t >= cutoff);
         // Coalesce: if the most recent record already matches `is_up`,
         // the kernel sometimes emits duplicate RTM_NEWLINK in a row;
         // dropping the dup keeps the count honest.
-        if entry.last().map(|(_, u)| *u) == Some(is_up) {
+        if entry.transitions.last().map(|(_, u)| *u) == Some(is_up) {
             return false;
         }
-        entry.push((now, is_up));
+        entry.transitions.push((now, is_up));
         // Detect down→up→down→up: that's two "up" transitions in the
         // window. The simplest way to count is: among the trimmed
         // entries, how many have `is_up == true`? A standard fresh
         // bring-up is one. A flap is two.
-        let ups = entry.iter().filter(|(_, u)| *u).count();
-        ups >= 2
+        let ups = entry.transitions.iter().filter(|(_, u)| *u).count();
+        if ups < 2 {
+            return false;
+        }
+        // N8: per-trigger debounce. If we fired for this iface within
+        // the current window, suppress this flap. The detector still
+        // tracks the transitions (so the next out-of-window flap fires
+        // immediately) but the registry is spared the duplicate
+        // trigger — saving its rate-limit budget for genuinely
+        // distinct flap events on other ifaces.
+        if let Some(prev) = entry.last_fired
+            && now.duration_since(prev) < window
+        {
+            return false;
+        }
+        entry.last_fired = Some(now);
+        true
     }
 
     /// Test/inspection helper: number of distinct interfaces being
@@ -704,6 +737,54 @@ mod tests {
         src.push("wlan0", true, t0 + Duration::from_millis(200));
         src.start(&reg).unwrap();
         assert_eq!(n.load(Ordering::SeqCst), 1);
+    }
+
+    /// N8: per-iface debounce. After a flap fires for `wlan0`, a
+    /// subsequent down→up sequence inside the same window must not
+    /// fire again. Pin the FlapTable directly rather than driving
+    /// through the mock source — the mock has its own
+    /// `already_fired_for` set that suppresses repeats too, but the
+    /// detector itself must own the debounce so the production
+    /// netlink consumer (which doesn't carry that set) gets the same
+    /// guarantee.
+    #[test]
+    fn flap_table_debounces_repeat_flaps_within_window() {
+        let mut table = FlapTable::default();
+        let window = Duration::from_secs(10);
+        let t0 = Instant::now();
+        // First flap: down, up, down, up → fires.
+        assert!(!table.record("wlan0", t0, false, window));
+        assert!(!table.record("wlan0", t0 + Duration::from_millis(50), true, window));
+        assert!(!table.record("wlan0", t0 + Duration::from_millis(100), false, window));
+        assert!(table.record("wlan0", t0 + Duration::from_millis(200), true, window));
+        // Second flap inside the same window: down, up. Without N8
+        // debounce this would have fired again because the transition
+        // count is still ≥2. With debounce: suppressed.
+        assert!(!table.record("wlan0", t0 + Duration::from_millis(300), false, window));
+        assert!(!table.record("wlan0", t0 + Duration::from_millis(400), true, window));
+    }
+
+    /// N8 mirror: a flap that happens *after* the debounce window
+    /// elapses fires again. Pins the bound — the debounce is one-shot
+    /// per-window, not a permanent silence.
+    #[test]
+    fn flap_table_fires_again_after_debounce_window_elapses() {
+        let mut table = FlapTable::default();
+        let window = Duration::from_secs(2);
+        let t0 = Instant::now();
+        // First flap inside the small 2 s window.
+        let _ = table.record("wlan0", t0, false, window);
+        let _ = table.record("wlan0", t0 + Duration::from_millis(100), true, window);
+        let _ = table.record("wlan0", t0 + Duration::from_millis(200), false, window);
+        assert!(table.record("wlan0", t0 + Duration::from_millis(300), true, window));
+        // Wait past the window. Eviction also kicks in here — the
+        // entries before `cutoff` are pruned, but the iface re-entry
+        // gets a fresh `last_fired = None` so the next flap fires.
+        let later = t0 + window + Duration::from_secs(5);
+        let _ = table.record("wlan0", later, false, window);
+        let _ = table.record("wlan0", later + Duration::from_millis(50), true, window);
+        let _ = table.record("wlan0", later + Duration::from_millis(100), false, window);
+        assert!(table.record("wlan0", later + Duration::from_millis(200), true, window));
     }
 
     /// A single down→up is just a normal bring-up — no flap.

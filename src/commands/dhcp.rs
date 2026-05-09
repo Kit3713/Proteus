@@ -243,7 +243,12 @@ pub fn renew(iface: Option<&str>, yes: bool, state_path: Option<&Path>) -> Resul
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct RenewOutcome {
     iface: String,
-    method: String,
+    /// R7: this is one of a small fixed set ("reapply",
+    /// "disconnect+activate", "skipped", "failed"); store as `&'static
+    /// str` so the per-iface loop allocates nothing for the method
+    /// field. The `note` field stays `Option<String>` because the
+    /// failure path formats the underlying error.
+    method: &'static str,
     note: Option<String>,
 }
 
@@ -265,22 +270,22 @@ pub(crate) async fn do_renew_with_backend(
         let entry = match backend.renew_lease(&dev).await {
             Ok(BackendRenewOutcome::Reapplied) => RenewOutcome {
                 iface: dev.iface.clone(),
-                method: "reapply".into(),
+                method: "reapply",
                 note: None,
             },
             Ok(BackendRenewOutcome::DisconnectActivated) => RenewOutcome {
                 iface: dev.iface.clone(),
-                method: "disconnect+activate".into(),
+                method: "disconnect+activate",
                 note: Some("Reapply unsupported; cycled connection".into()),
             },
             Ok(BackendRenewOutcome::NoActiveConnection) => RenewOutcome {
                 iface: dev.iface.clone(),
-                method: "skipped".into(),
+                method: "skipped",
                 note: Some("no active connection".into()),
             },
             Err(e) => RenewOutcome {
                 iface: dev.iface.clone(),
-                method: "failed".into(),
+                method: "failed",
                 note: Some(format!("{e:#}")),
             },
         };
@@ -313,7 +318,7 @@ pub(crate) async fn renew_after_apply(backend: &dyn NetworkBackend) -> Result<Re
     let outcomes = do_renew_with_backend(backend, None).await?;
     let mut t = RenewTally::default();
     for o in &outcomes {
-        match o.method.as_str() {
+        match o.method {
             "reapply" => t.reapplied += 1,
             "disconnect+activate" => t.cycled += 1,
             "skipped" => t.skipped_no_active += 1,
@@ -353,7 +358,7 @@ fn device_matches(dev: &DeviceInfo, iface_filter: Option<&str>) -> bool {
 
 fn print_renew(outcomes: &[RenewOutcome]) {
     for o in outcomes {
-        match (o.method.as_str(), &o.note) {
+        match (o.method, &o.note) {
             ("reapply", _) => {
                 // Lease number is a placeholder; NM doesn't expose a
                 // monotonic counter and the IP-on-the-wire is the
@@ -395,6 +400,15 @@ struct RevertOutcome {
 }
 
 async fn gather_status() -> Result<StatusReport> {
+    // R3: a single `zbus::Connection::system()` is opened here and reused
+    // across `SettingsProxy::new`, `list_connections`, and every per-path
+    // `get_settings` call below. zbus connections are expensive (PolicyKit
+    // round-trip + auth) so the inner `for path` loop must not call
+    // `Connection::system()` per iteration. The same pattern holds in
+    // `do_apply` and `do_revert`. The backend-trait renew path is the
+    // outlier — it routes through `NmBackend::connect()` per-call today;
+    // NBE.1 (in `src/backend/nm.rs`) is the structural fix, deferred to
+    // avoid Stream 4 conflict.
     let conn = match zbus::Connection::system().await {
         Ok(c) => c,
         Err(_) => {

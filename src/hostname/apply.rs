@@ -6,12 +6,46 @@
 //! (`linksys-7a3f`) disagree with the pretty hostname (`Chris's Laptop`) on
 //! the same boot. Originals are captured into `state.json` on first apply and
 //! never re-captured, matching the sacred-original-cache invariant.
+//!
+//! NEV2.3: every DBus call to `org.freedesktop.hostname1` is wrapped in
+//! a 5-second `tokio::time::timeout`. A stalled `systemd-hostnamed`
+//! used to pin the NM dispatcher synchronously — the dispatcher is the
+//! event-driven hot path, so any single hung DBus call there starved
+//! the whole rotate machinery. With the timeout, a wedged hostnamed
+//! surfaces as `TimedOut` (a recoverable error) and the orchestrator
+//! moves on to the next component.
 
-use anyhow::{Context, Result};
+use std::time::Duration;
+
+use anyhow::{Context, Result, anyhow};
 use serde::Serialize;
 
 use super::dbus::{self, HostnameSnapshot};
 use crate::state::{HostnameOriginals, State};
+
+/// NEV2.3: per-call DBus timeout for hostnamed. The dispatcher is the
+/// hot path that benefits most; 5s is generous enough that any healthy
+/// hostnamed responds well under it, and short enough that a hang
+/// doesn't pin a rotate cycle past its 10s timer budget.
+const HOSTNAMED_DBUS_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Wrap a hostnamed DBus call in `tokio::time::timeout`. Surfaces
+/// `TimedOut` as a structured error rather than letting the call block
+/// indefinitely. The `op` label is used in the error message so the
+/// operator can tell which of the three setters wedged.
+async fn with_hostnamed_timeout<T, F>(op: &str, fut: F) -> Result<T>
+where
+    F: std::future::Future<Output = zbus::Result<T>>,
+{
+    match tokio::time::timeout(HOSTNAMED_DBUS_TIMEOUT, fut).await {
+        Ok(Ok(v)) => Ok(v),
+        Ok(Err(e)) => Err(anyhow!(e)).with_context(|| format!("hostnamed: {op}")),
+        Err(_elapsed) => Err(anyhow!(
+            "hostnamed: {op} timed out after {}s — systemd-hostnamed may be wedged",
+            HOSTNAMED_DBUS_TIMEOUT.as_secs()
+        )),
+    }
+}
 
 /// Outcome of a single `apply` run, suitable for human and JSON rendering.
 /// `previous`/`current` reuse `HostnameOriginals` because the on-disk shape
@@ -58,18 +92,11 @@ pub async fn mutate_hostname(
 
     let proxy = dbus::proxy().await?;
 
-    proxy
-        .set_static_hostname(name, false)
-        .await
-        .context("setting static hostname via hostname1.SetStaticHostname")?;
-    proxy
-        .set_pretty_hostname(name, false)
-        .await
-        .context("setting pretty hostname via hostname1.SetPrettyHostname")?;
-    proxy
-        .set_hostname(name, false)
-        .await
-        .context("setting transient hostname via hostname1.SetHostname")?;
+    // NEV2.3: each DBus setter is wrapped in a 5s timeout so a wedged
+    // hostnamed surfaces as TimedOut rather than blocking the dispatcher.
+    with_hostnamed_timeout("SetStaticHostname", proxy.set_static_hostname(name, false)).await?;
+    with_hostnamed_timeout("SetPrettyHostname", proxy.set_pretty_hostname(name, false)).await?;
+    with_hostnamed_timeout("SetHostname", proxy.set_hostname(name, false)).await?;
 
     let after = dbus::read_snapshot(&proxy).await;
 
@@ -90,23 +117,24 @@ pub async fn revert_hostname(state: &State) -> Result<RevertOutcome> {
 
     let cached = state.originals.hostname.is_some();
     let (kernel, pretty, transient) = revert_targets(state.originals.hostname.as_ref());
+    // NEV2.3: same 5s timeout as the apply path so revert can't
+    // deadlock against a wedged hostnamed.
     if let Some(k) = kernel {
-        proxy
-            .set_static_hostname(k, false)
-            .await
-            .context("restoring static hostname")?;
+        with_hostnamed_timeout(
+            "SetStaticHostname (revert)",
+            proxy.set_static_hostname(k, false),
+        )
+        .await?;
     }
     if let Some(p) = pretty {
-        proxy
-            .set_pretty_hostname(p, false)
-            .await
-            .context("restoring pretty hostname")?;
+        with_hostnamed_timeout(
+            "SetPrettyHostname (revert)",
+            proxy.set_pretty_hostname(p, false),
+        )
+        .await?;
     }
     if let Some(t) = transient {
-        proxy
-            .set_hostname(t, false)
-            .await
-            .context("restoring transient hostname")?;
+        with_hostnamed_timeout("SetHostname (revert)", proxy.set_hostname(t, false)).await?;
     }
 
     let after = dbus::read_snapshot(&proxy).await;

@@ -23,7 +23,7 @@
 //! rendered ruleset. Running apply ten times converges to the same state as
 //! running it once.
 
-use std::io::Write;
+use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result, anyhow};
@@ -255,19 +255,52 @@ pub enum TableProbe {
 /// Run `nft list table inet proteus` and classify the outcome.
 ///
 /// Returns `Err(_)` only if `nft` itself fails for an unexpected reason.
+///
+/// R2: stream stdout line-by-line into the destination `String` rather
+/// than letting `.output()` buffer the entire ruleset into a `Vec<u8>`
+/// and then re-allocating it as a `String`. For typical hosts the table
+/// is small (a few KiB) but a host with many chains/maps can produce
+/// hundreds of KiB; the streaming path keeps a single growing `String`
+/// without the duplicate-allocation hop.
 pub fn list_our_table() -> Result<TableProbe> {
-    let output = Command::new("nft")
+    let mut child = Command::new("nft")
         .args(["list", "table", TABLE_FAMILY, TABLE_NAME])
-        .output()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .context("invoking nft list")?;
-    if output.status.success() {
-        let s = String::from_utf8_lossy(&output.stdout).into_owned();
-        if s.trim().is_empty() {
+
+    // Stream stdout into a single `String` — line buffer keeps memory
+    // pressure low on large tables.
+    let mut stdout_str = String::new();
+    if let Some(out) = child.stdout.take() {
+        let mut rdr = BufReader::new(out);
+        let mut line = String::new();
+        loop {
+            line.clear();
+            let n = rdr
+                .read_line(&mut line)
+                .context("reading nft list stdout")?;
+            if n == 0 {
+                break;
+            }
+            stdout_str.push_str(&line);
+        }
+    }
+    // stderr is small (one or two lines on the failure modes we
+    // pattern-match) — read it whole.
+    let mut stderr_buf = Vec::new();
+    if let Some(mut err) = child.stderr.take() {
+        let _ = err.read_to_end(&mut stderr_buf);
+    }
+    let status = child.wait().context("waiting on nft list")?;
+    if status.success() {
+        if stdout_str.trim().is_empty() {
             return Ok(TableProbe::Absent);
         }
-        return Ok(TableProbe::Present(s));
+        return Ok(TableProbe::Present(stdout_str));
     }
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stderr = String::from_utf8_lossy(&stderr_buf);
     // The "No such file or directory" message is what nft prints when the
     // table is absent. Not an error condition for us.
     if stderr.contains("No such file") || stderr.contains("does not exist") {
@@ -282,7 +315,7 @@ pub fn list_our_table() -> Result<TableProbe> {
         "nft list table {} {} exited {}: {}",
         TABLE_FAMILY,
         TABLE_NAME,
-        output.status,
+        status,
         stderr.trim()
     ))
 }
@@ -329,14 +362,23 @@ fn run_nft_script(script: &str) -> Result<()> {
         .stderr(Stdio::piped())
         .spawn()
         .context("spawning nft -f -")?;
+    // R1: take + drop stdin BEFORE `wait_with_output` so `nft` sees EOF
+    // promptly and the writer fd is released even if the OS scheduler
+    // delays the child reading the pipe. `wait_with_output` would also
+    // drop stdin internally, but only after the stdout/stderr reader
+    // threads spin up — taking it ourselves keeps the close path tight
+    // and matches the explicit "close-then-wait" subprocess hygiene
+    // pattern we use in tests.
     {
-        let stdin = child
+        let mut stdin = child
             .stdin
-            .as_mut()
+            .take()
             .ok_or_else(|| anyhow!("could not open nft stdin"))?;
         stdin
             .write_all(script.as_bytes())
             .context("writing ruleset to nft stdin")?;
+        // explicit drop closes the pipe; `nft` now sees EOF and proceeds.
+        drop(stdin);
     }
     let output = child.wait_with_output().context("waiting on nft")?;
     if output.status.success() {

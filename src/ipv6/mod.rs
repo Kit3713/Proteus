@@ -155,11 +155,58 @@ pub fn read_snapshot(root_prefix: Option<&Path>, iface: &str) -> InterfaceSnapsh
 /// Used by `apply` and `revert` to push settings live without waiting for
 /// `sysctl --system` to pick up the drop-in. Validates `iface` first so a
 /// caller-supplied bad name can never traverse outside the per-iface tree.
+///
+/// GH#358 — `key` and `value` are also caller-supplied; validate both:
+///
+/// * `key` is restricted to the known [`SYSCTLS`] set so a caller can't
+///   open an arbitrary file under the per-iface tree (e.g. `forwarding`,
+///   `accept_ra`) by passing a free-form name.
+/// * `value` is restricted to printable ASCII without whitespace beyond a
+///   single line — kernel sysctl values are integers or short tokens, so
+///   anything containing newlines / NUL / control bytes is malformed by
+///   construction. This is defense-in-depth against a swapped state
+///   record carrying attacker-crafted bytes.
 pub fn write_sysctl(root_prefix: Option<&Path>, iface: &str, key: &str, value: &str) -> Result<()> {
     validate_iface_name(iface)?;
+    validate_sysctl_key(key)?;
+    validate_sysctl_value(value)?;
     let path = sysctl_path(root_prefix, iface, key);
     std::fs::write(&path, format!("{value}\n"))
         .with_context(|| format!("writing {} = {}", path.display(), value))
+}
+
+/// GH#358: caller-supplied key must match one of the keys in the static
+/// `SYSCTLS` table. The kernel exposes far more knobs under
+/// `/proc/sys/net/ipv6/conf/<iface>/` than Proteus manages; allowing a
+/// free-form key would let a swapped state record (or a future caller
+/// regression) write to e.g. `forwarding` and break the host's network.
+fn validate_sysctl_key(key: &str) -> Result<()> {
+    if SYSCTLS.iter().any(|s| s.key == key) {
+        Ok(())
+    } else {
+        Err(anyhow!(
+            "sysctl key '{key}' is not in the proteus-managed set"
+        ))
+    }
+}
+
+/// GH#358: kernel sysctls under net.ipv6.conf.* take small integer or
+/// short-token values. Reject NUL, control bytes, and any embedded
+/// whitespace beyond a leading/trailing trim. The cap of 64 chars is
+/// well above any real value (`addr_gen_mode` etc. are single digits).
+fn validate_sysctl_value(value: &str) -> Result<()> {
+    if value.is_empty() {
+        return Err(anyhow!("sysctl value is empty"));
+    }
+    if value.len() > 64 {
+        return Err(anyhow!("sysctl value is {} bytes (max 64)", value.len()));
+    }
+    for b in value.bytes() {
+        if b == 0 || b < 0x20 || b == 0x7f || b == b' ' || b == b'\t' || b == b'\n' || b == b'\r' {
+            return Err(anyhow!("sysctl value contains illegal byte 0x{b:02x}"));
+        }
+    }
+    Ok(())
 }
 
 /// Defense-in-depth: refuse interface names the kernel itself wouldn't
@@ -308,6 +355,40 @@ mod tests {
         std::fs::create_dir_all(&tmp).unwrap();
         let res = write_sysctl(Some(&tmp), "../../etc/shadow", "use_tempaddr", "2");
         assert!(res.is_err(), "expected validation error");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn write_sysctl_refuses_unknown_key() {
+        // GH#358: a caller can't open an arbitrary sysctl file under
+        // the per-iface tree by passing a free-form key name.
+        let tmp =
+            std::env::temp_dir().join(format!("proteus-ipv6-keyguard-{}", std::process::id()));
+        std::fs::create_dir_all(tmp.join("proc/sys/net/ipv6/conf/wlan0")).unwrap();
+        let res = write_sysctl(Some(&tmp), "wlan0", "forwarding", "1");
+        assert!(res.is_err(), "non-managed key must be refused");
+        // Sanity: a managed key still works (file may not be there to
+        // write to in this synthetic tree, but the validation passes).
+        let res2 = write_sysctl(Some(&tmp), "wlan0", "use_tempaddr", "2");
+        // Either Ok (file exists) or an IO error from the std::fs::write —
+        // never the validation error.
+        if let Err(e) = res2 {
+            assert!(!format!("{e:#}").contains("not in the proteus-managed set"));
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn write_sysctl_refuses_value_with_control_bytes() {
+        // GH#358: a swapped state record carrying CR/LF or NUL must not
+        // be written verbatim into /proc/sys.
+        let tmp =
+            std::env::temp_dir().join(format!("proteus-ipv6-valguard-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        for bad in ["", "2\n", "2 3", "\x002", "ab cd"] {
+            let res = write_sysctl(Some(&tmp), "wlan0", "use_tempaddr", bad);
+            assert!(res.is_err(), "value {bad:?} must be refused");
+        }
         let _ = std::fs::remove_dir_all(&tmp);
     }
 

@@ -8,6 +8,7 @@ use serde::Serialize;
 
 use crate::backend::{BackendDevice, BackendKind, ConnectionRef, NetworkBackend};
 use crate::config::Config;
+use crate::display::display_safe;
 use crate::exit;
 use crate::mac::generator::{
     self, ByteSuffixPattern, CandidateAttempt, GenerateOptions, ProbeOptions, RejectionReason,
@@ -511,15 +512,28 @@ fn persona_shape_for(
 }
 
 fn print_report(report: &RotateReport, explain: bool) {
+    // Issue #367 (terminal-injection cluster): iface names come from
+    // NetworkManager, which surfaces whatever the kernel reports — and on
+    // virtual ifaces, what the kernel reports may include attacker-shaped
+    // bytes (NM dispatcher driven by an SSID-derived connection name).
+    // Sanitize before echo. Connection ids come from NM settings, which a
+    // hostile profile push can populate; sanitize too.
     for r in &report.rotated {
         let prev = r.previous.as_deref().unwrap_or("?");
+        let iface_safe = display_safe(&r.iface);
         match &r.connection {
-            Some(id) => println!("rotated {} ({}): {} -> {}", r.iface, id, prev, r.new),
-            None => println!("rotated {}: {} -> {}", r.iface, prev, r.new),
+            Some(id) => println!(
+                "rotated {} ({}): {} -> {}",
+                iface_safe,
+                display_safe(id),
+                prev,
+                r.new
+            ),
+            None => println!("rotated {}: {} -> {}", iface_safe, prev, r.new),
         }
     }
     for s in &report.skipped {
-        println!("skipped {}: {}", s.iface, s.reason);
+        println!("skipped {}: {}", display_safe(&s.iface), s.reason);
     }
     if explain {
         // Persona banner: the operator wants to see which OUI pool was
@@ -602,13 +616,14 @@ pub fn run_if_needed(
     if let Some(p) = &policy
         && p.pin_mac.is_some()
     {
-        let iface_label = iface.unwrap_or("(no iface)");
+        // Issue #367: sanitize the dispatcher-supplied iface before echo.
+        let iface_label = display_safe(iface.unwrap_or("(no iface)"));
         if explain {
             // Issue #378: surface the policy that drove the skip so the
             // dispatcher's logger sees *why* this iface was excluded.
             println!(
                 "explain rotate-if-needed: ssid={} per-SSID pin_mac is set → skipping (no rotation)",
-                ssid.unwrap_or("(none)")
+                display_safe(ssid.unwrap_or("(none)"))
             );
         }
         println!("skipped {iface_label}: pinned by per-SSID policy");
@@ -685,6 +700,8 @@ pub fn run_if_needed(
     };
 
     use crate::backend::RotateOutcome;
+    // Issue #367 (terminal-injection cluster): iface from NM dispatcher.
+    let iface_name = display_safe(&iface_name);
     match outcome {
         RotateOutcome::Rotated { new_mac } => {
             println!("rotated {iface_name}: {new_mac}");
