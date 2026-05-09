@@ -248,7 +248,12 @@ async fn poll_state_property(
     mut stop_rx: tokio::sync::oneshot::Receiver<()>,
 ) {
     use std::time::Duration;
+    // GH#355: seed the edge detector with the first observed state so
+    // the daemon does not synthesize a spurious `ConnectionUp` for
+    // every device that happened to be `Activated` at daemon start.
+    // See `is_activation_edge` for the full discussion.
     let mut last: Option<u32> = None;
+    let mut seeded = false;
     loop {
         let state = match read_device_state(dev).await {
             Some(s) => s,
@@ -269,7 +274,7 @@ async fn poll_state_property(
             }
         };
         let prev = last.replace(state);
-        if state == NM_DEVICE_STATE_ACTIVATED && prev != Some(NM_DEVICE_STATE_ACTIVATED) {
+        if is_activation_edge(seeded, prev, state) {
             let iface = dev.interface().await.unwrap_or_default();
             // SSID resolution is best-effort — we shell out to
             // `/proc/net/wireless` only as a last resort because the
@@ -277,6 +282,7 @@ async fn poll_state_property(
             let ssid = read_active_ssid_via_proc(&iface);
             let _ = registry.fire(RotationTrigger::ConnectionUp { iface, ssid });
         }
+        seeded = true;
         if tokio::time::timeout(Duration::from_secs(2), &mut stop_rx)
             .await
             .is_ok()
@@ -284,6 +290,29 @@ async fn poll_state_property(
             return;
         }
     }
+}
+
+/// Pure edge-detector for the poll-state fallback. Returns `true`
+/// only for a *real* Activated edge — not the synthetic edge that
+/// shows up the first time the daemon observes an already-connected
+/// device.
+///
+/// GH#355: previously the loop body was
+/// `state == Activated && prev != Some(Activated)`. With
+/// `last: Option<u32> = None`, the very first poll on an
+/// already-Activated NIC fired a fake `ConnectionUp` because `prev`
+/// was `None` rather than `Some(Activated)`. The fix is to require
+/// the detector to have observed at least one prior reading before
+/// any edge is allowed to fire.
+///
+/// `seeded` is `false` on the first call (no prior reading yet),
+/// `true` thereafter. `prev` is the value `last` held *before* the
+/// current state was stored; `state` is the freshly-read value.
+pub(crate) fn is_activation_edge(seeded: bool, prev: Option<u32>, state: u32) -> bool {
+    if !seeded {
+        return false;
+    }
+    state == NM_DEVICE_STATE_ACTIVATED && prev != Some(NM_DEVICE_STATE_ACTIVATED)
 }
 
 /// Read `Device.State` over DBus. Returns `None` on transient errors
@@ -512,5 +541,67 @@ mod tests {
         let reg = EventRegistry::new();
         NmConnectionUpSource::new().start(&reg).unwrap();
         assert_eq!(reg.handler_count(), 0);
+    }
+
+    /// GH#355 regression: the very first poll of an already-Activated
+    /// device must NOT count as an activation edge. Previously the
+    /// daemon would fire a spurious `ConnectionUp` on every connected
+    /// NIC at startup, before any real network event had happened.
+    #[test]
+    fn gh355_first_poll_of_activated_device_does_not_fire() {
+        // Initial state: not seeded, prev = None, state = Activated.
+        assert!(!is_activation_edge(false, None, NM_DEVICE_STATE_ACTIVATED));
+    }
+
+    /// GH#355: the first poll of a non-Activated device also must
+    /// not fire — there's no edge to detect yet.
+    #[test]
+    fn gh355_first_poll_of_disconnected_device_does_not_fire() {
+        assert!(!is_activation_edge(false, None, 30));
+    }
+
+    /// Once seeded, a transition from anything-not-Activated into
+    /// Activated *is* a real edge and fires.
+    #[test]
+    fn gh355_real_transition_after_seeding_fires() {
+        // Seeded with state=30 (Disconnected), now state=100 (Activated).
+        assert!(is_activation_edge(
+            true,
+            Some(30),
+            NM_DEVICE_STATE_ACTIVATED
+        ));
+        // Seeded with state=50 (Config), now state=100 (Activated).
+        assert!(is_activation_edge(
+            true,
+            Some(50),
+            NM_DEVICE_STATE_ACTIVATED
+        ));
+        // Seeded with state=80 (IpCheck), now state=100 (Activated).
+        assert!(is_activation_edge(
+            true,
+            Some(80),
+            NM_DEVICE_STATE_ACTIVATED
+        ));
+    }
+
+    /// Activated → Activated holds the line — no edge.
+    #[test]
+    fn gh355_activated_to_activated_does_not_fire() {
+        assert!(!is_activation_edge(
+            true,
+            Some(NM_DEVICE_STATE_ACTIVATED),
+            NM_DEVICE_STATE_ACTIVATED
+        ));
+    }
+
+    /// Activated → Disconnected (e.g. a real disconnect) does not
+    /// fire `ConnectionUp` — that's only for the rising edge.
+    #[test]
+    fn gh355_falling_edge_does_not_fire_connection_up() {
+        assert!(!is_activation_edge(
+            true,
+            Some(NM_DEVICE_STATE_ACTIVATED),
+            30
+        ));
     }
 }
