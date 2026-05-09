@@ -161,13 +161,13 @@ flagged with "= ID"):
 | #389 | medium | 9 | new — BiDi override codepoints (U+202E etc.) pass `display_ssid` (mirror of #241/#224) |
 | #386 | medium | 1 | new — `proteus revert` ignores global `--state` flag; nested steps hardcode default |
 | #382 | medium | 2 | new — `iot-generic.toml` `oui_pool` has tokens `Vendor::from_pool_token` doesn't know — silent LAA degrade |
-| #381 | medium | 1 | new — `rotate-if-needed --state` silently ignored; backend hardcodes `/var/lib/proteus/state.json` |
+| #381 | medium | 1 | ✅ Wave 3 Group A — backend trait `rotate_if_needed` now takes `state_path: Option<&Path>`; cooldown read + inner rotate honour operator's `--state` |
 | #380 | medium | 9 | new — `persona list` prints unvalidated `display_name`/`notes` — terminal injection |
 | #379 | medium | 4 | new — `apply` not idempotent — `build_forbidden` always adds `current_mac` to forbidden set |
 | #374 | medium | 9 | new — `persona list` prints `display_name` byte-for-byte — ANSI/control/BiDi injection |
 | #373 | medium | 9 | new — `portal mark/unmark` print raw SSID via `println!` — same N-2 family, four sites |
 | #367 | medium | 9 | new — terminal-escape passthrough via raw `iface` echo in `rotate{,-if-needed}` (N-2 third site) |
-| #366 | medium | 4 | new — `state.managed.connections` updated *before* `set_cloned_mac` — failed rotation persists ghost MAC |
+| #366 | medium | 4 | ✅ Wave 3 Group A — `rotate_one` now reads connection metadata before the backend write but commits `state.managed.{connections,interfaces}` AFTER `set_cloned_mac` returns Ok |
 | #365 | medium | 9 | new — `proteus session` (and `portal list`) prints SSIDs/aliases verbatim — terminal injection |
 | #363 | medium | 5 | new — state-lock acquire chmods state-dir parent unconditionally (same family as #354) |
 | #362 | medium | 9 | new — NM dispatcher `validate_cli_value` 128-byte cap uses bash `${#val}` (char-count, locale-bypass) |
@@ -527,19 +527,30 @@ NBE.7, NBE.8, NBE.10, NTEST.2.
 - ⏳ Bluetooth name length: query adapter capabilities and cap BLE-only
   adapters at ~30 bytes; `warn!` if the configured alias would be truncated
   by the controller (NEV2.5).
-- ⏳ DHCP DUID/IAID asymmetry on rotate: document the tradeoff and add a
-  config knob to keep IAID persistent (or pin DUID + IAID derivation so the
-  asymmetry goes away). Today rotation breaks DHCPv6-only networks (NBE.3).
+- ✅ DHCP DUID/IAID asymmetry on rotate: documented the tradeoff and added
+  `[dhcp] keep_iaid_stable_across_rotation` so the operator can pin IAID to
+  NM's `"stable"` derivation (constant per-iface, DUID-derived) while DUID
+  itself still rotates. Default off — the historical both-rotate behaviour
+  for strongest unlinkability, opt-in for DHCPv6-only stable-pool networks
+  (NBE.3, Wave 3 Group A).
 - ⏳ Honor `[dhcp] suppress_vendor_class = true` over the persona's
   `vendor_class_identifier` write — user suppression should win (NBE.4).
-- ⏳ Extend the existing enterprise-Wi-Fi mock test to round-trip a
-  connection with `private-key-password` set; assert it's preserved
-  post-rotate (NBE.5).
-- ⏳ NM `Reapply` race: read the connection's current `version_id` and pass
-  it to `Reapply` so concurrent `nmcli connection modify` surfaces as a DBus
-  conflict instead of a silent stale-write (NBE.7).
-- ⏳ Resolve backend devices by interface name at every method call rather
-  than caching the NM Device object path at enumeration time (NBE.8).
+- ✅ Extended the enterprise-Wi-Fi mock test to round-trip a connection
+  with `private-key-password` set; new test pins that the EAP-TLS key
+  passphrase survives the merge-secrets path and that the merge does not
+  invent a `private-key-password` for PEAP-only profiles (NBE.5,
+  Wave 3 Group A).
+- ✅ NM `Reapply` race: `nm/dhcp.rs::renew_lease` now reads the
+  connection's `Settings.Connection.VersionId` (NM 1.20+) and passes it to
+  `Device.Reapply` so a concurrent `nmcli connection modify` surfaces as
+  a DBus version-mismatch error rather than a silent stale-write. Older NM
+  without the property falls back to the legacy `version=0` contract
+  (NBE.7, Wave 3 Group A).
+- ✅ Backend re-resolves NM device by iface name on every mutating call
+  (`set_cloned_mac`, `read_cloned_mac`, `renew_lease`) rather than trusting
+  the NM Device object path cached at `list_devices` time. Falls back to
+  the cached identifier when the iface lookup fails so the operator-error
+  path stays clean (NBE.8, Wave 3 Group A).
 - ⏳ `ethtool -P` parser: match against both `permanent address:` and
   `permanent mac address:` (Linux 6.3+ Intel iwlwifi variant). Add a
   fixture-based test (NBE.10) — relevant because incorrect parsing means
@@ -691,13 +702,16 @@ Stream 7's E10 audit).
 - ⏳ Drop redundant `lossy().into_owned()` on known-ASCII paths (R5).
 - ⏳ Subprocess fd-close audit comments (R8); shell-metacharacter validators
   on iface names (M3 — coordinate with Stream 9).
-- ⏳ Cache an `Arc<Connection>` on `NmBackend` so trait methods share a
+- ✅ Cache an `Arc<Connection>` on `NmBackend` so trait methods share a
   single `zbus::Connection::system()` per command invocation rather than
-  re-authenticating on every method call (NBE.1) — same family as R3 but
-  in a different file.
-- ⏳ Cache the last availability check on the backend struct so
-  `select_auto()` and `availability_matrix()` don't double-probe networkd
-  via `/run/systemd/netif` syscalls (NBE.2).
+  re-authenticating on every method call. The backend now lazy-initialises
+  one bus connection on first use and clones the Arc on every subsequent
+  call — same family as R3 (NBE.1, Wave 3 Group A).
+- ✅ Cache the last availability check on the backend struct (2 s TTL) so
+  `select_auto()` and `availability_matrix()` don't double-probe via
+  back-to-back `/run/NetworkManager` checks. The TTL is short enough that
+  an operator who restarts NM mid-command sees the new state (NBE.2,
+  Wave 3 Group A).
 
 **Acceptance:** `bench/` micro-benchmarks for nft-table parse and wiki search
 (p50 / p99 budget); soak test for DHCP fd accumulation.
@@ -726,10 +740,17 @@ L‑3 (residual), audit I‑1, NEV2.1.
 - ⏳ Restrict polkit policy to `unix-group:wheel` / `sudo` and add a runtime
   check in `proteus doctor` (S7, B15 — Stream 3 owns the file, Stream 9
   owns the policy text).
-- ⏳ Expand the safety comment on `OwnedFd::from_raw_fd` (S9); strict MAC
-  separator parser (S10).
-- ⏳ Sanitize NM dict values before tracing (S8) — coordinate with Stream
-  4's error-context preservation (N4).
+- ⏳ Expand the safety comment on `OwnedFd::from_raw_fd` (S9).
+- ✅ Strict MAC separator parser: `Mac::from_str` and
+  `ByteSuffixPattern::parse` reject mixed `:`/`-` separators in the same
+  input (e.g. `aa:bb-cc:dd-ee:ff`) so a typo lands as an error rather
+  than a silently-normalised MAC (S10, Wave 3 Group A).
+- ✅ Sanitize NM dict values before tracing: `nm/mod.rs::update_with_secrets`
+  routes `GetSecrets` errors through `crate::display::display_string` so
+  attacker-controlled bytes in connection-setting values cannot redraw
+  `journalctl -t proteus`. The `read_or_skip!` macro for device property
+  enumeration does the same (S8, builds on Stream 4's preserve-method-context
+  for N4, Wave 3 Group A).
 - ⏳ Harden `Layout::from_env()` in `src/commands/uninstall.rs` so
   `PROTEUS_CONFIG_DIR` / `PROTEUS_STATE_DIR` / `PROTEUS_SYSTEMD_DIR` cannot
   steer `remove_dir_all` against `/etc` or anywhere outside an explicit

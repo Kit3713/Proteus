@@ -507,6 +507,7 @@ async fn do_apply(
             config.dhcp.suppress_hostname,
             config.dhcp.suppress_vendor_class,
             config.dhcp.rotate_client_id,
+            config.dhcp.keep_iaid_stable_across_rotation,
         )?;
         // Roadmap M2 "Integration": persona-shaped option content lands
         // AFTER suppression so persona slots fill exactly what the

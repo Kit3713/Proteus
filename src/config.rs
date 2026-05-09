@@ -248,6 +248,7 @@ impl Config {
                 suppress_vendor_class: Some(self.dhcp.suppress_vendor_class),
                 rotate_client_id: Some(self.dhcp.rotate_client_id),
                 renew_on_apply: Some(self.dhcp.renew_on_apply),
+                keep_iaid_stable_across_rotation: Some(self.dhcp.keep_iaid_stable_across_rotation),
             }),
             captive_portal: Some(RawCaptivePortalConfig {
                 enabled: Some(self.captive_portal.enabled),
@@ -501,6 +502,9 @@ impl RawConfig {
             if let Some(v) = d.renew_on_apply {
                 cfg.dhcp.renew_on_apply = v;
             }
+            if let Some(v) = d.keep_iaid_stable_across_rotation {
+                cfg.dhcp.keep_iaid_stable_across_rotation = v;
+            }
         }
         if let Some(c) = self.captive_portal {
             if let Some(v) = c.enabled {
@@ -651,7 +655,8 @@ impl RawConfig {
                 suppress_hostname,
                 suppress_vendor_class,
                 rotate_client_id,
-                renew_on_apply
+                renew_on_apply,
+                keep_iaid_stable_across_rotation
             ]
         );
         any_some!(
@@ -1203,6 +1208,8 @@ pub struct RawDhcpConfig {
     /// integration-wired in the follow-up; the knob ships now so the
     /// schema is stable.
     pub renew_on_apply: Option<bool>,
+    /// NBE.3: see `DhcpConfig::keep_iaid_stable_across_rotation`.
+    pub keep_iaid_stable_across_rotation: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -1406,6 +1413,33 @@ pub struct DhcpConfig {
     /// renew` after `apply` so the upstream DHCP server hands out a
     /// fresh lease against the new client identity. Default false.
     pub renew_on_apply: bool,
+    /// NBE.3: DUID/IAID asymmetry on rotate.
+    ///
+    /// NM's `ipv6.dhcp-duid = "ll"` derives the DHCPv6 DUID from the
+    /// MAC's link-layer address — which means the DUID is reborn on
+    /// every rotation. NM's `ipv6.dhcp-iaid = "mac"` does the same
+    /// for the IAID (DHCPv6 identifier per interface association).
+    /// Both rotating together is the strongest unlinkability story
+    /// but also breaks DHCPv6-only networks that hand out stable
+    /// leases keyed by (DUID, IAID).
+    ///
+    /// The tradeoff:
+    ///
+    /// - Default (`false`): DUID + IAID both rotate, full
+    ///   unlinkability, broken stable-DHCPv6.
+    /// - `true`: pin IAID to the DUID derivation (NM's `"stable"`
+    ///   mode), keeping the IAID stable across rotations while the
+    ///   DUID itself rotates. The DHCPv6 server still sees a fresh
+    ///   client identity (DUID changes) but the per-iface IAID stays
+    ///   constant so a sticky-pool server can re-issue the same
+    ///   lease. Slight unlinkability cost for compatibility on
+    ///   IPv6-stable networks.
+    ///
+    /// The knob ships now so the schema is stable; the wire impl
+    /// (writing `"stable"` instead of `"mac"` on `ipv6.dhcp-iaid`
+    /// when the knob is set) lands on the same backend `Update` path
+    /// the existing `apply_dhcp_settings` uses.
+    pub keep_iaid_stable_across_rotation: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1710,6 +1744,7 @@ impl Default for DhcpConfig {
             suppress_vendor_class: true,
             rotate_client_id: true,
             renew_on_apply: false,
+            keep_iaid_stable_across_rotation: false,
         }
     }
 }

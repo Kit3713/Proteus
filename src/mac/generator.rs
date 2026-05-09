@@ -22,11 +22,27 @@ pub struct ByteSuffixPattern {
 
 impl ByteSuffixPattern {
     /// Parse `01:23:xx` / `01-23-xx` / `0123xx` into a pattern. The
-    /// caller supplies one of the three accepted separators and the
-    /// parser is lenient about case + the colon variant. Returns
-    /// `Err` on malformed input so a typo'd persona pattern lands at
-    /// the user, not as silently-rolled bytes.
+    /// caller supplies ONE of the three accepted separators (S10:
+    /// strict — mixed separators like `01:23-xx` are rejected because
+    /// they're indistinguishable from a typo and silently accepting
+    /// them removes a useful operator-error signal). The parser is
+    /// lenient about case + the colon variant. Returns `Err` on
+    /// malformed input so a typo'd persona pattern lands at the user,
+    /// not as silently-rolled bytes.
     pub fn parse(s: &str) -> Result<Self> {
+        // S10: a single canonical separator. Counting both characters
+        // in the raw input — if both appear, reject before any further
+        // parsing so the error message names the offending input
+        // rather than landing as a generic "wrong byte count" further
+        // down the pipeline.
+        let has_colon = s.contains(':');
+        let has_dash = s.contains('-');
+        if has_colon && has_dash {
+            bail!(
+                "mac_byte_pattern '{s}' mixes ':' and '-' separators; \
+                 use a single canonical form (aa:bb:cc, aa-bb-cc, or aabbcc)"
+            );
+        }
         let cleaned: String = s
             .chars()
             .filter(|c| !matches!(c, ':' | '-' | ' '))
@@ -854,6 +870,33 @@ mod tests {
         assert!(ByteSuffixPattern::parse("01:23").is_err());
         assert!(ByteSuffixPattern::parse("").is_err());
         assert!(ByteSuffixPattern::parse("zz:zz:zz").is_err());
+    }
+
+    /// S10: mixed separators in the suffix pattern are rejected.
+    /// Persona `mac_byte_pattern = "01:23-xx"` is unambiguously a
+    /// typo, not a feature; the strict reject lets a misconfig fail
+    /// loudly at load time instead of silently rolling all three
+    /// trailing bytes.
+    #[test]
+    fn byte_pattern_rejects_mixed_separators() {
+        for s in ["01:23-xx", "01-23:xx", "01:23-45", "ab-cd:ef"] {
+            let r = ByteSuffixPattern::parse(s);
+            assert!(
+                r.is_err(),
+                "mixed-separator pattern '{s}' must be rejected, got {:?}",
+                r
+            );
+        }
+    }
+
+    /// S10: confirm single canonical forms still parse — guard
+    /// against the strict check turning into "reject every separator".
+    #[test]
+    fn byte_pattern_accepts_single_separator_forms() {
+        assert!(ByteSuffixPattern::parse("01:23:xx").is_ok());
+        assert!(ByteSuffixPattern::parse("01-23-xx").is_ok());
+        assert!(ByteSuffixPattern::parse("0123xx").is_ok());
+        assert!(ByteSuffixPattern::parse("xx:xx:xx").is_ok());
     }
 
     #[test]

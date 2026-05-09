@@ -284,12 +284,18 @@ async fn rotate_one<P: Probe + ?Sized>(
     let outcome = generator::generate_with_probe(&opts, probe, &probe_opts)?;
     let new_mac = outcome.chosen;
 
-    // Issue #122: write the new MAC to every connection profile bound
-    // to the device. The backend trait's `set_cloned_mac` iterates
-    // internally for nm; on stub backends it bails with a clear error.
-    // We still need per-profile id/uuid for the `state.json` book-keeping
-    // below, so iterate the connection list ourselves to gather those.
+    // GH#366: read connection metadata BEFORE the backend write but
+    // commit `state.managed.connections` AFTER `set_cloned_mac` returns
+    // Ok. Pre-fix, the per-connection state book-keeping happened in
+    // the same loop as the metadata read — landing on disk regardless
+    // of whether the backend actually applied the new MAC. A backend
+    // failure (NM `Update` rejected, version mismatch under concurrent
+    // edit, etc.) then left a permanent ghost: `state.json` claimed
+    // the connection had MAC X while NM still held the old MAC, and
+    // `proteus revert` would walk the ghost back into a state nobody
+    // ever observed live.
     let mut primary_id: Option<String> = None;
+    let mut uuid_writes: Vec<String> = Vec::new();
     let connections: Vec<ConnectionRef> = backend.list_connections(dev).await?;
     for cref in &connections {
         let id = backend.read_connection_id(cref).await.ok().flatten();
@@ -297,17 +303,27 @@ async fn rotate_one<P: Probe + ?Sized>(
         if primary_id.is_none() {
             primary_id = id.clone();
         }
-        if let Some(uuid) = uuid {
-            let crec = state.managed.connections.entry(uuid).or_default();
-            crec.current_mac = Some(new_mac.to_string());
-            crec.last_rotated = Some(super::now_iso8601());
-            crec.rotation_count += 1;
+        if let Some(u) = uuid {
+            uuid_writes.push(u);
         }
     }
     backend
         .set_cloned_mac(dev, new_mac)
         .await
         .with_context(|| format!("setting cloned MAC on {}", dev.iface))?;
+
+    // Backend confirmed — now safe to record the post-rotate state.
+    // Both the per-connection map and the per-iface record land in the
+    // same critical section so a partial state.save() can't catch the
+    // managed.connections write without the matching managed.interfaces
+    // bump.
+    let now = super::now_iso8601();
+    for uuid in uuid_writes {
+        let crec = state.managed.connections.entry(uuid).or_default();
+        crec.current_mac = Some(new_mac.to_string());
+        crec.last_rotated = Some(now.clone());
+        crec.rotation_count += 1;
+    }
 
     let rec = state
         .managed
@@ -316,7 +332,7 @@ async fn rotate_one<P: Probe + ?Sized>(
         .or_default();
     let previous = rec.current_mac.clone().or_else(|| dev.hw_address.clone());
     rec.current_mac = Some(new_mac.to_string());
-    rec.last_rotated = Some(super::now_iso8601());
+    rec.last_rotated = Some(now);
     rec.rotation_count += 1;
 
     let entry = RotatedEntry {
@@ -544,22 +560,11 @@ pub fn run_if_needed(
         eprintln!("proteus: {e}");
         return Ok(exit::PERMISSION_ERROR);
     }
-    // Issue #381: the state-path threading from the CLI ends here. The
-    // backend trait's `rotate_if_needed` doesn't yet accept a state path,
-    // so the cooldown read-back inside `backend/nm.rs::rotate_if_needed_inner`
-    // hardcodes `crate::commands::DEFAULT_STATE_PATH`. Surface a warning
-    // when an explicit `--state` was passed so the operator at least
-    // sees that their override was dropped — the proper fix needs a
-    // trait-signature change (Stream 5 / state-lock work) and is
-    // tracked there. TODO(#381): remove this warning when the backend
-    // trait grows a `state_path` parameter.
-    if state_path.is_some() {
-        tracing::warn!(
-            "--state is currently ignored by `rotate-if-needed`; cooldown reads \
-             {} (see #381)",
-            crate::commands::DEFAULT_STATE_PATH
-        );
-    }
+    // GH#381: pass `state_path` through to the backend's
+    // `rotate_if_needed` so the cooldown read AND the inner
+    // `commands::rotate::run` book-keeping land on the same on-disk
+    // file. Pre-fix, `_state_unused` discarded the operator's choice
+    // and the cooldown read hardcoded `crate::commands::DEFAULT_STATE_PATH`.
     let config_path = super::config_path(config_path);
     let config = Config::default_or_loaded(&config_path).unwrap_or_default();
 
@@ -642,7 +647,9 @@ pub fn run_if_needed(
                 crate::backend::RotateOutcome::BackendUnavailable,
             ));
         }
-        let r = backend.rotate_if_needed(&target, cooldown).await?;
+        let r = backend
+            .rotate_if_needed(&target, cooldown, state_path)
+            .await?;
         Ok((target, r))
     });
 
@@ -1285,7 +1292,7 @@ mod tests {
         );
         rt().block_on(async {
             let outcome = backend
-                .rotate_if_needed("wlan0", std::time::Duration::from_secs(60))
+                .rotate_if_needed("wlan0", std::time::Duration::from_secs(60), None)
                 .await
                 .unwrap();
             assert_eq!(
@@ -1309,7 +1316,7 @@ mod tests {
         );
         rt().block_on(async {
             let outcome = backend
-                .rotate_if_needed("wlan0", std::time::Duration::from_secs(60))
+                .rotate_if_needed("wlan0", std::time::Duration::from_secs(60), None)
                 .await
                 .unwrap();
             assert!(matches!(
@@ -1328,7 +1335,7 @@ mod tests {
         backend.set_rotate_outcome("wlan0", crate::backend::RotateOutcome::NoFactoryMac);
         rt().block_on(async {
             let outcome = backend
-                .rotate_if_needed("wlan0", std::time::Duration::from_secs(60))
+                .rotate_if_needed("wlan0", std::time::Duration::from_secs(60), None)
                 .await
                 .unwrap();
             assert_eq!(outcome, crate::backend::RotateOutcome::NoFactoryMac);
@@ -1345,10 +1352,77 @@ mod tests {
         backend.set_rotate_outcome("wlan0", crate::backend::RotateOutcome::BackendUnavailable);
         rt().block_on(async {
             let outcome = backend
-                .rotate_if_needed("wlan0", std::time::Duration::from_secs(60))
+                .rotate_if_needed("wlan0", std::time::Duration::from_secs(60), None)
                 .await
                 .unwrap();
             assert_eq!(outcome, crate::backend::RotateOutcome::BackendUnavailable);
         });
+    }
+
+    /// GH#366: when `set_cloned_mac` returns Err (NM rejected the
+    /// Update under a concurrent edit, version-mismatch, etc.) the
+    /// state.managed.connections map MUST NOT carry a forward-looking
+    /// `current_mac` for that profile. Pre-fix, the connection map was
+    /// updated in the same loop as the metadata read — landing on
+    /// disk before `set_cloned_mac` was even called — so a failed
+    /// rotation persisted a ghost MAC that `proteus revert` would
+    /// then walk back into a state nobody ever observed live.
+    #[test]
+    fn failed_set_cloned_mac_does_not_persist_ghost_in_managed_connections() {
+        let backend = MockBackend::new();
+        let device = dev("wlan0");
+        backend.insert_device(device.clone(), Some("aa:bb:cc:dd:ee:ff".into()));
+        // Seed a connection so list_connections returns a concrete UUID.
+        let cref = device.connections[0].clone();
+        backend.insert_connection(&cref, Some("Home"), Some("uuid-test-1234"));
+        // Arm the failure: the next `set_cloned_mac` rejects.
+        backend.fail_next_set_cloned_mac("simulated NM Update conflict");
+
+        let dir = crate::testing::TempRoot::new("rotate-gh366");
+        let state_path = dir.path.join("state.json");
+        let mut state = State::default();
+        state
+            .original_macs
+            .insert("wlan0".into(), "aa:bb:cc:dd:ee:ff".into());
+
+        let cfg = cfg();
+        let avoid: HashSet<Mac> = HashSet::new();
+        let probe = MockProbe::responds(false);
+        let report = rt().block_on(async {
+            run_with_backend(
+                &backend,
+                Some("wlan0"),
+                &cfg,
+                &avoid,
+                &probe,
+                false,
+                &mut state,
+                &state_path,
+            )
+            .await
+            .unwrap()
+        });
+        // The rotate is reported as a skip (the backend rejected the write).
+        assert_eq!(report.rotated.len(), 0, "no rotation actually landed");
+        assert_eq!(report.skipped.len(), 1, "one skip recorded");
+
+        // Nothing in state.managed.connections claims a fresh MAC for
+        // this UUID. Pre-fix, the entry would carry the would-have-been
+        // current_mac written before set_cloned_mac was even called.
+        let crec = state.managed.connections.get("uuid-test-1234");
+        assert!(
+            crec.map(|c| c.current_mac.is_none()).unwrap_or(true),
+            "state.managed.connections must not carry a ghost MAC for failed rotations; \
+             got {:?}",
+            crec.and_then(|c| c.current_mac.clone()),
+        );
+
+        // And the per-iface record is similarly unbumped.
+        let irec = state.managed.interfaces.get("wlan0");
+        assert!(
+            irec.map(|r| r.current_mac.is_none()).unwrap_or(true),
+            "state.managed.interfaces must not carry a ghost MAC; got {:?}",
+            irec.and_then(|r| r.current_mac.clone()),
+        );
     }
 }
