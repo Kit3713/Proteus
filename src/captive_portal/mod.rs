@@ -21,11 +21,13 @@
 use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::sync::mpsc;
+use std::sync::{Arc, RwLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
+use crate::config::CaptivePortalConfig;
 use crate::display::display_string;
 
 /// Classification of the network path according to the portal detector.
@@ -86,6 +88,16 @@ impl HttpResponse {
 /// expires. Per-socket read/write timeouts cover the steady-state case;
 /// the watchdog covers DNS resolution and any phase that ignores the
 /// per-socket timeout (issue #129).
+///
+/// N9 (redirect following, HTTP-only): when the detector receives a
+/// `3xx` with a `Location` header that points at another `http://`
+/// URL, the request is retried against that target up to
+/// [`MAX_REDIRECT_HOPS`] times before the response is classified.
+/// `https://` redirects are surfaced as `PortalRequired` with the
+/// validated target attached — TLS validation requires a TLS dep
+/// (`rustls` / `webpki-roots`) which is explicitly forbidden in this
+/// crate, so cross-scheme redirect-chasing is a deferred design
+/// decision.
 pub fn detect(url: &str, expected_body: &str, timeout: Duration) -> DetectionOutcome {
     let parsed = match parse_http_url(url) {
         Some(p) => p,
@@ -97,12 +109,17 @@ pub fn detect(url: &str, expected_body: &str, timeout: Duration) -> DetectionOut
             };
         }
     };
-    match run_bounded(timeout, move || http_get(&parsed, timeout)) {
-        Ok(resp) => {
-            let outcome = classify_response(&resp, expected_body);
+    match run_bounded(timeout, move || http_get_following(&parsed, timeout)) {
+        Ok(GetResult { response, hops }) => {
+            let outcome = classify_response(&response, expected_body);
+            let note = if hops == 0 {
+                outcome.1
+            } else {
+                format!("{} (after {} redirect hop(s))", outcome.1, hops)
+            };
             DetectionOutcome {
                 classification: outcome.0,
-                note: outcome.1,
+                note,
                 redirect_target: outcome.2,
             }
         }
@@ -111,6 +128,54 @@ pub fn detect(url: &str, expected_body: &str, timeout: Duration) -> DetectionOut
             note: format!("tcp/io error: {e}"),
             redirect_target: None,
         },
+    }
+}
+
+/// N9: maximum number of HTTP redirect hops the detector will follow
+/// before giving up. Bounded small because (a) a real captive-portal
+/// detector should resolve in 1–3 hops and (b) chasing a redirect
+/// loop is an attacker's denial-of-service primitive.
+pub(crate) const MAX_REDIRECT_HOPS: u8 = 5;
+
+/// Result of a (possibly redirected) HTTP GET. `hops` is the number
+/// of redirect-follows we performed before this response.
+struct GetResult {
+    response: HttpResponse,
+    hops: u8,
+}
+
+/// HTTP-only redirect-following GET. Iterates up to
+/// [`MAX_REDIRECT_HOPS`] times, parsing each `Location:` header
+/// through [`validate_location_header`] before re-issuing the
+/// request. Stops at the first non-3xx response, or when the
+/// `Location` is missing/invalid/cross-scheme/over-cap.
+fn http_get_following(parts: &UrlParts, timeout: Duration) -> std::io::Result<GetResult> {
+    let mut current = parts.clone();
+    let mut hops: u8 = 0;
+    loop {
+        let response = http_get(&current, timeout)?;
+        if !(300..400).contains(&response.status) {
+            return Ok(GetResult { response, hops });
+        }
+        if hops >= MAX_REDIRECT_HOPS {
+            // Exceeded budget — return the last response so the
+            // classifier can render it as `PortalRequired` with the
+            // (already-sanitized-by-classifier) `Location` attached.
+            return Ok(GetResult { response, hops });
+        }
+        let raw_location = match response.header("Location") {
+            Some(s) => s.to_string(),
+            None => return Ok(GetResult { response, hops }),
+        };
+        let next_url = match resolve_redirect_target(&current, &raw_location) {
+            Some(u) => u,
+            // Invalid, https, or otherwise un-followable: surface the
+            // 3xx as-is so the classifier reports `PortalRequired`
+            // with the sanitized URL in `redirect_target`.
+            None => return Ok(GetResult { response, hops }),
+        };
+        current = next_url;
+        hops += 1;
     }
 }
 
@@ -169,12 +234,21 @@ pub(crate) fn classify_response(
 
     // 3xx redirects almost always mean a portal redirect.
     if (300..400).contains(&resp.status) {
+        // S2: validate the `Location:` header per RFC before handing
+        // it to any downstream consumer. Reject CR/LF (header
+        // injection), megabyte-sized junk (DoS), and refs that
+        // aren't absolute or scheme-/root-relative.
+        //
         // Issue #241: the `Location:` header is attacker-controlled — a
         // hostile portal can stuff ANSI escapes, BiDi overrides, NULs, or
         // a megabyte of junk into it and watch the operator's terminal
-        // (and journald) render the lot. Sanitize at the earliest seam so
-        // every downstream renderer (text, JSON, log) sees the safe form.
-        let target = resp.header("Location").map(display_string);
+        // (and journald) render the lot. We layer S2's validator first
+        // (drops the bad bytes outright) and `display_string` second
+        // (escapes anything still printable that would deceive the
+        // operator).
+        let target = resp
+            .header("Location")
+            .and_then(|h| validate_location_header(h).map(display_string));
         return (
             Classification::PortalRequired,
             format!("HTTP {} redirect", resp.status),
@@ -211,7 +285,7 @@ fn has_portal_shaped_headers(resp: &HttpResponse) -> bool {
     false
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct UrlParts {
     host: String,
     port: u16,
@@ -294,6 +368,206 @@ fn is_request_safe(s: &str) -> bool {
     s.bytes().all(|b| b >= 0x20 && b != 0x7F)
 }
 
+/// S6: build the full HTTP/1.0 request blob from `parts` through a
+/// single percent-encoder pass.
+///
+/// Previously the request line was assembled with two independent
+/// `format!()` interpolations: one for the request-target (path) and
+/// one for the `Host:` header. Either string passed
+/// [`is_request_safe`] in isolation, but the concatenation could
+/// still cross-contaminate — a path like `"/foo HTTP/1.0\r\n
+/// X-Smuggle: yes\r\nDummy: "` paired with a benign host would slip
+/// past the per-string control-byte gate (`is_request_safe` accepts
+/// space and printable ASCII) and smuggle a fake header into the
+/// request-line position. A single encoder pass over both fields
+/// catches this class of bug because the encoder rejects/escapes any
+/// byte that would end the request-target token (space, CR, LF, NUL,
+/// `0x7F`).
+///
+/// The function returns the entire blob (request line + headers +
+/// terminating `\r\n\r\n`) so callers cannot accidentally construct
+/// a request that re-introduces the smuggling vector by skipping a
+/// step.
+fn request_line_builder(parts: &UrlParts) -> Result<String, &'static str> {
+    let encoded_host = percent_encode_request_safe(&parts.host)?;
+    let encoded_path = percent_encode_request_target(&parts.path)?;
+
+    // Belt-and-braces: after encoding, every byte is one of [printable
+    // ASCII minus space minus delimiters], so neither field can
+    // possibly carry CR/LF/NUL into the request line.
+    debug_assert!(encoded_host.bytes().all(|b| (0x21..=0x7E).contains(&b)));
+    debug_assert!(encoded_path.bytes().all(|b| (0x21..=0x7E).contains(&b)));
+
+    Ok(format!(
+        "GET {} HTTP/1.0\r\nHost: {}\r\nUser-Agent: proteus-portal-detect/1.0\r\nAccept: */*\r\nConnection: close\r\n\r\n",
+        encoded_path, encoded_host
+    ))
+}
+
+/// Percent-encode any byte that would corrupt the HTTP request
+/// target. Allows the unreserved set + the small punctuation that
+/// `parse_http_url` already accepts in a path; everything else is
+/// `%XX`-escaped. Returns `Err` only for empty input — encoding is
+/// otherwise total.
+fn percent_encode_request_target(s: &str) -> Result<String, &'static str> {
+    if s.is_empty() {
+        return Err("empty request target");
+    }
+    let mut out = String::with_capacity(s.len());
+    for &b in s.as_bytes() {
+        if is_path_safe_byte(b) {
+            out.push(b as char);
+        } else {
+            out.push('%');
+            out.push_str(&format!("{:02X}", b));
+        }
+    }
+    Ok(out)
+}
+
+/// Percent-encode any byte not safe in the `Host:` header. The host
+/// is generally already restricted to DNS-name + `:` + digits, plus
+/// IPv6 literal characters (`[]:.0-9a-fA-F`); everything else gets
+/// escaped. Returns `Err` only for empty input.
+fn percent_encode_request_safe(s: &str) -> Result<String, &'static str> {
+    if s.is_empty() {
+        return Err("empty host");
+    }
+    let mut out = String::with_capacity(s.len());
+    for &b in s.as_bytes() {
+        if is_host_safe_byte(b) {
+            out.push(b as char);
+        } else {
+            out.push('%');
+            out.push_str(&format!("{:02X}", b));
+        }
+    }
+    Ok(out)
+}
+
+/// Bytes that pass through the request-target encoder unchanged.
+/// RFC 3986 unreserved + the small set of `pchar` punctuation that a
+/// valid HTTP/1.0 path can carry. Crucially does NOT include space,
+/// CR, LF, NUL, `?`, `#`, or any of the C0/C1 control range — those
+/// are exactly the bytes that could smuggle a header into the
+/// request line.
+fn is_path_safe_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric()
+        || matches!(
+            b,
+            // unreserved
+            b'-' | b'.' | b'_' | b'~'
+                // sub-delims that pchar permits
+                | b'!' | b'$' | b'&' | b'\'' | b'(' | b')' | b'*' | b'+' | b',' | b';' | b'='
+                // segment delimiter + colon + at-sign + percent
+                | b'/' | b':' | b'@' | b'%'
+                // query / fragment markers — kept so a configured detect_url
+                // with `?key=val` round-trips, but they do not introduce
+                // request-line ambiguity because they're inside the encoded
+                // request-target token.
+                | b'?' | b'#'
+        )
+}
+
+/// Bytes safe in a `Host:` header value. ASCII alphanumeric, dot,
+/// hyphen, colon (port separator), and the IPv6-literal brackets.
+/// Everything else escapes — including spaces and any C0 control.
+fn is_host_safe_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b':' | b'[' | b']')
+}
+
+/// S2 + N9: validate a `Location:` header per RFC 7231 §7.1.2 well
+/// enough to refuse the bad and accept the rest.
+///
+/// Returns `Some(URI)` when the header is suitable for redirect
+/// following; `None` otherwise. Specifically:
+///
+/// - **Empty / whitespace-only** → `None`. RFC requires a URI-reference.
+/// - **Length > 4096 bytes** → `None`. A megabyte of junk in `Location:`
+///   is the classic attacker-DoS shape; cap at 4 KiB which fits any
+///   real portal target.
+/// - **CR/LF/NUL/control bytes** → `None`. Header injection.
+/// - **No scheme and no leading `/`** → `None`. We require either
+///   absolute (`http://...`, `https://...`), scheme-relative
+///   (`//host/path`), or root-relative (`/path`). RFC 7231 also
+///   permits plain relative refs but they're rare in `Location:` and
+///   accepting them widens the parse surface.
+/// - Anything else passes through unchanged. The caller is
+///   responsible for resolving relative refs and rejecting schemes
+///   it can't follow (the detector currently can only follow
+///   `http://`).
+pub(crate) fn validate_location_header(raw: &str) -> Option<&str> {
+    const MAX_LOCATION_LEN: usize = 4096;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if trimmed.len() > MAX_LOCATION_LEN {
+        return None;
+    }
+    // Reject CR/LF/NUL/all C0 controls + DEL. `is_request_safe` is
+    // the same gate `parse_http_url` uses on host/path; reuse it so
+    // the policy stays identical across every byte that touches an
+    // HTTP request line.
+    if !is_request_safe(trimmed) {
+        return None;
+    }
+    // Categorise.
+    if trimmed.starts_with("http://")
+        || trimmed.starts_with("https://")
+        || trimmed.starts_with("//")
+        || trimmed.starts_with('/')
+    {
+        Some(trimmed)
+    } else {
+        None
+    }
+}
+
+/// Resolve a `Location:` header value to a follow-able [`UrlParts`]
+/// for the redirect-following GET path.
+///
+/// - Returns `None` for invalid headers (per
+///   [`validate_location_header`]), `https://` targets (we have no
+///   TLS), and root-relative refs that fail re-parsing.
+/// - For absolute `http://` URLs we re-run [`parse_http_url`] so the
+///   same `is_request_safe` gates apply.
+/// - For `//host/path` (scheme-relative) we synthesize `http://` and
+///   re-parse.
+/// - For `/path` (root-relative) we keep the current host + port and
+///   substitute the path.
+fn resolve_redirect_target(current: &UrlParts, raw_location: &str) -> Option<UrlParts> {
+    let validated = validate_location_header(raw_location)?;
+    if let Some(rest) = validated.strip_prefix("http://") {
+        let _ = rest;
+        return parse_http_url(validated);
+    }
+    if validated.starts_with("https://") {
+        // Cross-scheme redirect: cannot follow without TLS. Return
+        // None so the caller surfaces the 3xx as `PortalRequired`
+        // with the validated URL attached.
+        return None;
+    }
+    if let Some(rest) = validated.strip_prefix("//") {
+        let synthesized = format!("http://{rest}");
+        return parse_http_url(&synthesized);
+    }
+    if validated.starts_with('/') {
+        // Root-relative: same authority, swapped path. We still run
+        // the path through the same is_request_safe gate as
+        // parse_http_url to keep the policy uniform.
+        if !is_request_safe(validated) {
+            return None;
+        }
+        return Some(UrlParts {
+            host: current.host.clone(),
+            port: current.port,
+            path: validated.to_string(),
+        });
+    }
+    None
+}
+
 /// Helper for IPv6-literal port handling: `after` is the slice that comes
 /// after the closing `]`, which is either empty (no port; default 80) or
 /// `:NNN`.
@@ -309,13 +583,15 @@ fn http_get(parts: &UrlParts, timeout: Duration) -> std::io::Result<HttpResponse
     let started = Instant::now();
     let addr_iter = (parts.host.as_str(), parts.port).to_socket_addrs()?;
     let mut last_err: Option<std::io::Error> = None;
+    let req = request_line_builder(parts).map_err(|e| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("captive-portal request build: {e}"),
+        )
+    })?;
     for addr in addr_iter {
         match TcpStream::connect_timeout(&addr, remaining_budget(started, timeout)?) {
             Ok(mut stream) => {
-                let req = format!(
-                    "GET {} HTTP/1.0\r\nHost: {}\r\nUser-Agent: proteus-portal-detect/1.0\r\nAccept: */*\r\nConnection: close\r\n\r\n",
-                    parts.path, parts.host
-                );
                 stream.set_write_timeout(Some(remaining_budget(started, timeout)?))?;
                 stream.write_all(req.as_bytes())?;
                 let mut buf = Vec::with_capacity(4096);
@@ -440,6 +716,89 @@ fn body_slice(buf: &[u8]) -> Option<(&[u8], &[u8])> {
     Some((head, body))
 }
 
+/// R4: shared, atomically-swappable handle to the live captive-portal
+/// config. The events daemon constructs one of these at startup and
+/// hands the same `Arc` to every consumer (the periodic detector
+/// task, the `proteus events status --json` reader, the
+/// `proteus events trigger portal-auth` mutator). On `SIGHUP` the
+/// daemon re-reads the config block from disk and calls
+/// [`CaptivePortalReload::swap`], which takes a `write()` on the
+/// inner `RwLock` and replaces the value in place.
+///
+/// **Why a primitive in this module rather than a wired-up SIGHUP
+/// handler:** the events daemon's main loop lives in
+/// `src/commands/events.rs`. The signal-wiring side is small but
+/// belongs alongside the rest of the daemon's signal handling; this
+/// module owns the captive-portal-side primitive so the daemon side
+/// doesn't have to invent a concurrency story for one config block.
+///
+/// **Why `RwLock` not `Mutex`:** the read path (every detect cycle
+/// reads `enabled`, `detect_url`, `expected_response`,
+/// `timeout_secs`, `policy`, `fresh_mac_per_visit`) runs on the
+/// fast path; SIGHUP-driven swaps are rare. Reads must not block on
+/// each other.
+#[derive(Debug, Clone)]
+pub struct CaptivePortalReload {
+    inner: Arc<RwLock<CaptivePortalConfig>>,
+}
+
+impl CaptivePortalReload {
+    /// Build a new shared handle around `cfg`. Use one of these per
+    /// daemon, cloning the `CaptivePortalReload` (cheap — just an
+    /// `Arc::clone`) into every consumer task.
+    pub fn new(cfg: CaptivePortalConfig) -> Self {
+        Self {
+            inner: Arc::new(RwLock::new(cfg)),
+        }
+    }
+
+    /// Take a snapshot of the current config. Cheap: clones a small
+    /// struct of `String`s + scalars. Use this from the detector
+    /// task's per-cycle entry point so each cycle reads a coherent
+    /// snapshot — never half a swap.
+    ///
+    /// Recovers from a poisoned `RwLock` by returning the inner
+    /// value via `into_inner()` semantics: a panic in a writer must
+    /// not silently disable the captive-portal subsystem for the
+    /// rest of the daemon's life.
+    pub fn snapshot(&self) -> CaptivePortalConfig {
+        match self.inner.read() {
+            Ok(g) => g.clone(),
+            Err(poisoned) => {
+                tracing::warn!("captive-portal reload lock was poisoned; recovered");
+                poisoned.into_inner().clone()
+            }
+        }
+    }
+
+    /// Atomically swap the config in place. The new value takes
+    /// effect on the *next* call to [`Self::snapshot`] — in-flight
+    /// `detect()` calls keep using whatever they captured at the
+    /// start of their cycle, which is the right semantics: a
+    /// running probe should not have its timeout / detect_url
+    /// rewritten under it.
+    ///
+    /// Returns the previous config so callers can log the diff
+    /// (`info!("captive-portal config swapped from {old:?} to {new:?}")`).
+    pub fn swap(&self, new_cfg: CaptivePortalConfig) -> CaptivePortalConfig {
+        match self.inner.write() {
+            Ok(mut g) => std::mem::replace(&mut *g, new_cfg),
+            Err(poisoned) => {
+                tracing::warn!("captive-portal reload lock was poisoned; recovered for swap");
+                let mut g = poisoned.into_inner();
+                std::mem::replace(&mut *g, new_cfg)
+            }
+        }
+    }
+
+    /// Inspection helper for tests / `proteus events status`.
+    /// Returns a clonable handle to the inner `Arc` so tests can
+    /// assert pointer equality across `clone()` calls.
+    pub fn handle(&self) -> Arc<RwLock<CaptivePortalConfig>> {
+        Arc::clone(&self.inner)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -470,21 +829,44 @@ mod tests {
         assert_eq!(target.as_deref(), Some("https://login.example/portal"));
     }
 
-    /// Issue #241: a hostile portal can stuff ANSI / BiDi / control bytes
-    /// into the `Location:` header. The classifier must hand the URL back
-    /// already neutered so every downstream log/print site is safe.
+    /// Issue #241 + S2: a hostile portal can stuff ANSI / BiDi /
+    /// control bytes into the `Location:` header. The classifier
+    /// runs the value through [`validate_location_header`] first; a
+    /// header containing CR/LF/NUL/C0 controls is rejected outright
+    /// (returned as `None`) rather than escaped, because the
+    /// detector cannot trust *any* part of an attacker-controlled
+    /// string that already injected bytes intended to break the
+    /// operator's terminal or log scraper.
     #[test]
     fn redirect_target_strips_terminal_control_sequences() {
         let raw = "https://evil.example/\x1b[2J\x1b[31mfake\u{202e}.bank.com";
         let r = mk_resp(302, &[("Location", raw)], "");
+        let (c, _, target) = classify_response(&r, "NetworkManager is online");
+        assert_eq!(c, Classification::PortalRequired);
+        assert!(
+            target.is_none(),
+            "hostile Location header must be rejected, got {target:?}"
+        );
+    }
+
+    /// S2: a benign BiDi-override character in a *valid* https URL
+    /// is still surfaced through the display-string escaper. The
+    /// classifier passes the validated URL through
+    /// `display_string`, which escapes the override codepoint so
+    /// downstream renderers don't get spoofed.
+    #[test]
+    fn redirect_target_escapes_benign_bidi_override() {
+        // No CR/LF/NUL — only a BiDi override codepoint, which is a
+        // multibyte UTF-8 sequence that `is_request_safe` accepts
+        // (every byte ≥ 0x20 and ≠ 0x7F).
+        let raw = "https://example.com/path\u{202e}/back";
+        let r = mk_resp(302, &[("Location", raw)], "");
         let (_, _, target) = classify_response(&r, "NetworkManager is online");
-        let t = target.expect("redirect target captured");
-        assert!(!t.contains('\x1b'), "ESC byte must be escaped: {t:?}");
+        let t = target.expect("benign-bytes Location must be captured");
         assert!(
             !t.chars().any(|c| c as u32 == 0x202e),
-            "BiDi override must be escaped: {t:?}",
+            "BiDi override must be escaped by display_string: {t:?}",
         );
-        assert!(t.contains("\\x1b"));
         assert!(t.contains("\\u{202e}"));
     }
 
@@ -687,5 +1069,269 @@ mod tests {
         let r = remaining_budget(Instant::now(), Duration::from_secs(5)).unwrap();
         assert!(r > Duration::from_millis(100), "got {r:?}");
         assert!(r <= Duration::from_secs(5), "got {r:?}");
+    }
+
+    // === S2 (validate Location header) ===
+
+    #[test]
+    fn validate_location_accepts_absolute_http_and_https() {
+        assert_eq!(
+            validate_location_header("http://example.com/check"),
+            Some("http://example.com/check")
+        );
+        assert_eq!(
+            validate_location_header("https://login.example/portal"),
+            Some("https://login.example/portal")
+        );
+    }
+
+    #[test]
+    fn validate_location_accepts_scheme_relative_and_root_relative() {
+        assert_eq!(
+            validate_location_header("//example.com/x"),
+            Some("//example.com/x")
+        );
+        assert_eq!(
+            validate_location_header("/portal/login"),
+            Some("/portal/login")
+        );
+    }
+
+    #[test]
+    fn validate_location_trims_surrounding_whitespace() {
+        assert_eq!(
+            validate_location_header("   http://example.com/   "),
+            Some("http://example.com/")
+        );
+    }
+
+    #[test]
+    fn validate_location_rejects_empty_and_whitespace() {
+        assert!(validate_location_header("").is_none());
+        assert!(validate_location_header("   ").is_none());
+    }
+
+    #[test]
+    fn validate_location_rejects_relative_refs() {
+        // RFC 7231 also permits plain relative refs but the detector
+        // intentionally narrows the parse surface.
+        assert!(validate_location_header("portal/login").is_none());
+        assert!(validate_location_header("./next").is_none());
+    }
+
+    #[test]
+    fn validate_location_rejects_header_injection() {
+        // CR / LF in a Location header is the classic header-injection
+        // primitive. Reject outright.
+        assert!(validate_location_header("http://x/\r\nX-Smuggle: yes").is_none());
+        assert!(validate_location_header("http://x/\nFoo: bar").is_none());
+        assert!(validate_location_header("http://x/\rFoo: bar").is_none());
+        // NUL.
+        assert!(validate_location_header("http://x/\0evil").is_none());
+        // ESC + other C0.
+        assert!(validate_location_header("http://x/\x1b[2J").is_none());
+        assert!(validate_location_header("http://x/\x07").is_none());
+        // DEL.
+        assert!(validate_location_header("http://x/\x7f").is_none());
+    }
+
+    #[test]
+    fn validate_location_caps_oversized_input() {
+        let huge = "http://example.com/".to_string() + &"a".repeat(8_000);
+        assert!(validate_location_header(&huge).is_none());
+        // Just under cap is still accepted.
+        let ok = "http://example.com/".to_string() + &"a".repeat(2_000);
+        assert!(validate_location_header(&ok).is_some());
+    }
+
+    // === S6 (single-pass percent-encoder for request line) ===
+
+    #[test]
+    fn request_line_builder_round_trip_simple() {
+        let p = parse_http_url("http://nmcheck.gnome.org/check_network_status.txt").unwrap();
+        let line = request_line_builder(&p).unwrap();
+        assert!(line.starts_with("GET /check_network_status.txt HTTP/1.0\r\n"));
+        assert!(line.contains("\r\nHost: nmcheck.gnome.org\r\n"));
+        assert!(line.ends_with("\r\n\r\n"));
+    }
+
+    /// S6: the single-pass encoder must escape any byte in either
+    /// host or path that would let an attacker terminate the request
+    /// line and inject another header. `parse_http_url` already
+    /// rejects most of these via `is_request_safe`, but the encoder
+    /// is the second line of defence.
+    #[test]
+    fn request_line_builder_encodes_unsafe_path_bytes() {
+        // Synthesize a UrlParts directly to bypass parse_http_url's
+        // pre-filter — the encoder must catch hostile bytes regardless
+        // of how the parts were assembled.
+        let p = UrlParts {
+            host: "example.com".into(),
+            port: 80,
+            // Space, CR, LF — exactly the bytes that would smuggle
+            // a header into the request-line position.
+            path: "/foo bar\r\nX-Smuggle: yes".into(),
+        };
+        let line = request_line_builder(&p).unwrap();
+        // First line must end with " HTTP/1.0\r\n"; nothing earlier
+        // can carry a raw CR/LF/space into the request line.
+        let first_line = line.split("\r\n").next().unwrap();
+        assert!(first_line.ends_with(" HTTP/1.0"), "got {first_line:?}");
+        // The hostile bytes are %-encoded.
+        assert!(
+            first_line.contains("%20") || first_line.contains("%0D") || first_line.contains("%0A"),
+            "expected percent-encoding of hostile bytes; got {first_line:?}",
+        );
+        // No raw smuggled header.
+        assert!(!line.contains("X-Smuggle: yes\r\n"));
+    }
+
+    #[test]
+    fn request_line_builder_encodes_unsafe_host_bytes() {
+        let p = UrlParts {
+            host: "example.com\r\nX-Smuggle: yes".into(),
+            port: 80,
+            path: "/check".into(),
+        };
+        let line = request_line_builder(&p).unwrap();
+        assert!(!line.contains("X-Smuggle: yes\r\n"));
+        // Host header line ends with \r\n, then User-Agent follows.
+        assert!(line.contains("\r\nUser-Agent: proteus-portal-detect/1.0\r\n"));
+    }
+
+    /// S6: IPv6 literal hosts should round-trip through the encoder
+    /// without their `:` bytes being percent-encoded (colon is in
+    /// the host-safe set). The bracket question is N12.7 territory
+    /// (Stream 4); for now we just pin that the encoder doesn't
+    /// corrupt the address itself.
+    #[test]
+    fn request_line_builder_preserves_ipv6_address_bytes() {
+        let p = parse_http_url("http://[::1]:8080/check").unwrap();
+        let line = request_line_builder(&p).unwrap();
+        assert!(line.contains("Host: ::1\r\n"), "got line: {line:?}");
+    }
+
+    // === N9 (HTTP-only redirect following) ===
+
+    #[test]
+    fn resolve_redirect_target_follows_http_absolute() {
+        let cur = parse_http_url("http://a.example/").unwrap();
+        let r = resolve_redirect_target(&cur, "http://b.example:8080/x").unwrap();
+        assert_eq!(r.host, "b.example");
+        assert_eq!(r.port, 8080);
+        assert_eq!(r.path, "/x");
+    }
+
+    #[test]
+    fn resolve_redirect_target_refuses_https_when_no_tls() {
+        let cur = parse_http_url("http://a.example/").unwrap();
+        // We can't follow https:// without a TLS dep — return None
+        // so the caller surfaces the 3xx as PortalRequired instead.
+        assert!(resolve_redirect_target(&cur, "https://b.example/x").is_none());
+    }
+
+    #[test]
+    fn resolve_redirect_target_handles_root_relative() {
+        let cur = parse_http_url("http://a.example:8081/old").unwrap();
+        let r = resolve_redirect_target(&cur, "/portal/login").unwrap();
+        assert_eq!(r.host, "a.example");
+        assert_eq!(r.port, 8081);
+        assert_eq!(r.path, "/portal/login");
+    }
+
+    #[test]
+    fn resolve_redirect_target_handles_scheme_relative() {
+        let cur = parse_http_url("http://a.example/").unwrap();
+        let r = resolve_redirect_target(&cur, "//b.example:9090/y").unwrap();
+        assert_eq!(r.host, "b.example");
+        assert_eq!(r.port, 9090);
+        assert_eq!(r.path, "/y");
+    }
+
+    #[test]
+    fn resolve_redirect_target_rejects_header_injection() {
+        let cur = parse_http_url("http://a.example/").unwrap();
+        assert!(resolve_redirect_target(&cur, "http://b/\r\nX: y").is_none());
+        assert!(resolve_redirect_target(&cur, "/safe-looking\nX: y").is_none());
+    }
+
+    #[test]
+    fn max_redirect_hops_is_bounded_small() {
+        // Pin the bound so a refactor can't accidentally let the
+        // detector chase a redirect loop forever.
+        const _: () = assert!(MAX_REDIRECT_HOPS <= 10);
+        const _: () = assert!(MAX_REDIRECT_HOPS >= 1);
+    }
+
+    // === R4 (SIGHUP reload primitive) ===
+
+    fn cfg(detect_url: &str, timeout_secs: u64) -> CaptivePortalConfig {
+        CaptivePortalConfig {
+            enabled: true,
+            detect_url: detect_url.into(),
+            expected_response: "NetworkManager is online".into(),
+            policy: "rotate-before-auth".into(),
+            fresh_mac_per_visit: true,
+            timeout_secs,
+        }
+    }
+
+    #[test]
+    fn reload_snapshot_is_a_coherent_clone() {
+        let r = CaptivePortalReload::new(cfg("http://a/", 5));
+        let s = r.snapshot();
+        assert_eq!(s.detect_url, "http://a/");
+        assert_eq!(s.timeout_secs, 5);
+    }
+
+    #[test]
+    fn reload_swap_replaces_config_atomically() {
+        let r = CaptivePortalReload::new(cfg("http://a/", 5));
+        let prev = r.swap(cfg("http://b/", 10));
+        assert_eq!(prev.detect_url, "http://a/");
+        assert_eq!(prev.timeout_secs, 5);
+        let now = r.snapshot();
+        assert_eq!(now.detect_url, "http://b/");
+        assert_eq!(now.timeout_secs, 10);
+    }
+
+    #[test]
+    fn reload_clone_shares_underlying_config() {
+        // Two clones of the handle must observe each other's swaps —
+        // this is the whole point of the primitive (one daemon-side
+        // reload, many task-side readers).
+        let a = CaptivePortalReload::new(cfg("http://a/", 5));
+        let b = a.clone();
+        let _ = a.swap(cfg("http://b/", 10));
+        assert_eq!(b.snapshot().detect_url, "http://b/");
+        assert_eq!(b.snapshot().timeout_secs, 10);
+    }
+
+    #[test]
+    fn reload_handle_round_trip() {
+        // The internal `Arc` is exposed via `handle()` so tests can
+        // assert pointer-identity across clones. Mostly a smoke test
+        // that the primitive is composable with anything that wants
+        // a raw `Arc<RwLock<...>>` (e.g. a status reporter).
+        let r = CaptivePortalReload::new(cfg("http://a/", 5));
+        let h = r.handle();
+        assert_eq!(h.read().unwrap().detect_url, "http://a/");
+    }
+
+    #[test]
+    fn reload_recovers_from_poisoned_writer() {
+        let r = CaptivePortalReload::new(cfg("http://a/", 5));
+        let r_for_thread = r.clone();
+        let _ = std::thread::spawn(move || {
+            let _g = r_for_thread.inner.write().unwrap();
+            panic!("synthetic poison");
+        })
+        .join();
+        assert!(r.inner.is_poisoned());
+        // Subsequent snapshot/swap must still succeed.
+        let s = r.snapshot();
+        assert_eq!(s.detect_url, "http://a/");
+        let _ = r.swap(cfg("http://recovered/", 7));
+        assert_eq!(r.snapshot().detect_url, "http://recovered/");
     }
 }

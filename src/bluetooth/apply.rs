@@ -78,6 +78,31 @@ pub async fn apply_one(
     }
 
     if cfg.generic_alias {
+        // NEV2.5: BLE-only controllers cap the advertised "Complete
+        // Local Name" at the GAP advertising-payload limit, ~30
+        // bytes after EIR overhead. BR/EDR (EIR) is 240+ bytes, so
+        // BlueZ silently truncates on the BLE adapter and the
+        // operator never sees the rendered alias on the air. Warn
+        // up-front when the configured alias would be truncated by
+        // a BLE-only controller — this is observable but does not
+        // block the write (BlueZ still accepts the longer string,
+        // it's just clipped on advertise).
+        if let Some(cap) = recommend_alias_byte_cap(info)
+            && new_alias.len() > cap
+        {
+            tracing::warn!(
+                hci = %info.hci,
+                alias_bytes = new_alias.len(),
+                cap_bytes = cap,
+                "configured Bluetooth alias exceeds BLE-only adapter advertising cap; \
+                 controller will truncate the broadcast name"
+            );
+            notes.push(format!(
+                "BLE-only adapter advertising cap is ~{cap} bytes; alias is {} bytes — \
+                 controller will truncate on the air",
+                new_alias.len()
+            ));
+        }
         proxy
             .set_alias(new_alias)
             .await
@@ -128,6 +153,41 @@ pub async fn apply_one(
 /// assert the policy without wiring a real DBus connection.
 pub(crate) fn should_skip_powered_off(info: &AdapterInfo) -> bool {
     info.powered == Some(false)
+}
+
+/// NEV2.5: estimate the byte-length cap the controller will tolerate
+/// for the advertised local name. Returns `Some(cap)` when the
+/// adapter looks BLE-only, `None` otherwise.
+///
+/// **Heuristic.** BlueZ exposes `Adapter1.AddressType` as either
+/// `"public"` (BR/EDR-capable) or `"random"` (BLE-only — random
+/// resolvable / non-resolvable address used by LE-only controllers).
+/// On a dual-mode controller the address type stays `"public"`
+/// because the BR/EDR side still advertises the public BD_ADDR. So
+/// `address_type == "random"` is a reliable BLE-only signal in
+/// practice.
+///
+/// **Cap value.** The GAP advertising payload is 31 bytes total; the
+/// "Complete Local Name" AD structure costs 2 bytes of overhead
+/// (length + type) plus a flags AD structure usually takes 3 bytes.
+/// That leaves 26 bytes for the name in the advertisement itself.
+/// Modern controllers fall back to the scan-response packet (another
+/// 31 bytes) for the rest, so 30 bytes is the conventional safe cap
+/// recommended by the Bluetooth SIG and matches what every BLE
+/// scanner on the market displays without truncation.
+///
+/// Returns `None` (no cap, BR/EDR-style 240-byte limit applies) when
+/// the heuristic can't confirm BLE-only. This intentionally errs on
+/// "no warning" rather than spamming the operator about every
+/// dual-mode controller.
+pub(crate) fn recommend_alias_byte_cap(info: &AdapterInfo) -> Option<usize> {
+    // Conventional BLE GAP advertising-name budget. See the function
+    // doc comment for the breakdown.
+    const BLE_NAME_BYTE_CAP: usize = 30;
+    match info.address_type.as_deref() {
+        Some("random") => Some(BLE_NAME_BYTE_CAP),
+        _ => None,
+    }
 }
 
 pub async fn revert_one(
@@ -213,5 +273,60 @@ mod tests {
         // write rather than silently skipping every adapter.
         assert!(!should_skip_powered_off(&info_with_powered(Some(true))));
         assert!(!should_skip_powered_off(&info_with_powered(None)));
+    }
+
+    fn info_with_address_type(addr_type: Option<&str>) -> AdapterInfo {
+        AdapterInfo {
+            hci: "hci0".into(),
+            path: OwnedObjectPath::try_from("/org/bluez/hci0").unwrap(),
+            address: None,
+            address_type: addr_type.map(str::to_string),
+            alias: None,
+            name: None,
+            discoverable: None,
+            pairable: None,
+            powered: Some(true),
+            privacy_capable: false,
+            privacy_active: false,
+        }
+    }
+
+    /// NEV2.5: a controller that reports `AddressType = "random"`
+    /// is BLE-only and the advertising-name budget is ~30 bytes.
+    #[test]
+    fn ble_only_adapter_caps_alias_at_thirty_bytes() {
+        let info = info_with_address_type(Some("random"));
+        assert_eq!(recommend_alias_byte_cap(&info), Some(30));
+    }
+
+    /// NEV2.5: a public-address (dual-mode) controller has the
+    /// 240-byte EIR budget — return `None` so the apply path doesn't
+    /// warn for the common case.
+    #[test]
+    fn dual_mode_adapter_has_no_warn_cap() {
+        let info = info_with_address_type(Some("public"));
+        assert_eq!(recommend_alias_byte_cap(&info), None);
+    }
+
+    /// NEV2.5: when BlueZ doesn't expose AddressType (older daemons,
+    /// weird controllers) we err on "no warning" so the operator
+    /// isn't spammed about every adapter we can't identify.
+    #[test]
+    fn unknown_address_type_returns_no_cap() {
+        let info = info_with_address_type(None);
+        assert_eq!(recommend_alias_byte_cap(&info), None);
+    }
+
+    /// NEV2.5: the cap returned is exactly the conventional GAP
+    /// advertising-name budget. Pin the value so a refactor can't
+    /// accidentally shorten or lengthen the cap.
+    #[test]
+    fn ble_cap_value_is_thirty_bytes() {
+        let info = info_with_address_type(Some("random"));
+        let cap = recommend_alias_byte_cap(&info).expect("BLE-only adapter");
+        assert_eq!(
+            cap, 30,
+            "GAP Complete-Local-Name budget must remain 30 bytes — see function doc"
+        );
     }
 }

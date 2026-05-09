@@ -222,6 +222,63 @@ pub(super) mod netlink {
         if fd < 0 {
             return Err(std::io::Error::last_os_error());
         }
+        // S9 — expanded safety + lifetime invariant for the
+        // `OwnedFd::from_raw_fd` call below. `from_raw_fd` is
+        // `unsafe` because it asserts an ownership handover: the
+        // caller promises that:
+        //
+        //   1. The fd is valid (open in this process's table).
+        //   2. The fd is exclusively owned by this code path — no
+        //      other `OwnedFd` / `BorrowedFd` references it.
+        //   3. The fd will be closed exactly once, by `OwnedFd`'s
+        //      `Drop`, when the value goes out of scope.
+        //
+        // **Who owns the fd.** The kernel handed `fd` to userspace
+        // via `socket()` exactly one statement above. No other code
+        // path observes `fd` between the syscall and the
+        // `from_raw_fd` call: `fd` is an unaliased local. The
+        // `OwnedFd` returned here is then moved into a local
+        // `owned` and ultimately moved into the
+        // `NetlinkSocket { fd: owned }` field on the success path.
+        // Until that move happens, every error return below
+        // (`bind` failure, `setsockopt` failure) drops `owned` on
+        // the way out, which closes the fd. Net: every code path
+        // through this function closes the fd exactly once.
+        //
+        // **When the fd is closed.** On the success path, the
+        // `NetlinkSocket` is returned to the caller. The
+        // `NetlinkSocket` struct holds the `OwnedFd` and is moved
+        // through the `Arc<NetlinkSocket>` the consumer task holds.
+        // When the last `Arc` is dropped (orchestrator shutdown,
+        // task panic, source disable) the `OwnedFd::Drop` impl
+        // calls `close(2)`. The `shutdown(2)` call in
+        // `super::netlink::shutdown` is a *separate* concern — it
+        // wakes a blocking `recvfrom` so the reader thread can
+        // exit; it does not close the fd. This split matters: if
+        // we relied on `shutdown` for closure we'd risk closing
+        // the fd while the reader thread still held the integer
+        // and could call `recv` on a re-used fd number.
+        //
+        // **Concurrent close from the netlink subsystem.** The
+        // kernel does *not* close userspace fds out from under the
+        // process. NETLINK family sockets are subject to the same
+        // close-only-on-userspace-request contract as TCP sockets:
+        // a kernel-side teardown (e.g. an unloaded netlink module,
+        // a regulatory-domain reset) surfaces to userspace as an
+        // `ENOTCONN` / `ENETDOWN` on the next `recvfrom`, never as
+        // a closed fd. The reader loop catches that error, logs,
+        // and exits its loop; the `OwnedFd` is then dropped
+        // normally. So there is no concurrent-close race to
+        // defend against here.
+        //
+        // **Why we don't use `std::os::fd::OwnedFd::try_from`** —
+        // the `From<RawFd>` impl on stable is gated behind
+        // `from_raw_fd`'s `unsafe` precisely because the standard
+        // library cannot prove conditions (1)–(3) hold. We provide
+        // the proof above; a future Rust release may add a safe
+        // `OwnedFd::from_raw_fd_checked` that internally validates
+        // condition (1) via `fcntl(F_GETFL)`, at which point this
+        // call site should switch.
         let owned = unsafe { OwnedFd::from_raw_fd(fd) };
 
         let mut addr: libc::sockaddr_nl = unsafe { std::mem::zeroed() };
