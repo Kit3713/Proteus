@@ -96,6 +96,12 @@ struct Inner {
     connections: std::collections::HashMap<String, ConnectionState>,
     calls: Vec<MockCall>,
     available: bool,
+    /// GH#366: failure-injection for `set_cloned_mac`. When set, the
+    /// next call to `set_cloned_mac` returns the carried error instead
+    /// of touching device state. Used by the rotate-error-handling
+    /// regression test that pins "state.managed.connections is NOT
+    /// updated when the backend rejects the write".
+    set_cloned_mac_err: Option<String>,
 }
 
 #[derive(Default)]
@@ -165,6 +171,13 @@ impl MockBackend {
         if let Some(d) = inner.devices.iter_mut().find(|d| d.device.iface == iface) {
             d.renew_outcome = outcome;
         }
+    }
+
+    /// GH#366: arm the next `set_cloned_mac` call to fail with `msg`.
+    /// Cleared automatically once consumed so the test can assert
+    /// "exactly the FIRST call failed".
+    pub fn fail_next_set_cloned_mac(&self, msg: &str) {
+        self.inner.lock().unwrap().set_cloned_mac_err = Some(msg.to_string());
     }
 
     /// Snapshot of the call log in the order calls landed. Returns
@@ -255,6 +268,13 @@ impl NetworkBackend for MockBackend {
             iface: device.iface.clone(),
             mac,
         });
+        // GH#366: honour the one-shot failure injection. Recorded the
+        // call first so the test can still assert "we observed the
+        // attempt"; the recorded device state is left unchanged so the
+        // failure is observable from the caller's perspective.
+        if let Some(msg) = inner.set_cloned_mac_err.take() {
+            return Box::pin(async move { Err(anyhow::anyhow!("{msg}")) });
+        }
         if let Some(d) = inner
             .devices
             .iter_mut()
@@ -298,6 +318,7 @@ impl NetworkBackend for MockBackend {
         &'a self,
         iface: &'a str,
         cooldown: Duration,
+        _state_path: Option<&'a std::path::Path>,
     ) -> BoxFuture<'a, Result<RotateOutcome>> {
         let mut inner = self.inner.lock().unwrap();
         inner.calls.push(MockCall::RotateIfNeeded {
@@ -479,7 +500,7 @@ mod tests {
         backend.set_rotate_outcome("wlan0", RotateOutcome::Rotated { new_mac: mac });
         rt().block_on(async {
             let outcome = backend
-                .rotate_if_needed("wlan0", Duration::from_secs(60))
+                .rotate_if_needed("wlan0", Duration::from_secs(60), None)
                 .await
                 .unwrap();
             assert_eq!(outcome, RotateOutcome::Rotated { new_mac: mac });
@@ -491,7 +512,7 @@ mod tests {
         let backend = MockBackend::new();
         rt().block_on(async {
             let outcome = backend
-                .rotate_if_needed("eth9", Duration::from_secs(0))
+                .rotate_if_needed("eth9", Duration::from_secs(0), None)
                 .await
                 .unwrap();
             assert_eq!(outcome, RotateOutcome::BackendUnavailable);

@@ -179,10 +179,19 @@ pub trait NetworkBackend: Send + Sync {
     /// Rotation entry point used by the NM dispatcher (issue
     /// #206-C). Backends that don't yet implement this return
     /// [`RotateOutcome::BackendUnavailable`].
+    ///
+    /// GH#381: `state_path` is the operator-supplied state file (from
+    /// `--state`); when `None` the backend defaults to
+    /// `crate::commands::DEFAULT_STATE_PATH`. Pre-fix, the NM backend
+    /// hardcoded the default path and silently ignored `--state`, so a
+    /// dispatcher run with a custom state file recorded the cooldown
+    /// stamp on disk but the next `rotate-if-needed` check read from
+    /// the default file and rotated again.
     fn rotate_if_needed<'a>(
         &'a self,
         iface: &'a str,
         cooldown: Duration,
+        state_path: Option<&'a std::path::Path>,
     ) -> BoxFuture<'a, Result<RotateOutcome>>;
 
     /// Read the human-friendly profile id for `connection` (`connection.id`
