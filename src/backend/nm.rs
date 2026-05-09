@@ -7,7 +7,9 @@
 //! impl so non-NM backends can drop in.
 
 use std::path::Path;
-use std::time::Duration;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+use tokio::sync::Mutex as AsyncMutex;
 
 use anyhow::{Context, Result, anyhow};
 use zbus::zvariant::{ObjectPath, OwnedObjectPath};
@@ -21,21 +23,77 @@ use crate::mac::{Mac, factory};
 use crate::nm::{self, ConnectionSettings, DeviceKind};
 use crate::state::DhcpSettingsSnapshot;
 
-/// NetworkManager-backed implementation. Holds nothing — the system
-/// DBus connection is opened lazily per call so the backend value is
-/// cheap to construct and cheap to clone for trait-object dispatch.
-#[derive(Debug, Default)]
-pub struct NmBackend;
+/// How long an `available()` answer stays valid before the backend
+/// re-probes. NBE.2: `select_auto` and `availability_matrix` (and any
+/// caller doing back-to-back `available` checks within one command
+/// invocation) used to syscall `/run/systemd/netif` per call. The TTL
+/// is intentionally short — long enough that two consecutive trait
+/// calls share one probe, short enough that an operator who restarts
+/// NetworkManager mid-command sees the new state on the next pass.
+const AVAIL_CACHE_TTL: Duration = Duration::from_secs(2);
+
+/// NetworkManager-backed implementation.
+///
+/// NBE.1: previously every trait method opened a fresh
+/// `zbus::Connection::system()`, which re-authenticates against the
+/// daemon and pays the full SASL handshake on each call. A single
+/// `proteus rotate` invocation hits the backend ~6-10 times (list_devices,
+/// list_connections, read_connection_id/uuid per profile, set_cloned_mac,
+/// state book-keeping) so the cumulative cost was visible in the rotate
+/// hot path. The cached `Arc<Connection>` is opened lazily on first use
+/// and re-used by every subsequent call on the same backend value;
+/// `Arc<Connection>` is the same shape `zbus` itself uses internally,
+/// so cloning it is a cheap atomic refcount bump.
+///
+/// NBE.2: the `available()` answer is cached behind the same backend
+/// value with a short TTL so `select_auto` (NM probe → networkd probe →
+/// raw probe) and `availability_matrix` (every backend probed for the
+/// doctor matrix) don't re-syscall on back-to-back checks.
+#[derive(Default)]
+pub struct NmBackend {
+    /// Lazily-initialised system bus connection. `None` until the first
+    /// real DBus method is called; once filled, every subsequent call
+    /// shares the same connection. `tokio::sync::Mutex` because the
+    /// initialisation itself is async (the `Connection::system()` call).
+    conn: AsyncMutex<Option<Arc<zbus::Connection>>>,
+    /// Cached `available()` decision + the wall-clock `Instant` it was
+    /// taken. The TTL is `AVAIL_CACHE_TTL`; `None` means "never probed".
+    avail_cache: AsyncMutex<Option<(bool, Instant)>>,
+}
+
+// Hand-written Debug because `tokio::sync::Mutex` is not `Debug` on its
+// inner cell content — we just want an opaque marker so `#[derive(Debug)]`
+// on consumers (like the trait-object placeholder) doesn't break.
+impl std::fmt::Debug for NmBackend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NmBackend").finish_non_exhaustive()
+    }
+}
 
 impl NmBackend {
     pub fn new() -> Self {
-        Self
+        Self {
+            conn: AsyncMutex::new(None),
+            avail_cache: AsyncMutex::new(None),
+        }
     }
 
-    async fn connect() -> Result<zbus::Connection> {
-        zbus::Connection::system()
+    /// Return the cached system bus connection, opening + caching it on
+    /// first use. NBE.1: every NM trait method routes through this
+    /// rather than calling `zbus::Connection::system()` directly so a
+    /// single `proteus rotate` invocation re-uses one authenticated
+    /// connection across the ~10 trait calls it makes.
+    async fn shared_conn(&self) -> Result<Arc<zbus::Connection>> {
+        let mut guard = self.conn.lock().await;
+        if let Some(c) = guard.as_ref() {
+            return Ok(Arc::clone(c));
+        }
+        let c = zbus::Connection::system()
             .await
-            .context("connecting to system DBus (NetworkManager)")
+            .context("connecting to system DBus (NetworkManager)")?;
+        let arc = Arc::new(c);
+        *guard = Some(Arc::clone(&arc));
+        Ok(arc)
     }
 }
 
@@ -48,15 +106,29 @@ impl NetworkBackend for NmBackend {
         // /run/NetworkManager and /var/run/NetworkManager are the same
         // signal `commands::status::detect_system` uses; cheap and
         // mirrors what the user already sees in `proteus status`.
-        Box::pin(async {
-            Path::new("/run/NetworkManager").exists()
-                || Path::new("/var/run/NetworkManager").exists()
+        //
+        // NBE.2: cache the answer for `AVAIL_CACHE_TTL` so back-to-back
+        // probes (auto-select + availability_matrix in `proteus doctor`,
+        // or two trait callers in one rotate) share one syscall pair.
+        // The TTL is short enough that an operator restarting NM mid-
+        // run sees the change in their next command.
+        Box::pin(async move {
+            let mut guard = self.avail_cache.lock().await;
+            if let Some((value, taken)) = *guard
+                && taken.elapsed() < AVAIL_CACHE_TTL
+            {
+                return value;
+            }
+            let v = Path::new("/run/NetworkManager").exists()
+                || Path::new("/var/run/NetworkManager").exists();
+            *guard = Some((v, Instant::now()));
+            v
         })
     }
 
     fn list_devices<'a>(&'a self) -> BoxFuture<'a, Result<Vec<BackendDevice>>> {
         Box::pin(async move {
-            let conn = Self::connect().await?;
+            let conn = self.shared_conn().await?;
             let devs = nm::list_devices(&conn).await?;
             let out = devs
                 .into_iter()
@@ -103,15 +175,33 @@ impl NetworkBackend for NmBackend {
                     device.kind
                 )
             })?;
-            if device.connections.is_empty() {
+            let conn = self.shared_conn().await?;
+            // NBE.8: re-resolve the device by iface name on every
+            // mutating call so the connection-profile list reflects the
+            // CURRENT NM state. The `device.connections` cached on the
+            // value passed in was captured by `list_devices` earlier in
+            // the command and may be stale if NM added or removed a
+            // profile in the interim (e.g. nmcli connection add raced
+            // against the rotate). Falling back to the cached list
+            // when the re-resolve cannot find the device keeps
+            // operator-friendly errors on the unlikely "device removed"
+            // race.
+            let connections = match nm::find_device_by_iface(&conn, &device.iface).await {
+                Ok(d) => d
+                    .connections
+                    .iter()
+                    .map(|p| ConnectionRef::new(p.as_str()))
+                    .collect::<Vec<_>>(),
+                Err(_) => device.connections.clone(),
+            };
+            if connections.is_empty() {
                 return Err(anyhow!(
                     "backend::nm: device {} has no NM connection profile",
                     device.iface
                 ));
             }
-            let conn = Self::connect().await?;
             // Issue #122: write to every profile, not just the first.
-            for cref in &device.connections {
+            for cref in &connections {
                 let path = parse_connection_ref(cref)?;
                 nm::apply::set_cloned_mac(&conn, &path, kind, mac).await?;
             }
@@ -124,15 +214,24 @@ impl NetworkBackend for NmBackend {
         device: &'a BackendDevice,
     ) -> BoxFuture<'a, Result<Option<String>>> {
         Box::pin(async move {
-            let Some(cref) = device.connections.first() else {
-                return Ok(None);
-            };
             let kind = match kind_to_nm(device.kind) {
                 Some(k) => k,
                 None => return Ok(None),
             };
-            let conn = Self::connect().await?;
-            let path = parse_connection_ref(cref)?;
+            let conn = self.shared_conn().await?;
+            // NBE.8: re-resolve by iface so a stale `device.connections`
+            // list doesn't mask a connection NM has since added.
+            let cref_opt = match nm::find_device_by_iface(&conn, &device.iface).await {
+                Ok(d) => d
+                    .connections
+                    .first()
+                    .map(|p| ConnectionRef::new(p.as_str())),
+                Err(_) => device.connections.first().cloned(),
+            };
+            let Some(cref) = cref_opt else {
+                return Ok(None);
+            };
+            let path = parse_connection_ref(&cref)?;
             nm::apply::read_cloned_mac(&conn, &path, kind).await
         })
     }
@@ -148,6 +247,7 @@ impl NetworkBackend for NmBackend {
         &'a self,
         iface: &'a str,
         cooldown: Duration,
+        state_path: Option<&'a std::path::Path>,
     ) -> BoxFuture<'a, Result<RotateOutcome>> {
         // Issue #206-C: structured entry point used by the NM
         // dispatcher in place of the previous `proteus current --json | sed`
@@ -155,7 +255,12 @@ impl NetworkBackend for NmBackend {
         // compatibility — the cooldown decision lives here, the actual
         // mutation is delegated to `commands::rotate::run` (no DBus
         // spelling out).
-        Box::pin(async move { rotate_if_needed_inner(iface, cooldown).await })
+        //
+        // GH#381: honor the operator-supplied `--state` path. Stream 1
+        // surfaced a warn for the ignored arg; the actual fix needed
+        // a backend-trait change, threaded through here so the cooldown
+        // read AND the inner rotate book-keeping land on the same file.
+        Box::pin(async move { rotate_if_needed_inner(iface, cooldown, state_path).await })
     }
 
     fn read_connection_id<'a>(
@@ -164,7 +269,7 @@ impl NetworkBackend for NmBackend {
     ) -> BoxFuture<'a, Result<Option<String>>> {
         Box::pin(async move {
             let path = parse_connection_ref(connection)?;
-            let conn = Self::connect().await?;
+            let conn = self.shared_conn().await?;
             nm::apply::read_connection_id(&conn, &path).await
         })
     }
@@ -175,7 +280,7 @@ impl NetworkBackend for NmBackend {
     ) -> BoxFuture<'a, Result<Option<String>>> {
         Box::pin(async move {
             let path = parse_connection_ref(connection)?;
-            let conn = Self::connect().await?;
+            let conn = self.shared_conn().await?;
             nm::apply::read_connection_uuid(&conn, &path).await
         })
     }
@@ -187,7 +292,7 @@ impl NetworkBackend for NmBackend {
     ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
             let path = parse_connection_ref(connection)?;
-            let conn = Self::connect().await?;
+            let conn = self.shared_conn().await?;
             // Read current settings, write the snapshot's keys, push
             // back via the secrets-aware updater. `revert_dhcp_settings`
             // is the same routine the per-command revert path uses;
@@ -206,23 +311,38 @@ impl NetworkBackend for NmBackend {
     ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
             let path = parse_connection_ref(connection)?;
-            let conn = Self::connect().await?;
+            let conn = self.shared_conn().await?;
             crate::ipv6::nm::apply_settings(&conn, &path, &settings).await
         })
     }
 
     fn renew_lease<'a>(&'a self, device: &'a BackendDevice) -> BoxFuture<'a, Result<RenewOutcome>> {
         Box::pin(async move {
-            if device.identifier.is_empty() {
-                return Err(anyhow!(
-                    "backend::nm: device {} has no NM device path",
-                    device.iface
-                ));
-            }
-            let conn = Self::connect().await?;
-            let dev_path = ObjectPath::try_from(device.identifier.as_str())
-                .with_context(|| format!("parsing NM device path '{}'", device.identifier))?;
-            let owned: OwnedObjectPath = dev_path.into();
+            let conn = self.shared_conn().await?;
+            // NBE.8: re-resolve the NM Device object path by iface name
+            // rather than trusting `device.identifier`. NM can recycle a
+            // device path on a `udev` add/remove (USB Wi-Fi unplug-replug,
+            // a netns move) so the path captured at `list_devices` time
+            // may now point to a different device or be stale. Falling
+            // back to the cached identifier preserves the prior behaviour
+            // when the iface lookup fails (e.g. NM is mid-restart).
+            let owned: OwnedObjectPath = match nm::find_device_by_iface(&conn, &device.iface).await
+            {
+                Ok(d) => d.path,
+                Err(_) => {
+                    if device.identifier.is_empty() {
+                        return Err(anyhow!(
+                            "backend::nm: device {} has no NM device path",
+                            device.iface
+                        ));
+                    }
+                    let dev_path =
+                        ObjectPath::try_from(device.identifier.as_str()).with_context(|| {
+                            format!("parsing NM device path '{}'", device.identifier)
+                        })?;
+                    dev_path.into()
+                }
+            };
             let outcome = nm::dhcp::renew_lease(&conn, &owned).await?;
             Ok(match outcome {
                 nm::dhcp::RenewOutcome::Reapplied => RenewOutcome::Reapplied,
@@ -239,7 +359,7 @@ impl NetworkBackend for NmBackend {
     ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
             let path = parse_connection_ref(connection)?;
-            let conn = Self::connect().await?;
+            let conn = self.shared_conn().await?;
             crate::enterprise_wifi::nm::write_anonymous_identity(&conn, &path, value).await
         })
     }
@@ -270,9 +390,27 @@ impl NetworkBackend for NmBackend {
 /// that the caller surfaces with the trail "rotate succeeded but state
 /// read-back failed" so the operator can see the rotate landed and the
 /// only thing missing is the post-mutation observation.
-async fn rotate_if_needed_inner(iface: &str, cooldown: Duration) -> Result<RotateOutcome> {
-    let state_path = std::path::PathBuf::from(crate::commands::DEFAULT_STATE_PATH);
-    rotate_if_needed_inner_with(iface, cooldown, &state_path, |iface, sp| {
+async fn rotate_if_needed_inner(
+    iface: &str,
+    cooldown: Duration,
+    state_path: Option<&std::path::Path>,
+) -> Result<RotateOutcome> {
+    // GH#381: use the operator-supplied state path when present, falling
+    // back to the documented default. Pre-fix, the default was
+    // hardcoded so `rotate-if-needed --state /tmp/altered.json` read
+    // cooldown from the default file, ignored the operator's choice,
+    // and let the inner `commands::rotate::run` write the new MAC to
+    // the alternate path — leaving the two views permanently
+    // out-of-sync.
+    let owned_default;
+    let state_path: &std::path::Path = match state_path {
+        Some(p) => p,
+        None => {
+            owned_default = std::path::PathBuf::from(crate::commands::DEFAULT_STATE_PATH);
+            owned_default.as_path()
+        }
+    };
+    rotate_if_needed_inner_with(iface, cooldown, state_path, |iface, sp| {
         // Production rotate: the existing CLI helper. Sync — builds its
         // own current-thread runtime; called from inside our outer
         // runtime via the same shape `commands::rotate::run_if_needed`
