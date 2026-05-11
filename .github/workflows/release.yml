@@ -190,7 +190,7 @@ jobs:
             echo "kernel_uname=$(uname -srm)"
             echo "binary_sha256=$(sha256sum dist-out/proteus-x86_64-unknown-linux-gnu | cut -d' ' -f1)"
           } > dist-out/proteus-x86_64-unknown-linux-gnu.build-info
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: proteus-x86_64
           path: dist-out/*
@@ -258,7 +258,7 @@ jobs:
             echo "host_kernel_uname=$(uname -srm)"
             echo "binary_sha256=$(sha256sum dist-out/proteus-aarch64-unknown-linux-gnu | cut -d' ' -f1)"
           } > dist-out/proteus-aarch64-unknown-linux-gnu.build-info
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: proteus-aarch64
           path: dist-out/*
@@ -309,7 +309,7 @@ jobs:
           find ~/rpmbuild/SRPMS -type f -name '*.rpm' -exec cp -v {} dist-out/ \;
           ( cd dist-out && for f in *.rpm; do sha256sum "$f" > "$f.sha256"; done )
           ls -la dist-out
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: proteus-rpm
           path: dist-out/*
@@ -393,7 +393,7 @@ jobs:
             -exec cp -v {} dist-out/ \;
           ( cd dist-out && for f in *.deb; do [ -e "$f" ] && sha256sum "$f" > "$f.sha256" || true; done )
           ls -la dist-out
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: proteus-deb
           path: dist-out/*
@@ -469,7 +469,7 @@ jobs:
           find dist/arch -maxdepth 1 -type f -name '*.pkg.tar.zst' -exec cp -v {} dist-out/ \;
           ( cd dist-out && for f in *.pkg.tar.zst; do sha256sum "$f" > "$f.sha256"; done )
           ls -la dist-out
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: proteus-arch
           path: dist-out/*
