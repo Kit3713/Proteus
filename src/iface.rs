@@ -6,15 +6,17 @@
 //! interface-name validators (`src/ipv6/mod.rs::validate_iface_name`,
 //! `src/mac/factory.rs::is_valid_iface_name`, `src/rf/mod.rs::is_safe_iface`,
 //! `src/kill_switch/mod.rs::is_safe_iface`, plus assorted private inline
-//! shapes). Each enforces a slightly different rule set: some refuse
-//! leading `-`, some don't; some cap at 15 bytes, some at 16; some allow
-//! `_`, some don't. That fragmentation invites drift the next time a new
-//! call site appears.
+//! shapes). Each enforced a slightly different rule set: some refused
+//! leading `-`, some didn't; some capped at 15 bytes, some at 16; some
+//! allowed `_`, some didn't. That fragmentation invited drift the next
+//! time a new call site appeared.
 //!
-//! This module ships the canonical helper. The intent — per the roadmap —
-//! is for new code to call [`validate`] directly; the per-module
-//! validators stay in place for now (most live in files Stream 4 / 5 / 8
-//! also touch this wave) and migrate to this helper in a future wave.
+//! This module is the canonical helper. As of the GH#359 follow-up wave
+//! every per-module validator in the tree is a thin wrapper that
+//! delegates here — they keep their existing function signature so the
+//! local call sites still read naturally, but the rule set lives in one
+//! place. New code should prefer [`validate`] (typed reason) or
+//! [`is_valid`] (bool) directly.
 //!
 //! ## Rule set
 //!
