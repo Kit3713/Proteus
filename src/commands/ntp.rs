@@ -229,7 +229,7 @@ fn restart_timesyncd() -> Result<()> {
     }
     let stderr = String::from_utf8_lossy(&out.stderr);
     Err(anyhow::anyhow!(
-        "systemctl restart {TIMESYNCD_UNIT} exited with {}: {}",
+        "systemctl restart {TIMESYNCD_UNIT} exited with {}: {}; see proteus wiki troubleshooting",
         out.status,
         stderr.trim()
     ))

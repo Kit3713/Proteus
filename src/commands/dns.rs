@@ -242,7 +242,7 @@ fn restart_resolved() -> Result<()> {
     }
     let stderr = String::from_utf8_lossy(&out.stderr);
     Err(anyhow::anyhow!(
-        "systemctl restart {RESOLVED_UNIT} exited with {}: {}",
+        "systemctl restart {RESOLVED_UNIT} exited with {}: {}; see proteus wiki dns",
         out.status,
         stderr.trim()
     ))

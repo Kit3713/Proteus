@@ -341,7 +341,7 @@ fn sysctl_system_reload() -> Result<()> {
     }
     let stderr = String::from_utf8_lossy(&output.stderr);
     anyhow::bail!(
-        "sysctl --system exited with {}: {}",
+        "sysctl --system exited with {}: {}; see proteus wiki stack-fingerprint",
         output.status,
         stderr.trim()
     )
