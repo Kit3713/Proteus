@@ -331,9 +331,13 @@ NM2.7, NCMD2.1, NCMD2.5, NEV2.7.
 - ✅ `proteus revert` honours global `--state` flag (GH#386).
 - ✅ `timer resume` short-name maps to the actual shipped artifact
   `proteus-resume.service` (GH#352).
-- 🚧 `rotate-if-needed --state` plumbed at CLI but the backend trait
-  hardcodes the read-back path; full fix needs a Stream 5 trait
-  signature change (GH#381 — partial / TODO).
+- ✅ `rotate-if-needed --state` end-to-end. Backend trait
+  `rotate_if_needed` now takes `state_path: Option<&'a Path>` (see
+  `src/backend/mod.rs:190` and the matching impls in `nm.rs`,
+  `mock.rs`, `raw.rs`, `networkd.rs`). The inner
+  `rotate_if_needed_inner` falls back to `DEFAULT_STATE_PATH` only
+  when no path is supplied. Same trait is reused by C6 (mock flock
+  on opt-in state path) and N14 (per-iface mutex registry). (GH#381)
 
 **Acceptance:** end-to-end script that calls every mutator without `--yes` and
 asserts exit code 64 (`CONFIRMATION_REQUIRED`); run watch with `--interval 0s`
@@ -970,11 +974,22 @@ silent-deception class.
 **Issues:** D1–D8, N12.6, NPKG.13, plus the four ⏳ items carried forward
 from [`ROADMAP-v0.3.md`](ROADMAP-v0.3.md):
 
-- ⏳ Audit pass: every error string in `src/error.rs` and every `bail!` /
-  `anyhow!` callsite carries a `wiki <page>` hint. Stream 10 sweep
-  enumerated 208 `bail!`/`anyhow!` sites across 40 files (sweep can't
-  edit non-error.rs source files in this stream — see `Wiki-hint
-  follow-up checklist` below).
+- 🟢 Audit pass: substantially landed across multiple stream-aligned
+  PRs. Files swept so far:
+  - `src/persona/*`, `src/commands/{rotate,pin,config_cmd}.rs`
+    (PR #428)
+  - `src/init/*`, `CHANGELOG.md`, `wiki/cli.md` (PR #427)
+  - `src/backend/{select,raw,networkd}.rs`,
+    `src/enterprise_wifi/mod.rs` (PR #433)
+  - `src/commands/{dns,ntp,resolved,stack}.rs` (PR #434)
+  - `src/commands/{enterprise_wifi,timer,apply,watch}.rs` (PR #440)
+  - `src/hostname/mod.rs` (PR #441)
+  Total ~75 hints appended across the operator-facing error surface;
+  internal/defensive errors skipped per policy. Remaining files in the
+  original 40-file checklist either had zero operator-facing
+  `bail!`/`anyhow!` sites or route errors through `eprintln!` +
+  `Ok(exit::*)` (so the wiki hint flows through anyway when the
+  inner call surfaces one).
 - ✅ Bypass hardening pass: review every place we shell out — 33
   `Command::new` sites enumerated and pattern-classified in
   `docs/security/external-review.md`.
@@ -1006,8 +1021,14 @@ from [`ROADMAP-v0.3.md`](ROADMAP-v0.3.md):
   controls (`\x07`), C1 controls (`\u{009b}`), and backslash —
   previously each amplified output by 4×, 6×, and 2× respectively
   past the clamp.
-- ⏳ Wiki-hint audit pass on every `bail!` / `anyhow!` site (frontier item).
-  Stream 10 sweep enumerated 208 sites; see follow-up checklist below.
+- 🟢 Wiki-hint audit pass on every `bail!` / `anyhow!` site (frontier item).
+  Stream 10 multi-PR sweep covered the persona/rotate/config/pin (PR
+  #428), init (PR #427), backend/select/networkd/enterprise (PR
+  #433), dns/ntp/resolved/stack (PR #434), enterprise-wifi/timer/
+  apply/watch (PR #440), and hostname (PR #441) modules; ~75 hints
+  appended. Remaining files in the 40-file checklist had zero
+  operator-facing bail/anyhow sites or used the eprintln+exit-code
+  pattern (where hints flow through transitively).
 - ✅ Bypass-hardening pass: enumerate every `Command::new` site and confirm
   argument-array form (no shell interpolation). Done in
   `docs/security/external-review.md`.
