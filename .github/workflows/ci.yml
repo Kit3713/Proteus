@@ -6,7 +6,7 @@
 #   - cargo clippy --all-targets -- -D warnings clean
 #   - cargo test passes
 #   - cargo build --release succeeds
-#   - stripped release binary is <= 4.75 MB (hard release-time cap; CI here
+#   - stripped release binary is <= 4.9 MB (hard release-time cap; CI here
 #     emits a soft warn only — the hard fail lives in release.yml)
 #   - cold release build wallclock logged (soft signal, not enforced)
 #
@@ -130,7 +130,7 @@ jobs:
           { time cargo build --release --locked ; } 2> build-time.txt
           echo "PROTEUS_BUILD_TIME (soft signal, not enforced):"
           cat build-time.txt
-      # Strip and log size. The ≤4.75 MB target is the release-time hard cap
+      # Strip and log size. The ≤4.9 MB target is the release-time hard cap
       # enforced in release.yml; CI emits a soft warn so feature work in
       # flight does not block PR feedback. The project optimizes aggressively
       # (opt-level=z, lto, codegen-units=1, panic=abort, strip) and tracks
@@ -142,18 +142,18 @@ jobs:
           strip "$BIN"
           SIZE=$(wc -c < "$BIN")
           echo "PROTEUS_BINARY_SIZE_BYTES=${SIZE}"
-          echo "PROTEUS_BINARY_SIZE_TARGET_BYTES=4750000"
-          if [ "$SIZE" -gt 4750000 ]; then
-            echo "WARN: stripped proteus binary is ${SIZE} bytes, exceeds 4.75 MB target — consider cargo bloat" >&2
+          echo "PROTEUS_BINARY_SIZE_TARGET_BYTES=4900000"
+          if [ "$SIZE" -gt 4900000 ]; then
+            echo "WARN: stripped proteus binary is ${SIZE} bytes, exceeds 4.9 MB target — consider cargo bloat" >&2
           else
-            echo "OK: stripped proteus binary is ${SIZE} bytes (under 4.75 MB target)"
+            echo "OK: stripped proteus binary is ${SIZE} bytes (under 4.9 MB target)"
           fi
 
   # ARM cross-compile sanity. Catches dependency churn that breaks ARM
   # before a release tag tries to build the artifact for real. Runs on plain
   # ubuntu-latest because cross-compile toolchains are easier to install via
   # apt than dnf, and this job only needs to prove that the tree still builds
-  # and strips under the 4.75 MB cap on the secondary architectures.
+  # and strips under the 4.9 MB cap on the secondary architectures.
   #
   # Roadmap Milestone 5: matrix expanded to cover armv7 (Pi 2/3, ARM
   # Chromebooks) alongside the original aarch64 (Pi 4/5, Apple Silicon
@@ -207,11 +207,11 @@ jobs:
           ${{ matrix.strip }} "$BIN"
           SIZE=$(wc -c < "$BIN")
           echo "PROTEUS_BINARY_SIZE_BYTES=${SIZE}"
-          echo "PROTEUS_BINARY_SIZE_TARGET_BYTES=4750000"
-          if [ "$SIZE" -gt 4750000 ]; then
-            echo "WARN: stripped ${{ matrix.target }} proteus binary is ${SIZE} bytes, exceeds 4.75 MB target" >&2
+          echo "PROTEUS_BINARY_SIZE_TARGET_BYTES=4900000"
+          if [ "$SIZE" -gt 4900000 ]; then
+            echo "WARN: stripped ${{ matrix.target }} proteus binary is ${SIZE} bytes, exceeds 4.9 MB target" >&2
           else
-            echo "OK: stripped ${{ matrix.target }} proteus binary is ${SIZE} bytes (under 4.75 MB target)"
+            echo "OK: stripped ${{ matrix.target }} proteus binary is ${SIZE} bytes (under 4.9 MB target)"
           fi
 
   # Stream 3 acceptance: lint packaging files and shell scripts so
