@@ -882,13 +882,18 @@ L‑3 (residual), audit I‑1, NEV2.1.
   `src/captive_portal/mod.rs` runs both fields through
   `percent_encode_request_target` / `percent_encode_request_safe`
   before the request blob is assembled.
-- ⏳ Restrict polkit policy to `unix-group:wheel` / `sudo` and add a runtime
+- 🟡 Restrict polkit policy to `unix-group:wheel` / `sudo` and add a runtime
   check in `proteus doctor` (S7, B15). Policy file annotated; group
   enforcement requires a polkit JS rule under
   `/etc/polkit-1/rules.d/` (XML format does not accept a unix-group
   selector). Doctor runtime check deferred. **Maintainer decision needed:**
   conflicts with the `polkit_mutating_actions_do_not_cache_auth` test pin
-  from issue #133.
+  from issue #133. **Docs portion landed via PR #446** —
+  `wiki/polkit-hardening.md` documents the optional JS recipe operators
+  can apply today plus the `pkcheck` runtime-check pattern, with explicit
+  guidance on avoiding the auth-cache conflict. Code portion (default
+  policy + `proteus doctor` runtime check) remains the maintainer's
+  decision.
 - ✅ Expand the safety comment on `OwnedFd::from_raw_fd` (S9) —
   `src/events/source/link_flap.rs::netlink::open_netlink` now
   documents ownership handover, close-once invariant, kernel
