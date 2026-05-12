@@ -222,7 +222,7 @@ impl Probe for MockProbe {
 // the same three-way outcome regardless of which kernel call failed.
 mod raw {
     use super::{Mac, ProbeOutcome};
-    use anyhow::{Context, Result, bail};
+    use anyhow::{Context, Result};
     use std::ffi::CString;
     use std::io;
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
@@ -370,18 +370,10 @@ mod raw {
     // ---- low-level libc wrappers -----------------------------------------
 
     fn validate_iface(iface: &str) -> Result<()> {
-        if iface.is_empty() {
-            bail!("empty iface name");
-        }
-        if iface.contains('\0') {
-            bail!("iface contains NUL byte");
-        }
-        if iface.len() >= 16 {
-            // IFNAMSIZ on Linux is 16 — a name longer than that can't be
-            // looked up via if_nametoindex.
-            bail!("iface name too long");
-        }
-        Ok(())
+        // GH#359: rules live in `crate::iface`. Map the typed
+        // `InvalidIface` reason into the same `bail!`-style anyhow
+        // error the surrounding `?` chain expects.
+        crate::iface::validate(iface).map_err(|e| anyhow::anyhow!("iface name rejected: {e}"))
     }
 
     fn if_nametoindex(iface: &str) -> Result<u32> {

@@ -202,12 +202,14 @@ pub fn iw_present() -> bool {
 /// `/`, NUL, or a leading `-`. Today these come from kernel-validated
 /// sources (sysfs walks, NM Device proxy), but the caller has no way to
 /// see that and a future call site might forward attacker-shaped input.
+///
+/// GH#359: rules live in [`crate::iface`] — this wrapper is kept as a
+/// thin alias so the existing `if !is_safe_iface(...)` call shape reads
+/// naturally. The central validator is strictly stricter than the old
+/// `is_ascii_graphic` set (it limits punctuation to `_`, `.`, `-`),
+/// which is the audit-faithful direction.
 fn is_safe_iface(iface: &str) -> bool {
-    !iface.is_empty()
-        && !iface.starts_with('-')
-        && iface
-            .bytes()
-            .all(|b| b != b'/' && b != 0 && b.is_ascii_graphic())
+    crate::iface::is_valid(iface)
 }
 
 /// Re-shape `crate::bluetooth::list_adapters` output for the inventory caller.
