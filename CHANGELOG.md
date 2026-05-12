@@ -11,6 +11,15 @@ landed, what is in flight, and what is on the bench. See
 
 ## [Unreleased]
 
+Wave-2 v0.4.x hardening pass — closes every reachable High and Medium
+roadmap ⏳ item across CLI safety, events daemon, NM backend, state
+lock, panic hardening, error handling, security surface, and the
+Stream 10 wiki-hint sweep. Only intentional defers remain in
+`docs/ROADMAP.md`: typed-error refactor (cycle-sized work for v0.5+),
+real-world Wi-Fi testing (needs physical access), and independent
+security review (needs external party). See the roadmap for the
+per-stream landing details.
+
 ### Known sharp edges
 
 - **CLI prefix matching (CL5)** — `clap` accepts shortest-unambiguous
@@ -21,6 +30,163 @@ landed, what is in flight, and what is on the bench. See
   out full subcommand names — `proteus pin`, not `proteus pi`. There
   is no commitment to keeping prefix resolutions stable across
   releases.
+
+### Security
+
+- **NM `GetSecrets` failure surfacing (E6)** — `nm::update_with_secrets`
+  routes through a new `get_secrets_or_warn` chokepoint with typed
+  benign-vs-hard error classification. `AccessDenied` (polkit),
+  `NoReply` (DBus disconnect), and unrecognised NM `MethodError`
+  variants land as hard failures (with `tracing::error!` and an
+  abort BEFORE `proxy.update(settings)`, so the stored secret is never
+  silently wiped); empty dicts, `SettingNotFound`, `InvalidSetting`,
+  `AgentManager.NoSecrets`, `InvalidProperty`, `MissingProperty`, and
+  FDO `UnknownProperty`/`UnknownInterface` stay benign and merge as
+  empty. Tracing routes the connection label through `display_string`
+  so attacker-controlled secret values can't redraw `journalctl -t
+  proteus`.
+- **State-lock skew detection (C2)** — `backend::nm::remaining_cooldown`
+  now treats `last > now` (wall-clock moved backward) and
+  `elapsed > 30 days` (when configured cooldown < 30 days) as skew
+  signals: returns `None` + `tracing::warn!` so a rotate proceeds
+  rather than ratcheting into an "in the future" trap. Long-cooldown
+  operators (≥ 30 days) get the literal remaining-budget answer.
+- **Per-iface rotate debounce (N14)** — `backend::nm` now keeps a
+  process-wide per-iface `Arc<tokio::sync::Mutex<()>>` registry,
+  acquired BEFORE the state lock. Two same-process concurrent
+  `rotate_if_needed` tasks on the same iface now fully serialise
+  (state lock's reentrancy used to let both pass the cooldown
+  check). Different ifaces still proceed in parallel.
+- **Polkit hardening recipe** (`wiki/polkit-hardening.md`) — documents
+  the optional `/etc/polkit-1/rules.d/49-proteus.rules` JS rule that
+  restricts Proteus actions to `unix-group:wheel`/`sudo`, plus the
+  `pkcheck --action-id ... --process $$` runtime-check pattern.
+  Cross-linked from `wiki/security-checklist.md` and `wiki/_index.md`.
+
+### Bug fixes
+
+- **NCMD2.4 wire-up** — `revert::validate_cached_connection_uuids`
+  is now called from `revert_best_effort` BEFORE any per-feature
+  revert runs and honours the global `--state` override. Recycled
+  NM uuids no longer cause Proteus to restore its cached snapshot
+  onto an unrelated profile.
+- **`--yes` end-to-end coverage (CL2/M1/N12.1/N12.2/N12.3)** — DHCP
+  `apply`/`revert`, portal `mark`/`unmark`/`open`, and `unpin` now
+  honour the project-wide `--yes` gate; previously the flag was
+  silently dropped on dispatch's rest-pattern. Closes #348, #375,
+  #391.
+- **`rotate-if-needed --state` end-to-end (GH#381)** — backend trait
+  signature now takes `state_path: Option<&Path>`; every impl
+  (nm, mock, raw, networkd) honours it; C6 (mock flock) and N14
+  (per-iface mutex) reuse the same arg.
+- **`watch --interval` lower bound (CL1/CL7)** — sub-1ms intervals
+  rejected at parse time with CONFIG_ERROR (65) instead of pegging
+  a CPU core via `thread::sleep(0)`.
+- **CaptivePortalReload primitive restored (R4)** — `Arc<RwLock<
+  CaptivePortalConfig>>` shape exposed in `src/captive_portal/mod.rs`
+  with `new`/`snapshot`/`swap`/`handle` + `Clone`. Tests that
+  previously couldn't compile now do.
+- **NM `Reapply` race detection (NBE.7)** — `nm/dhcp.rs::renew_lease`
+  reads `Settings.Connection.VersionId` (NM 1.20+) and passes it to
+  `Device.Reapply`, so a concurrent `nmcli connection modify` surfaces
+  as a DBus version-mismatch error rather than a silent stale-write.
+- **`ethtool -P` parser accepts Linux 6.3+ headers (NBE.10)** — matches
+  both `permanent address:` and `permanent mac address:` (Intel
+  iwlwifi variant).
+- **Events daemon SIGTERM shutdown drain (C4)** — `tokio::select!`
+  races the 250ms tick against `SignalKind::terminate()` /
+  `SignalKind::interrupt()`. On signal the loop breaks normally so
+  the existing `shutdown_tasks` source drain + in-flight rotate
+  `JoinHandle` drain (both bounded at 5s) become reachable from
+  systemd's `ExecStop` path.
+- **Handler-panic visibility (C7)** — `EventRegistry::fire` wraps
+  every `h.handle(&trigger)` in `catch_unwind(AssertUnwindSafe(...))`,
+  logs panics at `tracing::error!` with `handler_index` + `kind` +
+  downcast payload, bumps a per-registry `handler_panics: AtomicU64`
+  counter, and continues dispatch so a single panicking handler can't
+  take down the daemon.
+- **Persona-effectiveness scenario poll (NTEST.2)** — replaces fixed
+  `sleep 5` with a 60s-default poll loop on `proteus current --json`
+  (MAC + `last_rotated`). Slow CI runners no longer conflate
+  baseline and persona-applied variants.
+- **clap arg ranges (N12.12)** — bounded with `value_parser!(T).range(...)`:
+  `timer logs --lines` 1..=100_000, `wiki search --limit` 1..=500,
+  `events run --max-triggers` 0..=10_000_000, `events run
+  --once-after-secs` 0..=86_400, `rotate-if-needed --cooldown`
+  0..=86_400.
+
+### Tests
+
+- **N5 PSK round-trip (`tests/nm_get_settings_roundtrip.rs`)** — test-local
+  `MockNmConnectionSettings` shim pins that
+  `802-11-wireless-security.psk` and `802-1x.password` /
+  `802-1x.private-key-password` survive an unrelated `ssid`
+  mutation through the production `nm::merge_secrets` +
+  `nm::SECRET_SECTIONS` path. Negative control demonstrates the
+  mock correctly models NM's wipe-on-absent-key behaviour.
+- **CL4 scenario sweep** — twelve new `tests/integration/scenarios/`
+  files cover `session`, `diff`, `dry-run`, every component status
+  reader, every component apply/revert `--yes` gate, `persona`
+  cli, `ssid` cli, `wiki search`, top-level `help`, `completions`,
+  `kill`/`resume`, `timer` set/reset/logs, `config` set-profile,
+  `probe`, and `events run`. Runner auto-discovers via
+  `scenarios/*.sh` glob.
+- **C6 mock-flock honesty** — `MockBackend::with_state_path(p)`
+  opt-in flock so unit tests can pin the
+  foreign-fd-flock-busy → `SkippedCooldown { remaining: 1s }`
+  contract production NM uses.
+
+### Code quality
+
+- **Central iface validator full migration (GH#359 follow-up)** —
+  all six per-module duplicates now delegate to `crate::iface`:
+  `mac::factory`, `ipv6`, `rf`, `kill_switch`,
+  `events::source::nm_connection_up`, and the nested
+  `mac::probe::raw`. Three wrappers were strictly laxer than the
+  central kernel-faithful validator and are now newly-strict on
+  input that bypassed them before — defence-in-depth on callsites
+  that already feed kernel-validated sysfs walks.
+- **NMOD.4 const-assert** — `OWNER_POOL` non-empty check before
+  indexing in `persona::template::pick_owner`.
+- **E5 partial** — surveyed `apply.rs`, `show_config.rs`,
+  `doctor.rs`, `config_cmd.rs`. The exact `eprintln+drop+
+  Ok(GENERIC_ERROR)` pattern doesn't appear; every `if let Err(e)`
+  arm uses a typed exit code that bubbling via `?` would change.
+  Converted one site (`config_cmd::edit`) plus three breadcrumb
+  comments. Full typed-error refactor deferred to v0.5+.
+
+### Dependencies
+
+- **tokio 1.52.2 → 1.52.3** (cargo patch bump).
+- **toml_edit 0.22.27 → 0.25.11+spec-1.1.0** (compat bump).
+- **actions-rust-lang/setup-rust-toolchain 1.16.0 → 1.16.1**
+  (GH Actions patch).
+- **softprops/action-gh-release 2.6.2 → 3.0.0** (release workflow).
+- **actions/upload-artifact 4.6.2 → 7.0.1** (release workflow).
+- Closed without merge (require source migration): `toml 0.8 → 1.x`
+  (top-level API gone), `getrandom 0.2 → 0.4` (top-level
+  `getrandom()` removed).
+
+### Docs
+
+- **Stream 10 wiki-hint sweep** — ~77 `; see proteus wiki <page>`
+  hints appended to operator-facing `bail!` / `anyhow!` sites
+  across `src/persona/`, `src/init/`, `src/backend/`,
+  `src/enterprise_wifi/`, `src/hostname/`, `src/commands/{rotate,
+  pin,config_cmd,dns,ntp,resolved,stack,enterprise_wifi,timer,
+  apply,watch,mod}.rs`. Internal/defensive errors skipped.
+- **`wiki/polkit-hardening.md` new** — documents the optional
+  unix-group polkit JS recipe and the `pkcheck` runtime check.
+- **`docs/ROADMAP.md` substantive update** — sync ⏳ → ✅ for every
+  landed item with status notes referencing the PR that landed it.
+- **`contrib/recovery-kit/`** — codex-authored backup/restore
+  sidecar scripts (`backup.sh`, `restore.sh`, `README.md`) with
+  deterministic tarball flags, `flock`-based concurrency, audit
+  JSON for rollback, optional encryption via gpg/age. Followups
+  fixed tar exit-status handling and stderr-into-listing
+  contamination (codex P1 reviews).
+
+## [0.4.2-beta] - 2026-05-08
 
 ## [0.4.2-beta] - 2026-05-08
 
