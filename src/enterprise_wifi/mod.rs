@@ -44,19 +44,23 @@ pub fn anonymous_identity_for(realm: &str) -> String {
 pub fn extract_realm(identity: &str) -> Result<&str> {
     let trimmed = identity.trim();
     if trimmed.is_empty() {
-        return Err(anyhow!("802-1x.identity is empty"));
+        return Err(anyhow!(
+            "802-1x.identity is empty; see proteus wiki enterprise-wifi"
+        ));
     }
     let mut parts = trimmed.rsplitn(2, '@');
     let realm = parts.next().unwrap_or("");
-    let local = parts
-        .next()
-        .ok_or_else(|| anyhow!("identity '{trimmed}' has no '@' realm separator"))?;
+    let local = parts.next().ok_or_else(|| {
+        anyhow!("identity '{trimmed}' has no '@' realm separator; see proteus wiki enterprise-wifi")
+    })?;
     if local.is_empty() {
-        return Err(anyhow!("identity '{trimmed}' has no local-part before '@'"));
+        return Err(anyhow!(
+            "identity '{trimmed}' has no local-part before '@'; see proteus wiki enterprise-wifi"
+        ));
     }
     if realm.is_empty() {
         return Err(anyhow!(
-            "identity '{trimmed}' has no realm after '@' (cannot derive anonymous identity)"
+            "identity '{trimmed}' has no realm after '@' (cannot derive anonymous identity); see proteus wiki enterprise-wifi"
         ));
     }
     Ok(realm)
@@ -76,7 +80,7 @@ pub fn resolve_realm<'a>(
             let trimmed = configured_realm.trim();
             if trimmed.is_empty() {
                 Err(anyhow!(
-                    "enterprise_wifi.realm_strip_strategy = 'manual' but enterprise_wifi.anonymous_realm is empty"
+                    "enterprise_wifi.realm_strip_strategy = 'manual' but enterprise_wifi.anonymous_realm is empty; see proteus wiki enterprise-wifi"
                 ))
             } else {
                 Ok(trimmed)
@@ -84,12 +88,14 @@ pub fn resolve_realm<'a>(
         }
         "auto" => {
             let inner = inner_identity.ok_or_else(|| {
-                anyhow!("connection has no 802-1x.identity to derive a realm from")
+                anyhow!(
+                    "connection has no 802-1x.identity to derive a realm from; see proteus wiki enterprise-wifi"
+                )
             })?;
             extract_realm(inner)
         }
         other => Err(anyhow!(
-            "unknown realm_strip_strategy '{other}'; expected 'auto' or 'manual'"
+            "unknown realm_strip_strategy '{other}'; expected 'auto' or 'manual'; see proteus wiki enterprise-wifi"
         )),
     }
 }
