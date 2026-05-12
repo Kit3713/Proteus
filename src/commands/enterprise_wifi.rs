@@ -384,7 +384,11 @@ async fn enable_one(
     let uuid = nm::apply::read_connection_uuid(conn, &path)
         .await
         .context("reading connection.uuid for state keying")?
-        .ok_or_else(|| anyhow!("NM connection '{connection}' has no `connection.uuid`"))?;
+        .ok_or_else(|| {
+            anyhow!(
+                "NM connection '{connection}' has no `connection.uuid`; see proteus wiki enterprise-wifi"
+            )
+        })?;
 
     // Cache the pre-Proteus value exactly once. Re-runs on a connection we
     // already manage do NOT clobber the cached original — that's how revert
@@ -634,7 +638,9 @@ async fn read_one_for_status(
     }
     let id = nm::apply::read_connection_id(conn, path)
         .await?
-        .ok_or_else(|| anyhow!("connection has no `connection.id`"))?;
+        .ok_or_else(|| {
+            anyhow!("connection has no `connection.id`; see proteus wiki enterprise-wifi")
+        })?;
     // Issue #209: state.originals.connections keys by uuid, not display id.
     let proteus_managed = match nm::apply::read_connection_uuid(conn, path).await? {
         Some(uuid) => state.originals.connections.contains_key(&uuid),

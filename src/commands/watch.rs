@@ -91,11 +91,13 @@ pub fn parse_interval(s: &str) -> anyhow::Result<Duration> {
         let mins: u64 = num.parse()?;
         Duration::from_secs(mins * 60)
     } else {
-        anyhow::bail!("expected a duration like `2s`, `500ms`, or `1m`; got '{s}'");
+        anyhow::bail!(
+            "expected a duration like `2s`, `500ms`, or `1m`; got '{s}'; see proteus wiki cli"
+        );
     };
     if parsed < MIN_INTERVAL {
         anyhow::bail!(
-            "--interval must be >= 1ms (got '{s}'); zero / sub-ms sleeps would peg a CPU core"
+            "--interval must be >= 1ms (got '{s}'); zero / sub-ms sleeps would peg a CPU core; see proteus wiki cli"
         );
     }
     Ok(parsed)

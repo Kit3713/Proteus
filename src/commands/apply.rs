@@ -197,7 +197,7 @@ fn systemctl_with_timeout(args: &[&str], timeout: std::time::Duration) -> anyhow
                     let _ = s.read_to_string(&mut buf);
                 }
                 return Err(anyhow!(
-                    "systemctl {} exited with {status}: {}",
+                    "systemctl {} exited with {status}: {}; see proteus wiki troubleshooting",
                     args.join(" "),
                     buf.trim()
                 ));
@@ -207,7 +207,7 @@ fn systemctl_with_timeout(args: &[&str], timeout: std::time::Duration) -> anyhow
                     let _ = child.kill();
                     let _ = child.wait();
                     return Err(anyhow!(
-                        "systemctl {} timed out after {}s",
+                        "systemctl {} timed out after {}s; see proteus wiki troubleshooting",
                         args.join(" "),
                         timeout.as_secs()
                     ));
@@ -594,7 +594,7 @@ fn systemctl(args: &[&str]) -> anyhow::Result<()> {
     }
     let stderr = String::from_utf8_lossy(&output.stderr);
     Err(anyhow!(
-        "systemctl {} exited with {}: {}",
+        "systemctl {} exited with {}: {}; see proteus wiki troubleshooting",
         args.join(" "),
         output.status,
         stderr.trim()
@@ -650,7 +650,7 @@ pub(crate) fn run_with_timeout(
                     let _ = child.kill();
                     let _ = child.wait();
                     return Err(anyhow!(
-                        "{program} {} timed out after {}s",
+                        "{program} {} timed out after {}s; see proteus wiki troubleshooting",
                         args.join(" "),
                         timeout.as_secs()
                     ));
