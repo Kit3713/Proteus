@@ -60,7 +60,9 @@ if [[ $purge -eq 1 && $auto_yes -ne 1 ]]; then token="PURGE-${host}-$(date -u +%
 allowed=(etc/proteus var/lib/proteus usr/share/proteus/personas)
 case "$only" in "") ;; config) allowed=(etc/proteus) ;; state) allowed=(var/lib/proteus) ;; personas) allowed=(usr/share/proteus/personas) ;; *) exit 2;; esac
 validate(){ m="${1#./}"; [[ "$m" != /* && "$m" != *..* ]] || return 1; for p in "${allowed[@]}"; do [[ "$m" == "$p" || "$m" == "$p/"* ]] && return 0; done; return 1; }
-while IFS= read -r m; do validate "$m" || { log "unexpected path $m"; exit 1; }; done < <(tar -tf "$bundle")
+tar_list="$(tar -tf "$bundle" 2>&1)" || { log "archive validation failed: tar -tf could not list $bundle (corrupt/non-archive?); aborting before any destructive action"; exit 50; }
+[[ -n "$tar_list" ]] || { log "archive validation failed: $bundle listed zero entries; aborting"; exit 50; }
+while IFS= read -r m; do validate "$m" || { log "unexpected path $m"; exit 1; }; done <<< "$tar_list"
 
 services=(proteus.service proteus-dispatcher.service proteus-events.service)
 report=(); running=()
