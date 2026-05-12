@@ -47,7 +47,7 @@ clap = { version = "4", default-features = false, features = ["derive", "std", "
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = { version = "0.8", default-features = false, features = ["parse", "display"] }
-toml_edit = { version = "0.22", default-features = false, features = ["display", "parse"] }
+toml_edit = { version = "0.25", default-features = false, features = ["display", "parse"] }
 # bloat-trim 2026-05-07: dropped tracing/attributes (no `#[instrument]` in src) — saves proc-macro compile time, tiny .text shrink.
 tracing = { version = "0.1", default-features = false, features = ["std"] }
 # bloat-trim 2026-05-07: dropped tracing-subscriber/env-filter — eliminates `matchers` + `regex-automata` + `regex-syntax` (~175 KB stripped). RUST_LOG is now parsed by a hand-rolled adapter on top of `Targets` in src/logging.rs; supports `RUST_LOG=debug` and `RUST_LOG=proteus=trace,zbus=warn` (the syntax we document).
