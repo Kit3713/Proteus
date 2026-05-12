@@ -253,7 +253,7 @@ async fn rotate_one<P: Probe + ?Sized>(
     state_path: &Path,
 ) -> Result<(RotatedEntry, Vec<CandidateAttempt>, String, usize)> {
     if dev.connections.is_empty() {
-        anyhow::bail!("no connection profile available");
+        anyhow::bail!("no connection profile available; see proteus wiki rotation");
     }
 
     // Capture-then-save-then-mutate: the original factory MAC must be

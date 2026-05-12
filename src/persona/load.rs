@@ -41,7 +41,7 @@ pub fn load_builtin(id: &str) -> Result<Option<Persona>> {
         .with_context(|| format!("parsing builtin persona '{id}' (see `proteus wiki personas`)"))?;
     if p.id != id {
         anyhow::bail!(
-            "builtin persona file '{id}.toml' has mismatched id field '{}' (see wiki personas)",
+            "builtin persona file '{id}.toml' has mismatched id field '{}' (see `proteus wiki personas`)",
             p.id
         );
     }
@@ -59,7 +59,7 @@ pub fn load_user(id: &str, root: &Path) -> Result<Option<Persona>> {
     let p = parse_file(&path)?;
     if p.id != id {
         anyhow::bail!(
-            "user persona '{}' has id field '{}' that does not match its filename (see wiki personas)",
+            "user persona '{}' has id field '{}' that does not match its filename (see `proteus wiki personas`)",
             path.display(),
             p.id
         );
