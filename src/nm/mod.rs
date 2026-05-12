@@ -335,6 +335,206 @@ pub fn merge_secrets(settings: &mut ConnectionSettings, secrets: &ConnectionSett
     }
 }
 
+/// Classification of a single `GetSecrets` call outcome.
+///
+/// `Absent` covers every "no secrets to merge" path NM legitimately uses —
+/// the section isn't on this profile, the section has no secret-typed keys,
+/// or NM's agent returned an empty dict. `Hard` is everything else: a polkit
+/// denial, a DBus disconnect, an NM crash mid-call. The split exists so
+/// `update_with_secrets` can fail fast on `Hard` (and not call `Update`
+/// with a stripped dict that would wipe the secrets store) while still
+/// treating `Absent` as the routine no-op it is on the WPA-PSK / plain
+/// ethernet / no-VPN path.
+#[derive(Debug)]
+pub enum GetSecretsOutcome {
+    /// NM returned a populated secrets dict for the section.
+    Merged(ConnectionSettings),
+    /// NM has nothing to merge for this section. Safe to continue.
+    Absent,
+    /// NM returned an error that may indicate a real breakage. The caller
+    /// must treat this as a hard failure — proceeding to `Update` would
+    /// wipe the secrets store for the affected section.
+    Hard(anyhow::Error),
+}
+
+/// Classify a `zbus::Error` from `Settings.Connection.GetSecrets` into the
+/// "no secrets to merge" / "real failure" buckets.
+///
+/// Returns `true` when the error variant indicates NM legitimately has
+/// nothing to hand back for this section (section absent, section without
+/// secret keys, agent returned an empty result). Returns `false` when the
+/// error could indicate a real failure — DBus disconnect, polkit denial,
+/// arbitrary `MethodError` payload — and the caller must NOT proceed to
+/// `Update` with a stripped dict.
+///
+/// Approach mirrors `bluetooth::apply::is_adapter_gone`: match the typed
+/// `zbus::Error` / `zbus::fdo::Error` variants the runtime actually emits
+/// rather than substring-sniffing the rendered error message. The
+/// `MethodError` arm pins the exact NM error-name strings we accept as
+/// benign; anything else propagates so the operator sees the breakage in
+/// the journal.
+fn get_secrets_error_is_benign(err: &zbus::Error) -> bool {
+    match err {
+        // FDO-typed errors. NM sometimes routes "section/property not on
+        // this connection" through these rather than a MethodError —
+        // accept the no-such-{property,interface,object} variants and
+        // refuse everything else (AccessDenied / NoReply / IOError / …
+        // remain hard failures).
+        zbus::Error::FDO(boxed) => matches!(
+            **boxed,
+            zbus::fdo::Error::UnknownProperty(_) | zbus::fdo::Error::UnknownInterface(_)
+        ),
+        // NM-typed MethodErrors: the canonical "section not on this
+        // profile" / "no agent could supply / had no secrets" set.
+        // Anything outside this list — including `AccessDenied`
+        // (polkit) and the AgentManager's `UserCanceled` /
+        // `PermissionDenied` — is a hard failure.
+        zbus::Error::MethodError(name, _, _) => {
+            let s = name.as_str();
+            matches!(
+                s,
+                "org.freedesktop.NetworkManager.Settings.Connection.SettingNotFound"
+                    | "org.freedesktop.NetworkManager.InvalidSetting"
+                    | "org.freedesktop.NetworkManager.AgentManager.NoSecrets"
+            )
+        }
+        _ => false,
+    }
+}
+
+/// Fetch the secrets dict for one section, classifying failure into the
+/// "no secrets to merge" vs "real failure" buckets and emitting a tracing
+/// line at the appropriate level.
+///
+/// E6: introduced as the single chokepoint for `GetSecrets` error handling
+/// so each `update_with_secrets` callsite agrees on what counts as benign
+/// (skip + `debug!`) vs hard (return `Hard` + `error!`). Operators chasing
+/// a silent "auth broke after rotate" symptom now have a single grep
+/// target — `GetSecrets failed with non-benign error` — that names the
+/// profile, uuid, section, and underlying DBus error.
+///
+/// `connection_label` is whatever identifier the caller chose for the
+/// log line. `update_with_secrets` passes a `"<profile> (<uuid>)"`
+/// rendering pulled out of the in-flight settings dict.
+async fn get_secrets_or_warn(
+    proxy: &ConnectionProxy<'_>,
+    section: &str,
+    connection_path: &OwnedObjectPath,
+    connection_label: &str,
+) -> GetSecretsOutcome {
+    match proxy.get_secrets(section).await {
+        Ok(s) if s.is_empty() => {
+            // NM returns `Ok({})` when the section exists but stores no
+            // secrets — the WPA2-Enterprise-without-saved-password case,
+            // among others. Distinguish it from a populated merge so
+            // callers don't `merge_secrets` an empty dict (a no-op
+            // today, but the distinction is useful for the trace).
+            tracing::debug!(
+                method = "Settings.Connection.GetSecrets",
+                path = %connection_path.as_str(),
+                connection = %connection_label,
+                section = section,
+                "GetSecrets returned an empty dict; nothing to merge"
+            );
+            GetSecretsOutcome::Absent
+        }
+        Ok(s) => GetSecretsOutcome::Merged(s),
+        Err(e) => {
+            // S8: NM error messages can echo connection-setting values
+            // verbatim ("Could not parse value 'foo' for key …"). For
+            // an enterprise-Wi-Fi connection that's attacker-influenced
+            // — the AP supplies the realm / anonymous-identity, the
+            // dispatcher feeds it through GetSettings, and an
+            // unsanitized error message reaches journald with embedded
+            // ANSI / BiDi controls. Route every dict-influenced byte
+            // through `display_string` before tracing so a hostile peer
+            // can't redraw the operator's terminal via
+            // `journalctl -t proteus`.
+            let raw = format!("{e:#}");
+            let safe = crate::display::display_string(&raw);
+            if get_secrets_error_is_benign(&e) {
+                // Documented "nothing to merge" path — the section isn't
+                // on this profile (e.g. asking for `802-1x` on a plain
+                // WPA-PSK Wi-Fi, asking for `vpn` on a wired profile).
+                // `debug!` keeps the journal calm on the common case.
+                tracing::debug!(
+                    method = "Settings.Connection.GetSecrets",
+                    path = %connection_path.as_str(),
+                    connection = %connection_label,
+                    section = section,
+                    "GetSecrets returned no secrets to merge: {safe}"
+                );
+                GetSecretsOutcome::Absent
+            } else {
+                // E6: a hard GetSecrets failure (polkit denial, DBus
+                // disconnect, NM crash mid-call) was previously logged
+                // and swallowed — `update_with_secrets` would proceed
+                // to `Update` with a settings dict missing the secret
+                // keys, which NM interprets as "the user cleared their
+                // password" and wipes the secrets store. The operator
+                // saw nothing alarming in the journal beyond a stray
+                // log line and the next reconnect silently failed to
+                // auth.
+                //
+                // Now: `error!` so the breakage is visible AND the
+                // caller surfaces an `Err` instead of continuing to
+                // Update — the secret is preserved exactly because we
+                // refused to push a stripped dict. The error level is
+                // `error!` (not `warn!`) because we're on the hot path
+                // for a mutation that's about to land; the operator
+                // needs to know it didn't.
+                tracing::error!(
+                    method = "Settings.Connection.GetSecrets",
+                    path = %connection_path.as_str(),
+                    connection = %connection_label,
+                    section = section,
+                    "GetSecrets failed with non-benign error; refusing Update to avoid wiping secrets: {safe}"
+                );
+                GetSecretsOutcome::Hard(anyhow::Error::new(e).context(format!(
+                    "getting secrets for connection {connection_label} (section {section})"
+                )))
+            }
+        }
+    }
+}
+
+/// Pull `connection.id` (display name) and `connection.uuid` out of a
+/// settings dict so error/warning lines can carry a human-meaningful
+/// handle on the connection beyond the bare object path. Returns
+/// `"<unknown> (<no-uuid>)"` if neither key is present — the trace stays
+/// well-formed even on a stripped or malformed dict.
+fn settings_connection_label(settings: &ConnectionSettings) -> String {
+    let connection = settings.get("connection");
+    let id = connection
+        .and_then(|s| s.get("id"))
+        .and_then(|v| {
+            let v: &zbus::zvariant::Value = v;
+            if let zbus::zvariant::Value::Str(s) = v {
+                Some(s.as_str().to_string())
+            } else {
+                None
+            }
+        })
+        .unwrap_or_else(|| "<unknown>".to_string());
+    let uuid = connection
+        .and_then(|s| s.get("uuid"))
+        .and_then(|v| {
+            let v: &zbus::zvariant::Value = v;
+            if let zbus::zvariant::Value::Str(s) = v {
+                Some(s.as_str().to_string())
+            } else {
+                None
+            }
+        })
+        .unwrap_or_else(|| "<no-uuid>".to_string());
+    // Route the display name through `display_string` so a profile id
+    // with embedded ANSI / BiDi can't redraw `journalctl -t proteus`.
+    // The uuid is well-formed hex-with-dashes and doesn't need
+    // sanitisation, but the id is user-authored on the keyfile side.
+    let safe_id = crate::display::display_string(&id);
+    format!("{safe_id} ({uuid})")
+}
+
 /// Push a `Settings.Connection.Update` after grafting every relevant secrets
 /// section back onto `settings`. Issue #207: every NM `Update` site must go
 /// through this so a connection's stored PSK / EAP passwords / VPN secrets
@@ -343,93 +543,57 @@ pub fn merge_secrets(settings: &mut ConnectionSettings, secrets: &ConnectionSett
 /// `GetSettings` strips secret-typed keys, so calling `Update` with the
 /// stripped dict tells NM "the user cleared this password" and wipes the
 /// secrets store. We pull `GetSecrets` for each section in [`SECRET_SECTIONS`]
-/// (best-effort — sections that don't exist on this connection or that
-/// are not flagged as "system-owned" return errors NM emits as
-/// `NoSecrets`/`PermissionDenied`, which we deliberately swallow) and merge
-/// them back in.
+/// through the [`get_secrets_or_warn`] chokepoint, which classifies failure
+/// into "section legitimately has no secrets" (continue) vs "DBus/agent
+/// breakage" (return `Err` without touching `Update` — the secret stays
+/// intact because we never push a stripped dict).
+///
+/// E6: pre-fix, every `GetSecrets` error was silently swallowed at
+/// `debug!`. An operator with an enterprise-Wi-Fi profile and a
+/// transient polkit denial mid-rotate would see no warning, the rotate
+/// would land an empty-secrets dict, and the next reconnect would
+/// silently fail to auth. The hard-failure split now surfaces those
+/// errors at `error!` AND propagates them to the caller so the rotate
+/// fails loudly instead of corrupting the secrets store.
 pub async fn update_with_secrets(
     conn: &zbus::Connection,
     connection_path: &OwnedObjectPath,
     mut settings: ConnectionSettings,
 ) -> Result<()> {
+    // Resolve a human label once so every per-section trace line carries
+    // the same handle — `connection.id` + uuid pulled out of the dict
+    // the caller already prepared.
+    let connection_label = settings_connection_label(&settings);
     let proxy = ConnectionProxy::builder(conn)
         .path(connection_path.clone())?
         .build()
         .await
         .with_context(|| {
-            // N4: include the connection path in the error context so an
-            // operator chasing a Settings.Connection failure can see which
-            // profile (and therefore which iface) tripped without grepping
-            // a separate journald line.
+            // N4: include the connection path AND the human label in the
+            // error context so an operator chasing a Settings.Connection
+            // failure can see which profile (and therefore which iface)
+            // tripped without grepping a separate journald line.
             format!(
-                "building Settings.Connection proxy on path {}",
+                "building Settings.Connection proxy on path {} for {connection_label}",
                 connection_path.as_str()
             )
         })?;
     for section in SECRET_SECTIONS {
-        // GetSecrets failure modes we tolerate:
-        //
-        // - NM returns NoSecrets when the section exists but stores no secrets.
-        // - NM returns InvalidProperty / generic when the section isn't on this
-        //   profile (e.g. asking for `802-1x` on a plain WPA-PSK Wi-Fi).
-        // - PermissionDenied if the connection is user-owned and the agent
-        //   refuses to surface secrets to a non-interactive caller.
-        //
-        // None of these is a reason to abort the update — they just mean
-        // there's nothing to merge for that section. A real DBus failure on
-        // the subsequent `update` call still surfaces.
-        //
-        // E6: previously every GetSecrets error landed at `debug!`,
-        // which hides genuine secret-store breakage from the operator.
-        // The new shape distinguishes the documented "nothing to merge"
-        // cases (NoSecrets / InvalidProperty / PermissionDenied) from
-        // real failures (DBus disconnect, NM crash mid-call). Real
-        // failures land at `error!` with method + path context so the
-        // operator can see WHY the merge skipped — pre-fix, a hostile
-        // edge could feed `Update` a stripped dict and silently wipe
-        // secrets while the journal showed only "returned no secrets to
-        // merge". Builds on Stream 4's preserve-method-context (N4).
-        match proxy.get_secrets(section).await {
-            Ok(s) => merge_secrets(&mut settings, &s),
-            Err(e) => {
-                // S8: NM error messages can echo connection-setting
-                // values verbatim ("Could not parse value 'foo' for key
-                // …"). For an enterprise-Wi-Fi connection that's
-                // attacker-influenced — the AP supplies the realm /
-                // anonymous-identity, the dispatcher feeds it through
-                // GetSettings, and an unsanitized error message reaches
-                // journald with embedded ANSI / BiDi controls. Route
-                // every dict-influenced byte through `display_string`
-                // before tracing so a hostile peer can't redraw the
-                // operator's terminal via `journalctl -t proteus`.
-                let raw = format!("{e:#}");
-                let safe = crate::display::display_string(&raw);
-                let benign = raw.contains("NoSecrets")
-                    || raw.contains("InvalidProperty")
-                    || raw.contains("PermissionDenied")
-                    || raw.contains("not found")
-                    || raw.contains("does not exist");
-                if benign {
-                    tracing::debug!(
-                        method = "Settings.Connection.GetSecrets",
-                        path = %connection_path.as_str(),
-                        section = section,
-                        "GetSecrets returned no secrets to merge: {safe}"
-                    );
-                } else {
-                    tracing::error!(
-                        method = "Settings.Connection.GetSecrets",
-                        path = %connection_path.as_str(),
-                        section = section,
-                        "GetSecrets failed with non-benign error; secret may be wiped on Update: {safe}"
-                    );
-                }
+        // E6: hard-failure outcomes return Err here so we never reach
+        // `proxy.update(settings)` with a stripped secrets dict — that
+        // would be the silent-secret-wipe symptom the brief calls out.
+        match get_secrets_or_warn(&proxy, section, connection_path, &connection_label).await {
+            GetSecretsOutcome::Merged(s) => merge_secrets(&mut settings, &s),
+            GetSecretsOutcome::Absent => {
+                // Logged at debug! inside `get_secrets_or_warn` — nothing
+                // more to do for this section.
             }
+            GetSecretsOutcome::Hard(err) => return Err(err),
         }
     }
     proxy.update(settings).await.with_context(|| {
         format!(
-            "calling Settings.Connection.Update on {}",
+            "calling Settings.Connection.Update on {} for {connection_label}",
             connection_path.as_str()
         )
     })?;
@@ -496,5 +660,231 @@ mod tests {
         assert!(addr_gen_mode_to_int("garbage").is_err());
         assert!(addr_gen_mode_to_int("").is_err());
         assert!(addr_gen_mode_to_int("STABLE-PRIVACY").is_err());
+    }
+
+    // -----------------------------------------------------------------
+    // E6: GetSecrets failure classification.
+    //
+    // We can't drive `get_secrets_or_warn` from a unit test without a
+    // live NM DBus connection — but the classifier `get_secrets_error_is_benign`
+    // and the label extractor are pure functions, so we exercise both
+    // against the documented benign and hard error variants. The
+    // assertions here are the source of truth for which NM errors the
+    // production code treats as "no secrets to merge" vs "abort the
+    // Update".
+    // -----------------------------------------------------------------
+
+    /// `Settings.Connection.SettingNotFound` is what NM raises when the
+    /// caller asks for `GetSecrets("802-1x")` on a plain WPA-PSK
+    /// connection (no 802.1X section). Must classify as benign so the
+    /// merge skip doesn't bubble out as an `error!`.
+    #[test]
+    fn benign_classifies_nm_setting_not_found() {
+        // Build the MethodError using zbus's typed constructor: we
+        // can't easily fabricate a `Message` body in a unit test, so
+        // we shape the error variant directly. The variant carries an
+        // OwnedErrorName built from a string; the runtime equivalent
+        // travels the same shape.
+        let name = zbus::names::OwnedErrorName::try_from(
+            "org.freedesktop.NetworkManager.Settings.Connection.SettingNotFound",
+        )
+        .unwrap();
+        // The `Message` payload is opaque to the classifier; supply a
+        // synthetic one from a method call signature so we can
+        // construct the variant.
+        let payload = synthetic_method_message();
+        let err = zbus::Error::MethodError(name, Some("no such setting".into()), payload);
+        assert!(
+            get_secrets_error_is_benign(&err),
+            "SettingNotFound must be benign"
+        );
+    }
+
+    /// NM's `AgentManager.NoSecrets` covers the "no agent could supply
+    /// secrets for this section" path. Also benign — the merge skip
+    /// doesn't break anything when there were no secrets to begin with.
+    #[test]
+    fn benign_classifies_agent_manager_no_secrets() {
+        let name = zbus::names::OwnedErrorName::try_from(
+            "org.freedesktop.NetworkManager.AgentManager.NoSecrets",
+        )
+        .unwrap();
+        let payload = synthetic_method_message();
+        let err = zbus::Error::MethodError(name, None, payload);
+        assert!(
+            get_secrets_error_is_benign(&err),
+            "AgentManager.NoSecrets must be benign"
+        );
+    }
+
+    /// FDO `UnknownProperty` is what NM raises when a section is on
+    /// the profile but the requested property isn't readable. The
+    /// classifier treats this as benign too — there's no secret to
+    /// merge.
+    #[test]
+    fn benign_classifies_fdo_unknown_property() {
+        let inner = zbus::fdo::Error::UnknownProperty("Secrets".into());
+        let err = zbus::Error::FDO(Box::new(inner));
+        assert!(
+            get_secrets_error_is_benign(&err),
+            "UnknownProperty must be benign"
+        );
+    }
+
+    /// Polkit denial: `AccessDenied` is a hard failure. The operator's
+    /// authn flow couldn't sign the GetSecrets call — proceeding to
+    /// Update would push a stripped dict and NM would wipe the secret.
+    /// The classifier must refuse this so `update_with_secrets`
+    /// returns `Err` and the caller (rotate, dhcp, ipv6, anonymous-id
+    /// write) surfaces the failure.
+    #[test]
+    fn hard_classifies_fdo_access_denied() {
+        let inner = zbus::fdo::Error::AccessDenied("polkit declined".into());
+        let err = zbus::Error::FDO(Box::new(inner));
+        assert!(
+            !get_secrets_error_is_benign(&err),
+            "FDO AccessDenied must NOT be classified benign — would silently wipe the secret"
+        );
+    }
+
+    /// DBus disconnect: NM crashed mid-call, socket closed, etc. Hard
+    /// failure for the same reason as AccessDenied — Update would
+    /// strip the secret.
+    #[test]
+    fn hard_classifies_fdo_no_reply() {
+        let inner = zbus::fdo::Error::NoReply("daemon went away".into());
+        let err = zbus::Error::FDO(Box::new(inner));
+        assert!(
+            !get_secrets_error_is_benign(&err),
+            "NoReply must be a hard failure"
+        );
+    }
+
+    /// Address-level zbus error (couldn't even open the bus). Definitely
+    /// hard — we shouldn't be running `Update` at all in this state.
+    #[test]
+    fn hard_classifies_bus_address_error() {
+        let err = zbus::Error::Address("not a bus address".to_string());
+        assert!(
+            !get_secrets_error_is_benign(&err),
+            "Address errors must be hard failures"
+        );
+    }
+
+    /// An unrecognised NM `MethodError` name must default to "hard
+    /// failure". The brief's invariant: a transient polkit / agent
+    /// breakage NM signals with a new error name we haven't seen
+    /// before must NOT be silently swallowed.
+    #[test]
+    fn hard_classifies_unknown_nm_method_error() {
+        let name = zbus::names::OwnedErrorName::try_from(
+            "org.freedesktop.NetworkManager.Settings.Connection.SomeNewError",
+        )
+        .unwrap();
+        let payload = synthetic_method_message();
+        let err = zbus::Error::MethodError(name, None, payload);
+        assert!(
+            !get_secrets_error_is_benign(&err),
+            "Unknown NM MethodError names must default to hard failure"
+        );
+    }
+
+    /// Pin the exact set of MethodError names we accept as benign.
+    /// If a future NM rev renames one of these (or adds a new "no
+    /// secrets" variant), the test forces the classifier update to
+    /// happen as a deliberate code change rather than a silent runtime
+    /// drift to "always log error!".
+    #[test]
+    fn benign_method_error_name_set_is_documented() {
+        let names = [
+            "org.freedesktop.NetworkManager.Settings.Connection.SettingNotFound",
+            "org.freedesktop.NetworkManager.InvalidSetting",
+            "org.freedesktop.NetworkManager.AgentManager.NoSecrets",
+        ];
+        let payload = synthetic_method_message();
+        for n in names {
+            let name = zbus::names::OwnedErrorName::try_from(n).unwrap();
+            let err = zbus::Error::MethodError(name, None, payload.clone());
+            assert!(
+                get_secrets_error_is_benign(&err),
+                "get_secrets_error_is_benign must accept {n}"
+            );
+        }
+    }
+
+    /// E6: the per-section label format `<id> (<uuid>)` is what the
+    /// trace lines and the error context use. Verify the extractor
+    /// pulls both fields out of a typical settings dict and sanitises
+    /// the id field via `display_string` (so an attacker-controlled
+    /// profile name can't redraw `journalctl -t proteus`).
+    #[test]
+    fn settings_connection_label_includes_id_and_uuid() {
+        let mut s = ConnectionSettings::new();
+        let section = s.entry("connection".to_string()).or_default();
+        section.insert(
+            "id".to_string(),
+            zbus::zvariant::Value::from("Eduroam".to_string())
+                .try_into()
+                .unwrap(),
+        );
+        section.insert(
+            "uuid".to_string(),
+            zbus::zvariant::Value::from("12345678-aaaa-bbbb-cccc-1234567890ab".to_string())
+                .try_into()
+                .unwrap(),
+        );
+        let label = settings_connection_label(&s);
+        assert_eq!(label, "Eduroam (12345678-aaaa-bbbb-cccc-1234567890ab)");
+    }
+
+    /// E6: a dict without a `connection` section (or with neither id
+    /// nor uuid) still produces a well-formed label so the trace lines
+    /// stay readable on a malformed or partially-stripped input.
+    #[test]
+    fn settings_connection_label_handles_missing_fields() {
+        let s = ConnectionSettings::new();
+        let label = settings_connection_label(&s);
+        assert_eq!(label, "<unknown> (<no-uuid>)");
+    }
+
+    /// E6: the id field is routed through `display_string` so a profile
+    /// id with embedded ANSI / BiDi controls can't redraw the journal.
+    /// We don't sanitise the uuid because NM's uuid grammar is
+    /// hex-and-dashes, but the id is user-authored on the keyfile side.
+    #[test]
+    fn settings_connection_label_sanitises_id() {
+        let mut s = ConnectionSettings::new();
+        let section = s.entry("connection".to_string()).or_default();
+        // Embed a CSI (ESC `[`) — display_string must escape it.
+        section.insert(
+            "id".to_string(),
+            zbus::zvariant::Value::from("evil\x1b[31mhack".to_string())
+                .try_into()
+                .unwrap(),
+        );
+        let label = settings_connection_label(&s);
+        // The escape sequence must not appear verbatim. Exact escape
+        // form is `display_string`'s choice; we just assert ESC didn't
+        // pass through and the label still carries the readable prefix.
+        assert!(
+            !label.contains('\x1b'),
+            "raw ESC must not survive the label render: {label:?}"
+        );
+        assert!(
+            label.contains("evil"),
+            "the readable prefix must survive: {label:?}"
+        );
+    }
+
+    /// Build a synthetic DBus `Message` so the test can construct a
+    /// `MethodError` variant without standing up a real bus. The
+    /// payload is opaque to `get_secrets_error_is_benign` — only the
+    /// error name string is inspected — so any well-formed message
+    /// works.
+    fn synthetic_method_message() -> zbus::message::Message {
+        zbus::message::Message::method_call("/", "Dummy")
+            .unwrap()
+            .build(&())
+            .unwrap()
     }
 }
