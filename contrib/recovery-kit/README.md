@@ -1,34 +1,35 @@
-# Proteus Recovery Kit (canonical + transactional)
+# Proteus Recovery Kit (visibility + retractability)
 
-## Features implemented
+## Visibility/reporting
 
-- Canonical JSON manifest via Python `json.dump(..., sort_keys=True, separators=(',',':'))`.
-- Strict JSON parsing on restore verify path.
-- Recursive per-file manifest coverage (sha256, bytes, mode, uid, gid, mtime).
-- Transactional lock using `flock` on `/tmp/proteus-recovery.lock`.
-- Service orchestration hardening with retries/timeouts and pre/post state reporting.
-- Safer purge behavior: `--purge-targets` requires `--force`; manual token includes hostname + timestamp.
-- Structured restore audit artifact: `run-<timestamp>.json`.
-- Optional encryption-at-rest: `--encrypt gpg|age` for bundle + manifest.
-- `backup.sh --verify <bundle>` helper mode.
-- `--exclude` patterns and `--output-name` template support.
-- `--json` output for CI.
+- Every run writes timestamped log lines to file and syslog (`logger -t proteus-recovery-kit`) when available.
+- Default logs:
+  - backup: `/var/log/proteus-recovery-kit/backup.log` (fallback `/tmp/proteus-recovery-kit.log`)
+  - restore: `/var/log/proteus-recovery-kit/restore.log` (fallback `/tmp/proteus-recovery-kit.log`)
+- Override log destination with `--log-file <path>`.
+- Restore emits structured audit artifacts: `run-<timestamp>.json` next to the backup bundle.
 
-## Exit codes (machine-readable)
+## Retractability
 
-| Code | Meaning |
-|---|---|
-| 0 | success |
-| 1 | runtime/precondition failure |
-| 2 | invalid CLI arguments |
-| 3 | no source paths found for backup |
-| 40 | transactional lock busy |
+- Restore stores rollback mappings in the audit JSON.
+- Replay rollback with:
+  - `restore.sh <bundle> --rollback-from-audit=<run-file.json>`
+
+## Safety/operations features
+
+- Canonical JSON manifest + strict JSON parse.
+- Recursive per-file metadata coverage.
+- Transaction lock (`flock`) to prevent concurrent runs.
+- Service pre-state/post-state reporting and restart retries with timeout checks.
+- `--purge-targets` requires `--force` and explicit host+timestamp token (unless `--yes`).
+- Optional encryption-at-rest (`--encrypt gpg|age`).
+- `backup.sh --verify <bundle>` preflight verification mode.
 
 ## Examples
 
 ```bash
-sudo ./backup.sh /tmp/proteus-backups --keep 8 --compression zstd --output-name nightly --exclude '*.cache' --json
-sudo ./backup.sh --verify /tmp/proteus-backups/nightly.tar.zst
-sudo ./restore.sh /tmp/proteus-backups/nightly.tar.zst --force --purge-targets --confirm-host=$(hostname -f)
-sudo ./restore.sh /tmp/proteus-backups/nightly.tar.zst --plan --only=config
+sudo ./backup.sh /tmp/proteus-backups --json
+sudo ./backup.sh /tmp/proteus-backups --log-file /var/log/proteus-recovery-kit/custom-backup.log
+sudo ./restore.sh /tmp/proteus-backups/proteus-backup-20260512-120000.tar.gz --force --purge-targets --confirm-host=$(hostname -f)
+sudo ./restore.sh /tmp/proteus-backups/proteus-backup-20260512-120000.tar.gz --rollback-from-audit=/tmp/proteus-backups/run-20260512-120500.json
 ```
