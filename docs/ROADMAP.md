@@ -331,9 +331,13 @@ NM2.7, NCMD2.1, NCMD2.5, NEV2.7.
 - ✅ `proteus revert` honours global `--state` flag (GH#386).
 - ✅ `timer resume` short-name maps to the actual shipped artifact
   `proteus-resume.service` (GH#352).
-- 🚧 `rotate-if-needed --state` plumbed at CLI but the backend trait
-  hardcodes the read-back path; full fix needs a Stream 5 trait
-  signature change (GH#381 — partial / TODO).
+- ✅ `rotate-if-needed --state` end-to-end. Backend trait
+  `rotate_if_needed` now takes `state_path: Option<&'a Path>` (see
+  `src/backend/mod.rs:190` and the matching impls in `nm.rs`,
+  `mock.rs`, `raw.rs`, `networkd.rs`). The inner
+  `rotate_if_needed_inner` falls back to `DEFAULT_STATE_PATH` only
+  when no path is supplied. Same trait is reused by C6 (mock flock
+  on opt-in state path) and N14 (per-iface mutex registry). (GH#381)
 
 **Acceptance:** end-to-end script that calls every mutator without `--yes` and
 asserts exit code 64 (`CONFIRMATION_REQUIRED`); run watch with `--interval 0s`
@@ -878,13 +882,18 @@ L‑3 (residual), audit I‑1, NEV2.1.
   `src/captive_portal/mod.rs` runs both fields through
   `percent_encode_request_target` / `percent_encode_request_safe`
   before the request blob is assembled.
-- ⏳ Restrict polkit policy to `unix-group:wheel` / `sudo` and add a runtime
+- 🟡 Restrict polkit policy to `unix-group:wheel` / `sudo` and add a runtime
   check in `proteus doctor` (S7, B15). Policy file annotated; group
   enforcement requires a polkit JS rule under
   `/etc/polkit-1/rules.d/` (XML format does not accept a unix-group
   selector). Doctor runtime check deferred. **Maintainer decision needed:**
   conflicts with the `polkit_mutating_actions_do_not_cache_auth` test pin
-  from issue #133.
+  from issue #133. **Docs portion landed via PR #446** —
+  `wiki/polkit-hardening.md` documents the optional JS recipe operators
+  can apply today plus the `pkcheck` runtime-check pattern, with explicit
+  guidance on avoiding the auth-cache conflict. Code portion (default
+  policy + `proteus doctor` runtime check) remains the maintainer's
+  decision.
 - ✅ Expand the safety comment on `OwnedFd::from_raw_fd` (S9) —
   `src/events/source/link_flap.rs::netlink::open_netlink` now
   documents ownership handover, close-once invariant, kernel
