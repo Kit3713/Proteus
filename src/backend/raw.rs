@@ -52,7 +52,11 @@ impl NetworkBackend for RawBackend {
     }
 
     fn list_devices<'a>(&'a self) -> BoxFuture<'a, Result<Vec<BackendDevice>>> {
-        Box::pin(async { bail!("backend::raw: list_devices not yet implemented (Milestone 1)") })
+        Box::pin(async {
+            bail!(
+                "backend::raw: list_devices not yet implemented (Milestone 1); see proteus wiki backend"
+            )
+        })
     }
 
     fn list_connections<'a>(
@@ -60,7 +64,9 @@ impl NetworkBackend for RawBackend {
         _device: &'a BackendDevice,
     ) -> BoxFuture<'a, Result<Vec<ConnectionRef>>> {
         Box::pin(async {
-            bail!("backend::raw: list_connections not yet implemented (Milestone 1)")
+            bail!(
+                "backend::raw: list_connections not yet implemented (Milestone 1); see proteus wiki backend"
+            )
         })
     }
 
@@ -69,14 +75,22 @@ impl NetworkBackend for RawBackend {
         _device: &'a BackendDevice,
         _mac: Mac,
     ) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async { bail!("backend::raw: set_cloned_mac not yet implemented (Milestone 1)") })
+        Box::pin(async {
+            bail!(
+                "backend::raw: set_cloned_mac not yet implemented (Milestone 1); see proteus wiki backend"
+            )
+        })
     }
 
     fn read_cloned_mac<'a>(
         &'a self,
         _device: &'a BackendDevice,
     ) -> BoxFuture<'a, Result<Option<String>>> {
-        Box::pin(async { bail!("backend::raw: read_cloned_mac not yet implemented (Milestone 1)") })
+        Box::pin(async {
+            bail!(
+                "backend::raw: read_cloned_mac not yet implemented (Milestone 1); see proteus wiki backend"
+            )
+        })
     }
 
     fn read_factory_mac<'a>(&'a self, iface: &'a str) -> BoxFuture<'a, Result<Option<String>>> {
@@ -112,7 +126,9 @@ impl NetworkBackend for RawBackend {
         _snapshot: DhcpSettingsSnapshot,
     ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async {
-            bail!("backend::raw: set_dhcp_settings not yet implemented (Milestone 1)")
+            bail!(
+                "backend::raw: set_dhcp_settings not yet implemented (Milestone 1); see proteus wiki backend"
+            )
         })
     }
 
@@ -122,7 +138,9 @@ impl NetworkBackend for RawBackend {
         _settings: Ipv6NmSettings,
     ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async {
-            bail!("backend::raw: set_ipv6_settings not yet implemented (Milestone 1)")
+            bail!(
+                "backend::raw: set_ipv6_settings not yet implemented (Milestone 1); see proteus wiki backend"
+            )
         })
     }
 
@@ -130,7 +148,11 @@ impl NetworkBackend for RawBackend {
         &'a self,
         _device: &'a BackendDevice,
     ) -> BoxFuture<'a, Result<RenewOutcome>> {
-        Box::pin(async { bail!("backend::raw: renew_lease not yet implemented (Milestone 1)") })
+        Box::pin(async {
+            bail!(
+                "backend::raw: renew_lease not yet implemented (Milestone 1); see proteus wiki backend"
+            )
+        })
     }
 
     fn write_anonymous_identity<'a>(
@@ -139,7 +161,9 @@ impl NetworkBackend for RawBackend {
         _value: &'a str,
     ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async {
-            bail!("backend::raw: write_anonymous_identity not yet implemented (Milestone 1)")
+            bail!(
+                "backend::raw: write_anonymous_identity not yet implemented (Milestone 1); see proteus wiki backend"
+            )
         })
     }
 }
