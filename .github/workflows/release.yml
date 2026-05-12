@@ -80,7 +80,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
-      - uses: actions-rust-lang/setup-rust-toolchain@2b1f5e9b395427c92ee4e3331786ca3c37afe2d7  # v1
+      - uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6  # v1
       - name: Install cargo-audit
         run: cargo install --locked cargo-audit
       - name: cargo audit
@@ -155,7 +155,7 @@ jobs:
           echo "Using SOURCE_DATE_EPOCH=${SDE} (tag commit timestamp)"
       # `actions-rust-lang/setup-rust-toolchain` reads rust-toolchain.toml
       # (no `toolchain:` arg) so the pinned channel installs verbatim.
-      - uses: actions-rust-lang/setup-rust-toolchain@2b1f5e9b395427c92ee4e3331786ca3c37afe2d7  # v1
+      - uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6  # v1
         with:
           rustflags: ""
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32  # v2
@@ -222,7 +222,7 @@ jobs:
           SDE=$(git log -1 --pretty=%ct)
           echo "SOURCE_DATE_EPOCH=${SDE}" >> "$GITHUB_ENV"
           echo "Using SOURCE_DATE_EPOCH=${SDE} (tag commit timestamp)"
-      - uses: actions-rust-lang/setup-rust-toolchain@2b1f5e9b395427c92ee4e3331786ca3c37afe2d7  # v1
+      - uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6  # v1
         with:
           target: aarch64-unknown-linux-gnu
           rustflags: ""
