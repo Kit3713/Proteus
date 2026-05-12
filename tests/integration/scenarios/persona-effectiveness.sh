@@ -36,17 +36,88 @@ echo "==> baseline: clearing persona + capturing nmap -O"
 "$PROTEUS" apply --yes >/dev/null 2>&1 || true
 
 baseline_out=$(mktemp)
+# `persona_out` is created later (after the poll loop); initialize empty so
+# the EXIT trap doesn't trip `set -u` on early exits (timeout, SIGINT).
+persona_out=""
 trap 'rm -f "$baseline_out" "$persona_out"' EXIT
 nmap -O -Pn "$TARGET_IP" 2>&1 | tee "$baseline_out" || true
 echo
+
+# Extract a single field from `proteus current --json --iface $TARGET_IFACE`.
+# Used to gate the persona apply on an observable MAC / last_rotated change
+# rather than a fixed sleep. Pretty-printed JSON, one entry per iface, so a
+# grep + sed pair is enough — avoids pulling in jq, which isn't guaranteed on
+# every CI runner.
+proteus_field() {
+  # $1 = field name; reads JSON from stdin. Never fails — `grep`'s no-match
+  # rc=1 would otherwise trip `set -e`/`pipefail` on an absent field.
+  { grep -E "^[[:space:]]*\"$1\":" || true; } | head -n 1 \
+    | sed -E "s/.*\"$1\"[[:space:]]*:[[:space:]]*//;s/,[[:space:]]*\$//;s/^\"(.*)\"\$/\1/"
+}
+
+# Capture the pre-apply MAC + last_rotated so the poll loop below has
+# something concrete to compare against.
+baseline_json=$("$PROTEUS" current --json --iface "$TARGET_IFACE" 2>/dev/null || true)
+baseline_mac=$(printf '%s\n' "$baseline_json" | proteus_field mac)
+baseline_rotated=$(printf '%s\n' "$baseline_json" | proteus_field last_rotated)
+echo "    pre-apply MAC          = ${baseline_mac:-<unknown>}"
+echo "    pre-apply last_rotated = ${baseline_rotated:-<unknown>}"
 
 # 2. Apply persona, capture again.
 echo "==> persona: applying iphone-15 + capturing nmap -O"
 "$PROTEUS" persona use iphone-15 --yes
 "$PROTEUS" apply --yes
 
-# Give NM/networkd a moment to push the new MAC + DHCP fingerprint.
-sleep 5
+# NTEST.2: a fixed `sleep 5` here was flaky on slow CI runners — the apply
+# could still be propagating through NM/networkd by the time the second
+# nmap -O fired, so baseline and persona output looked identical and the
+# scenario reported a false negative. Poll `proteus current --json` until
+# either the MAC differs from the pre-apply baseline AND last_rotated has
+# advanced past its pre-apply value, or the (configurable) timeout fires.
+timeout_secs="${PROTEUS_PERSONA_EFFECT_TIMEOUT_SECS:-60}"
+deadline=$(( $(date +%s) + timeout_secs ))
+poll_ok=0
+while [ "$(date +%s)" -lt "$deadline" ]; do
+  current_json=$("$PROTEUS" current --json --iface "$TARGET_IFACE" 2>/dev/null || true)
+  current_mac=$(printf '%s\n' "$current_json" | proteus_field mac)
+  current_rotated=$(printf '%s\n' "$current_json" | proteus_field last_rotated)
+
+  mac_changed=0
+  if [ -n "$current_mac" ] && [ "$current_mac" != "null" ] \
+     && [ "$current_mac" != "$baseline_mac" ]; then
+    mac_changed=1
+  fi
+
+  # ISO-8601 strings sort lexicographically the same way they sort
+  # chronologically, so a plain string compare is correct here. An empty
+  # baseline_rotated (never rotated before) counts as advanced the moment
+  # we see any non-null stamp.
+  rotated_advanced=0
+  if [ -n "$current_rotated" ] && [ "$current_rotated" != "null" ]; then
+    if [ -z "$baseline_rotated" ] || [ "$baseline_rotated" = "null" ] \
+       || [ "$current_rotated" \> "$baseline_rotated" ]; then
+      rotated_advanced=1
+    fi
+  fi
+
+  if [ "$mac_changed" -eq 1 ] && [ "$rotated_advanced" -eq 1 ]; then
+    poll_ok=1
+    echo "    post-apply MAC          = $current_mac"
+    echo "    post-apply last_rotated = $current_rotated"
+    break
+  fi
+  sleep 1
+done
+
+if [ "$poll_ok" -ne 1 ]; then
+  echo "TIMEOUT waiting for persona-driven MAC/DHCP change after ${timeout_secs}s"
+  echo "      baseline MAC          = ${baseline_mac:-<unknown>}"
+  echo "      baseline last_rotated = ${baseline_rotated:-<unknown>}"
+  echo "      latest   MAC          = ${current_mac:-<unknown>}"
+  echo "      latest   last_rotated = ${current_rotated:-<unknown>}"
+  echo "      override the wait via PROTEUS_PERSONA_EFFECT_TIMEOUT_SECS=N"
+  exit 1
+fi
 
 persona_out=$(mktemp)
 nmap -O -Pn "$TARGET_IP" 2>&1 | tee "$persona_out" || true
