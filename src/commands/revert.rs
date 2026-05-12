@@ -104,6 +104,15 @@ pub(crate) struct RevertChanged {
 /// location got their state file untouched.
 pub(crate) fn revert_best_effort(state_path: Option<&Path>, warns: &mut Vec<String>) {
     let mut changed = RevertChanged::default();
+    // NCMD2.4: prune cached uuids that no longer exist in NM before any
+    // per-feature revert runs. A recycled uuid otherwise causes the
+    // per-feature path to restore Proteus's cached snapshot onto an
+    // unrelated profile (NM hands recycled uuids to fresh connections).
+    // Best-effort — the validator returns Ok() when state is absent or
+    // NM is unreachable, and accumulates warns for any dropped record.
+    if let Err(e) = validate_cached_connection_uuids(state_path, warns) {
+        warns.push(format!("uuid-validation: {e:#}"));
+    }
     if let Err(e) = super::hostname::revert(true, state_path) {
         warns.push(format!("hostname: {e:#}"));
     }
@@ -180,9 +189,12 @@ pub(crate) fn revert_best_effort(state_path: Option<&Path>, warns: &mut Vec<Stri
 /// Returns `Ok(())` on a clean validation OR a clean defer (NM absent);
 /// `Err(...)` only if loading state itself fails — callers treat that as
 /// debug-level and continue.
-pub(crate) fn validate_cached_connection_uuids(warns: &mut Vec<String>) -> Result<()> {
-    let state_path = super::state_path(None);
-    let mut state = match State::load(&state_path)? {
+pub(crate) fn validate_cached_connection_uuids(
+    state_path: Option<&Path>,
+    warns: &mut Vec<String>,
+) -> Result<()> {
+    let state_path_buf = super::state_path(state_path);
+    let mut state = match State::load(&state_path_buf)? {
         Some(s) => s,
         None => return Ok(()),
     };
@@ -242,7 +254,7 @@ pub(crate) fn validate_cached_connection_uuids(warns: &mut Vec<String>) -> Resul
     }
 
     state
-        .save(&state_path)
+        .save(&state_path_buf)
         .context("persisting NCMD2.4 cached-uuid prune")?;
     Ok(())
 }
