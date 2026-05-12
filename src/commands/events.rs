@@ -455,12 +455,41 @@ pub fn run(
         // this lock back, but the swap is the obviously-correct
         // shape regardless. Bounded by the same 5 s budget the
         // source drain uses.
+        //
+        // C7: surface JoinError::is_panic() at tracing::error! so a
+        // panicking rotate task does not disappear into the void. The
+        // daemon already kept running through it (tokio task isolation),
+        // but a silent discard means an operator running
+        // `journalctl -u proteus-events` sees no signal that a
+        // rotation failed because of a bug. Mirrors the JoinError
+        // handling shape in `shutdown_tasks` below.
         let pending: Vec<tokio::task::JoinHandle<()>> = match in_flight.lock() {
             Ok(mut g) => std::mem::take(&mut *g),
             Err(p) => std::mem::take(&mut *p.into_inner()),
         };
         for join in pending {
-            let _ = tokio::time::timeout(Duration::from_secs(5), join).await;
+            match tokio::time::timeout(Duration::from_secs(5), join).await {
+                Ok(Ok(())) => {}
+                Ok(Err(join_err)) => {
+                    if join_err.is_panic() {
+                        let payload = join_err.into_panic();
+                        let msg = crate::events::panic_payload_message(payload.as_ref());
+                        tracing::error!(
+                            panic = msg.as_str(),
+                            "events daemon: rotate-on-trigger task panicked"
+                        );
+                    } else {
+                        tracing::warn!(
+                            "events daemon: rotate-on-trigger task cancelled: {join_err}"
+                        );
+                    }
+                }
+                Err(_) => {
+                    tracing::warn!(
+                        "events daemon: rotate-on-trigger task did not complete within 5s"
+                    );
+                }
+            }
         }
 
         Ok::<u8, anyhow::Error>(exit::SUCCESS)
@@ -493,10 +522,29 @@ async fn shutdown_tasks(tasks: Vec<crate::events::source::SourceTask>, deadline:
                 tracing::debug!(source = name, "events daemon: source shut down cleanly");
             }
             Ok(Err(join_err)) => {
-                tracing::warn!(
-                    source = name,
-                    "events daemon: source task panicked or was cancelled: {join_err}"
-                );
+                // C7: differentiate panic from cancellation so an
+                // operator running `journalctl -u proteus-events` can
+                // tell a "the source's loop unwound on a bug" event
+                // apart from a "the source was cancelled at shutdown"
+                // one. Panic logs at `error!` with a downcast of the
+                // payload to `&str` / `String` so the message is
+                // legible. Cancellation stays at `warn!` because it's
+                // expected during shutdown if a source's stop arm
+                // races the join.
+                if join_err.is_panic() {
+                    let payload = join_err.into_panic();
+                    let msg = crate::events::panic_payload_message(payload.as_ref());
+                    tracing::error!(
+                        source = name,
+                        panic = msg.as_str(),
+                        "events daemon: source task panicked"
+                    );
+                } else {
+                    tracing::warn!(
+                        source = name,
+                        "events daemon: source task cancelled at shutdown: {join_err}"
+                    );
+                }
             }
             Err(_) => {
                 tracing::warn!(

@@ -43,6 +43,8 @@
 //! without the NM dispatcher (networkd, raw) and for triggers the
 //! dispatcher doesn't expose (link-flap, reg-domain, portal-auth).
 
+use std::panic::AssertUnwindSafe;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -126,6 +128,14 @@ pub struct EventRegistry {
     /// catches a runaway source. Test rigs override via
     /// [`EventRegistry::with_limiter`].
     limiter: RateLimiter,
+    /// Roadmap C7: count handler panics observed by `fire`. Per-registry
+    /// (not per-handler) because the handler index is not a stable
+    /// identifier across daemon runs and the operator's question is
+    /// "is anything panicking at all?" rather than "which slot." Exposed
+    /// read-only via [`EventRegistry::handler_panic_count`] so a future
+    /// `proteus events status` can surface it. Atomic so the read is
+    /// lock-free and never blocks dispatch.
+    handler_panics: AtomicU64,
 }
 
 impl EventRegistry {
@@ -136,6 +146,7 @@ impl EventRegistry {
         Self {
             handlers: Mutex::new(Vec::new()),
             limiter: RateLimiter::new(),
+            handler_panics: AtomicU64::new(0),
         }
     }
 
@@ -147,6 +158,7 @@ impl EventRegistry {
         Self {
             handlers: Mutex::new(Vec::new()),
             limiter,
+            handler_panics: AtomicU64::new(0),
         }
     }
 
@@ -220,6 +232,23 @@ impl EventRegistry {
     /// must not silently disable the registry for the rest of the
     /// daemon's life — it would silently swallow every subsequent
     /// rotation trigger.
+    ///
+    /// Roadmap C7: handler panics used to be silently swallowed —
+    /// `EventHandler::handle` is synchronous so an unwind would
+    /// propagate to the calling source task; a `tokio::spawn` source
+    /// task with a panicking handler would have its `JoinHandle`
+    /// resolve to `Err(JoinError::is_panic())` only at shutdown, and
+    /// the shutdown path discards that error. Wrap every handler call
+    /// in `std::panic::catch_unwind` so the panic surfaces at
+    /// `tracing::error!` with the handler index, trigger kind, and
+    /// best-effort downcast of the panic payload to `&str` / `String`,
+    /// then continue dispatching to subsequent handlers. The per-
+    /// registry [`EventRegistry::handler_panic_count`] counter is
+    /// bumped so a future `proteus events status` can answer "did any
+    /// handler panic in this run." `AssertUnwindSafe` is sound here:
+    /// the handler trait object lives behind a `&dyn EventHandler` and
+    /// the trigger is borrowed; we do not observe partially-mutated
+    /// state across the unwind boundary.
     pub fn fire(&self, trigger: RotationTrigger) -> Result<()> {
         let kind = trigger.kind();
         let now = Instant::now();
@@ -242,11 +271,37 @@ impl EventRegistry {
             }
         };
         for (idx, h) in handlers.iter().enumerate() {
-            if let Err(e) = h.handle(&trigger) {
-                tracing::warn!(handler_index = idx, kind = kind, "handler error: {e:#}");
+            // C7: catch_unwind so a panicking handler does not take
+            // down the source task. Each handler is called inside the
+            // unwind boundary; subsequent handlers see a fresh frame.
+            let result = std::panic::catch_unwind(AssertUnwindSafe(|| h.handle(&trigger)));
+            match result {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => {
+                    tracing::warn!(handler_index = idx, kind = kind, "handler error: {e:#}");
+                }
+                Err(payload) => {
+                    self.handler_panics.fetch_add(1, Ordering::SeqCst);
+                    let msg = panic_payload_message(payload.as_ref());
+                    tracing::error!(
+                        handler_index = idx,
+                        kind = kind,
+                        panic = msg.as_str(),
+                        "events: handler panicked; continuing dispatch to remaining handlers"
+                    );
+                }
             }
         }
         Ok(())
+    }
+
+    /// Roadmap C7: count of handler panics observed since the registry
+    /// was constructed. Exposed read-only so a future
+    /// `proteus events status` (or the daemon's own telemetry line)
+    /// can surface "handlers panicked N times this run" without
+    /// exposing the underlying atomic.
+    pub fn handler_panic_count(&self) -> u64 {
+        self.handler_panics.load(Ordering::SeqCst)
     }
 
     /// Inspection helper — exposes the limiter so an orchestrator
@@ -260,6 +315,25 @@ impl EventRegistry {
 impl Default for EventRegistry {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Roadmap C7: best-effort downcast of a `Box<dyn Any + Send>` panic
+/// payload (the shape `std::panic::catch_unwind` /
+/// `JoinError::into_panic` hand back) to a human-readable string. The
+/// conventional encodings are `&'static str` (from `panic!("literal")`)
+/// and `String` (from `panic!("{}", ...)`). Anything else renders as
+/// `"<non-string panic payload>"` — the daemon stays up, and the
+/// operator at least sees that *something* panicked even if the
+/// payload is a bespoke type. Logging the type id would be nice but
+/// is not stable across compiler versions.
+pub fn panic_payload_message(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(s) = payload.downcast_ref::<&'static str>() {
+        (*s).to_string()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "<non-string panic payload>".to_string()
     }
 }
 
@@ -560,5 +634,128 @@ mod tests {
         })
         .expect("fire on a poisoned registry must recover and dispatch");
         assert_eq!(count.load(Ordering::SeqCst), 1);
+    }
+
+    /// Roadmap C7: a handler that panics inside `handle` must not
+    /// take down the registry, must not abort dispatch to later
+    /// handlers, and must be observable via the per-registry panic
+    /// counter. Pre-fix this was a silent abort path — the panic
+    /// would unwind into the source task, leaving subsequent
+    /// handlers un-invoked and the operator with no signal that
+    /// anything had gone wrong.
+    #[test]
+    fn panicking_handler_does_not_abort_dispatch_and_bumps_counter() {
+        struct AlwaysPanics;
+        impl EventHandler for AlwaysPanics {
+            fn handle(&self, _: &RotationTrigger) -> Result<()> {
+                panic!("synthetic handler panic for C7");
+            }
+        }
+
+        let count = Arc::new(AtomicUsize::new(0));
+        let last = Arc::new(Mutex::new(None));
+        let reg = EventRegistry::new();
+        reg.register(Box::new(AlwaysPanics)).unwrap();
+        reg.register(Box::new(CountingHandler {
+            count: Arc::clone(&count),
+            last_kind: Arc::clone(&last),
+        }))
+        .unwrap();
+
+        // The fire call itself must return Ok — the panic is caught
+        // and logged inside the registry. Pre-fix this would have
+        // unwound the calling source task.
+        reg.fire(RotationTrigger::ConnectionUp {
+            iface: "wlan0".into(),
+            ssid: Some("home".into()),
+        })
+        .expect("fire must return Ok after a handler panic");
+
+        // The second handler still ran — panic is isolated.
+        assert_eq!(
+            count.load(Ordering::SeqCst),
+            1,
+            "later handler must still run after an earlier one panicked"
+        );
+        // The panic counter is bumped exactly once.
+        assert_eq!(
+            reg.handler_panic_count(),
+            1,
+            "panic counter must reflect the one observed handler panic"
+        );
+
+        // Fire again — the panicking handler panics again, the
+        // healthy one runs again, and the panic counter advances.
+        reg.fire(RotationTrigger::LinkFlap {
+            iface: "wlan0".into(),
+        })
+        .expect("fire must keep returning Ok across repeated handler panics");
+        assert_eq!(count.load(Ordering::SeqCst), 2);
+        assert_eq!(reg.handler_panic_count(), 2);
+    }
+
+    /// C7: the panic-payload downcaster handles both conventional
+    /// encodings (`&'static str` from `panic!("literal")`, `String`
+    /// from `panic!("{}", ...)`) and falls back to a placeholder
+    /// for everything else. Pin so the log surface stays operator-
+    /// readable across the kinds of panic call sites Rust code
+    /// emits.
+    #[test]
+    fn panic_payload_message_handles_str_string_and_other() {
+        let str_payload: Box<dyn std::any::Any + Send> = Box::new("static literal");
+        assert_eq!(
+            panic_payload_message(str_payload.as_ref()),
+            "static literal"
+        );
+
+        let string_payload: Box<dyn std::any::Any + Send> = Box::new(String::from("owned text"));
+        assert_eq!(panic_payload_message(string_payload.as_ref()), "owned text");
+
+        // u32 is the canonical "anything else" — the placeholder
+        // path keeps the daemon from rendering raw type ids.
+        let other_payload: Box<dyn std::any::Any + Send> = Box::new(42u32);
+        assert_eq!(
+            panic_payload_message(other_payload.as_ref()),
+            "<non-string panic payload>"
+        );
+    }
+
+    /// C7: a panicking handler followed by a panicking handler still
+    /// dispatches all the way through (every panic is caught and
+    /// counted individually). Pins the "every handler runs in its
+    /// own unwind boundary" shape so a future refactor cannot fall
+    /// back to a single outer boundary that aborts on the first
+    /// panic.
+    #[test]
+    fn multiple_panicking_handlers_each_bump_the_counter() {
+        struct AlwaysPanics(&'static str);
+        impl EventHandler for AlwaysPanics {
+            fn handle(&self, _: &RotationTrigger) -> Result<()> {
+                panic!("{}", self.0);
+            }
+        }
+
+        let count = Arc::new(AtomicUsize::new(0));
+        let last = Arc::new(Mutex::new(None));
+        let reg = EventRegistry::new();
+        reg.register(Box::new(AlwaysPanics("first panicker")))
+            .unwrap();
+        reg.register(Box::new(AlwaysPanics("second panicker")))
+            .unwrap();
+        // The trailing healthy handler proves dispatch reached the
+        // end of the list past two consecutive panics.
+        reg.register(Box::new(CountingHandler {
+            count: Arc::clone(&count),
+            last_kind: Arc::clone(&last),
+        }))
+        .unwrap();
+
+        reg.fire(RotationTrigger::PortalAuth {
+            ssid: "Cafe".into(),
+        })
+        .expect("fire must return Ok after multiple handler panics");
+
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+        assert_eq!(reg.handler_panic_count(), 2);
     }
 }
