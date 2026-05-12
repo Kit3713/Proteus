@@ -540,8 +540,9 @@ where
     };
     // Cooldown check under the lock: read the per-iface `last_rotated`
     // and bail structured if the elapsed time hasn't met the budget
-    // yet. The elapsed/now arithmetic is racy with wall-clock skew but
-    // not with concurrent rotates anymore.
+    // yet. The elapsed/now arithmetic detects wall-clock skew via the
+    // guards in `remaining_cooldown` (Stream 5 / C2) and is no longer
+    // racy with concurrent rotates either.
     if let Some(rec) = state.managed.interfaces.get(iface)
         && let Some(stamp) = rec.last_rotated.as_deref()
         && let Some(remaining) = remaining_cooldown(stamp, cooldown)
@@ -627,16 +628,75 @@ fn parse_connection_ref(cref: &ConnectionRef) -> Result<OwnedObjectPath> {
     Ok(p.into())
 }
 
+/// Maximum plausible cooldown lookback before we suspect wall-clock skew
+/// (Stream 5 / C2). The longest realistic per-iface cooldown an operator
+/// configures is on the order of hours; an elapsed reading north of 30
+/// days almost certainly means the wall clock jumped forward (NTP correction,
+/// VM resume from suspend, manual `date` set) rather than a genuinely month-
+/// old stamp. Treating that case as "cooldown expired" matches user intent
+/// (the rotate budget is long-since burned) and avoids weird underflow-style
+/// arithmetic surprises.
+const COOLDOWN_SKEW_CEILING: Duration = Duration::from_secs(30 * 24 * 60 * 60);
+
 /// Compute remaining cooldown given an ISO-8601 `last_rotated` stamp
 /// and a budget. Returns `None` if the cooldown has expired (or the
 /// stamp couldn't be parsed) — both cases mean "go ahead and rotate".
+///
+/// Stream 5 / C2 — wall-clock skew is detected and degraded gracefully.
+/// Because `last_rotated` is persisted as an ISO-8601 wall-clock stamp
+/// in `state.json` (for cross-process visibility), a strict monotonic
+/// comparison isn't possible — a pure `std::time::Instant` resets at
+/// boot and isn't comparable across processes. The compromise:
+///
+///   1. Keep the wall-clock arithmetic (the persisted shape forces it).
+///   2. If `last > now` (the saved stamp lives in the future relative
+///      to the current wall clock), assume NTP / operator action moved
+///      the clock backward. Pre-fix, `saturating_sub` collapsed elapsed
+///      to 0 and the cooldown enforced the full window — a one-way
+///      ratchet whenever the clock slipped back. Post-fix, we return
+///      `None` (rotate-allowed) and `warn!` so the operator can see the
+///      host has a clock-discipline problem.
+///   3. If `elapsed > COOLDOWN_SKEW_CEILING` (30 days), treat as the
+///      same skew class. No reasonable cooldown budget is that long,
+///      and a stamp from a month ago is almost certainly the wall clock
+///      having jumped forward by months while `state.json` was idle.
+///      Same `None`-plus-`warn!` treatment.
+///
+/// Option 4 from the C2 brief (in-process monotonic anchor on each
+/// `last_rotated` write) was considered but skipped: the only prod
+/// write site is `commands::rotate.rs`, which is out of scope for this
+/// fix. Wiring an `Instant` stamp solely on the post-hook path inside
+/// `rotate_if_needed_inner_with` would help one codepath but miss the
+/// `proteus rotate` foreground command's writes, so it gives a partial
+/// shield without proving the wall-clock guards aren't needed. The
+/// guards in (2) and (3) close the ratchet bug on their own.
 fn remaining_cooldown(stamp: &str, cooldown: Duration) -> Option<Duration> {
     let last = parse_iso8601_z(stamp)?;
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .ok()?
         .as_secs();
-    let elapsed = now.saturating_sub(last);
+    if last > now {
+        tracing::warn!(
+            stamp = %stamp,
+            now = now,
+            last = last,
+            "cooldown: last_rotated is in the future (wall clock moved backward); \
+             treating cooldown as expired"
+        );
+        return None;
+    }
+    let elapsed = now - last;
+    if elapsed > COOLDOWN_SKEW_CEILING.as_secs() {
+        tracing::warn!(
+            stamp = %stamp,
+            elapsed_secs = elapsed,
+            ceiling_secs = COOLDOWN_SKEW_CEILING.as_secs(),
+            "cooldown: elapsed since last_rotated exceeds skew ceiling (likely \
+             wall-clock jump forward); treating cooldown as expired"
+        );
+        return None;
+    }
     if elapsed >= cooldown.as_secs() {
         None
     } else {
@@ -736,6 +796,83 @@ mod tests {
         // A stamp from year 2000 is far past any reasonable cooldown.
         let r = remaining_cooldown("2000-01-01T00:00:00Z", Duration::from_secs(60));
         assert!(r.is_none());
+    }
+
+    // ===== Stream 5 / C2 — wall-clock skew detection =====
+
+    /// Helper: build an ISO-8601 stamp `offset_secs` away from the
+    /// current wall clock. Positive offsets reach into the future,
+    /// negative offsets into the past. We round-trip through the same
+    /// formatter the production code uses so the bytes match exactly.
+    fn stamp_offset_from_now(offset_secs: i64) -> String {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let target = (now + offset_secs).max(0) as u64;
+        let (y, mo, d, h, mi, s) = crate::commands::unix_to_ymdhms(target);
+        format!("{y:04}-{mo:02}-{d:02}T{h:02}:{mi:02}:{s:02}Z")
+    }
+
+    /// C2 / scenario 1: `last_rotated` lives in the future relative to
+    /// `now`. Pre-fix, `saturating_sub` collapsed elapsed to 0 and the
+    /// cooldown enforced the full window — a permanent block until the
+    /// clock caught up. Post-fix, we detect the skew and return `None`
+    /// so the rotate is allowed to proceed.
+    #[test]
+    fn remaining_cooldown_future_stamp_treated_as_skew() {
+        // Stamp ~1 hour in the future, cooldown 1 minute. Pre-fix this
+        // would have returned `Some(60s)` (the full cooldown). Post-fix:
+        // detect the skew, return `None`.
+        let stamp = stamp_offset_from_now(3600);
+        let r = remaining_cooldown(&stamp, Duration::from_secs(60));
+        assert!(
+            r.is_none(),
+            "future last_rotated must be treated as wall-clock skew (rotate allowed), \
+             got {r:?}"
+        );
+    }
+
+    /// C2 / scenario 2: a stamp 31 days in the past trips the absurd-
+    /// elapsed ceiling and is treated as wall-clock skew (clock jumped
+    /// forward), returning `None` even when the cooldown budget itself
+    /// is small enough that the answer would be `None` anyway. The
+    /// behaviour-meaningful side is the warn; the return value matches
+    /// the well-past path. We assert `None` and rely on the warn-on-skew
+    /// branch being the one that fires (verified by sibling tests).
+    #[test]
+    fn remaining_cooldown_absurd_elapsed_treated_as_skew() {
+        // 31 days * 86_400 = 2_678_400 seconds in the past. Budget set
+        // far ABOVE the elapsed value so that without the ceiling guard
+        // the function would return `Some(<huge>)` and incorrectly
+        // hold the rotate.
+        let stamp = stamp_offset_from_now(-(31 * 86_400));
+        let huge_budget = Duration::from_secs(60 * 86_400); // 60 days
+        let r = remaining_cooldown(&stamp, huge_budget);
+        assert!(
+            r.is_none(),
+            "elapsed beyond skew ceiling must be treated as wall-clock skew \
+             (rotate allowed), got {r:?}"
+        );
+    }
+
+    /// C2 / scenario 3: in-window stamps continue to return the
+    /// expected remaining duration — the skew guards must not perturb
+    /// the happy path. We allow ±2 seconds of slop because the production
+    /// code re-reads `SystemTime::now()` inside `remaining_cooldown`,
+    /// which advances by a tick or two between the test's stamp build
+    /// and the function's read.
+    #[test]
+    fn remaining_cooldown_in_window_returns_expected_duration() {
+        // Stamp 10 seconds ago, cooldown budget 60 seconds → ~50s remaining.
+        let stamp = stamp_offset_from_now(-10);
+        let cooldown = Duration::from_secs(60);
+        let r = remaining_cooldown(&stamp, cooldown).expect("expected Some(remaining)");
+        let secs = r.as_secs();
+        assert!(
+            (48..=52).contains(&secs),
+            "remaining for a 10s-old stamp under 60s budget should be ~50s, got {secs}s"
+        );
     }
 
     // ===== Issue #245 / #250 — TOCTOU + read-back regressions =====
