@@ -36,7 +36,9 @@ pub const OWNER_POOL: &[&str] = &[
 /// at the user, not silently in `state.json`.
 pub fn render_template(template: &str, wordlist: &[&str]) -> Result<String> {
     if template.is_empty() {
-        return Err(anyhow!("persona template is empty"));
+        return Err(anyhow!(
+            "persona template is empty; see proteus wiki personas"
+        ));
     }
     if wordlist.is_empty() {
         return Err(anyhow!("hostname wordlist is empty"));
@@ -60,7 +62,9 @@ pub fn render_template(template: &str, wordlist: &[&str]) -> Result<String> {
             tok.push(cc);
         }
         if !closed {
-            return Err(anyhow!("template '{template}' has unclosed '{{'"));
+            return Err(anyhow!(
+                "template '{template}' has unclosed '{{'; see proteus wiki personas"
+            ));
         }
         match tok.as_str() {
             "owner" => out.push_str(pick_owner()?),

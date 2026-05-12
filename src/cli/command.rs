@@ -100,8 +100,16 @@ pub enum Command {
         /// CLI defaults to the first managed wifi/ethernet.
         #[arg(long)]
         iface: Option<String>,
-        /// Cooldown budget in seconds.
-        #[arg(long, default_value_t = 60)]
+        /// Cooldown budget in seconds (0 = always rotate; 0..=86400).
+        // N12.12: bound to 0..=86_400 because 0 is a legitimate
+        // "always rotate" shape (the dispatcher's hot path may pass
+        // it for forced rotates) and 86_400s = 1 day is the realistic
+        // upper bound for a per-SSID stickiness window.
+        #[arg(
+            long,
+            default_value_t = 60,
+            value_parser = clap::value_parser!(u64).range(0..=86_400),
+        )]
         cooldown: u64,
         /// SSID being joined, when known. Roadmap Milestone 3: the
         /// dispatcher passes this so per-SSID policies (`pin_mac`,

@@ -11,6 +11,17 @@ landed, what is in flight, and what is on the bench. See
 
 ## [Unreleased]
 
+### Known sharp edges
+
+- **CLI prefix matching (CL5)** — `clap` accepts shortest-unambiguous
+  subcommand prefixes by default (`proteus per` resolves to `persona`,
+  `proteus pi` resolves to `pin`). A future subcommand that shares a
+  prefix with an existing one (e.g. a hypothetical `pinger`) will
+  silently change what `proteus pi` resolves to. Scripts should spell
+  out full subcommand names — `proteus pin`, not `proteus pi`. There
+  is no commitment to keeping prefix resolutions stable across
+  releases.
+
 ## [0.4.2-beta] - 2026-05-08
 
 Second v0.4 beta. Closes the remainder of the May 2026 audit tree plus

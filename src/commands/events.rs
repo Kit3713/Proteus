@@ -420,8 +420,42 @@ pub fn run(
         // the loop so the budget is honoured: when the count meets or
         // exceeds the budget the loop breaks with a "trigger budget
         // reached" log line.
+        //
+        // Roadmap C4: previously the production "runs until SIGTERM"
+        // path relied on the OS dropping the process — systemd's
+        // SIGTERM landed as a SIGKILL-equivalent because the loop
+        // body had no way to observe the signal, so the in-flight
+        // rotate drain + per-source `shutdown_tasks` below were only
+        // reachable from the trigger-budget / wall-clock-budget
+        // exits. The select! arms below race the 250 ms tick against
+        // SIGTERM (systemd `ExecStop`) and SIGINT (interactive
+        // Ctrl-C); on signal the loop breaks normally so the same
+        // graceful drain path runs. Manual verification:
+        // `pkill -TERM proteus` — journald should show the
+        // "SIGTERM received" line followed by the source-drain
+        // lines; signal delivery is not exercised in `cargo test`
+        // because spawning real signals from inside the test harness
+        // is fragile (it would race other tests on the same pid).
+        let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .context("installing SIGTERM handler for events daemon")?;
+        let mut sigint = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
+            .context("installing SIGINT handler for events daemon")?;
         loop {
-            tokio::time::sleep(Duration::from_millis(250)).await;
+            tokio::select! {
+                _ = tokio::time::sleep(Duration::from_millis(250)) => {}
+                _ = sigterm.recv() => {
+                    tracing::info!(
+                        "events daemon: SIGTERM received; draining and shutting down"
+                    );
+                    break;
+                }
+                _ = sigint.recv() => {
+                    tracing::info!(
+                        "events daemon: SIGINT received; draining and shutting down"
+                    );
+                    break;
+                }
+            }
             if max_triggers > 0
                 && trigger_count.load(std::sync::atomic::Ordering::SeqCst) >= max_triggers
             {
@@ -455,12 +489,41 @@ pub fn run(
         // this lock back, but the swap is the obviously-correct
         // shape regardless. Bounded by the same 5 s budget the
         // source drain uses.
+        //
+        // C7: surface JoinError::is_panic() at tracing::error! so a
+        // panicking rotate task does not disappear into the void. The
+        // daemon already kept running through it (tokio task isolation),
+        // but a silent discard means an operator running
+        // `journalctl -u proteus-events` sees no signal that a
+        // rotation failed because of a bug. Mirrors the JoinError
+        // handling shape in `shutdown_tasks` below.
         let pending: Vec<tokio::task::JoinHandle<()>> = match in_flight.lock() {
             Ok(mut g) => std::mem::take(&mut *g),
             Err(p) => std::mem::take(&mut *p.into_inner()),
         };
         for join in pending {
-            let _ = tokio::time::timeout(Duration::from_secs(5), join).await;
+            match tokio::time::timeout(Duration::from_secs(5), join).await {
+                Ok(Ok(())) => {}
+                Ok(Err(join_err)) => {
+                    if join_err.is_panic() {
+                        let payload = join_err.into_panic();
+                        let msg = crate::events::panic_payload_message(payload.as_ref());
+                        tracing::error!(
+                            panic = msg.as_str(),
+                            "events daemon: rotate-on-trigger task panicked"
+                        );
+                    } else {
+                        tracing::warn!(
+                            "events daemon: rotate-on-trigger task cancelled: {join_err}"
+                        );
+                    }
+                }
+                Err(_) => {
+                    tracing::warn!(
+                        "events daemon: rotate-on-trigger task did not complete within 5s"
+                    );
+                }
+            }
         }
 
         Ok::<u8, anyhow::Error>(exit::SUCCESS)
@@ -493,10 +556,29 @@ async fn shutdown_tasks(tasks: Vec<crate::events::source::SourceTask>, deadline:
                 tracing::debug!(source = name, "events daemon: source shut down cleanly");
             }
             Ok(Err(join_err)) => {
-                tracing::warn!(
-                    source = name,
-                    "events daemon: source task panicked or was cancelled: {join_err}"
-                );
+                // C7: differentiate panic from cancellation so an
+                // operator running `journalctl -u proteus-events` can
+                // tell a "the source's loop unwound on a bug" event
+                // apart from a "the source was cancelled at shutdown"
+                // one. Panic logs at `error!` with a downcast of the
+                // payload to `&str` / `String` so the message is
+                // legible. Cancellation stays at `warn!` because it's
+                // expected during shutdown if a source's stop arm
+                // races the join.
+                if join_err.is_panic() {
+                    let payload = join_err.into_panic();
+                    let msg = crate::events::panic_payload_message(payload.as_ref());
+                    tracing::error!(
+                        source = name,
+                        panic = msg.as_str(),
+                        "events daemon: source task panicked"
+                    );
+                } else {
+                    tracing::warn!(
+                        source = name,
+                        "events daemon: source task cancelled at shutdown: {join_err}"
+                    );
+                }
             }
             Err(_) => {
                 tracing::warn!(
