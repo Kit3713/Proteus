@@ -441,17 +441,17 @@ fn parse_config_text(s: &str) -> Result<Config> {
 /// Empty segments (leading or trailing dots, double dots) are rejected.
 fn split_key(key: &str) -> Result<(Vec<&str>, &str)> {
     if key.is_empty() {
-        return Err(anyhow!("empty key"));
+        return Err(anyhow!("empty key; see proteus wiki config"));
     }
     let parts: Vec<&str> = key.split('.').collect();
     if parts.iter().any(|p| p.is_empty()) {
         return Err(anyhow!(
-            "key '{key}' must be of the form section.field or section.subsection.field"
+            "key '{key}' must be of the form section.field or section.subsection.field; see proteus wiki config"
         ));
     }
     if parts.len() < 2 {
         return Err(anyhow!(
-            "key '{key}' must be of the form section.field or section.subsection.field"
+            "key '{key}' must be of the form section.field or section.subsection.field; see proteus wiki config"
         ));
     }
     let (last, head) = parts.split_last().unwrap();
@@ -487,13 +487,13 @@ fn set_in_doc(doc: &mut DocumentMut, key: &str, value: Value) -> Result<()> {
     let (path, field) = split_key(key)?;
     let (head, rest) = path
         .split_first()
-        .ok_or_else(|| anyhow!("key '{key}' has no section"))?;
+        .ok_or_else(|| anyhow!("key '{key}' has no section; see proteus wiki config"))?;
     if doc.get(head).is_none() {
         doc[*head] = Item::Table(toml_edit::Table::new());
     }
     let mut table = doc[*head]
         .as_table_mut()
-        .ok_or_else(|| anyhow!("section [{head}] is not a table"))?;
+        .ok_or_else(|| anyhow!("section [{head}] is not a table; see proteus wiki config"))?;
     for seg in rest {
         if !table.contains_key(seg) {
             table.insert(seg, Item::Table(toml_edit::Table::new()));
@@ -501,7 +501,7 @@ fn set_in_doc(doc: &mut DocumentMut, key: &str, value: Value) -> Result<()> {
         table = table
             .get_mut(seg)
             .and_then(|i| i.as_table_mut())
-            .ok_or_else(|| anyhow!("section [{seg}] is not a table"))?;
+            .ok_or_else(|| anyhow!("section [{seg}] is not a table; see proteus wiki config"))?;
     }
     // Issue #164: warn when overwriting a user-set value with a different
     // TOML type. The default-schema-driven coercion in `parse_value_for_key`
@@ -540,21 +540,22 @@ fn value_type_tag(v: &Value) -> &'static str {
 /// default's existing type. Bools accept true/false/yes/no/on/off (case-insensitive).
 fn parse_value_for_key(key: &str, raw: &str) -> Result<Value> {
     let defaults = default_document()?;
-    let item = lookup(&defaults, key)
-        .ok_or_else(|| anyhow!("unknown config key (try `proteus config keys`)"))?;
+    let item = lookup(&defaults, key).ok_or_else(|| {
+        anyhow!("unknown config key (try `proteus config keys`); see proteus wiki config")
+    })?;
     let val = item
         .as_value()
-        .ok_or_else(|| anyhow!("'{key}' is not a scalar value"))?;
+        .ok_or_else(|| anyhow!("'{key}' is not a scalar value; see proteus wiki config"))?;
     match val {
         Value::Boolean(_) => parse_bool(raw).map(Value::from),
         Value::Integer(_) => raw
             .parse::<i64>()
             .map(Value::from)
-            .map_err(|e| anyhow!("expected integer: {e}")),
+            .map_err(|e| anyhow!("expected integer: {e}; see proteus wiki config")),
         Value::Float(_) => raw
             .parse::<f64>()
             .map(Value::from)
-            .map_err(|e| anyhow!("expected float: {e}")),
+            .map_err(|e| anyhow!("expected float: {e}; see proteus wiki config")),
         Value::String(_) => Ok(Value::from(raw)),
         Value::Array(_) => {
             // Comma-separated list of strings.
@@ -567,9 +568,9 @@ fn parse_value_for_key(key: &str, raw: &str) -> Result<Value> {
             }
             Ok(Value::Array(arr))
         }
-        Value::InlineTable(_) | Value::Datetime(_) => {
-            Err(anyhow!("setting this key from the CLI is not supported"))
-        }
+        Value::InlineTable(_) | Value::Datetime(_) => Err(anyhow!(
+            "setting this key from the CLI is not supported; see proteus wiki config"
+        )),
     }
 }
 
@@ -578,7 +579,7 @@ fn parse_bool(s: &str) -> Result<bool> {
         "true" | "yes" | "on" | "1" => Ok(true),
         "false" | "no" | "off" | "0" => Ok(false),
         other => Err(anyhow!(
-            "expected boolean (true/false/yes/no/on/off), got '{other}'"
+            "expected boolean (true/false/yes/no/on/off), got '{other}'; see proteus wiki config"
         )),
     }
 }
