@@ -642,9 +642,15 @@ Stream 9), S1, audit N‑3 (residual), NEV2.3, NMOD.1, NMOD.2, NBE.6.
 
 - ✅ Lift the `HELD` mutex out of the retry-sleep loop (C1, N12.13) — the
   highest-frequency contention pin.
-- ⏳ Use monotonic clock for cooldown (C2) instead of wall-clock-skew
-  vulnerable `SystemTime`. **Deferred** — fix lives in `src/backend/nm.rs`
-  which is Stream 4's territory; flagged for follow-up.
+- ✅ Detect wall-clock skew in cooldown calc; degrade gracefully (C2).
+  `last_rotated` persists as ISO-8601 for cross-process visibility so a
+  strict monotonic comparison is impossible, but `remaining_cooldown`
+  now classifies two skew patterns: `last > now` (clock moved backward)
+  → returns `None` + `tracing::warn!` so a rotate proceeds; `elapsed >
+  COOLDOWN_SKEW_CEILING` (30 days) → same path. Three new unit tests
+  pin the future-stamp, absurd-elapsed, and in-window shapes. Pairs
+  with N14 (per-iface mutex) so a same-iface concurrent race no longer
+  exploits the skew window.
 - ✅ Add subprocess timeouts to `apply` and `revert` (C3).
 - ✅ SIGTERM handler in events daemon (C4). The shutdown loop's plain
   `tokio::time::sleep` now sits inside a `tokio::select!` that races the
