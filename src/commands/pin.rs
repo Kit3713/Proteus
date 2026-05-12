@@ -90,7 +90,7 @@ async fn resolve_and_pin(target: &str, mac: Option<Mac>, state: &mut State) -> R
                     Some(dev) => resolve_mac_for_device(&conn, dev, None).await?,
                     None => {
                         return Err(anyhow!(
-                            "connection '{target}' is not currently bound to a device; pass --mac"
+                            "connection '{target}' is not currently bound to a device; pass --mac; see proteus wiki mac-recipes"
                         ));
                     }
                 }
@@ -106,7 +106,7 @@ async fn resolve_and_pin(target: &str, mac: Option<Mac>, state: &mut State) -> R
     }
 
     Err(anyhow!(
-        "no NetworkManager interface or connection profile named '{target}'"
+        "no NetworkManager interface or connection profile named '{target}'; see proteus wiki mac-recipes"
     ))
 }
 
@@ -127,7 +127,7 @@ async fn resolve_mac_for_device(
         return parse_mac(hw);
     }
     Err(anyhow!(
-        "no current MAC available for {}; pass --mac",
+        "no current MAC available for {}; pass --mac; see proteus wiki mac-recipes",
         dev.interface
     ))
 }

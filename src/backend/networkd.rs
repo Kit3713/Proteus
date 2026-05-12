@@ -51,7 +51,9 @@ impl NetworkBackend for NetworkdBackend {
 
     fn list_devices<'a>(&'a self) -> BoxFuture<'a, Result<Vec<BackendDevice>>> {
         Box::pin(async {
-            bail!("backend::networkd: list_devices not yet implemented (Milestone 1)")
+            bail!(
+                "backend::networkd: list_devices not yet implemented (Milestone 1); see proteus wiki backend"
+            )
         })
     }
 
@@ -60,7 +62,9 @@ impl NetworkBackend for NetworkdBackend {
         _device: &'a BackendDevice,
     ) -> BoxFuture<'a, Result<Vec<ConnectionRef>>> {
         Box::pin(async {
-            bail!("backend::networkd: list_connections not yet implemented (Milestone 1)")
+            bail!(
+                "backend::networkd: list_connections not yet implemented (Milestone 1); see proteus wiki backend"
+            )
         })
     }
 
@@ -70,7 +74,9 @@ impl NetworkBackend for NetworkdBackend {
         _mac: Mac,
     ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async {
-            bail!("backend::networkd: set_cloned_mac not yet implemented (Milestone 1)")
+            bail!(
+                "backend::networkd: set_cloned_mac not yet implemented (Milestone 1); see proteus wiki backend"
+            )
         })
     }
 
@@ -79,7 +85,9 @@ impl NetworkBackend for NetworkdBackend {
         _device: &'a BackendDevice,
     ) -> BoxFuture<'a, Result<Option<String>>> {
         Box::pin(async {
-            bail!("backend::networkd: read_cloned_mac not yet implemented (Milestone 1)")
+            bail!(
+                "backend::networkd: read_cloned_mac not yet implemented (Milestone 1); see proteus wiki backend"
+            )
         })
     }
 
@@ -119,7 +127,9 @@ impl NetworkBackend for NetworkdBackend {
         _snapshot: DhcpSettingsSnapshot,
     ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async {
-            bail!("backend::networkd: set_dhcp_settings not yet implemented (Milestone 1)")
+            bail!(
+                "backend::networkd: set_dhcp_settings not yet implemented (Milestone 1); see proteus wiki backend"
+            )
         })
     }
 
@@ -129,7 +139,9 @@ impl NetworkBackend for NetworkdBackend {
         _settings: Ipv6NmSettings,
     ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async {
-            bail!("backend::networkd: set_ipv6_settings not yet implemented (Milestone 1)")
+            bail!(
+                "backend::networkd: set_ipv6_settings not yet implemented (Milestone 1); see proteus wiki backend"
+            )
         })
     }
 
@@ -138,7 +150,9 @@ impl NetworkBackend for NetworkdBackend {
         _device: &'a BackendDevice,
     ) -> BoxFuture<'a, Result<RenewOutcome>> {
         Box::pin(async {
-            bail!("backend::networkd: renew_lease not yet implemented (Milestone 1)")
+            bail!(
+                "backend::networkd: renew_lease not yet implemented (Milestone 1); see proteus wiki backend"
+            )
         })
     }
 
@@ -148,7 +162,9 @@ impl NetworkBackend for NetworkdBackend {
         _value: &'a str,
     ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async {
-            bail!("backend::networkd: write_anonymous_identity not yet implemented (Milestone 1)")
+            bail!(
+                "backend::networkd: write_anonymous_identity not yet implemented (Milestone 1); see proteus wiki backend"
+            )
         })
     }
 }
