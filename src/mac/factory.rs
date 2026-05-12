@@ -268,31 +268,14 @@ impl EthtoolRunner for EthtoolBin {
 }
 
 /// Security audit N-1: iface-name allow-list mirroring the kernel's
-/// `dev_valid_name()` rules (`net/core/dev.c`). The constraints are:
+/// `dev_valid_name()` rules (`net/core/dev.c`).
 ///
-/// - non-empty and `<= 15` bytes (`IFNAMSIZ - 1` excluding the NUL)
-/// - no leading `-` so `ethtool` cannot parse it as a flag
-/// - the special names `.` and `..` are forbidden
-/// - bytes are restricted to `[A-Za-z0-9_.-]` — ASCII alphanumerics
-///   plus the three punctuation characters real iface names use
-///   (`enp48s0`, `wlp3s0f3u2`, `eth0.10`, `enx00e04c360033`).
-///
-/// Anything outside this set is refused. The function is intentionally
-/// stricter than `is_safe_iface` elsewhere in the tree because the
-/// audit explicitly called out the regex `[A-Za-z0-9_.-]+` shape.
+/// GH#359: the validation rules now live in [`crate::iface`] — this
+/// helper is a thin boolean wrapper kept around so the local call sites
+/// (and the tests below) read naturally. New code should call
+/// `crate::iface::validate` directly.
 fn is_valid_iface_name(iface: &str) -> bool {
-    if iface.is_empty() || iface.len() > 15 {
-        return false;
-    }
-    if iface == "." || iface == ".." {
-        return false;
-    }
-    if iface.starts_with('-') {
-        return false;
-    }
-    iface
-        .bytes()
-        .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'.' || b == b'-')
+    crate::iface::is_valid(iface)
 }
 
 /// Issue #206-E: validate that a candidate string is a colon-formatted MAC
