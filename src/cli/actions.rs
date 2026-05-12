@@ -43,8 +43,14 @@ pub enum TimerAction {
     Logs {
         /// Timer name (`rotate`, `check`, ...).
         name: String,
-        /// How many lines to tail.
-        #[arg(long, default_value_t = 50)]
+        /// How many lines to tail (1..=100000).
+        // N12.12: bound to 1..=100_000 because 0 lines is meaningless
+        // and journalctl tail past ~100k lines is operator error.
+        #[arg(
+            long,
+            default_value_t = 50,
+            value_parser = clap::value_parser!(u32).range(1..=100_000),
+        )]
         lines: u32,
     },
 }
@@ -230,9 +236,18 @@ pub enum WikiAction {
         query: Vec<String>,
         #[arg(long)]
         json: bool,
-        /// Cap on result rows shown (default 10).
-        #[arg(long, default_value_t = WIKI_SEARCH_DEFAULT_LIMIT)]
-        limit: usize,
+        /// Cap on result rows shown (default 10, range 1..=500).
+        // N12.12: bound to 1..=500 because 0 results is nonsense
+        // and 500 is well above any realistic operator triage need.
+        // `usize` doesn't have a built-in `RangedValueParser`; we parse
+        // as `u64` and convert in dispatch (still fits well under
+        // `usize::MAX` on every supported platform).
+        #[arg(
+            long,
+            default_value_t = WIKI_SEARCH_DEFAULT_LIMIT as u64,
+            value_parser = clap::value_parser!(u64).range(1..=500),
+        )]
+        limit: u64,
     },
 }
 
@@ -554,13 +569,28 @@ pub enum EventsAction {
         /// Exit after `n` triggers (or after `--once-after-secs`,
         /// whichever comes first). `0` (the default) means run
         /// forever — the production shape for the systemd unit.
-        #[arg(long, default_value_t = 0)]
+        // N12.12: bound to 0..=10_000_000 because 0 means "no limit"
+        // (documented) and 10M is far above any realistic CI/smoke
+        // budget; a typo like `99999999999` should be rejected at
+        // parse time rather than burning forever.
+        #[arg(
+            long,
+            default_value_t = 0,
+            value_parser = clap::value_parser!(u64).range(0..=10_000_000),
+        )]
         max_triggers: u64,
         /// Stop the daemon after the given number of seconds. `0`
         /// (the default) means run forever. The smoke-test path
         /// pairs this with `--max-triggers` so a CI run terminates
         /// even when no triggers fire.
-        #[arg(long, default_value_t = 0)]
+        // N12.12: bound to 0..=86_400 because 0 means "no time limit"
+        // (documented) and 86_400s = 1 day is well past any reasonable
+        // smoke-test deadline; the systemd unit never sets this.
+        #[arg(
+            long,
+            default_value_t = 0,
+            value_parser = clap::value_parser!(u64).range(0..=86_400),
+        )]
         once_after_secs: u64,
     },
 }

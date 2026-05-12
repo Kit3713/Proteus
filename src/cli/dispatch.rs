@@ -277,7 +277,8 @@ pub(super) fn dispatch(cli: Cli) -> Result<u8> {
         },
         Command::Wiki { action, page, json } => match action {
             Some(WikiAction::Search { query, json, limit }) => {
-                commands::wiki_cmd::run_search(&query, json, limit)
+                // N12.12: clap-bounded to 1..=500 (u64); fits `usize` trivially.
+                commands::wiki_cmd::run_search(&query, json, limit as usize)
             }
             None => commands::wiki_cmd::run(page.as_deref(), json, cli.no_color),
         },

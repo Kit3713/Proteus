@@ -58,7 +58,11 @@ thiserror = "2"
 include_dir = "0.7"
 zbus = { version = "5", default-features = false, features = ["tokio"] }
 # bloat-trim 2026-05-07: dropped tokio/macros (no `#[tokio::main]`/`select!`/`pin!` used). zbus pulls tokio/sync+time+net via its default feature set, so our `sync`+`time` were already covered transitively.
-tokio = { version = "1", default-features = false, features = ["rt"] }
+# Roadmap C4 (2026-05-11): re-added `macros` + `signal` so the events daemon
+# can race a 250 ms tick against SIGTERM / SIGINT via `tokio::select!` and
+# drain in-flight rotates gracefully on systemd `ExecStop`. Only the events
+# daemon uses these — everywhere else still avoids `select!`.
+tokio = { version = "1", default-features = false, features = ["rt", "macros", "signal"] }
 getrandom = "0.2"
 # Issue #126: advisory flock(2) on /var/lib/proteus/.lock so concurrent `proteus
 # apply`/`rotate`/etc. runs serialize. libc is already a transitive dep
