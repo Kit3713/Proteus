@@ -343,7 +343,7 @@ fn systemctl(args: &[&str]) -> Result<()> {
     }
     let stderr = String::from_utf8_lossy(&output.stderr);
     Err(anyhow!(
-        "systemctl {} exited with {}: {}",
+        "systemctl {} exited with {}: {}; see proteus wiki timer",
         args.join(" "),
         output.status,
         stderr.trim()
