@@ -1,3 +1,50 @@
+proteus (0.4.3~beta-1) unstable; urgency=medium
+
+  * v0.4.3-beta — wave-2 hardening pass in the v0.4 cycle. Closes every
+    reachable High and Medium roadmap ⏳ item across CLI safety, events
+    daemon, NM backend, state lock, panic hardening, error handling,
+    security surface, and the Stream 10 wiki-hint sweep (~42 PRs).
+  * Security: E6 NM GetSecrets failure surfacing (benign-vs-hard
+    classifier; never silently wipes a stored secret); C2 cooldown
+    skew detection with long-cooldown-aware short-circuit; N14
+    per-iface rotate debounce (process-wide Arc<Mutex<()>> registry,
+    acquired BEFORE the state lock); polkit-hardening wiki recipe
+    (optional unix-group:wheel/sudo restriction + pkcheck runtime
+    check).
+  * Bug fixes: --yes end-to-end (CL2/M1/N12.1/N12.2/N12.3 — closes
+    #348, #375, #391); rotate-if-needed --state (GH#381) trait
+    signature now plumbs Option<&Path> through every backend impl;
+    NCMD2.4 cached-uuid validator wired into revert; events SIGTERM
+    drain (C4); handler-panic visibility via catch_unwind + AtomicU64
+    counter (C7); persona-effectiveness scenario poll instead of
+    fixed sleep 5 (NTEST.2); clap arg ranges via value_parser
+    (N12.12); CaptivePortalReload primitive restored (R4); NM Reapply
+    VersionId race detection (NBE.7); ethtool -P Linux 6.3+ header
+    accepted (NBE.10).
+  * Tests: 12 new integration scenarios covering session, diff,
+    dry-run, every component status reader + --yes gate, persona +
+    ssid CLI, wiki, help, completions, kill/resume, timer, config
+    set-profile, probe, events run (CL4); N5 PSK + private-key-
+    password round-trip via mock GetSettings/Update shim; C6 mock
+    backend opt-in flock with state path.
+  * Code quality: central crate::iface validator full migration —
+    all six per-module duplicates now delegate (GH#359); E5 partial
+    typed-error returns (full refactor remains for v0.5+).
+  * Docs: ~77 Stream 10 wiki-hint suffixes appended to operator-facing
+    bail!/anyhow! sites across persona, init, backend, enterprise-wifi,
+    hostname, and command modules; new wiki/polkit-hardening.md;
+    populated CHANGELOG [Unreleased].
+  * Codex contrib: contrib/recovery-kit (backup/restore sidecar
+    scripts with deterministic tarball flags, flock-based concurrency,
+    audit JSON for rollback, optional encryption); followup fixes for
+    tar exit status + stderr-into-listing contamination.
+  * Dependencies: tokio 1.52.2→1.52.3, toml_edit 0.22→0.25.11+spec-1.1.0,
+    setup-rust-toolchain 1.16.0→1.16.1, action-gh-release 2.6.2→3.0.0,
+    upload-artifact 4.6.2→7.0.1. getrandom 0.2→0.4 and toml 0.8→1.x
+    closed without merge (require source migration).
+
+ -- Kit3713 <noreply@example.com>  Tue, 12 May 2026 06:00:00 +0000
+
 proteus (0.4.2~beta-1) unstable; urgency=medium
 
   * v0.4.2-beta — second beta in the v0.4 cycle. Closes the remainder of

@@ -11,6 +11,8 @@ landed, what is in flight, and what is on the bench. See
 
 ## [Unreleased]
 
+## [0.4.3-beta] - 2026-05-12
+
 Wave-2 v0.4.x hardening pass — closes every reachable High and Medium
 roadmap ⏳ item across CLI safety, events daemon, NM backend, state
 lock, panic hardening, error handling, security surface, and the
@@ -185,8 +187,6 @@ per-stream landing details.
   JSON for rollback, optional encryption via gpg/age. Followups
   fixed tar exit-status handling and stderr-into-listing
   contamination (codex P1 reviews).
-
-## [0.4.2-beta] - 2026-05-08
 
 ## [0.4.2-beta] - 2026-05-08
 
