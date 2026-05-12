@@ -375,8 +375,12 @@ P1, P7, NMOD.4, NTEST.1.
   `events run --once-after-secs` 0..=86_400, `rotate-if-needed --cooldown`
   0..=86_400. Out-of-range values now reject at clap parse time.
 - ✅ Replace `split_at` on potentially-empty duration strings (P1).
-- ⏳ Replace `get_mut("mac").unwrap()` test path (P7) — deferred:
-  `src/commands/config_cmd.rs` is owned by another stream.
+- ✅ Replace `get_mut("mac").unwrap()` test path (P7) — handled via the
+  Wave 1 carryover in `src/commands/config_cmd.rs`. The test uses
+  structured `.expect("default schema must contain a [mac] section")` +
+  `.expect("[mac] must be a table in the default schema")` so a future
+  schema rename surfaces the actual cause instead of a bare panic line
+  number.
 - ✅ Distinguish "no value" from "out of range" in `parse_duration`; emit
   a `warn!` on overflow rather than silent fallback to global timer
   (V8 — paired with N12.4 via `checked_mul`).
@@ -394,9 +398,12 @@ P1, P7, NMOD.4, NTEST.1.
   every shipped persona.
 - ✅ Defensive guard + const-assert that `OWNER_POOL` is non-empty before
   indexing in `persona::template::pick_owner` (NMOD.4).
-- ⏳ GH#340 (`ByteSuffixPattern::parse` multibyte panic) — deferred:
-  fix lives in `src/mac/generator.rs` which is out of Stream 2's
-  worktree scope.
+- ✅ GH#340 (`ByteSuffixPattern::parse` multibyte panic) — fixed in
+  `src/mac/generator.rs`: the parser now gathers cleaned characters
+  into a `Vec<char>` and reads from the vec instead of byte-indexing
+  the raw `&str`, so multibyte input (e.g. `"é:23:xx"`) errors cleanly
+  instead of panicking inside a `&str[i..j]` slice. Same panic class
+  Stream 2 fixed for `is_valid_per_ssid_duration`.
 
 **Acceptance:** new test module `config::validation_tests` loads each malformed
 example and asserts the specific error variant; full `cargo test --release`
