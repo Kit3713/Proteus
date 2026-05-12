@@ -37,7 +37,7 @@ impl Mode {
             "generic" => Ok(Mode::Generic),
             "pinned" => Ok(Mode::Pinned),
             other => Err(anyhow!(
-                "unknown hostname mode '{other}'; expected 'wordlist', 'generic', or 'pinned'"
+                "unknown hostname mode '{other}'; expected 'wordlist', 'generic', or 'pinned'; see proteus wiki hostname-recipes"
             )),
         }
     }
@@ -77,11 +77,13 @@ pub fn wordlist() -> Result<Vec<&'static str>> {
 /// underscores, leading/trailing hyphens, length overflow, and non-ASCII.
 pub fn validate_hostname(name: &str) -> Result<()> {
     if name.is_empty() {
-        return Err(anyhow!("hostname is empty"));
+        return Err(anyhow!(
+            "hostname is empty; see proteus wiki hostname-recipes"
+        ));
     }
     if name.len() > MAX_HOSTNAME_LEN {
         return Err(anyhow!(
-            "hostname '{}' is {} bytes (max {})",
+            "hostname '{}' is {} bytes (max {}); see proteus wiki hostname-recipes",
             name,
             name.len(),
             MAX_HOSTNAME_LEN
@@ -95,11 +97,13 @@ pub fn validate_hostname(name: &str) -> Result<()> {
 
 fn validate_label(label: &str, full: &str) -> Result<()> {
     if label.is_empty() {
-        return Err(anyhow!("hostname '{full}' has an empty label"));
+        return Err(anyhow!(
+            "hostname '{full}' has an empty label; see proteus wiki hostname-recipes"
+        ));
     }
     if label.len() > MAX_LABEL_LEN {
         return Err(anyhow!(
-            "hostname '{full}' label '{label}' is {} bytes (max {})",
+            "hostname '{full}' label '{label}' is {} bytes (max {}); see proteus wiki hostname-recipes",
             label.len(),
             MAX_LABEL_LEN
         ));
@@ -119,14 +123,14 @@ fn validate_label(label: &str, full: &str) -> Result<()> {
         .ok_or_else(|| anyhow!("hostname '{full}' has an empty label (label has no last byte)"))?;
     if leading == b'-' || trailing == b'-' {
         return Err(anyhow!(
-            "hostname '{full}' label '{label}' has a leading or trailing hyphen"
+            "hostname '{full}' label '{label}' has a leading or trailing hyphen; see proteus wiki hostname-recipes"
         ));
     }
     for &b in bytes {
         let ok = b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-';
         if !ok {
             return Err(anyhow!(
-                "hostname '{full}' label '{label}' contains '{}' (only [a-z0-9-] allowed)",
+                "hostname '{full}' label '{label}' contains '{}' (only [a-z0-9-] allowed); see proteus wiki hostname-recipes",
                 b as char
             ));
         }
@@ -234,7 +238,9 @@ fn resolve_with<P: IndexPicker>(
             .clone()
             .unwrap_or_else(|| GENERIC_DEFAULT.to_string()),
         Mode::Pinned => cfg.pinned_value.clone().ok_or_else(|| {
-            anyhow!("hostname mode = 'pinned' but [hostname] pinned_value is unset")
+            anyhow!(
+                "hostname mode = 'pinned' but [hostname] pinned_value is unset; see proteus wiki hostname-recipes"
+            )
         })?,
     };
     validate_hostname(&name)?;
@@ -269,7 +275,9 @@ pub fn render_template(template: &str) -> Result<String> {
     // have to remember the kebab convention for every template.
     let rendered = raw.to_ascii_lowercase();
     validate_hostname(&rendered).map_err(|e| {
-        anyhow!("rendered hostname '{rendered}' from template '{template}' fails RFC 1123: {e}")
+        anyhow!(
+            "rendered hostname '{rendered}' from template '{template}' fails RFC 1123: {e}; see proteus wiki personas"
+        )
     })?;
     Ok(rendered)
 }
