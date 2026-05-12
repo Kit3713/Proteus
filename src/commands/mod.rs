@@ -89,9 +89,11 @@ pub(crate) fn require_root() -> anyhow::Result<()> {
     match read_uid() {
         Some(0) => Ok(()),
         Some(other) => anyhow::bail!(
-            "this command must be run as root (current uid {other}); try `sudo proteus ...`"
+            "this command must be run as root (current uid {other}); try `sudo proteus ...`; see proteus wiki troubleshooting"
         ),
-        None => anyhow::bail!("could not determine effective uid from /proc/self/status"),
+        None => anyhow::bail!(
+            "could not determine effective uid from /proc/self/status; see proteus wiki troubleshooting"
+        ),
     }
 }
 
