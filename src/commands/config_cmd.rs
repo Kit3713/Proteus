@@ -5,6 +5,17 @@
 //!
 //! Mutating commands require root + `--yes`. Read commands work as any user.
 //! Round-trips through `toml_edit` so user comments and formatting survive.
+//!
+//! E5 partial follow-up (Stream 7): the `eprintln!("proteus: {e}");
+//! return Ok(exit::<TYPED_ERROR>);` shape used across `set`, `edit`,
+//! `reset`, `set_profile`, and `set_enabled` is intentional — the
+//! typed exit codes (`PERMISSION_ERROR`, `CONFIG_ERROR`) are what
+//! wrapper scripts and CI grep for. Bubbling via `?` would render an
+//! equivalent stderr line but collapse every typed code into
+//! `GENERIC_ERROR` (1). A future wave introducing a typed
+//! `ExitCodeError(u8)` wrapper can drop these patterns in cleanly;
+//! until then the eprintln+drop shape preserves the exit-code
+//! contract.
 
 use std::ffi::OsString;
 use std::fs;
@@ -142,9 +153,15 @@ pub fn edit(config: Option<&Path>) -> Result<u8> {
         .arg(&path)
         .status()
         .with_context(|| format!("spawning editor {editor:?}"))?;
+    // E5 partial: convert `eprintln!; Ok(exit::GENERIC_ERROR)` to a
+    // bubble-up. The dispatcher renders `proteus: {e:#}` and maps
+    // `Err` to `GENERIC_ERROR` (1) — same exit code, same user-visible
+    // diagnostic. No anyhow chain to preserve here (the diagnostic
+    // IS the message), but bubbling reduces the dispatch table's
+    // surface of "command prints then returns" callsites that the
+    // bigger E5 refactor has to sweep.
     if !status.success() {
-        eprintln!("proteus: editor exited with {status}");
-        return Ok(exit::GENERIC_ERROR);
+        return Err(anyhow!("editor exited with {status}"));
     }
     let raw = fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
     match parse_config_text(&raw) {

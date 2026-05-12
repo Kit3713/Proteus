@@ -67,6 +67,14 @@ pub fn run(yes: bool, state_path: Option<&Path>, config_path: Option<&Path>) -> 
     // root check first — every other failure mode below is a no-op for
     // a non-root caller, so surfacing the privilege error first keeps
     // the message clean.
+    //
+    // E5 partial follow-up: this site drops the anyhow source chain in
+    // exchange for a typed `PERMISSION_ERROR` exit code. Bubbling via
+    // `?` would let the dispatcher render `proteus: {e:#}` but collapse
+    // the code to `GENERIC_ERROR` (1) instead of (77), which CI scripts
+    // grepping for the typed code rely on. A future wave introducing a
+    // typed `ExitCodeError(u8)` wrapper can convert this without losing
+    // either the chain or the typed code.
     if let Err(e) = super::require_root() {
         eprintln!("proteus: {e}");
         return Ok(exit::PERMISSION_ERROR);
@@ -106,6 +114,14 @@ pub fn run(yes: bool, state_path: Option<&Path>, config_path: Option<&Path>) -> 
     // any component prints its own line — the whole cycle uses the
     // same auto-pick because `select` is deterministic for a fixed
     // driver string.
+    // E5 partial follow-up: similar shape to the root-check above.
+    // Bubbling via `?` would collapse `SYSTEM_NOT_SUPPORTED` (70) into
+    // `GENERIC_ERROR` (1) at the dispatcher; the typed code is what
+    // signals "install NM/networkd or pick `--backend=raw`" to wrapper
+    // scripts. The eprintln already prints the full anyhow chain via
+    // `{e:#}`, so the user-visible diagnostic is intact — only the
+    // dispatch table can't distinguish typed vs generic without a
+    // wrapper. Defer until the wrapper lands.
     if let Err(e) = preflight_backend(&config) {
         eprintln!("proteus apply: backend preflight failed: {e:#}");
         return Ok(exit::SYSTEM_NOT_SUPPORTED);
