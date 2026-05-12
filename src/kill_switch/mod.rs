@@ -173,29 +173,20 @@ pub fn link_up(iface: &str) -> Result<bool, String> {
 /// containing `/`, `:`, whitespace, or NUL. We additionally reject every
 /// shell metacharacter so a future call site that forwards user-shaped
 /// input through a `Command::new("sh")`-shaped wrapper can't be made to
-/// reinterpret an iface name. Coordinated with Stream 9: this validator
-/// covers the kill-switch surface only; if Stream 9 lifts a global iface
-/// validator helper we should call into it from here in a follow-up.
+/// reinterpret an iface name.
+///
+/// GH#359: the rule set now lives in [`crate::iface`] (a single
+/// source-of-truth helper coordinated across the tree). This wrapper is
+/// kept so the local `if !is_safe_iface(...)` shape reads naturally —
+/// the body is a strict bool delegate to `crate::iface::is_valid`. The
+/// central validator is kernel-faithful (mirrors `dev_valid_name()`)
+/// and therefore *also* refuses `:` — colon-aliased iface names like
+/// `br0:1` are no longer accepted here, matching what the kernel itself
+/// refuses for newly-created devices. The prior comment-only carve-out
+/// for already-existing colon-aliased names was never relied on by a
+/// real call site in this tree.
 pub(crate) fn is_safe_iface(iface: &str) -> bool {
-    if iface.is_empty() || iface.len() > 15 {
-        return false;
-    }
-    if iface.starts_with('-') {
-        return false;
-    }
-    // Allow only the kernel-blessed iface alphabet: ASCII alphanumerics
-    // plus `_`, `-`, `.`, `:` (some virtual interfaces use `:` but the
-    // kernel rejects it for newly-created devices; we still accept it
-    // here so we can DOWN existing-but-deprecated names; a leading `:`
-    // is still rejected by the leading-`-` shape because graphics class
-    // already excluded `\0`).
-    //
-    // The shell metacharacters explicitly blocked here: ` $ ; & | < > (
-    // ) [ ] { } \ ' " * ? ~ # ! ^ , % = + space tab newline. Anything
-    // outside the allowlist is rejected.
-    iface
-        .bytes()
-        .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-' || b == b'.' || b == b':')
+    crate::iface::is_valid(iface)
 }
 
 fn run_ip(args: &[&str]) -> Result<bool, String> {
@@ -265,11 +256,15 @@ mod tests {
     }
 
     /// M3: shell-metacharacter validator. Anything outside the
-    /// `[A-Za-z0-9_.:-]` allowlist must be rejected so a future
+    /// `[A-Za-z0-9_.-]` allowlist must be rejected so a future
     /// `Command::new("sh")`-shaped wrapper can't reinterpret the iface
     /// name. Pin both the rejection set and the over-15-bytes guard
     /// (kernel `IFNAMSIZ-1`) so a drive-by relaxation can't slip
     /// metacharacters through.
+    ///
+    /// GH#359: validator delegates to `crate::iface::is_valid` now, so
+    /// `:` is also refused — matching the kernel's `dev_valid_name`
+    /// behaviour for newly-created devices.
     #[test]
     fn is_safe_iface_rejects_shell_metacharacters() {
         let bads = [
@@ -295,12 +290,17 @@ mod tests {
             "wlan0\t",
             "wlan0 ",
             "this-name-is-way-too-long",
+            // GH#359: colon-aliased iface names are now refused (kernel
+            // rejects `:` for newly-created devices; `dev_valid_name`
+            // matches).
+            "br0:1",
+            "eth0:0",
         ];
         for bad in bads {
             assert!(!is_safe_iface(bad), "is_safe_iface({bad:?}) must be false");
         }
         // Real names still pass.
-        for good in ["wlan0", "wlo1", "eno1", "enp48s0", "eth0.100", "br0:1"] {
+        for good in ["wlan0", "wlo1", "eno1", "enp48s0", "eth0.100"] {
             assert!(is_safe_iface(good), "is_safe_iface({good:?}) must be true");
         }
     }

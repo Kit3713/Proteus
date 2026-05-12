@@ -20,6 +20,10 @@ These apply to every subcommand. They must precede the subcommand name.
 
 `RUST_LOG` overrides `-v` / `-q` when set; see the Logging section below.
 
+## Prefix matching
+
+`clap` accepts shortest-unambiguous subcommand prefixes by default — `proteus per` resolves to `persona`, `proteus pi` resolves to `pin`. This is a convenience, not a stability contract. A future subcommand that shares a prefix with an existing one will silently change what the abbreviation resolves to (or make it ambiguous). Scripts should spell out full subcommand names — `proteus pin`, not `proteus pi`.
+
 ## Subcommands
 
 Alphabetical. Mutating commands require root and accept `--yes` for non-interactive runs. Read commands degrade quietly when files aren't readable. The full list also includes short aliases: `s` → `status`, `r` → `rotate`, `a` → `apply`. Most read commands accept `--watch [--interval <DUR>]`.

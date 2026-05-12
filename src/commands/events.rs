@@ -420,8 +420,42 @@ pub fn run(
         // the loop so the budget is honoured: when the count meets or
         // exceeds the budget the loop breaks with a "trigger budget
         // reached" log line.
+        //
+        // Roadmap C4: previously the production "runs until SIGTERM"
+        // path relied on the OS dropping the process — systemd's
+        // SIGTERM landed as a SIGKILL-equivalent because the loop
+        // body had no way to observe the signal, so the in-flight
+        // rotate drain + per-source `shutdown_tasks` below were only
+        // reachable from the trigger-budget / wall-clock-budget
+        // exits. The select! arms below race the 250 ms tick against
+        // SIGTERM (systemd `ExecStop`) and SIGINT (interactive
+        // Ctrl-C); on signal the loop breaks normally so the same
+        // graceful drain path runs. Manual verification:
+        // `pkill -TERM proteus` — journald should show the
+        // "SIGTERM received" line followed by the source-drain
+        // lines; signal delivery is not exercised in `cargo test`
+        // because spawning real signals from inside the test harness
+        // is fragile (it would race other tests on the same pid).
+        let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .context("installing SIGTERM handler for events daemon")?;
+        let mut sigint = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
+            .context("installing SIGINT handler for events daemon")?;
         loop {
-            tokio::time::sleep(Duration::from_millis(250)).await;
+            tokio::select! {
+                _ = tokio::time::sleep(Duration::from_millis(250)) => {}
+                _ = sigterm.recv() => {
+                    tracing::info!(
+                        "events daemon: SIGTERM received; draining and shutting down"
+                    );
+                    break;
+                }
+                _ = sigint.recv() => {
+                    tracing::info!(
+                        "events daemon: SIGINT received; draining and shutting down"
+                    );
+                    break;
+                }
+            }
             if max_triggers > 0
                 && trigger_count.load(std::sync::atomic::Ordering::SeqCst) >= max_triggers
             {
