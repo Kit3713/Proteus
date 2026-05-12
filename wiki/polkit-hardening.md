@@ -99,25 +99,31 @@ A parse error logs as `Failed to load rules file ...`. A clean load is silent. I
 ```sh
 # Does the current shell (PID $$) currently have authorisation to
 # perform the Proteus rotate action? Returns 0 on yes, 1 on no,
-# 2 on "would need authentication interactively", 3 on error.
+# 2 if no auth agent is available (or --allow-user-interaction
+# omitted), 3 if the auth dialog was dismissed by the user.
+# See pkcheck(1) RETURN VALUE for the full mapping.
 pkcheck --action-id com.kit3713.proteus.rotate --process $$ --allow-user-interaction
 
 # Same for the apply action.
 pkcheck --action-id com.kit3713.proteus.apply --process $$ --allow-user-interaction
 ```
 
-Exit codes are documented in `pkcheck(1)`; the short version:
+Exit codes are documented in `pkcheck(1)` under RETURN VALUE; the short version:
 
-- `0` — already authorised. Action would proceed without a prompt.
-- `1` — not authorised. With `--allow-user-interaction`, this means the user declined the prompt or the rule above returned `polkit.Result.NO`.
-- `2` — authorisation would require user interaction. Without `--allow-user-interaction`, this is the "you'd be prompted" answer.
-- `3` — error (action id unknown, polkit unreachable, etc.).
+- `0` — authorised. Action would proceed without a prompt.
+- `1` — not authorised. The rule above returning `polkit.Result.NO`, or the XML default refusing an inactive session, lands here.
+- `2` — not authorised because no suitable authentication agent is available, or `--allow-user-interaction` was not passed. This is the "you'd be prompted, but I can't prompt right now" answer — use it for non-interactive probes.
+- `3` — not authorised because the authentication dialog / request was dismissed by the user.
+- `126` — one or more options passed to `pkcheck` were malformed.
+- `127` — an error occurred while checking for authorisation (action id unknown, polkit unreachable, etc.).
 
-To confirm the JS rule from the previous section is in effect, run `pkcheck` from a shell session owned by a user who is *not* in `wheel` or `sudo`. It should return exit code `1` immediately, with no dialog. Run again from a session owned by a `wheel` member; you should get a normal admin prompt and, on success, exit code `0`.
+(Source: `pkcheck(1)` man page, RETURN VALUE section. The pre-2026-05-12 version of this page mis-labelled `3` as "error" and folded the dismissed-dialog case into `1`; the mapping above matches the man page.)
+
+To confirm the JS rule from the previous section is in effect, run `pkcheck` from a shell session owned by a user who is *not* in `wheel` or `sudo`. It should return exit code `1` immediately, with no dialog. Run again from a session owned by a `wheel` member; you should get a normal admin prompt and, on success, exit code `0`. If you cancel the prompt instead of entering a password, you get exit code `3`, not `1`.
 
 Two operator-side gotchas:
 
-- `--process $$` ties the check to the shell's PID. Some polkit versions also require `--process-uid` or `--process-start-time`; `man pkcheck` for your installed version. If the check rejects with "no caller", try `pkcheck --action-id com.kit3713.proteus.rotate --process "$$,$(awk '{print $22}' /proc/$$/stat),$(id -u)"`.
+- `--process $$` ties the check to the shell's PID. Some polkit versions also require `--process-uid` or `--process-start-time`; `man pkcheck` for your installed version. If the check rejects with "no caller", try `pkcheck --action-id com.kit3713.proteus.rotate --process "$$,$(awk '{print $22}' /proc/$$/stat),$(id -u)"`. The `pkcheck(1)` NOTES section warns that the bare `$$` form is racy and recommends the three-tuple `pid,pid-start-time,uid`.
 - `--allow-user-interaction` triggers the dialog if the answer is "would prompt". Omit it for a strictly non-interactive probe — exit code `2` then tells you the action would prompt, without actually prompting.
 
 A doctor-level check (planned for B15) will wrap this same `pkcheck` call and surface the result as a `polkit::*` line in `proteus doctor` output, including a `warn` when the shipped policy is detected but the optional group restriction is absent. Until then, the manual recipe above is the supported runtime check.
