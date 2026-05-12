@@ -331,9 +331,13 @@ NM2.7, NCMD2.1, NCMD2.5, NEV2.7.
 - ✅ `proteus revert` honours global `--state` flag (GH#386).
 - ✅ `timer resume` short-name maps to the actual shipped artifact
   `proteus-resume.service` (GH#352).
-- 🚧 `rotate-if-needed --state` plumbed at CLI but the backend trait
-  hardcodes the read-back path; full fix needs a Stream 5 trait
-  signature change (GH#381 — partial / TODO).
+- ✅ `rotate-if-needed --state` end-to-end. Backend trait
+  `rotate_if_needed` now takes `state_path: Option<&'a Path>` (see
+  `src/backend/mod.rs:190` and the matching impls in `nm.rs`,
+  `mock.rs`, `raw.rs`, `networkd.rs`). The inner
+  `rotate_if_needed_inner` falls back to `DEFAULT_STATE_PATH` only
+  when no path is supplied. Same trait is reused by C6 (mock flock
+  on opt-in state path) and N14 (per-iface mutex registry). (GH#381)
 
 **Acceptance:** end-to-end script that calls every mutator without `--yes` and
 asserts exit code 64 (`CONFIRMATION_REQUIRED`); run watch with `--interval 0s`
