@@ -1,5 +1,5 @@
 Name:           proteus
-Version:        0.4.2~beta
+Version:        0.4.3~beta
 Release:        1%{?dist}
 Summary:        Erase network-layer identifiers your Linux laptop hands out on every join
 
@@ -126,6 +126,21 @@ install -dm700 %{buildroot}%{_sharedstatedir}/proteus
 %systemd_postun_with_restart proteus-rotate.timer proteus-check.timer proteus-boot.service proteus-resume.service proteus-events.service
 
 %changelog
+* Tue May 12 2026 Kit3713 <noreply@example.com> - 0.4.3~beta-1
+- v0.4.3-beta: wave-2 hardening pass closes every reachable High and
+  Medium roadmap ⏳ item across CLI safety, events daemon, NM backend,
+  state lock, panic hardening, error handling, security surface, and
+  the Stream 10 wiki-hint sweep (~42 PRs). E6 NM GetSecrets failure
+  surfacing, C2 cooldown skew detection (long-cooldown-aware), N14
+  per-iface rotate debounce, C4 SIGTERM drain, C7 handler-panic
+  visibility, NCMD2.4 wire-up + --state honour, --yes end-to-end
+  coverage (CL2/M1/N12.1/N12.2/N12.3), CL5 prefix-collision docs,
+  N12.12 clap arg ranges, NBE.7 Reapply race detection, NBE.10
+  Linux 6.3+ ethtool parser, ~77 Stream 10 wiki-hint suffixes,
+  central iface validator full migration (GH#359), CL4 12 new
+  integration scenarios, N5 PSK round-trip test, C6 mock flock,
+  E5 partial typed errors, codex contrib recovery-kit accepted,
+  five dependabot patch/compat bumps, polkit-hardening wiki page.
 * Fri May 08 2026 Kit3713 <noreply@example.com> - 0.4.2~beta-1
 - v0.4.2-beta: closes remainder of May 2026 audit tree (#279, #285-306) +
   three audit follow-up findings (PROTEUS_*_DIR env-var lockdown, iface
