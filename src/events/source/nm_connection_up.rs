@@ -440,13 +440,11 @@ fn read_active_ssid_via_proc(iface: &str) -> Option<String> {
 /// Defensive iface-name validator for the `/proc/net/wireless` /
 /// `/run/NetworkManager/devices` lookup path. Refuses anything that
 /// could escape a path or carry an unprintable.
+///
+/// GH#359: the rule set lives in [`crate::iface`] — this wrapper
+/// delegates to it so the local call site reads naturally.
 fn is_safe_iface_name(iface: &str) -> bool {
-    !iface.is_empty()
-        && iface.len() <= 15
-        && !iface.starts_with('-')
-        && iface
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'.' || b == b'-')
+    crate::iface::is_valid(iface)
 }
 
 /// Test double for `NmConnectionUpSource`. Tests push synthetic

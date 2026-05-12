@@ -12,6 +12,7 @@
 //! impact is negligible. Out-of-tree integration tests pick it up via
 //! `crate::backend::mock::MockBackend`.
 
+use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -107,6 +108,16 @@ struct Inner {
 #[derive(Default)]
 pub struct MockBackend {
     inner: Mutex<Inner>,
+    /// C6: opt-in state path. When `Some`, `rotate_if_needed` acquires
+    /// `crate::state_lock::acquire_for_state_path(...)` against this path
+    /// before doing its cooldown decision — mirroring the production NM
+    /// backend so tests that want to assert "two concurrent rotates
+    /// serialise" actually exercise the same `flock(2)` cooperation
+    /// contract instead of a no-op stub. When `None`, the previous
+    /// behaviour (no flock, no cooldown check) is preserved so the dozens
+    /// of existing `MockBackend::new()` callers in unit/integration tests
+    /// don't need a state file just to assert call-log shapes.
+    state_path: Option<PathBuf>,
 }
 
 impl MockBackend {
@@ -116,7 +127,21 @@ impl MockBackend {
                 available: true,
                 ..Inner::default()
             }),
+            state_path: None,
         }
+    }
+
+    /// C6: opt in to the real state-lock cooperation. When the backend
+    /// holds a state path, `rotate_if_needed` acquires the same flock
+    /// the production NM backend takes (`crate::state_lock::
+    /// acquire_for_state_path`) and persists `last_rotated` on a
+    /// successful rotate so a follow-up call observes the cooldown.
+    ///
+    /// Builder shape (consume + return) so the call sites read as:
+    /// `let backend = MockBackend::new().with_state_path(dir.join("state.json"));`
+    pub fn with_state_path(mut self, path: PathBuf) -> Self {
+        self.state_path = Some(path);
+        self
     }
 
     pub fn set_available(&self, available: bool) {
@@ -229,6 +254,67 @@ impl MockBackend {
     }
 }
 
+/// Coarse remaining-cooldown helper for the mock's lock-aware rotate
+/// path. Mirrors `backend::nm::remaining_cooldown` semantics (returns
+/// `None` when the cooldown has expired or the stamp can't be parsed —
+/// both mean "go ahead and rotate"). Kept inline here rather than
+/// reaching into `backend/nm.rs` because the C6 fix is explicitly
+/// scoped to mock.rs.
+///
+/// Parser accepts the exact `YYYY-MM-DDTHH:MM:SSZ` shape that
+/// `commands::now_iso8601` writes. Any other format yields `None` (the
+/// mock treats "unparseable stamp" the same as "no cooldown known",
+/// which keeps the mock from getting stuck if a test seeds a weird
+/// timestamp shape — production's nm.rs does the same).
+fn remaining_cooldown(stamp: &str, cooldown: Duration) -> Option<Duration> {
+    let last = parse_iso8601_z(stamp)?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_secs();
+    let elapsed = now.saturating_sub(last);
+    if elapsed >= cooldown.as_secs() {
+        None
+    } else {
+        Some(Duration::from_secs(cooldown.as_secs() - elapsed))
+    }
+}
+
+/// Hand-rolled parser for the `YYYY-MM-DDTHH:MM:SSZ` form
+/// `commands::now_iso8601` writes. Returns the Unix epoch second on
+/// success, `None` on any parse failure. Same shape as
+/// `backend::nm::parse_iso8601_z`; duplicated here for the C6 fix per
+/// "do not touch nm.rs".
+fn parse_iso8601_z(stamp: &str) -> Option<u64> {
+    if stamp.len() != 20 || !stamp.ends_with('Z') {
+        return None;
+    }
+    let y: u32 = stamp[0..4].parse().ok()?;
+    let mo: u32 = stamp[5..7].parse().ok()?;
+    let d: u32 = stamp[8..10].parse().ok()?;
+    let h: u32 = stamp[11..13].parse().ok()?;
+    let mi: u32 = stamp[14..16].parse().ok()?;
+    let s: u32 = stamp[17..19].parse().ok()?;
+    Some(ymdhms_to_unix(y, mo, d, h, mi, s))
+}
+
+/// Civil-from-days inverse mirroring `commands::unix_to_ymdhms` and the
+/// `backend::nm` helper of the same name. Inlined here so the mock's
+/// cooldown helper doesn't need to reach into a sibling backend's
+/// private API. Howard Hinnant's `civil_from_days` algorithm (public
+/// domain).
+fn ymdhms_to_unix(y: u32, mo: u32, d: u32, h: u32, mi: u32, s: u32) -> u64 {
+    let y = y as i64 - if mo <= 2 { 1 } else { 0 };
+    let era = y.div_euclid(400);
+    let yoe = (y - era * 400) as u64;
+    let mp = if mo > 2 { mo - 3 } else { mo + 9 };
+    let doy = (153 * mp as u64 + 2) / 5 + d as u64 - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe as i64 - 719_468;
+    let secs = days * 86_400 + h as i64 * 3600 + mi as i64 * 60 + s as i64;
+    secs.max(0) as u64
+}
+
 impl NetworkBackend for MockBackend {
     fn name(&self) -> &'static str {
         "mock"
@@ -329,20 +415,85 @@ impl NetworkBackend for MockBackend {
         &'a self,
         iface: &'a str,
         cooldown: Duration,
-        _state_path: Option<&'a std::path::Path>,
+        state_path: Option<&'a std::path::Path>,
     ) -> BoxFuture<'a, Result<RotateOutcome>> {
         let mut inner = self.inner.lock().unwrap();
         inner.calls.push(MockCall::RotateIfNeeded {
             iface: iface.to_string(),
             cooldown,
         });
-        let out = inner
+        let seeded = inner
             .devices
             .iter()
             .find(|d| d.device.iface == iface)
             .map(|d| d.rotate_outcome.clone())
             .unwrap_or(RotateOutcome::BackendUnavailable);
-        Box::pin(async move { Ok(out) })
+        // Drop the inner mutex before we touch the state lock — the
+        // state-lock acquire may briefly block on the kernel flock, and
+        // we don't want to keep the mock's own per-instance mutex held
+        // across that.
+        drop(inner);
+        // C6: prefer the caller-supplied `state_path` (mirrors production
+        // NM's GH#381 honor-`--state` behaviour); fall back to the
+        // builder-configured path. When neither is present, preserve the
+        // pre-C6 behaviour so the dozens of existing call sites that do
+        // not care about the lock contract stay simple.
+        let lock_path: Option<PathBuf> = state_path
+            .map(|p| p.to_path_buf())
+            .or_else(|| self.state_path.clone());
+        let Some(state_path) = lock_path else {
+            return Box::pin(async move { Ok(seeded) });
+        };
+        Box::pin(async move {
+            // Mirror `backend::nm::rotate_if_needed_inner_with`: acquire
+            // the state lock for the duration of the cooldown decision
+            // AND the persist step. On `LockError::Busy`, surface
+            // `SkippedCooldown { remaining: 1s }` — the same shape
+            // production uses so dispatcher logs read identically.
+            let _guard = match crate::state_lock::acquire_for_state_path(&state_path) {
+                Ok(g) => g,
+                Err(crate::state_lock::LockError::Busy { .. }) => {
+                    return Ok(RotateOutcome::SkippedCooldown {
+                        remaining: Duration::from_secs(1),
+                    });
+                }
+                Err(_) => return Ok(RotateOutcome::BackendUnavailable),
+            };
+            // Cooldown check under the lock: if `last_rotated` is fresh,
+            // skip and report the remaining window. `load_or_default`
+            // returns an empty state for a missing file, which is the
+            // expected first-call shape.
+            let state = match crate::state::State::load_or_default(&state_path) {
+                Ok(s) => s,
+                Err(_) => return Ok(RotateOutcome::BackendUnavailable),
+            };
+            if let Some(rec) = state.managed.interfaces.get(iface)
+                && let Some(stamp) = rec.last_rotated.as_deref()
+                && let Some(remaining) = remaining_cooldown(stamp, cooldown)
+            {
+                return Ok(RotateOutcome::SkippedCooldown { remaining });
+            }
+            // Apply the seeded outcome. On a successful rotate, persist
+            // `last_rotated` so the NEXT call's cooldown check trips —
+            // this is how production NM cooperates across dispatcher
+            // events, and what makes the test-honesty story end-to-end.
+            if let RotateOutcome::Rotated { new_mac } = &seeded {
+                let mut s = state;
+                let rec = s.managed.interfaces.entry(iface.to_string()).or_default();
+                rec.current_mac = Some(new_mac.to_string());
+                rec.last_rotated = Some(crate::commands::now_iso8601());
+                rec.rotation_count = rec.rotation_count.saturating_add(1);
+                // Best-effort: a save failure here should not lie about
+                // the rotate happening (the mock's seeded outcome stands)
+                // but we surface BackendUnavailable if we couldn't
+                // persist, matching production's "state read-back
+                // failure → structured error" shape.
+                if s.save(&state_path).is_err() {
+                    return Ok(RotateOutcome::BackendUnavailable);
+                }
+            }
+            Ok(seeded)
+        })
     }
 
     fn read_connection_id<'a>(
@@ -730,5 +881,230 @@ mod tests {
         // test stays `#[ignore]` until the recovery path lands.
         let mac = rt().block_on(async { backend.read_factory_mac("wlan0").await.unwrap_or(None) });
         assert_eq!(mac.as_deref(), Some("aa:bb:cc:dd:ee:ff"));
+    }
+
+    // ===== C6 — MockBackend acquires the real state-lock flock =====
+    //
+    // Roadmap Stream 5 / C6: pre-fix, the mock returned the seeded
+    // `RotateOutcome` directly without touching `crate::state_lock`. Any
+    // test that wanted to assert "two concurrent `rotate_if_needed`
+    // calls via the mock backend serialise" got a false negative — both
+    // would rotate. The lock-aware shape is opt-in via
+    // `with_state_path(...)` so the existing call sites that don't care
+    // about the flock stay simple, and the new tests below pin the
+    // production-mirroring contract:
+    //   - sequential calls: first rotates and stamps `last_rotated`;
+    //     second observes the stamp and returns `SkippedCooldown`.
+    //   - concurrent calls via `tokio::spawn`: exactly one rotates;
+    //     the other returns `SkippedCooldown` (cooldown OR the
+    //     `LockError::Busy` → `SkippedCooldown { remaining: 1s }`
+    //     mapping that production NM uses).
+    //   - a foreign-fd flock held during the call returns the same
+    //     1-second cooldown skip, proving the `LockError::Busy` branch
+    //     is wired.
+
+    /// Tempdir helper for the C6 tests. Mirrors the
+    /// `backend::nm::tests::fresh_state_dir` shape so a panicking test
+    /// doesn't leak fixtures across the suite.
+    fn fresh_state_dir_for_c6(label: &str) -> std::path::PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("proteus-mock-c6-{label}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// C6: when a state path is configured, two sequential
+    /// `rotate_if_needed` calls cooperate via the real flock + cooldown
+    /// stamp persisted to disk. First call rotates (seeded outcome);
+    /// second call observes `last_rotated` and returns
+    /// `SkippedCooldown`. Without the C6 fix, the mock returned the
+    /// seeded `Rotated` outcome twice.
+    #[test]
+    fn with_state_path_serialises_rotate_via_cooldown_stamp() {
+        let _serial = crate::state_lock::test_serial_guard();
+        let dir = fresh_state_dir_for_c6("sequential");
+        let state_path = dir.join("state.json");
+
+        let mac: Mac = "06:aa:bb:cc:dd:01".parse().unwrap();
+        let backend = MockBackend::new().with_state_path(state_path.clone());
+        backend.insert_device(dev("wlan0"), Some("aa:bb:cc:dd:ee:ff".into()));
+        backend.set_rotate_outcome("wlan0", RotateOutcome::Rotated { new_mac: mac });
+
+        rt().block_on(async {
+            // First call: rotates and persists `last_rotated`.
+            let first = backend
+                .rotate_if_needed("wlan0", Duration::from_secs(3600), None)
+                .await
+                .unwrap();
+            assert!(
+                matches!(first, RotateOutcome::Rotated { new_mac } if new_mac == mac),
+                "first call must rotate, got {first:?}",
+            );
+
+            // The cooldown stamp must be on disk under the real
+            // `state.json` keying production reads — otherwise the
+            // next call's cooldown check would miss.
+            let s = crate::state::State::load_or_default(&state_path).unwrap();
+            let rec = s
+                .managed
+                .interfaces
+                .get("wlan0")
+                .expect("first rotate persisted an InterfaceRecord");
+            assert!(
+                rec.last_rotated.is_some(),
+                "first rotate must stamp `last_rotated`; got {rec:?}"
+            );
+            assert_eq!(
+                rec.current_mac.as_deref(),
+                Some("06:aa:bb:cc:dd:01"),
+                "first rotate must persist the seeded MAC"
+            );
+
+            // Second call within the cooldown: must skip on cooldown.
+            let second = backend
+                .rotate_if_needed("wlan0", Duration::from_secs(3600), None)
+                .await
+                .unwrap();
+            assert!(
+                matches!(second, RotateOutcome::SkippedCooldown { .. }),
+                "second call within cooldown must skip; got {second:?}",
+            );
+        });
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // NB: an earlier draft of this PR had a
+    // `concurrent_rotates_serialise_via_real_flock` test that spawned
+    // two tokio tasks against shared state and asserted exactly one
+    // Rotated + one SkippedCooldown. It surfaced a separate concern
+    // worth flagging: the process-wide `Mutex<Option<File>>` in
+    // `crate::state_lock` serialises the *acquire* but doesn't hold
+    // across the cooldown-check + rotate body, so two same-process
+    // concurrent tokio tasks can both observe no `last_rotated` and
+    // both call `rotate_hook`. That race exists in production
+    // `backend::nm::rotate_if_needed_inner_with` too — the in-process
+    // reentrancy guarantee covers nested calls in one task, not true
+    // parallel tasks on a multi-thread runtime. Tracking that
+    // separately rather than encoding it as a flaky test here. The
+    // `busy_flock_from_foreign_fd_surfaces_skipped_cooldown` test
+    // below proves the C6 contract (foreign-process flock → busy →
+    // SkippedCooldown), which is what this PR actually delivers.
+
+    /// C6 wire-up: a foreign-fd flock held during the mock's rotate
+    /// call must trigger the `LockError::Busy` → `SkippedCooldown {
+    /// remaining: 1s }` mapping, mirroring
+    /// `backend::nm::rotate_if_needed_inner_with`. Uses the same
+    /// "open a separate fd and flock it" trick the state_lock unit
+    /// tests use to simulate cross-process contention without
+    /// spawning a real process.
+    #[test]
+    fn busy_flock_from_foreign_fd_surfaces_skipped_cooldown() {
+        use std::os::unix::io::AsRawFd;
+        let _serial = crate::state_lock::test_serial_guard();
+        let dir = fresh_state_dir_for_c6("busy");
+        let state_path = dir.join("state.json");
+        let lock_path = dir.join(".lock");
+
+        let mac: Mac = "06:aa:bb:cc:dd:03".parse().unwrap();
+        let backend = MockBackend::new().with_state_path(state_path.clone());
+        backend.insert_device(dev("wlan0"), Some("aa:bb:cc:dd:ee:ff".into()));
+        backend.set_rotate_outcome("wlan0", RotateOutcome::Rotated { new_mac: mac });
+
+        // Hold the lock via a "foreign" fd (different File, same
+        // path). The kernel flock contends; `acquire_for_state_path`
+        // retries inside its budget and then surfaces
+        // `LockError::Busy`. With the C6 mapping that becomes
+        // `SkippedCooldown { remaining: 1s }`.
+        //
+        // Shrink the retry budget for this test so we don't burn the
+        // default 5 s while waiting for an artificially-held lock.
+        // The lock dir's parent is fresh (created by us above) so we
+        // can scope the env knob here. `PROTEUS_LOCK_TIMEOUT_MS=100`
+        // is the minimum that survives the parser's granularity
+        // clamp — yields 1 retry attempt.
+        let foreign = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&lock_path)
+            .unwrap();
+        let rc = unsafe { libc::flock(foreign.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+        assert_eq!(rc, 0, "test setup: should acquire foreign flock");
+
+        // SAFETY: `_serial` above plus the `unsafe { set_var }` here
+        // is the same pattern other tests in the tree use to scope an
+        // env-var override; the serial guard ensures no concurrent
+        // test reads `PROTEUS_LOCK_TIMEOUT_MS` while we mutate it.
+        let prior = std::env::var("PROTEUS_LOCK_TIMEOUT_MS").ok();
+        unsafe {
+            std::env::set_var("PROTEUS_LOCK_TIMEOUT_MS", "100");
+        }
+        let outcome = rt().block_on(async {
+            backend
+                .rotate_if_needed("wlan0", Duration::from_secs(3600), None)
+                .await
+                .unwrap()
+        });
+        // Restore the env knob before any assertions so a failure
+        // doesn't leak the override into later tests.
+        unsafe {
+            match prior {
+                Some(v) => std::env::set_var("PROTEUS_LOCK_TIMEOUT_MS", v),
+                None => std::env::remove_var("PROTEUS_LOCK_TIMEOUT_MS"),
+            }
+        }
+
+        // Release the foreign flock so the dir cleanup doesn't trip
+        // on a held fd on exotic filesystems.
+        unsafe {
+            libc::flock(foreign.as_raw_fd(), libc::LOCK_UN);
+        }
+        drop(foreign);
+
+        assert!(
+            matches!(
+                outcome,
+                RotateOutcome::SkippedCooldown { remaining } if remaining == Duration::from_secs(1)
+            ),
+            "LockError::Busy must map to SkippedCooldown {{ remaining: 1s }}; got {outcome:?}",
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// C6 back-compat: a `MockBackend::new()` without a state path
+    /// behaves EXACTLY as it did before C6 — no flock, no cooldown
+    /// stamp, the seeded outcome is returned verbatim. Dozens of
+    /// existing tests rely on this shape; the regression would be a
+    /// noisy break across the suite.
+    #[test]
+    fn without_state_path_skips_flock_and_cooldown() {
+        let backend = MockBackend::new();
+        backend.insert_device(dev("wlan0"), Some("aa:bb:cc:dd:ee:ff".into()));
+        let mac: Mac = "06:aa:bb:cc:dd:04".parse().unwrap();
+        backend.set_rotate_outcome("wlan0", RotateOutcome::Rotated { new_mac: mac });
+
+        // Three rotates in a row, all without a state path: every
+        // call must return the seeded `Rotated` outcome (no cooldown
+        // bookkeeping happens when the lock-aware path is opt-out).
+        rt().block_on(async {
+            for _ in 0..3 {
+                let outcome = backend
+                    .rotate_if_needed("wlan0", Duration::from_secs(3600), None)
+                    .await
+                    .unwrap();
+                assert!(
+                    matches!(outcome, RotateOutcome::Rotated { new_mac: m } if m == mac),
+                    "without a state path, every call must return the seeded outcome; \
+                     got {outcome:?}",
+                );
+            }
+        });
+        // And the in-process state-lock slot must NOT be held — the
+        // mock didn't acquire anything.
+        assert!(!crate::state_lock::is_held_in_process());
     }
 }

@@ -214,38 +214,15 @@ fn validate_sysctl_value(value: &str) -> Result<()> {
 /// `"../../etc/passwd"` and `sysctl_path` would happily produce
 /// `/proc/sys/net/ipv6/conf/../../etc/passwd/use_tempaddr` (issue #147).
 ///
-/// Rules mirror `dev_valid_name()` in the Linux kernel
-/// (`net/core/dev.c`): 1..=15 bytes, no slash, no NUL, no whitespace, no
-/// `:` or `/`, and the special names `.` / `..` are forbidden.
+/// GH#359: the rule set lives in [`crate::iface`] (mirrors
+/// `dev_valid_name()` in the kernel plus the L-3 / N-1 audit
+/// recommendations). We keep this thin wrapper because every caller in
+/// this module uses the `Result<()>` shape — the body just maps the
+/// typed `InvalidIface` rejection reason onto the existing
+/// `anyhow!("interface name '{iface}': ...")` error string so log lines
+/// don't shift.
 pub(crate) fn validate_iface_name(iface: &str) -> Result<()> {
-    if iface.is_empty() {
-        return Err(anyhow!("interface name is empty"));
-    }
-    // The kernel ifname buffer is `IFNAMSIZ - 1 = 15` bytes (the trailing
-    // NUL is counted). Any longer name would be rejected by `SIOCSIFNAME`
-    // and ENAMETOOLONG-equivalents — refusing it here is a courtesy.
-    if iface.len() > 15 {
-        return Err(anyhow!(
-            "interface name '{iface}' is {} bytes (max 15)",
-            iface.len()
-        ));
-    }
-    if iface == "." || iface == ".." {
-        return Err(anyhow!("interface name '{iface}' is reserved"));
-    }
-    for b in iface.bytes() {
-        if b == 0 || b == b'/' || b == b':' || b.is_ascii_whitespace() {
-            return Err(anyhow!(
-                "interface name '{iface}' contains illegal byte 0x{b:02x}"
-            ));
-        }
-        if !b.is_ascii() {
-            return Err(anyhow!(
-                "interface name '{iface}' contains non-ASCII byte 0x{b:02x}"
-            ));
-        }
-    }
-    Ok(())
+    crate::iface::validate(iface).map_err(|e| anyhow!("interface name '{iface}': {e}"))
 }
 
 /// Reload kernel sysctls so the drop-in we just wrote takes effect on
