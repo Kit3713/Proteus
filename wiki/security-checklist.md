@@ -165,3 +165,4 @@ Cross-ref `proteus wiki threat-model` for the full discussion of each.
 - `proteus wiki captive-portals` — portal detection, classification, and the no-rotation-loop rule.
 - `proteus wiki rotation` — schedule and probe-driven rotation in detail.
 - `proteus wiki dns` — the one DNS knob and its detect-and-defer guard.
+- `proteus wiki polkit-hardening` — optional `wheel`/`sudo` group restriction on the shipped polkit policy plus a `pkcheck` runtime check.
