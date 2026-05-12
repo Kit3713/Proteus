@@ -302,9 +302,19 @@ NM2.7, NCMD2.1, NCMD2.5, NEV2.7.
   open (N12.3).
 - ✅ Reject `--interval 0s` in watch mode (CL1) and `<1ms` sleep granularities
   (CL7).
-- ⏳ Add integration scenarios for the 24 untested subcommands (CL4).
+- ✅ Add integration scenarios for the 24 untested subcommands (CL4).
+  Twelve new `.sh` scenarios under `tests/integration/scenarios/` covering
+  `session`, `diff`, `dry-run`, every component status reader, every
+  component apply/revert `--yes` gate, `persona list/show/current/random/
+  validate`, `ssid list/show/set/clear`, `wiki search`, top-level `help`,
+  `completions {bash,zsh,fish}`, `kill {status,resume}`, `timer {set,
+  reset,logs}`, `config {edit,set-profile}`, `probe`, and `events run`.
+  Contract: exit 0 on `--help`, 64/65/66 on obvious failure modes, valid
+  JSON on `--json`. Runner auto-discovers via `scenarios/*.sh` glob.
 - ✅ Add `--json` flag to `resume` and `wiki` (non-search) for parity (CL6).
-- ⏳ Document the prefix-collision risk in CLI changelog (CL5).
+- ✅ Document the prefix-collision risk in CLI changelog (CL5). Landed in
+  `CHANGELOG.md`'s `[Unreleased]` "Known sharp edges" subsection and
+  `wiki/cli.md`'s new "Prefix matching" section.
 - ✅ `proteus rotate --dry-run` preview: thread the configured OUI pool into
   `mac::plan::preview_mac` so the previewed MAC reflects the persona, not a
   hardcoded LAA placeholder (NM2.7).
@@ -359,11 +369,18 @@ P1, P7, NMOD.4, NTEST.1.
   Stream 2 doesn't widen scope into the MAC stream.
 - ✅ Fix `parse_duration` overflow (N12.4) and the multibyte-trailing-char
   panic in `is_valid_per_ssid_duration` (N12.5) — shipped together.
-- ⏳ Constrain `clap` `u32` flags to a sane range (N12.12) — deferred:
-  CLI lives in `src/cli/`, owned by another stream's worktree.
+- ✅ Constrain `clap` `u32`/`u64`/`usize` flags to sane ranges (N12.12).
+  Bounded via `value_parser!(T).range(...)`: `timer logs --lines` 1..=100_000,
+  `wiki search --limit` 1..=500, `events run --max-triggers` 0..=10_000_000,
+  `events run --once-after-secs` 0..=86_400, `rotate-if-needed --cooldown`
+  0..=86_400. Out-of-range values now reject at clap parse time.
 - ✅ Replace `split_at` on potentially-empty duration strings (P1).
-- ⏳ Replace `get_mut("mac").unwrap()` test path (P7) — deferred:
-  `src/commands/config_cmd.rs` is owned by another stream.
+- ✅ Replace `get_mut("mac").unwrap()` test path (P7) — handled via the
+  Wave 1 carryover in `src/commands/config_cmd.rs`. The test uses
+  structured `.expect("default schema must contain a [mac] section")` +
+  `.expect("[mac] must be a table in the default schema")` so a future
+  schema rename surfaces the actual cause instead of a bare panic line
+  number.
 - ✅ Distinguish "no value" from "out of range" in `parse_duration`; emit
   a `warn!` on overflow rather than silent fallback to global timer
   (V8 — paired with N12.4 via `checked_mul`).
@@ -381,9 +398,12 @@ P1, P7, NMOD.4, NTEST.1.
   every shipped persona.
 - ✅ Defensive guard + const-assert that `OWNER_POOL` is non-empty before
   indexing in `persona::template::pick_owner` (NMOD.4).
-- ⏳ GH#340 (`ByteSuffixPattern::parse` multibyte panic) — deferred:
-  fix lives in `src/mac/generator.rs` which is out of Stream 2's
-  worktree scope.
+- ✅ GH#340 (`ByteSuffixPattern::parse` multibyte panic) — fixed in
+  `src/mac/generator.rs`: the parser now gathers cleaned characters
+  into a `Vec<char>` and reads from the vec instead of byte-indexing
+  the raw `&str`, so multibyte input (e.g. `"é:23:xx"`) errors cleanly
+  instead of panicking inside a `&str[i..j]` slice. Same panic class
+  Stream 2 fixed for `is_valid_per_ssid_duration`.
 
 **Acceptance:** new test module `config::validation_tests` loads each malformed
 example and asserts the specific error variant; full `cargo test --release`
@@ -514,15 +534,27 @@ NBE.7, NBE.8, NBE.10, NTEST.2.
   `factory_lookup_*` tests on the new typed shape; mock-backend
   mutex-poisoning recovery (N13) documented as `#[ignore]`'d
   regression test pinning the desired into_inner-recovery shape.
-  ⏳ N5 (full `GetSettings → Update` with PSK round-trip) deferred —
-  needs DBus session in the harness.
+  ✅ N5 (full `GetSettings → Update` with PSK round-trip) closed via
+  `tests/nm_get_settings_roundtrip.rs` test-local `MockNmConnectionSettings`
+  shim (no live DBus). Three tests pin
+  `802-11-wireless-security.psk` survival across an unrelated ssid
+  mutation, `802-1x.password` + `802-1x.private-key-password` survival
+  on the EAP-TLS path, and a negative-control proving the mock correctly
+  models NM's wipe-on-absent-key semantics. Exercises production
+  `nm::merge_secrets` + `nm::SECRET_SECTIONS` directly.
 - ✅ Init-system detection paths beyond hardcoded list (N11). Added
   `src/init/posix_fallback.rs` with detection + artifact rendering
   for s6, dinit, and a generic POSIX fallback. `select::detect`
   walks Systemd → OpenRC → Runit → SysVinit → s6 → dinit →
   posix-fallback → Systemd (default).
-- ⏳ Per-SSID policy debounce vs concurrent CLI rotate (N14) —
-  deferred (interplay with state lock).
+- ✅ Per-SSID policy debounce vs concurrent CLI rotate (N14) — per-iface
+  `Arc<tokio::sync::Mutex<()>>` registry in `backend::nm`, keyed by
+  iface name. Acquired BEFORE the state lock so two parallel tokio
+  tasks against the same iface fully serialise (the state lock's
+  intra-process reentrancy meant both used to pass the cooldown
+  check). Different ifaces still rotate in parallel. Pinned by
+  `n14_concurrent_rotate_same_iface_serialises` (would fail pre-fix)
+  and `n14_concurrent_rotate_different_ifaces_proceeds_in_parallel`.
 - ✅ Drop the `&& opts.pool.len() > 1` guard in
   `mac::generator::generate_with_probe` so single-token persona pools (e.g.
   `oui_pool = ["apple"]`) reset `consecutive_collisions` on every retry
@@ -583,10 +615,13 @@ NBE.7, NBE.8, NBE.10, NTEST.2.
 - ✅ `ethtool -P` parser: match against both `permanent address:` and
   `permanent mac address:` (Linux 6.3+ Intel iwlwifi variant) (NBE.10).
   Pinned by `parse_ethtool_permanent_accepts_linux_6_3_mac_header`.
-- ⏳ Replace `persona-effectiveness.sh`'s fixed `sleep 5` with a poll-until
-  loop on `proteus current --json` (MAC + DHCP lease timestamp), with a
-  generous timeout, so slow CI runners don't conflate baseline and persona
-  variants (NTEST.2).
+- ✅ Replace `persona-effectiveness.sh`'s fixed `sleep 5` with a poll-until
+  loop on `proteus current --json` (MAC + `last_rotated`), with a 60s
+  default timeout (override via `PROTEUS_PERSONA_EFFECT_TIMEOUT_SECS`),
+  so slow CI runners don't conflate baseline and persona variants
+  (NTEST.2). Captures pre-apply baseline and polls every 1 s until MAC
+  differs AND `last_rotated` advances, or the timeout fires with a
+  clear diagnostic.
 
 **Acceptance:** new test scenario `events_rotate_actually_rotates.rs` that
 spins the events daemon, fires a `ConnectionUp` signal, and asserts the
@@ -611,15 +646,35 @@ Stream 9), S1, audit N‑3 (residual), NEV2.3, NMOD.1, NMOD.2, NBE.6.
   vulnerable `SystemTime`. **Deferred** — fix lives in `src/backend/nm.rs`
   which is Stream 4's territory; flagged for follow-up.
 - ✅ Add subprocess timeouts to `apply` and `revert` (C3).
-- ⏳ SIGTERM handler in events daemon (C4). **Deferred** — events.rs is
-  Stream 4's scope.
+- ✅ SIGTERM handler in events daemon (C4). The shutdown loop's plain
+  `tokio::time::sleep` now sits inside a `tokio::select!` that races the
+  250 ms tick against `SignalKind::terminate()` and
+  `SignalKind::interrupt()`. On a signal the loop breaks normally so the
+  existing `shutdown_tasks` source drain + in-flight rotate `JoinHandle`
+  drain (both bounded at 5 s) become reachable from systemd's
+  `ExecStop` path. `Cargo.toml` adds tokio's `macros` + `signal` features
+  for the select/signal API.
 - ✅ State quarantine rename: surface failures (C5, S4); ✅ chmod-after-write
   race (N12.16); ✅ UUID case-folding (N12.17); ✅ `lock_path_for` fallback for
   bare filenames (N12.15).
 - ✅ Bound `PROTEUS_LOCK_TIMEOUT_MS` (C8); ✅ document UUID-key cross-system
-  migration behaviour (C9); ⏳ restore handler-panic visibility (C7) —
-  **deferred** (events/mod.rs is Stream 4's); ⏳ make mock backend actually
-  flock for test honesty (C6) — **deferred** (mock.rs is Stream 4's).
+  migration behaviour (C9); ✅ restore handler-panic visibility (C7) —
+  `EventRegistry::fire` wraps every `h.handle(&trigger)` in
+  `catch_unwind(AssertUnwindSafe(...))`, logs panics at `tracing::error!`
+  with `handler_index` + `kind` + downcast payload, bumps a per-registry
+  `handler_panics: AtomicU64` counter, and continues dispatch so a single
+  panicking handler can't take down the daemon. Rotate-task / source-task
+  `JoinError`s in `commands/events.rs` similarly split `is_panic()` →
+  `error!` from `is_cancelled()` → `warn!`. ✅ make mock backend actually
+  flock for test honesty (C6). `MockBackend` now accepts an opt-in
+  `state_path: Option<PathBuf>` via `with_state_path(p)`. When configured
+  it acquires `crate::state_lock::acquire_for_state_path(...)` before the
+  cooldown decision, mirroring `backend::nm::rotate_if_needed_inner_with`.
+  A foreign-fd flock causes `LockError::Busy` →
+  `RotateOutcome::SkippedCooldown { remaining: 1s }`. (Same-process
+  concurrent rotate races remain a separate concern — the
+  `Mutex<Option<File>>` lock serialises the acquire but not the rotate
+  body across parallel tokio tasks; see N14 follow-up.)
 - ✅ Replace `std::env::set_var` / `remove_var` in `uninstall.rs` test setup
   with a serialized-test harness (S1).
 - ✅ Apply `.custom_flags(libc::O_NOFOLLOW)` to the `state_lock` `OpenOptions`
@@ -633,8 +688,10 @@ Stream 9), S1, audit N‑3 (residual), NEV2.3, NMOD.1, NMOD.2, NBE.6.
   (`set_static_hostname` / `set_pretty_hostname` / `set_hostname`) in
   `tokio::time::timeout(Duration::from_secs(5), …)` and surface `TimedOut`
   as a recoverable error (NEV2.3).
-- ⏳ Add `mac.validate_assignable()` to `MockBackend::set_cloned_mac` (NBE.6)
-  — **deferred** to Stream 4 (mock.rs is its scope).
+- ✅ Add `mac.validate_assignable()` to `MockBackend::set_cloned_mac` (NBE.6).
+  Landed alongside C6 — `MockBackend::set_cloned_mac` rejects MACs that
+  fail `validate_assignable` (e.g., multicast bit set, all-zeros) with a
+  structured error before the rotate outcome is recorded.
 - ✅ GH #354 / GH #363: state-lock acquire chmodded state-dir parent
   unconditionally (`--state /tmp/x` → `chmod /tmp 0700` system-bricking
   footgun). `ensure_state_dir_secure` now only chmods directories Proteus
@@ -692,9 +749,15 @@ strings, all-dots paths, oversize inputs).
 
 **Work:**
 
-- ✅ Demote info-level success-path events in `apply` (E1). ⏳ events
-  daemon hot path (E2) deferred — Stream 4 owns `src/commands/events.rs`
-  in this wave.
+- ✅ Demote info-level success-path events in `apply` (E1). ✅ events
+  daemon hot path (E2). Verified via cross-stream audit: every
+  `tracing::info!` in `src/commands/events.rs`, `src/events/mod.rs`,
+  and `src/events/source/*.rs` is a lifecycle / banner / once-per-run
+  event (daemon-start banner, signal-driven shutdown, trigger-budget
+  exit, time-budget exit, reg-domain source spawn). The hot-path
+  per-trigger lines in `RotateOnTriggerHandler::handle` were already
+  demoted to `debug!` with `E2:` comments by PR #411's bundled commit
+  `fix(events): demote per-trigger info-level logs to debug (E2)`.
 - ✅ Surface `RUST_LOG` parse failures (E3); ✅ show-config permission
   errors at `error!` not `warn!` (E4).
 - ⏳ Replace `Ok(exit::GENERIC_ERROR)` pattern with typed error returns
@@ -704,9 +767,19 @@ strings, all-dots paths, oversize inputs).
   (apply.rs, show_config.rs, doctor.rs, config_cmd.rs) all rely on the
   caller printing details before returning the non-zero code. Tracked
   for a follow-up wave.
-- ⏳ Stop swallowing NM `GetSecrets` failures (E6) — deferred (Stream 4
-  owns `src/nm/mod.rs`). ✅ Stop `unwrap_or_default` on `read_to_string`
-  results (E7) for the in-scope `read_os_release` site in `doctor.rs`.
+- ✅ Stop swallowing NM `GetSecrets` failures (E6). `nm::update_with_secrets`
+  routes through a new `get_secrets_or_warn` chokepoint with typed
+  benign-vs-hard error classification via `zbus::Error` /
+  `zbus::fdo::Error` matching (mirrors `bluetooth::apply::is_adapter_gone`).
+  Benign set: `Settings.Connection.SettingNotFound`, `InvalidSetting`,
+  `AgentManager.NoSecrets`, FDO `UnknownProperty` / `UnknownInterface`,
+  empty dict. Hard set: `AccessDenied` (polkit), `NoReply` (DBus
+  disconnect), unrecognised NM `MethodError` names. On `Hard`,
+  `update_with_secrets` returns `Err(..)` BEFORE `proxy.update(settings)`
+  — the secret stays intact. Tracing routes the connection label
+  (`id (uuid)`) through `display_string` (S8 invariant preserved).
+  ✅ Stop `unwrap_or_default` on `read_to_string` results (E7) for the
+  in-scope `read_os_release` site in `doctor.rs`.
 - ✅ Doctor probe error breadcrumbs (E8); ✅ unify
   `Config::default_or_loaded` fallback (E9) — `proteus config validate`
   now routes through `Config::default_or_loaded` so it shares the
@@ -863,9 +936,15 @@ L‑3 (residual), audit I‑1, NEV2.1.
   byte-count via `LC_ALL=C wc -c` instead of bash's
   locale-dependent `${#var}`.
 - ✅ GH#359: central iface validator landed at `crate::iface` (`validate`
-  + `is_valid` + typed `InvalidIface` error). Per-module duplicates
-  migrated where they were already in scope; remainder is a deferred
-  follow-up.
+  + `is_valid` + typed `InvalidIface` error). All six per-module
+  duplicates migrated to delegate through `crate::iface`:
+  `mac::factory::is_valid_iface_name`, `ipv6::validate_iface_name`,
+  `rf::is_safe_iface`, `kill_switch::is_safe_iface`,
+  `events::source::nm_connection_up::is_safe_iface_name`, and the
+  nested `mac::probe::raw::validate_iface`. Three wrappers (ipv6, rf,
+  kill_switch) were strictly laxer than the central kernel-faithful
+  validator and are now newly-strict — defence-in-depth on callsites
+  that already feed kernel-validated sysfs walks.
 
 **Acceptance:** `cargo audit`; manual review of every new validator; test
 for the polkit-missing path that asserts a clear error message.
