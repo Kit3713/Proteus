@@ -6,8 +6,9 @@
 //! `src/commands/{rotate,dhcp,ipv6,enterprise_wifi}.rs` through this
 //! impl so non-NM backends can drop in.
 
+use std::collections::HashMap;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex as AsyncMutex;
 
@@ -22,6 +23,49 @@ use crate::ipv6::nm::Ipv6NmSettings;
 use crate::mac::{Mac, factory};
 use crate::nm::{self, ConnectionSettings, DeviceKind};
 use crate::state::DhcpSettingsSnapshot;
+
+/// N14: process-wide registry of per-iface async mutexes used to
+/// serialise concurrent `rotate_if_needed` invocations against the same
+/// interface. Different interfaces still rotate in parallel.
+///
+/// Why a separate per-iface mutex (instead of relying on `state_lock`):
+/// the state lock's process-wide `Mutex<Option<File>>` is reentrant —
+/// the first acquire in this process holds the kernel flock; every
+/// subsequent acquire from the same process returns a no-op guard. That
+/// keeps the orchestrator pattern (`apply::run` → `rotate::run`) safe,
+/// but it also means two parallel tokio tasks on a multi-thread runtime
+/// can BOTH pass through the lock acquire and proceed to the cooldown
+/// read without observing each other's `last_rotated` write. The
+/// in-process reentrancy that protects nested calls in the same task
+/// becomes a hole for true parallel tasks: both see "no cooldown" and
+/// both fall through to `rotate_hook`, double-rotating inside the
+/// cooldown window.
+///
+/// The per-iface mutex closes that hole. We acquire it BEFORE the
+/// state-lock acquire, so:
+///   1. Same-iface concurrent rotates serialise on this mutex. The
+///      second waiter blocks until the first releases — by which point
+///      `last_rotated` has been written. The second waiter then runs
+///      the cooldown read, sees the stamp, and returns
+///      `SkippedCooldown`. No double rotate.
+///   2. Different-iface concurrent rotates take different keys in the
+///      map and run in parallel (each on its own iface's mutex).
+///   3. The state lock continues to do its job: cross-process serial-
+///      isation and intra-process reentrancy for nested same-task calls.
+///
+/// `tokio::sync::Mutex` (vs `std::sync::Mutex`) so the guard is `Send`
+/// and can be held across the await points in the rotate body. The
+/// registry itself is a plain `std::sync::Mutex<HashMap<...>>` because
+/// we never hold it across an await — only across the
+/// HashMap lookup/insert, which is sync.
+fn iface_rotate_mutex(iface: &str) -> Arc<AsyncMutex<()>> {
+    static REGISTRY: OnceLock<StdMutex<HashMap<String, Arc<AsyncMutex<()>>>>> = OnceLock::new();
+    let registry = REGISTRY.get_or_init(|| StdMutex::new(HashMap::new()));
+    let mut map = registry.lock().unwrap_or_else(|e| e.into_inner());
+    map.entry(iface.to_string())
+        .or_insert_with(|| Arc::new(AsyncMutex::new(())))
+        .clone()
+}
 
 /// How long an `available()` answer stays valid before the backend
 /// re-probes. NBE.2: `select_auto` and `availability_matrix` (and any
@@ -382,6 +426,17 @@ impl NetworkBackend for NmBackend {
 /// second wakes up holding the lock and observes `last_rotated` already
 /// updated → returns `SkippedCooldown`.
 ///
+/// N14 (Stream 4): the #245 fix closed the cross-process race but not
+/// the in-process parallel-task race. The state lock's
+/// `Mutex<Option<File>>` is reentrant — two parallel tokio tasks on a
+/// multi-thread runtime can both observe a populated slot and proceed
+/// (one as the real holder, the other with a no-op guard) without
+/// observing each other's `last_rotated` write. The follow-up wraps a
+/// per-iface async mutex (`iface_rotate_mutex`) around the entire
+/// cooldown + state-lock + rotate sequence so concurrent rotates
+/// against the SAME interface serialise; different interfaces still
+/// rotate in parallel.
+///
 /// Issue #250: the read-back path used to fall through to
 /// `Mac::new([0; 6])` when the freshly-written `state.json` couldn't be
 /// reloaded or when the parse failed. Reporting `Rotated { new_mac:
@@ -442,6 +497,21 @@ async fn rotate_if_needed_inner_with<F>(
 where
     F: FnMut(&str, &std::path::Path) -> Result<u8>,
 {
+    // N14: per-iface serialisation. Acquire the per-iface async mutex
+    // BEFORE the state lock so two concurrent rotates against the SAME
+    // interface (e.g. a per-SSID policy fires via the events daemon at
+    // the same moment an operator types `proteus rotate`) wait their
+    // turn. The state lock alone is insufficient: it is reentrant
+    // within a process, so parallel tokio tasks both observe `HELD =
+    // Some(..)` for one task and `outermost = false` for the other,
+    // then both fall through to the cooldown read with stale state and
+    // both rotate. The per-iface mutex makes the second task wait
+    // until the first commits `last_rotated`; the second then reads
+    // the stamp and returns `SkippedCooldown`. Different ifaces hash
+    // to different keys in the registry and rotate in parallel.
+    let iface_mutex = iface_rotate_mutex(iface);
+    let _iface_guard = iface_mutex.lock().await;
+
     // Acquire the state lock for the duration of the cooldown decision
     // AND the inner rotate. Held = no other proteus process can rotate
     // this iface; nested = the inner `rotate::run` sees the in-process
@@ -1026,6 +1096,249 @@ mod tests {
         drop(foreign);
 
         assert!(matches!(outcome, RotateOutcome::SkippedCooldown { .. }));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ===== N14 (Stream 4) — per-iface debounce for concurrent rotates =====
+
+    /// Multi-threaded runtime helper for the N14 regression test below.
+    /// The other rotate tests use `new_current_thread` because they
+    /// drive one call at a time; the parallel-task race needs true
+    /// multi-worker scheduling to surface.
+    fn rt_mt() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap()
+    }
+
+    /// N14: two `tokio::spawn`'d `rotate_if_needed` calls against the
+    /// SAME iface must serialise such that exactly one Rotated +
+    /// exactly one SkippedCooldown comes out. The pre-fix code would
+    /// double-rotate: both tasks acquired the state lock (one as the
+    /// real outermost holder, the other as a no-op reentrant guard
+    /// because `Mutex<Option<File>>` is process-wide reentrant), both
+    /// read `last_rotated` before either wrote it, both saw "no
+    /// cooldown", both fired the rotate hook.
+    ///
+    /// The fix wraps the entire decision-and-mutation sequence in a
+    /// per-iface async mutex (`iface_rotate_mutex`); the second task
+    /// blocks at that mutex until the first releases, by which point
+    /// `last_rotated` has been stamped, and the second's cooldown read
+    /// trips the skip branch.
+    ///
+    /// The hook here uses an `AtomicUsize` to count rotates so the
+    /// assertion stays robust to scheduling jitter: regardless of
+    /// which task wins the race, exactly one rotate must fire.
+    #[test]
+    fn n14_concurrent_rotate_same_iface_serialises() {
+        let _serial = crate::state_lock::test_serial_guard();
+        let dir = fresh_state_dir("n14-concurrent");
+        let state_path = dir.join("state.json");
+
+        // Seed: factory MAC on file, no `last_rotated` so both tasks
+        // would pass the cooldown check pre-fix.
+        let mut state = State::default();
+        state
+            .original_macs
+            .insert("wlan0".into(), "aa:bb:cc:dd:ee:ff".into());
+        state
+            .managed
+            .interfaces
+            .insert("wlan0".into(), InterfaceRecord::default());
+        state.save(&state_path).unwrap();
+
+        // The hook simulates a real rotate: bumps `last_rotated` and
+        // writes a fresh `current_mac`. It also increments a counter
+        // so the test can assert exactly-once. A small sleep widens
+        // the window during which the second task could observe stale
+        // state if the per-iface mutex weren't doing its job.
+        let rotate_calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let state_path_a = state_path.clone();
+        let state_path_b = state_path.clone();
+        let calls_a = rotate_calls.clone();
+        let calls_b = rotate_calls.clone();
+
+        let make_hook = |calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+                         hook_path: std::path::PathBuf| {
+            move |iface: &str, _sp: &std::path::Path| -> Result<u8> {
+                // Read-modify-write the state stamp so the SECOND
+                // task's cooldown check has something to observe.
+                let mut s = State::load_or_default(&hook_path).unwrap();
+                let rec = s.managed.interfaces.entry(iface.to_string()).or_default();
+                rec.current_mac = Some("02:00:00:00:00:01".into());
+                rec.last_rotated = Some(crate::commands::now_iso8601());
+                s.save(&hook_path).unwrap();
+                // Brief sleep to keep the critical section open long
+                // enough that a buggy implementation has every chance
+                // to lose the race.
+                std::thread::sleep(Duration::from_millis(50));
+                calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(crate::exit::SUCCESS)
+            }
+        };
+
+        let (out_a, out_b) = rt_mt().block_on(async move {
+            let hook_a = make_hook(calls_a, state_path_a.clone());
+            let hook_b = make_hook(calls_b, state_path_b.clone());
+            let task_a = tokio::spawn(async move {
+                super::rotate_if_needed_inner_with(
+                    "wlan0",
+                    Duration::from_secs(3600),
+                    &state_path_a,
+                    hook_a,
+                )
+                .await
+            });
+            let task_b = tokio::spawn(async move {
+                super::rotate_if_needed_inner_with(
+                    "wlan0",
+                    Duration::from_secs(3600),
+                    &state_path_b,
+                    hook_b,
+                )
+                .await
+            });
+            (
+                task_a.await.unwrap().unwrap(),
+                task_b.await.unwrap().unwrap(),
+            )
+        });
+
+        // Exactly one of the two outcomes must be Rotated and the
+        // other SkippedCooldown — order doesn't matter, only the
+        // multiset.
+        let rotated = matches!(out_a, RotateOutcome::Rotated { .. }) as usize
+            + matches!(out_b, RotateOutcome::Rotated { .. }) as usize;
+        let skipped = matches!(out_a, RotateOutcome::SkippedCooldown { .. }) as usize
+            + matches!(out_b, RotateOutcome::SkippedCooldown { .. }) as usize;
+        assert_eq!(
+            rotated, 1,
+            "exactly one task must rotate; got a={out_a:?} b={out_b:?}"
+        );
+        assert_eq!(
+            skipped, 1,
+            "the other task must skip on cooldown; got a={out_a:?} b={out_b:?}"
+        );
+        assert_eq!(
+            rotate_calls.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the rotate hook must fire exactly once across both tasks"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// N14 corollary: two tasks against DIFFERENT ifaces must NOT
+    /// serialise on the per-iface mutex — each iface has its own slot
+    /// in the registry, so a rotate on `wlan0` and a concurrent rotate
+    /// on `eth0` take different mutex Arcs and never block each other.
+    ///
+    /// We use SEPARATE state files for the two tasks so the test
+    /// isolates the per-iface mutex behaviour from the (separately-
+    /// tracked) intra-process state-lock reentrancy concern. With the
+    /// per-iface mutex in place, both hooks fire and both calls return
+    /// `Rotated`; with a coarse one-global-mutex implementation, the
+    /// hooks would serialise and the test wall-clock would observe
+    /// it. We don't assert on timing (flaky on CI) — we assert both
+    /// hooks fired and both returned `Rotated`.
+    #[test]
+    fn n14_concurrent_rotate_different_ifaces_proceeds_in_parallel() {
+        let _serial = crate::state_lock::test_serial_guard();
+        let dir = fresh_state_dir("n14-different-ifaces");
+        // Distinct state files so the two tasks don't race on the same
+        // state.json (the state-lock's intra-process reentrancy is a
+        // separate concern from per-iface debounce; this test pins the
+        // latter only).
+        let state_path_a = dir.join("a").join("state.json");
+        let state_path_b = dir.join("b").join("state.json");
+        std::fs::create_dir_all(state_path_a.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(state_path_b.parent().unwrap()).unwrap();
+
+        let mut state_a = State::default();
+        state_a
+            .original_macs
+            .insert("wlan0".into(), "aa:bb:cc:dd:ee:00".into());
+        state_a
+            .managed
+            .interfaces
+            .insert("wlan0".into(), InterfaceRecord::default());
+        state_a.save(&state_path_a).unwrap();
+
+        let mut state_b = State::default();
+        state_b
+            .original_macs
+            .insert("eth0".into(), "aa:bb:cc:dd:ee:01".into());
+        state_b
+            .managed
+            .interfaces
+            .insert("eth0".into(), InterfaceRecord::default());
+        state_b.save(&state_path_b).unwrap();
+
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let calls_a = calls.clone();
+        let calls_b = calls.clone();
+        let state_path_a_t = state_path_a.clone();
+        let state_path_b_t = state_path_b.clone();
+
+        let make_hook = |counter: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+                         hook_path: std::path::PathBuf,
+                         mac: &'static str| {
+            move |iface: &str, _sp: &std::path::Path| -> Result<u8> {
+                let mut s = State::load_or_default(&hook_path).unwrap();
+                let rec = s.managed.interfaces.entry(iface.to_string()).or_default();
+                rec.current_mac = Some(mac.to_string());
+                rec.last_rotated = Some(crate::commands::now_iso8601());
+                s.save(&hook_path).unwrap();
+                counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(crate::exit::SUCCESS)
+            }
+        };
+
+        let (out_a, out_b) = rt_mt().block_on(async move {
+            let hook_a = make_hook(calls_a, state_path_a_t.clone(), "02:00:00:00:00:0a");
+            let hook_b = make_hook(calls_b, state_path_b_t.clone(), "02:00:00:00:00:0b");
+            let task_a = tokio::spawn(async move {
+                super::rotate_if_needed_inner_with(
+                    "wlan0",
+                    Duration::from_secs(3600),
+                    &state_path_a_t,
+                    hook_a,
+                )
+                .await
+            });
+            let task_b = tokio::spawn(async move {
+                super::rotate_if_needed_inner_with(
+                    "eth0",
+                    Duration::from_secs(3600),
+                    &state_path_b_t,
+                    hook_b,
+                )
+                .await
+            });
+            (
+                task_a.await.unwrap().unwrap(),
+                task_b.await.unwrap().unwrap(),
+            )
+        });
+
+        // Both must rotate — separate ifaces hash to separate mutex
+        // slots in the per-iface registry, so neither blocks the other.
+        assert!(
+            matches!(out_a, RotateOutcome::Rotated { .. }),
+            "wlan0 must rotate; got {out_a:?}"
+        );
+        assert!(
+            matches!(out_b, RotateOutcome::Rotated { .. }),
+            "eth0 must rotate; got {out_b:?}"
+        );
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "both rotate hooks must fire when ifaces differ"
+        );
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
