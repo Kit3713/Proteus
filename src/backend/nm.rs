@@ -628,14 +628,16 @@ fn parse_connection_ref(cref: &ConnectionRef) -> Result<OwnedObjectPath> {
     Ok(p.into())
 }
 
-/// Maximum plausible cooldown lookback before we suspect wall-clock skew
-/// (Stream 5 / C2). The longest realistic per-iface cooldown an operator
-/// configures is on the order of hours; an elapsed reading north of 30
-/// days almost certainly means the wall clock jumped forward (NTP correction,
-/// VM resume from suspend, manual `date` set) rather than a genuinely month-
-/// old stamp. Treating that case as "cooldown expired" matches user intent
-/// (the rotate budget is long-since burned) and avoids weird underflow-style
-/// arithmetic surprises.
+/// Threshold above which an elapsed lookback starts to look like a
+/// wall-clock jump rather than a genuine wait (Stream 5 / C2). For
+/// typical per-iface cooldown budgets (seconds to hours) an elapsed
+/// reading north of 30 days almost certainly means the wall clock
+/// jumped forward (NTP correction, VM resume from suspend, manual
+/// `date` set) rather than a real month-old stamp. We only apply the
+/// guard when the configured cooldown is itself shorter than this
+/// ceiling — operators who deliberately configure a multi-week cooldown
+/// (codex P2 follow-up on PR #439) get the literal remaining-budget
+/// answer rather than a spurious "treat as expired".
 const COOLDOWN_SKEW_CEILING: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 
 /// Compute remaining cooldown given an ISO-8601 `last_rotated` stamp
@@ -656,11 +658,15 @@ const COOLDOWN_SKEW_CEILING: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 ///      ratchet whenever the clock slipped back. Post-fix, we return
 ///      `None` (rotate-allowed) and `warn!` so the operator can see the
 ///      host has a clock-discipline problem.
-///   3. If `elapsed > COOLDOWN_SKEW_CEILING` (30 days), treat as the
-///      same skew class. No reasonable cooldown budget is that long,
-///      and a stamp from a month ago is almost certainly the wall clock
-///      having jumped forward by months while `state.json` was idle.
-///      Same `None`-plus-`warn!` treatment.
+///   3. If `elapsed > COOLDOWN_SKEW_CEILING` (30 days) AND the configured
+///      cooldown is itself shorter than the ceiling, treat as the same
+///      skew class — a stamp from a month ago against a seconds-to-hours
+///      budget is almost certainly the wall clock having jumped forward
+///      while `state.json` was idle. Same `None`-plus-`warn!` treatment.
+///      Operators who deliberately configure a multi-week cooldown (codex
+///      P2 follow-up on PR #439) skip this guard entirely — for them, an
+///      old stamp inside the window is legitimate and must return the
+///      real remaining budget rather than a spurious None.
 ///
 /// Option 4 from the C2 brief (in-process monotonic anchor on each
 /// `last_rotated` write) was considered but skipped: the only prod
@@ -687,13 +693,17 @@ fn remaining_cooldown(stamp: &str, cooldown: Duration) -> Option<Duration> {
         return None;
     }
     let elapsed = now - last;
-    if elapsed > COOLDOWN_SKEW_CEILING.as_secs() {
+    if elapsed > COOLDOWN_SKEW_CEILING.as_secs()
+        && cooldown.as_secs() < COOLDOWN_SKEW_CEILING.as_secs()
+    {
         tracing::warn!(
             stamp = %stamp,
             elapsed_secs = elapsed,
             ceiling_secs = COOLDOWN_SKEW_CEILING.as_secs(),
-            "cooldown: elapsed since last_rotated exceeds skew ceiling (likely \
-             wall-clock jump forward); treating cooldown as expired"
+            cooldown_secs = cooldown.as_secs(),
+            "cooldown: elapsed since last_rotated exceeds skew ceiling under a \
+             short cooldown budget (likely wall-clock jump forward); treating \
+             cooldown as expired"
         );
         return None;
     }
@@ -835,24 +845,60 @@ mod tests {
 
     /// C2 / scenario 2: a stamp 31 days in the past trips the absurd-
     /// elapsed ceiling and is treated as wall-clock skew (clock jumped
-    /// forward), returning `None` even when the cooldown budget itself
-    /// is small enough that the answer would be `None` anyway. The
-    /// behaviour-meaningful side is the warn; the return value matches
-    /// the well-past path. We assert `None` and rely on the warn-on-skew
-    /// branch being the one that fires (verified by sibling tests).
+    /// forward), returning `None`. We pair the absurd elapsed with a
+    /// SHORT cooldown budget — the skew guard only fires when the
+    /// configured cooldown is itself shorter than the ceiling (codex P2
+    /// follow-up on PR #439: long-cooldown operators must get the real
+    /// remaining-budget answer, exercised separately below).
     #[test]
     fn remaining_cooldown_absurd_elapsed_treated_as_skew() {
         // 31 days * 86_400 = 2_678_400 seconds in the past. Budget set
-        // far ABOVE the elapsed value so that without the ceiling guard
-        // the function would return `Some(<huge>)` and incorrectly
-        // hold the rotate.
+        // to a typical short cooldown (1 hour); the skew guard fires
+        // because elapsed >> ceiling AND cooldown < ceiling.
         let stamp = stamp_offset_from_now(-(31 * 86_400));
-        let huge_budget = Duration::from_secs(60 * 86_400); // 60 days
-        let r = remaining_cooldown(&stamp, huge_budget);
+        let short_budget = Duration::from_secs(60 * 60); // 1 hour
+        let r = remaining_cooldown(&stamp, short_budget);
         assert!(
             r.is_none(),
-            "elapsed beyond skew ceiling must be treated as wall-clock skew \
-             (rotate allowed), got {r:?}"
+            "elapsed beyond skew ceiling under a short cooldown must be treated \
+             as wall-clock skew (rotate allowed), got {r:?}"
+        );
+    }
+
+    /// C2 codex P2 follow-up on PR #439: an operator who configures a
+    /// multi-week cooldown gets the literal remaining-budget answer
+    /// even when the stamp is "absurd" relative to short cooldowns.
+    /// A 31-day-old stamp inside a 60-day cooldown must return
+    /// `Some(~29 days)`, NOT `None`. Pre-fix, the absurd-elapsed
+    /// short-circuit collapsed this to None and incorrectly told the
+    /// caller the cooldown had expired.
+    #[test]
+    fn remaining_cooldown_long_cooldown_respects_old_stamp_within_window() {
+        let stamp = stamp_offset_from_now(-(31 * 86_400));
+        let long_budget = Duration::from_secs(60 * 86_400); // 60 days
+        let r = remaining_cooldown(&stamp, long_budget)
+            .expect("long-cooldown + in-window stamp must return Some(remaining)");
+        let secs = r.as_secs();
+        // Expected ~29 days remaining (60d - 31d), with ±2s slop for
+        // SystemTime::now() drift between stamp build and function read.
+        let target = 29 * 86_400;
+        assert!(
+            (target - 2..=target + 2).contains(&secs),
+            "60-day cooldown + 31-day-old stamp should yield ~29d remaining, got {secs}s"
+        );
+    }
+
+    /// C2 codex P2 follow-up on PR #439 — pin: a long-cooldown operator
+    /// whose stamp is past the cooldown horizon still gets `None`
+    /// (genuinely expired). 61 days old vs 60-day budget → expired.
+    #[test]
+    fn remaining_cooldown_long_cooldown_treats_past_expiry_as_expired() {
+        let stamp = stamp_offset_from_now(-(61 * 86_400));
+        let long_budget = Duration::from_secs(60 * 86_400); // 60 days
+        let r = remaining_cooldown(&stamp, long_budget);
+        assert!(
+            r.is_none(),
+            "61-day-old stamp under a 60-day cooldown is genuinely expired, got {r:?}"
         );
     }
 
