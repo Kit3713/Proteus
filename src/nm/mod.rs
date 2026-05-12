@@ -385,16 +385,29 @@ fn get_secrets_error_is_benign(err: &zbus::Error) -> bool {
             zbus::fdo::Error::UnknownProperty(_) | zbus::fdo::Error::UnknownInterface(_)
         ),
         // NM-typed MethodErrors: the canonical "section not on this
-        // profile" / "no agent could supply / had no secrets" set.
-        // Anything outside this list — including `AccessDenied`
-        // (polkit) and the AgentManager's `UserCanceled` /
-        // `PermissionDenied` — is a hard failure.
+        // profile" / "property not on this section" / "no agent could
+        // supply / had no secrets" set. Anything outside this list —
+        // including `AccessDenied` (polkit) and the AgentManager's
+        // `UserCanceled` / `PermissionDenied` — is a hard failure.
+        //
+        // E6 codex P1 followup: NM also raises
+        // `Settings.Connection.InvalidProperty` and
+        // `Settings.Connection.MissingProperty` when the requested
+        // section exists on the profile but has no secret-typed
+        // property for the key under inspection. Without these in the
+        // benign set, normal profiles that simply don't have a stored
+        // secret for the requested section abort `Update` instead of
+        // merging benign-empty.
         zbus::Error::MethodError(name, _, _) => {
             let s = name.as_str();
             matches!(
                 s,
                 "org.freedesktop.NetworkManager.Settings.Connection.SettingNotFound"
+                    | "org.freedesktop.NetworkManager.Settings.Connection.InvalidProperty"
+                    | "org.freedesktop.NetworkManager.Settings.Connection.MissingProperty"
                     | "org.freedesktop.NetworkManager.InvalidSetting"
+                    | "org.freedesktop.NetworkManager.InvalidProperty"
+                    | "org.freedesktop.NetworkManager.MissingProperty"
                     | "org.freedesktop.NetworkManager.AgentManager.NoSecrets"
             )
         }
@@ -731,6 +744,79 @@ mod tests {
         );
     }
 
+    /// E6 codex P1 followup: NM raises
+    /// `Settings.Connection.InvalidProperty` when the section exists
+    /// on the connection but doesn't carry a secret-typed property
+    /// for the requested key. Pinning this as benign keeps the merge
+    /// skip on the routine "this profile has no stored secret for
+    /// `<section>`" path — without it, `update_with_secrets` aborts
+    /// `Update` for ordinary profiles and the rotate / dhcp / ipv6 /
+    /// anonymous-id write fails with no operator-actionable cause.
+    #[test]
+    fn benign_classifies_nm_settings_connection_invalid_property() {
+        let name = zbus::names::OwnedErrorName::try_from(
+            "org.freedesktop.NetworkManager.Settings.Connection.InvalidProperty",
+        )
+        .unwrap();
+        let payload = synthetic_method_message();
+        let err = zbus::Error::MethodError(name, Some("no such property".into()), payload);
+        assert!(
+            get_secrets_error_is_benign(&err),
+            "Settings.Connection.InvalidProperty must be benign"
+        );
+    }
+
+    /// E6 codex P1 followup: NM also emits
+    /// `Settings.Connection.MissingProperty` for the same family of
+    /// "section is there, but the property the agent expected isn't"
+    /// outcomes. Pin it as benign alongside `InvalidProperty`.
+    #[test]
+    fn benign_classifies_nm_settings_connection_missing_property() {
+        let name = zbus::names::OwnedErrorName::try_from(
+            "org.freedesktop.NetworkManager.Settings.Connection.MissingProperty",
+        )
+        .unwrap();
+        let payload = synthetic_method_message();
+        let err = zbus::Error::MethodError(name, Some("missing property".into()), payload);
+        assert!(
+            get_secrets_error_is_benign(&err),
+            "Settings.Connection.MissingProperty must be benign"
+        );
+    }
+
+    /// E6 codex P1 followup: NM also occasionally emits the
+    /// `InvalidProperty` / `MissingProperty` variants without the
+    /// `Settings.Connection.` prefix (top-level NM error namespace).
+    /// Both must classify benign so the merge-skip path stays
+    /// consistent regardless of which prefix NM picks.
+    #[test]
+    fn benign_classifies_nm_top_level_invalid_property() {
+        let name =
+            zbus::names::OwnedErrorName::try_from("org.freedesktop.NetworkManager.InvalidProperty")
+                .unwrap();
+        let payload = synthetic_method_message();
+        let err = zbus::Error::MethodError(name, None, payload);
+        assert!(
+            get_secrets_error_is_benign(&err),
+            "top-level NetworkManager.InvalidProperty must be benign"
+        );
+    }
+
+    /// Sibling of the above for `MissingProperty` under the top-level
+    /// NM error namespace.
+    #[test]
+    fn benign_classifies_nm_top_level_missing_property() {
+        let name =
+            zbus::names::OwnedErrorName::try_from("org.freedesktop.NetworkManager.MissingProperty")
+                .unwrap();
+        let payload = synthetic_method_message();
+        let err = zbus::Error::MethodError(name, None, payload);
+        assert!(
+            get_secrets_error_is_benign(&err),
+            "top-level NetworkManager.MissingProperty must be benign"
+        );
+    }
+
     /// Polkit denial: `AccessDenied` is a hard failure. The operator's
     /// authn flow couldn't sign the GetSecrets call — proceeding to
     /// Update would push a stripped dict and NM would wipe the secret.
@@ -794,11 +880,25 @@ mod tests {
     /// secrets" variant), the test forces the classifier update to
     /// happen as a deliberate code change rather than a silent runtime
     /// drift to "always log error!".
+    ///
+    /// E6 codex P1 followup: the
+    /// `Settings.Connection.InvalidProperty` /
+    /// `Settings.Connection.MissingProperty` (and their
+    /// non-`Settings.Connection`-prefixed siblings NM occasionally
+    /// emits via the `InvalidSetting`/`InvalidProperty`/`MissingProperty`
+    /// top-level error names) entries pin the "section exists but no
+    /// secret property" case so `update_with_secrets` no longer aborts
+    /// `Update` for normal profiles that simply don't have a stored
+    /// secret for the requested section.
     #[test]
     fn benign_method_error_name_set_is_documented() {
         let names = [
             "org.freedesktop.NetworkManager.Settings.Connection.SettingNotFound",
+            "org.freedesktop.NetworkManager.Settings.Connection.InvalidProperty",
+            "org.freedesktop.NetworkManager.Settings.Connection.MissingProperty",
             "org.freedesktop.NetworkManager.InvalidSetting",
+            "org.freedesktop.NetworkManager.InvalidProperty",
+            "org.freedesktop.NetworkManager.MissingProperty",
             "org.freedesktop.NetworkManager.AgentManager.NoSecrets",
         ];
         let payload = synthetic_method_message();
