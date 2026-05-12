@@ -37,7 +37,7 @@ pub async fn select(driver: &str) -> Result<Box<dyn NetworkBackend>> {
         "networkd" => Ok(Box::new(NetworkdBackend::new())),
         "raw" => Ok(Box::new(RawBackend::new())),
         other => bail!(
-            "unknown backend driver '{other}'; expected one of {}",
+            "unknown backend driver '{other}'; expected one of {}; see proteus wiki backend",
             VALID_DRIVERS.join(", ")
         ),
     }
@@ -58,7 +58,7 @@ async fn select_auto() -> Result<Box<dyn NetworkBackend>> {
     }
     bail!(
         "no backend available — install NetworkManager, enable systemd-networkd, \
-         or install iproute2 (`ip`) and re-run. See `proteus doctor`."
+         or install iproute2 (`ip`) and re-run. See `proteus doctor`; see proteus wiki backend"
     )
 }
 
