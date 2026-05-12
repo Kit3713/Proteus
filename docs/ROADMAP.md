@@ -770,13 +770,18 @@ strings, all-dots paths, oversize inputs).
   `fix(events): demote per-trigger info-level logs to debug (E2)`.
 - ✅ Surface `RUST_LOG` parse failures (E3); ✅ show-config permission
   errors at `error!` not `warn!` (E4).
-- ⏳ Replace `Ok(exit::GENERIC_ERROR)` pattern with typed error returns
-  (E5) — deferred. The pattern is pervasive across the dispatch table
-  and converting it requires a larger refactor than fits this wave;
-  Stream 8 owns the `dhcp.rs` E5 dispatch site, and the in-scope sites
-  (apply.rs, show_config.rs, doctor.rs, config_cmd.rs) all rely on the
-  caller printing details before returning the non-zero code. Tracked
-  for a follow-up wave.
+- 🟡 Replace `Ok(exit::GENERIC_ERROR)` pattern with typed error returns
+  (E5) — full refactor remains cycle-sized work for v0.5+. PR #450
+  landed the partial: surveyed `apply.rs`, `show_config.rs`,
+  `doctor.rs`, `config_cmd.rs` and found the brief's exact
+  `eprintln+drop+GENERIC_ERROR` pattern doesn't appear — every
+  `if let Err(e)` arm ends with a *typed* exit code (PERMISSION_ERROR,
+  CONFIG_ERROR, SYSTEM_NOT_SUPPORTED) that bubbling via `?` would
+  change. Converted one in-scope site (`config_cmd::edit` `!status.success()`
+  → `Err(anyhow!(...))`) where the dispatcher renders the chain and
+  maps Err to GENERIC_ERROR. Added E5 breadcrumbs at three structurally
+  similar sites for the next wave. Stream 8's `dhcp.rs` dispatch site
+  is still untouched.
 - ✅ Stop swallowing NM `GetSecrets` failures (E6). `nm::update_with_secrets`
   routes through a new `get_secrets_or_warn` chokepoint with typed
   benign-vs-hard error classification via `zbus::Error` /
