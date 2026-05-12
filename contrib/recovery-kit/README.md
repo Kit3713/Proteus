@@ -1,36 +1,34 @@
-# Proteus Recovery Kit (hardened sidecar)
+# Proteus Recovery Kit (canonical + transactional)
 
-Backup/restore helper scripts for fast operational recovery iteration.
+## Features implemented
 
-## Implemented hardening features
+- Canonical JSON manifest via Python `json.dump(..., sort_keys=True, separators=(',',':'))`.
+- Strict JSON parsing on restore verify path.
+- Recursive per-file manifest coverage (sha256, bytes, mode, uid, gid, mtime).
+- Transactional lock using `flock` on `/tmp/proteus-recovery.lock`.
+- Service orchestration hardening with retries/timeouts and pre/post state reporting.
+- Safer purge behavior: `--purge-targets` requires `--force`; manual token includes hostname + timestamp.
+- Structured restore audit artifact: `run-<timestamp>.json`.
+- Optional encryption-at-rest: `--encrypt gpg|age` for bundle + manifest.
+- `backup.sh --verify <bundle>` helper mode.
+- `--exclude` patterns and `--output-name` template support.
+- `--json` output for CI.
 
-- Integrity: generates `.sha256` for bundle + manifest and verifies before restore.
-- Optional signature verification: if `<checksum>.sig` exists, restore verifies with `gpg` or `minisign`.
-- Metadata/versioning: manifest stores host, OS, Proteus version, schema version, timestamp, compression mode.
-- Compatibility gate: schema mismatch requires `--force`.
-- Atomic-ish restore: extract to staging directory first, then copy into place with rollback on failure.
-- Service-state aware: only restarts services that were active before restore and checks health after start.
-- Explicit manifest: `manifest.json` includes paths and per-file bytes/checksums where available.
-- Retention policy: `backup.sh --keep N` prunes old backups/manifests/checksums.
-- Safer destructive controls: `--purge-targets` and timestamped confirmation token.
-- Preflight checks: command availability, writable destination, root requirement for restore, free-space check.
-- Nice-to-have: `--only=<config|state|personas>`, `--plan`, gzip/zstd compression, `--json` output.
+## Exit codes (machine-readable)
 
-## Backup
+| Code | Meaning |
+|---|---|
+| 0 | success |
+| 1 | runtime/precondition failure |
+| 2 | invalid CLI arguments |
+| 3 | no source paths found for backup |
+| 40 | transactional lock busy |
+
+## Examples
 
 ```bash
-sudo ./backup.sh /tmp/proteus-backups --keep 10 --compression zstd --json
+sudo ./backup.sh /tmp/proteus-backups --keep 8 --compression zstd --output-name nightly --exclude '*.cache' --json
+sudo ./backup.sh --verify /tmp/proteus-backups/nightly.tar.zst
+sudo ./restore.sh /tmp/proteus-backups/nightly.tar.zst --force --purge-targets --confirm-host=$(hostname -f)
+sudo ./restore.sh /tmp/proteus-backups/nightly.tar.zst --plan --only=config
 ```
-
-## Restore
-
-```bash
-sudo ./restore.sh /tmp/proteus-backups/proteus-backup-YYYYmmdd-HHMMSS.tar.zst --yes --force
-sudo ./restore.sh /tmp/proteus-backups/proteus-backup-YYYYmmdd-HHMMSS.tar.gz --plan --only=config
-```
-
-## Paths covered
-
-- `/etc/proteus`
-- `/var/lib/proteus`
-- `/usr/share/proteus/personas`
