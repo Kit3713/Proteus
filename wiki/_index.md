@@ -59,4 +59,5 @@ entry below, or `proteus wiki search <term>` for full-text search.
 - `hostile-environments` — coffee-shop / hotel / conference Wi-Fi tactics
 - `journald-network-logs` — reading the journal for network events
 - `wpa-supplicant-hardening` — supplicant configuration hardening
+- `polkit-hardening` — optional `wheel`/`sudo` group restriction for the shipped polkit policy + `pkcheck` runtime check
 - `recipes` — assorted multi-feature recipes
