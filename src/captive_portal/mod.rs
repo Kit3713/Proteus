@@ -798,6 +798,63 @@ fn body_slice(buf: &[u8]) -> Option<(&[u8], &[u8])> {
     Some((head, body))
 }
 
+/// R4 — captive-portal config reload primitive.
+///
+/// One `Arc<RwLock<CaptivePortalConfig>>` owned by the daemon and cloned
+/// to every reader. Reloaders call [`Self::swap`] to replace the config
+/// in-place; readers call [`Self::snapshot`] to take a value copy that
+/// outlives the lock.
+///
+/// Wired from `src/commands/events.rs` on `SIGHUP` in a follow-up; the
+/// primitive ships here so other event sources can adopt the same
+/// reload contract without inventing their own.
+pub struct CaptivePortalReload {
+    inner: Arc<RwLock<CaptivePortalConfig>>,
+}
+
+impl CaptivePortalReload {
+    pub fn new(cfg: CaptivePortalConfig) -> Self {
+        Self {
+            inner: Arc::new(RwLock::new(cfg)),
+        }
+    }
+
+    /// Take a value copy of the current config. Recovers from a
+    /// poisoned reader by treating the inner value as still well-formed
+    /// — `swap` replaces the whole struct in one assignment, so a
+    /// writer panic can't leave a partial config behind.
+    pub fn snapshot(&self) -> CaptivePortalConfig {
+        match self.inner.read() {
+            Ok(g) => g.clone(),
+            Err(p) => p.into_inner().clone(),
+        }
+    }
+
+    /// Replace the stored config with `new_cfg`, returning the previous
+    /// value. Poison-recovering for the same reason as [`Self::snapshot`].
+    pub fn swap(&self, new_cfg: CaptivePortalConfig) -> CaptivePortalConfig {
+        let mut g = match self.inner.write() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        std::mem::replace(&mut *g, new_cfg)
+    }
+
+    /// Hand out the underlying `Arc` for callers that want raw access
+    /// (e.g. a status reporter that wants to share the same lock).
+    pub fn handle(&self) -> Arc<RwLock<CaptivePortalConfig>> {
+        Arc::clone(&self.inner)
+    }
+}
+
+impl Clone for CaptivePortalReload {
+    fn clone(&self) -> Self {
+        Self {
+            inner: Arc::clone(&self.inner),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
