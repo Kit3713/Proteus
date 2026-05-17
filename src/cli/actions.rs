@@ -341,6 +341,18 @@ pub enum ConfigAction {
         #[arg(long)]
         json: bool,
     },
+    /// Print doc-comment, risk, default, and wiki cross-link for one key.
+    ///
+    /// Issue #394: read-only sibling to `proteus config get` that surfaces
+    /// the schema documentation operators would otherwise have to grep the
+    /// source for. Unknown keys exit with `CONFIG_ERROR` plus the closest
+    /// known key as a suggestion.
+    Explain {
+        /// Dotted key, e.g. `mac.rotation_interval`.
+        key: String,
+        #[arg(long)]
+        json: bool,
+    },
     /// Set the active profile (off / min / low / med / high / agr).
     /// Per-knob overrides already in the config file are preserved.
     SetProfile {

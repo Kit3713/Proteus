@@ -1126,7 +1126,10 @@ fn check_persona_id_known(field: &str, id: &str) -> Result<()> {
 /// candidate with the smallest Levenshtein distance to `needle`, capped
 /// at 3 — beyond that the suggestion is more confusing than helpful.
 /// Empty `haystack` returns `None`.
-fn closest_match<'a>(needle: &str, haystack: &[&'a str]) -> Option<&'a str> {
+///
+/// Issue #394: exposed crate-wide so `proteus config explain` can hand the
+/// same "did-you-mean" line to operators on an unknown key.
+pub(crate) fn closest_match<'a>(needle: &str, haystack: &[&'a str]) -> Option<&'a str> {
     let mut best: Option<(&str, usize)> = None;
     for cand in haystack {
         let d = levenshtein(needle, cand);
