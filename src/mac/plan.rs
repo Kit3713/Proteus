@@ -247,6 +247,7 @@ mod tests {
                 pinned_at: None,
                 last_rotated: None,
                 rotation_count: 0,
+                reason: None,
             },
         );
         let plan = plan_rotate(&cfg, &st, None);
@@ -278,6 +279,7 @@ mod tests {
                 pinned_at: None,
                 last_rotated: None,
                 rotation_count: 0,
+                reason: None,
             },
         );
         let plan = plan_pin(&st, "wlan0", None);

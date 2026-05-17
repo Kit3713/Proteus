@@ -292,6 +292,7 @@ impl NetworkBackend for NmBackend {
         iface: &'a str,
         cooldown: Duration,
         state_path: Option<&'a std::path::Path>,
+        reason: Option<&'a str>,
     ) -> BoxFuture<'a, Result<RotateOutcome>> {
         // Issue #206-C: structured entry point used by the NM
         // dispatcher in place of the previous `proteus current --json | sed`
@@ -304,7 +305,11 @@ impl NetworkBackend for NmBackend {
         // surfaced a warn for the ignored arg; the actual fix needed
         // a backend-trait change, threaded through here so the cooldown
         // read AND the inner rotate book-keeping land on the same file.
-        Box::pin(async move { rotate_if_needed_inner(iface, cooldown, state_path).await })
+        //
+        // Issue #294: `reason` is threaded through to the inner rotate
+        // hook so the per-iface state record carries the same audit
+        // string the dispatcher / operator supplied.
+        Box::pin(async move { rotate_if_needed_inner(iface, cooldown, state_path, reason).await })
     }
 
     fn read_connection_id<'a>(
@@ -449,6 +454,7 @@ async fn rotate_if_needed_inner(
     iface: &str,
     cooldown: Duration,
     state_path: Option<&std::path::Path>,
+    reason: Option<&str>,
 ) -> Result<RotateOutcome> {
     // GH#381: use the operator-supplied state path when present, falling
     // back to the documented default. Pre-fix, the default was
@@ -472,7 +478,10 @@ async fn rotate_if_needed_inner(
         // already uses (the previous trait method called it the same
         // way before issue #245's fix). The inner acquire is reentrant
         // and the lock we hold here makes it a no-op.
-        crate::commands::rotate::run(Some(iface), true, false, false, Some(sp), None)
+        //
+        // Issue #294: pass the sanitized reason so each rotated iface's
+        // state record records the same audit string we just logged.
+        crate::commands::rotate::run(Some(iface), true, false, false, reason, Some(sp), None)
     })
     .await
 }

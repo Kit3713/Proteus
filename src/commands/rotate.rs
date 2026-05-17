@@ -107,16 +107,104 @@ struct RotateSummaryEnvelope {
     active_persona: Option<String>,
 }
 
+/// Issue #294: maximum byte length of an operator-supplied `--reason`
+/// string. Anything longer is truncated at byte 253 + `"..."` so the
+/// rotated state.json record and the rotate-time log line are bounded.
+/// The cap is in bytes (not chars) so a hostile multi-byte input can't
+/// silently bloat state.json — and we truncate on a char boundary so
+/// the stored form is still valid UTF-8.
+pub(crate) const REASON_MAX_BYTES: usize = 256;
+
+/// Issue #294: normalise an operator-supplied `--reason` string into the
+/// shape we persist + log:
+///
+/// 1. Strip control bytes (C0 + DEL + C1 + bidi overrides) so a hostile
+///    paste can't inject ANSI escapes or NUL into journald output. This
+///    is the same display-safety class Stream 9 already enforces at the
+///    print sites; doing it once at intake means every downstream caller
+///    (`state.json` reader, `tracing::info!` log, future JSON shape) is
+///    safe by construction.
+/// 2. Truncate to [`REASON_MAX_BYTES`] bytes, on a char boundary, with
+///    a trailing `"..."` marker so the operator sees the clamp landed.
+///
+/// Empty inputs (`Some("")` or all-control bytes) collapse to `None` so
+/// the persisted state stays compact (no `reason: ""` entries) and the
+/// log line is suppressed.
+pub(crate) fn sanitize_reason(raw: &str) -> Option<String> {
+    // Strip the same class of bytes `display::display_safe` escapes
+    // (C0 + DEL + C1 + bidi overrides), then trim outer whitespace so
+    // `--reason "  foo  "` lands as `"foo"`. Backslashes pass through:
+    // unlike a *display* path that has to round-trip unambiguously,
+    // the stored audit string is plain text and a literal `\` carries
+    // no terminal hazard.
+    let mut cleaned: String = raw
+        .trim()
+        .chars()
+        .filter(|c| {
+            let cp = *c as u32;
+            if *c == ' ' {
+                return true;
+            }
+            if cp < 0x20 || cp == 0x7f {
+                return false;
+            }
+            if (0x80..=0x9f).contains(&cp) {
+                return false;
+            }
+            if matches!(cp, 0x200E | 0x200F | 0x202A..=0x202E | 0x2066..=0x2069) {
+                return false;
+            }
+            true
+        })
+        .collect();
+    // Inner whitespace from stripped control bytes (e.g. `foo\n\tbar`
+    // after the filter is `foobar`) is intentional, but the outer trim
+    // above doesn't catch padding that's only revealed after stripping.
+    // A second trim handles `--reason " \x00 "` → empty.
+    let after_strip = cleaned.trim();
+    if after_strip.is_empty() {
+        return None;
+    }
+    if after_strip.len() != cleaned.len() {
+        cleaned = after_strip.to_string();
+    }
+    if cleaned.len() > REASON_MAX_BYTES {
+        // Truncate to 253 bytes on a char boundary, then append "..."
+        // so the total is <= 256 bytes. `floor_char_boundary` would be
+        // ideal but is unstable; walk down until we land on one.
+        let mut cut = 253;
+        while cut > 0 && !cleaned.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        cleaned.truncate(cut);
+        cleaned.push_str("...");
+        tracing::warn!(
+            original_bytes = raw.len(),
+            truncated_bytes = cleaned.len(),
+            "rotate --reason: input exceeded {REASON_MAX_BYTES} bytes; truncated"
+        );
+    }
+    Some(cleaned)
+}
+
 pub fn run(
     iface_filter: Option<&str>,
     yes: bool,
     explain: bool,
     json: bool,
+    reason: Option<&str>,
     state_path: Option<&Path>,
     config_path: Option<&Path>,
 ) -> Result<u8> {
     if explain {
         tracing::debug!("rotate --explain enabled (verbose candidate trace)");
+    }
+    // Issue #294: sanitize + log the audit string up front so the log
+    // line lands even if the rotation later skips or fails. The
+    // persisted form goes onto each rotated iface's state record below.
+    let reason_owned = reason.and_then(sanitize_reason);
+    if let Some(r) = reason_owned.as_deref() {
+        tracing::info!(reason = %display_safe(r), "rotate: operator-supplied reason");
     }
     if let Err(code) = super::require_yes(
         yes,
@@ -178,6 +266,7 @@ pub fn run(
             &avoid,
             &probe,
             explain,
+            reason_owned.as_deref(),
             &mut state,
             &state_path,
         )
@@ -222,6 +311,12 @@ pub fn run(
 /// Async core split out for testability. Drives the rotation loop
 /// against any [`NetworkBackend`] — production gives it the
 /// auto-selected one, unit tests give it a `MockBackend`.
+///
+/// Issue #294: `reason` is the sanitized audit string (already routed
+/// through [`sanitize_reason`]) and is stamped onto every rotated
+/// iface's state record. Passing `None` keeps the pre-#294 behaviour —
+/// rotations made without `--reason` leave the state record's
+/// `reason` field untouched.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_with_backend<P: Probe + ?Sized>(
     backend: &dyn NetworkBackend,
@@ -230,6 +325,7 @@ pub(crate) async fn run_with_backend<P: Probe + ?Sized>(
     avoid: &HashSet<Mac>,
     probe: &P,
     explain: bool,
+    reason: Option<&str>,
     state: &mut State,
     state_path: &Path,
 ) -> Result<RotateReport> {
@@ -269,7 +365,11 @@ pub(crate) async fn run_with_backend<P: Probe + ?Sized>(
             });
             continue;
         }
-        match rotate_one(backend, &dev, config, avoid, probe, state, state_path).await {
+        match rotate_one(
+            backend, &dev, config, avoid, probe, reason, state, state_path,
+        )
+        .await
+        {
             Ok((entry, attempts, chosen_token, oui_fallbacks)) => {
                 if explain {
                     report.explain.push(ExplainEntry {
@@ -293,12 +393,14 @@ pub(crate) async fn run_with_backend<P: Probe + ?Sized>(
     Ok(report)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn rotate_one<P: Probe + ?Sized>(
     backend: &dyn NetworkBackend,
     dev: &BackendDevice,
     config: &Config,
     avoid: &HashSet<Mac>,
     probe: &P,
+    reason: Option<&str>,
     state: &mut State,
     state_path: &Path,
 ) -> Result<(RotatedEntry, Vec<CandidateAttempt>, String, usize)> {
@@ -385,6 +487,16 @@ async fn rotate_one<P: Probe + ?Sized>(
     rec.current_mac = Some(new_mac.to_string());
     rec.last_rotated = Some(now);
     rec.rotation_count += 1;
+    // Issue #294: stamp the operator-supplied audit string alongside
+    // `last_rotated`. A `None` reason leaves the previous value
+    // untouched — automated callers (apply / events daemon) that don't
+    // pass `--reason` should not silently wipe an operator-supplied
+    // `--reason` from the most-recent prior rotation. The audit-string
+    // shape is per-rotation by intent, so the next rotate that *does*
+    // pass `--reason` overwrites the prior value as expected.
+    if let Some(r) = reason {
+        rec.reason = Some(r.to_string());
+    }
 
     let entry = RotatedEntry {
         iface: dev.iface.clone(),
@@ -683,12 +795,14 @@ fn print_report(report: &RotateReport, explain: bool) {
 /// - `skipped <iface>: cooldown <remaining_secs>s`
 /// - `skipped <iface>: no factory MAC captured`
 /// - `unavailable <iface>: backend reports unavailable`
+#[allow(clippy::too_many_arguments)]
 pub fn run_if_needed(
     iface: Option<&str>,
     cooldown_secs: u64,
     ssid: Option<&str>,
     yes: bool,
     explain: bool,
+    reason: Option<&str>,
     state_path: Option<&Path>,
     config_path: Option<&Path>,
 ) -> Result<u8> {
@@ -721,6 +835,19 @@ pub fn run_if_needed(
     }
     let config_path = super::config_path(config_path);
     let config = Config::default_or_loaded(&config_path).unwrap_or_default();
+
+    // Issue #294: sanitize + echo the operator-supplied reason up
+    // front so the log line lands even if the rotation later trips a
+    // per-SSID skip or a cooldown skip below. The persisted form is
+    // threaded through the backend trait into the inner rotate so
+    // each rotated iface's state record carries the same value.
+    let reason_owned = reason.and_then(sanitize_reason);
+    if let Some(r) = reason_owned.as_deref() {
+        tracing::info!(
+            reason = %display_safe(r),
+            "rotate-if-needed: operator-supplied reason"
+        );
+    }
 
     // Roadmap Milestone 3: when the caller (typically the NM dispatcher)
     // tells us which SSID just came up, fold the per-SSID policy into
@@ -802,7 +929,7 @@ pub fn run_if_needed(
             ));
         }
         let r = backend
-            .rotate_if_needed(&target, cooldown, state_path)
+            .rotate_if_needed(&target, cooldown, state_path, reason_owned.as_deref())
             .await?;
         Ok((target, r))
     });
@@ -997,6 +1124,7 @@ mod tests {
                 &avoid,
                 &probe,
                 false,
+                None,
                 &mut state,
                 &state_path,
             )
@@ -1052,6 +1180,7 @@ mod tests {
                 &avoid,
                 &probe,
                 false,
+                None,
                 &mut state,
                 &state_path,
             )
@@ -1092,6 +1221,7 @@ mod tests {
                 &avoid,
                 &probe,
                 false,
+                None,
                 &mut state,
                 &state_path,
             )
@@ -1131,6 +1261,7 @@ mod tests {
                 &avoid,
                 &probe,
                 false,
+                None,
                 &mut state,
                 &state_path,
             )
@@ -1448,7 +1579,7 @@ mod tests {
         );
         rt().block_on(async {
             let outcome = backend
-                .rotate_if_needed("wlan0", std::time::Duration::from_secs(60), None)
+                .rotate_if_needed("wlan0", std::time::Duration::from_secs(60), None, None)
                 .await
                 .unwrap();
             assert_eq!(
@@ -1472,7 +1603,7 @@ mod tests {
         );
         rt().block_on(async {
             let outcome = backend
-                .rotate_if_needed("wlan0", std::time::Duration::from_secs(60), None)
+                .rotate_if_needed("wlan0", std::time::Duration::from_secs(60), None, None)
                 .await
                 .unwrap();
             assert!(matches!(
@@ -1491,7 +1622,7 @@ mod tests {
         backend.set_rotate_outcome("wlan0", crate::backend::RotateOutcome::NoFactoryMac);
         rt().block_on(async {
             let outcome = backend
-                .rotate_if_needed("wlan0", std::time::Duration::from_secs(60), None)
+                .rotate_if_needed("wlan0", std::time::Duration::from_secs(60), None, None)
                 .await
                 .unwrap();
             assert_eq!(outcome, crate::backend::RotateOutcome::NoFactoryMac);
@@ -1508,7 +1639,7 @@ mod tests {
         backend.set_rotate_outcome("wlan0", crate::backend::RotateOutcome::BackendUnavailable);
         rt().block_on(async {
             let outcome = backend
-                .rotate_if_needed("wlan0", std::time::Duration::from_secs(60), None)
+                .rotate_if_needed("wlan0", std::time::Duration::from_secs(60), None, None)
                 .await
                 .unwrap();
             assert_eq!(outcome, crate::backend::RotateOutcome::BackendUnavailable);
@@ -1552,6 +1683,7 @@ mod tests {
                 &avoid,
                 &probe,
                 false,
+                None,
                 &mut state,
                 &state_path,
             )
@@ -1582,15 +1714,204 @@ mod tests {
         );
     }
 
+    // ===== Issue #294 — `--reason` audit string =====
+
+    /// Round-trip a state.json carrying a `reason` on a per-iface
+    /// record. Old state files without the field must still load
+    /// (covered by the existing `old_state_files_load` test in
+    /// `state.rs`); this one pins the *forward* shape — once written,
+    /// the value survives serialize → deserialize.
+    #[test]
+    fn reason_round_trips_through_state_json() {
+        let mut s = State::default();
+        s.managed.interfaces.insert(
+            "wlan0".into(),
+            crate::state::InterfaceRecord {
+                current_mac: Some("aa:bb:cc:dd:ee:ff".into()),
+                last_rotated: Some("2026-05-17T00:00:00Z".into()),
+                rotation_count: 1,
+                reason: Some("manual: lab test".into()),
+                ..Default::default()
+            },
+        );
+        let bytes = serde_json::to_vec(&s).expect("serialize");
+        let back: State = serde_json::from_slice(&bytes).expect("deserialize");
+        assert_eq!(
+            back.managed
+                .interfaces
+                .get("wlan0")
+                .and_then(|r| r.reason.as_deref()),
+            Some("manual: lab test"),
+            "reason must survive state.json round-trip"
+        );
+    }
+
+    /// Sanitizer caps at 256 bytes — anything longer truncates to 253
+    /// bytes of input + `"..."` so total <= 256.
+    #[test]
+    fn sanitize_reason_truncates_at_256_bytes() {
+        let raw = "a".repeat(300);
+        let out = sanitize_reason(&raw).expect("non-empty input");
+        assert!(
+            out.len() <= REASON_MAX_BYTES,
+            "truncated reason must be <= {REASON_MAX_BYTES} bytes, got {} bytes: {out:?}",
+            out.len()
+        );
+        assert!(
+            out.ends_with("..."),
+            "truncation marker must end the string, got {out:?}"
+        );
+        assert_eq!(out.len(), 256);
+    }
+
+    #[test]
+    fn sanitize_reason_passes_through_at_threshold() {
+        let raw = "a".repeat(REASON_MAX_BYTES);
+        let out = sanitize_reason(&raw).expect("at-threshold input");
+        assert_eq!(out.len(), REASON_MAX_BYTES);
+        assert!(!out.ends_with("..."), "at-threshold must NOT truncate");
+    }
+
+    #[test]
+    fn sanitize_reason_truncation_respects_char_boundaries() {
+        let mut raw = String::new();
+        raw.push_str(&"a".repeat(250));
+        raw.push('🎉');
+        raw.push_str(&"b".repeat(100));
+        assert!(raw.len() > REASON_MAX_BYTES);
+        let out = sanitize_reason(&raw).expect("non-empty");
+        assert!(out.is_char_boundary(out.len()));
+        assert!(out.ends_with("..."));
+    }
+
+    #[test]
+    fn sanitize_reason_strips_control_bytes() {
+        let cases = [
+            ("foo\0bar", "foobar"),
+            ("foo\x1bbar", "foobar"),
+            ("foo\u{9b}bar", "foobar"),
+            ("foo\x7fbar", "foobar"),
+            ("foo\nbar", "foobar"),
+            ("foo\rbar", "foobar"),
+            ("foo\u{202e}bar", "foobar"),
+            ("foo\u{200e}bar", "foobar"),
+            ("foo bar", "foo bar"),
+            ("foo\tbar", "foobar"),
+            ("hello world!", "hello world!"),
+        ];
+        for (raw, want) in cases {
+            let got = sanitize_reason(raw).unwrap_or_default();
+            assert_eq!(
+                got, want,
+                "sanitize_reason({raw:?}) -> {got:?}, want {want:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn sanitize_reason_collapses_empty_to_none() {
+        assert!(sanitize_reason("").is_none());
+        assert!(sanitize_reason("   ").is_none());
+        assert!(sanitize_reason("\x00\x1b\x7f").is_none());
+        assert!(sanitize_reason("  \x00  ").is_none());
+    }
+
+    /// End-to-end: `run_with_backend` stamps the sanitized `reason`
+    /// into every rotated iface's state record.
+    #[test]
+    fn run_with_backend_stamps_reason_into_state() {
+        let backend = MockBackend::new();
+        let device = dev("wlan0");
+        let cref = device.connections[0].clone();
+        backend.insert_device(device, Some("aa:bb:cc:dd:ee:ff".into()));
+        backend.insert_connection(&cref, Some("Home Wi-Fi"), Some("uuid-r-1"));
+
+        let dir = crate::testing::TempRoot::new("rotate-reason");
+        let state_path = dir.path.join("state.json");
+        let mut state = State::default();
+        state
+            .original_macs
+            .insert("wlan0".into(), "aa:bb:cc:dd:ee:ff".into());
+
+        let cfg = cfg();
+        let avoid: HashSet<Mac> = HashSet::new();
+        let probe = MockProbe::responds(false);
+        let report = rt().block_on(async {
+            run_with_backend(
+                &backend,
+                Some("wlan0"),
+                &cfg,
+                &avoid,
+                &probe,
+                false,
+                Some("dispatcher: nm connection-up"),
+                &mut state,
+                &state_path,
+            )
+            .await
+            .unwrap()
+        });
+        assert_eq!(report.rotated.len(), 1);
+        let rec = state
+            .managed
+            .interfaces
+            .get("wlan0")
+            .expect("iface record populated");
+        assert_eq!(
+            rec.reason.as_deref(),
+            Some("dispatcher: nm connection-up"),
+            "the sanitized reason must land on the per-iface state record",
+        );
+    }
+
+    /// A `reason = None` MUST NOT clear a previously-stamped reason.
+    #[test]
+    fn run_with_backend_none_reason_preserves_prior_reason() {
+        let backend = MockBackend::new();
+        let device = dev("wlan0");
+        backend.insert_device(device, Some("aa:bb:cc:dd:ee:ff".into()));
+        let dir = crate::testing::TempRoot::new("rotate-reason-pres");
+        let state_path = dir.path.join("state.json");
+        let mut state = State::default();
+        state
+            .original_macs
+            .insert("wlan0".into(), "aa:bb:cc:dd:ee:ff".into());
+        state.managed.interfaces.insert(
+            "wlan0".into(),
+            crate::state::InterfaceRecord {
+                reason: Some("prior: manual lab test".into()),
+                ..Default::default()
+            },
+        );
+
+        let cfg = cfg();
+        let avoid: HashSet<Mac> = HashSet::new();
+        let probe = MockProbe::responds(false);
+        let _ = rt().block_on(async {
+            run_with_backend(
+                &backend,
+                Some("wlan0"),
+                &cfg,
+                &avoid,
+                &probe,
+                false,
+                None,
+                &mut state,
+                &state_path,
+            )
+            .await
+            .unwrap()
+        });
+        let rec = state.managed.interfaces.get("wlan0").expect("iface record");
+        assert_eq!(
+            rec.reason.as_deref(),
+            Some("prior: manual lab test"),
+            "a None reason must NOT wipe a prior operator-supplied audit string",
+        );
+    }
+
     // === Issue #395 — `proteus rotate --json` summary envelope ===
 
-    /// Drive `run_with_backend` against the mock backend and confirm the
-    /// JSON summary built from the resulting `RotateReport` parses back
-    /// as a `{"results": [ ... ]}` envelope with `iface`, `old_mac`,
-    /// `new_mac`, and `outcome = "rotated"` on the successful entry.
-    /// Mirrors the headline acceptance from the roadmap: dispatcher
-    /// callers can branch on `outcome` instead of regex-matching the
-    /// human prose.
     #[test]
     fn rotate_json_summary_envelope_carries_expected_fields() {
         let backend = MockBackend::new();
@@ -1617,6 +1938,7 @@ mod tests {
                 &avoid,
                 &probe,
                 false,
+                None,
                 &mut state,
                 &state_path,
             )
@@ -1639,12 +1961,11 @@ mod tests {
         assert_eq!(
             entry.get("outcome").and_then(|v| v.as_str()),
             Some("rotated"),
-            "outcome must be a stable categorical token, not human prose"
+            "outcome must be a stable categorical token"
         );
         assert_eq!(
             entry.get("old_mac").and_then(|v| v.as_str()),
             Some("aa:bb:cc:dd:ee:ff"),
-            "old_mac mirrors the device's pre-rotate hw address"
         );
         let new_mac = entry
             .get("new_mac")
@@ -1652,19 +1973,13 @@ mod tests {
             .expect("new_mac present on a successful rotate");
         let _: Mac = new_mac.parse().expect("new_mac parses");
         assert_ne!(new_mac, "aa:bb:cc:dd:ee:ff");
-        assert!(
-            entry.get("explain").is_none(),
-            "explain must be absent without --explain; got {:?}",
-            entry.get("explain")
-        );
+        assert!(entry.get("explain").is_none());
         assert_eq!(
             entry.get("connection").and_then(|v| v.as_str()),
             Some("Home Wi-Fi"),
         );
     }
 
-    /// Pinned iface lands in the envelope as `outcome = "skipped"` with
-    /// the operator-readable `reason` populated. No `new_mac` on a skip.
     #[test]
     fn rotate_json_summary_envelope_skipped_entry_carries_reason() {
         let backend = MockBackend::new();
@@ -1693,6 +2008,7 @@ mod tests {
                 &avoid,
                 &probe,
                 false,
+                None,
                 &mut state,
                 &state_path,
             )
@@ -1717,19 +2033,10 @@ mod tests {
                 .get("reason")
                 .and_then(|v| v.as_str())
                 .is_some_and(|s| s.contains("pinned")),
-            "skip entry must carry the human reason; got {:?}",
-            entry.get("reason")
         );
-        assert!(
-            entry.get("new_mac").is_none(),
-            "no new_mac on a skip; got {:?}",
-            entry.get("new_mac")
-        );
+        assert!(entry.get("new_mac").is_none());
     }
 
-    /// `--explain` mode attaches the candidate trace to the matching
-    /// per-iface summary, so a dispatcher can correlate the chosen MAC
-    /// with the rejection reasons without a second walk.
     #[test]
     fn rotate_json_summary_envelope_includes_explain_when_requested() {
         let backend = MockBackend::new();
@@ -1756,6 +2063,7 @@ mod tests {
                 &avoid,
                 &probe,
                 true,
+                None,
                 &mut state,
                 &state_path,
             )
@@ -1770,17 +2078,11 @@ mod tests {
             .get("explain")
             .and_then(|v| v.as_object())
             .expect("explain object attached under --explain");
-        assert!(
-            explain.contains_key("chosen_token"),
-            "explain must surface chosen_token"
-        );
+        assert!(explain.contains_key("chosen_token"));
         let candidates = explain
             .get("candidates")
             .and_then(|v| v.as_array())
             .expect("candidates array");
-        assert!(
-            !candidates.is_empty(),
-            "explain must record at least one candidate"
-        );
+        assert!(!candidates.is_empty());
     }
 }

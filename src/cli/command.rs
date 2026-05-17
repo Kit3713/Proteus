@@ -105,11 +105,17 @@ pub enum Command {
         /// Emit a `{"results": [ ... ]}` JSON envelope summarising the
         /// rotation (issue #395). One entry per interface touched, each
         /// carrying `iface`, `old_mac`, `new_mac`, `outcome`, and
-        /// (under `--explain`) the candidate trace. Mirrors the
-        /// `--json` shape on other readers so dispatchers can stop
-        /// screen-scraping the human-readable lines.
+        /// (under `--explain`) the candidate trace.
         #[arg(long)]
         json: bool,
+        /// Issue #294: optional free-form audit string stamped into the
+        /// per-iface state record alongside `last_rotated` and echoed
+        /// into the rotate-time log so journalctl readers can correlate
+        /// a rotation with the trigger. Bounded to 256 bytes; control
+        /// bytes are stripped before logging and the input is truncated
+        /// rather than rejected on overflow.
+        #[arg(long)]
+        reason: Option<String>,
     },
     /// Rotate the MAC iff the cooldown window has elapsed.
     ///
@@ -150,6 +156,12 @@ pub enum Command {
         /// `--cooldown` to surface the actual effective budget.
         #[arg(long)]
         explain: bool,
+        /// Issue #294: optional audit string. See `proteus rotate --help`
+        /// for the contract — sanitized, capped at 256 bytes, stamped
+        /// into per-iface state and logged at rotate time so dispatcher
+        /// runs surface "why" in journalctl.
+        #[arg(long)]
+        reason: Option<String>,
     },
     /// Pin an interface or NM connection to a specific MAC.
     ///

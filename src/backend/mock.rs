@@ -416,6 +416,7 @@ impl NetworkBackend for MockBackend {
         iface: &'a str,
         cooldown: Duration,
         state_path: Option<&'a std::path::Path>,
+        _reason: Option<&'a str>,
     ) -> BoxFuture<'a, Result<RotateOutcome>> {
         let mut inner = self.inner.lock().unwrap();
         inner.calls.push(MockCall::RotateIfNeeded {
@@ -662,7 +663,7 @@ mod tests {
         backend.set_rotate_outcome("wlan0", RotateOutcome::Rotated { new_mac: mac });
         rt().block_on(async {
             let outcome = backend
-                .rotate_if_needed("wlan0", Duration::from_secs(60), None)
+                .rotate_if_needed("wlan0", Duration::from_secs(60), None, None)
                 .await
                 .unwrap();
             assert_eq!(outcome, RotateOutcome::Rotated { new_mac: mac });
@@ -674,7 +675,7 @@ mod tests {
         let backend = MockBackend::new();
         rt().block_on(async {
             let outcome = backend
-                .rotate_if_needed("eth9", Duration::from_secs(0), None)
+                .rotate_if_needed("eth9", Duration::from_secs(0), None, None)
                 .await
                 .unwrap();
             assert_eq!(outcome, RotateOutcome::BackendUnavailable);
@@ -934,7 +935,7 @@ mod tests {
         rt().block_on(async {
             // First call: rotates and persists `last_rotated`.
             let first = backend
-                .rotate_if_needed("wlan0", Duration::from_secs(3600), None)
+                .rotate_if_needed("wlan0", Duration::from_secs(3600), None, None)
                 .await
                 .unwrap();
             assert!(
@@ -963,7 +964,7 @@ mod tests {
 
             // Second call within the cooldown: must skip on cooldown.
             let second = backend
-                .rotate_if_needed("wlan0", Duration::from_secs(3600), None)
+                .rotate_if_needed("wlan0", Duration::from_secs(3600), None, None)
                 .await
                 .unwrap();
             assert!(
@@ -1044,7 +1045,7 @@ mod tests {
         }
         let outcome = rt().block_on(async {
             backend
-                .rotate_if_needed("wlan0", Duration::from_secs(3600), None)
+                .rotate_if_needed("wlan0", Duration::from_secs(3600), None, None)
                 .await
                 .unwrap()
         });
@@ -1093,7 +1094,7 @@ mod tests {
         rt().block_on(async {
             for _ in 0..3 {
                 let outcome = backend
-                    .rotate_if_needed("wlan0", Duration::from_secs(3600), None)
+                    .rotate_if_needed("wlan0", Duration::from_secs(3600), None, None)
                     .await
                     .unwrap();
                 assert!(

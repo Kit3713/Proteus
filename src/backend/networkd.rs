@@ -103,6 +103,7 @@ impl NetworkBackend for NetworkdBackend {
         _iface: &'a str,
         _cooldown: Duration,
         _state_path: Option<&'a std::path::Path>,
+        _reason: Option<&'a str>,
     ) -> BoxFuture<'a, Result<RotateOutcome>> {
         Box::pin(async { Ok(RotateOutcome::BackendUnavailable) })
     }
@@ -233,7 +234,7 @@ mod tests {
         let backend = NetworkdBackend::new();
         rt.block_on(async {
             let outcome = backend
-                .rotate_if_needed("wlan0", Duration::from_secs(60), None)
+                .rotate_if_needed("wlan0", Duration::from_secs(60), None, None)
                 .await
                 .unwrap();
             assert_eq!(outcome, RotateOutcome::BackendUnavailable);

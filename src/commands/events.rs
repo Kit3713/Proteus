@@ -245,6 +245,13 @@ async fn run_rotate_for_trigger(
         &avoid,
         &probe,
         false,
+        // Issue #294: events-daemon rotations don't carry an operator
+        // audit string today — the trigger surface (`RotationTrigger`)
+        // identifies *what* fired but not a human reason. A follow-up
+        // could map each trigger kind to a synthesized reason like
+        // `"events: link-flap"`; for now leave the field untouched so
+        // a prior manual `--reason` from the operator survives.
+        None,
         &mut state,
         state_path,
     )
