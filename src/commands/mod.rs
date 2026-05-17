@@ -38,6 +38,7 @@ pub mod stub;
 pub mod timer;
 pub mod uninstall;
 pub mod unpin;
+pub mod version;
 pub mod watch;
 pub mod wiki_cmd;
 
