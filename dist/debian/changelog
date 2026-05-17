@@ -1,3 +1,19 @@
+proteus (1.0.0-1) unstable; urgency=medium
+
+  * v1.0.0 — first stable, non-beta release. 18-subcommand CLI ergonomics
+    wave: version/about, logs, state info, backup/restore, pin list,
+    unpin --all/--scope, rotate --json / --reason, apply/revert --json,
+    config show --annotate, config explain, persona search/delete,
+    persona random --use, events list-sources/status/trigger, wiki list.
+  * Hardening: V11 OUI catalogue extension (Espressif + Realtek);
+    S3 state-lock mode(0o600) regression test pinned.
+  * No breaking changes vs 0.4.3-beta. Semver commitment: the CLI surface,
+    on-disk state schema, config schema, exit codes, and --yes gate
+    semantics are now stable. Breaking changes will bump the major
+    version (2.0.0+).
+
+ -- Kit3713 <noreply@example.com>  Sun, 17 May 2026 17:09:47 -0500
+
 proteus (0.4.3~beta-1) unstable; urgency=medium
 
   * v0.4.3-beta — wave-2 hardening pass in the v0.4 cycle. Closes every

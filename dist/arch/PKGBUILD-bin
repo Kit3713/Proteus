@@ -9,7 +9,7 @@
 
 pkgname=proteus-bin
 _pkgname=proteus
-pkgver=0.1.0
+pkgver=1.0.0
 pkgrel=1
 pkgdesc="Erase the network identifiers your Linux laptop hands out on every join (prebuilt)"
 arch=('x86_64' 'aarch64')

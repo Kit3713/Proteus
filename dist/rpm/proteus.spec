@@ -1,5 +1,5 @@
 Name:           proteus
-Version:        0.4.3~beta
+Version:        1.0.0
 Release:        1%{?dist}
 Summary:        Erase network-layer identifiers your Linux laptop hands out on every join
 
@@ -126,6 +126,17 @@ install -dm700 %{buildroot}%{_sharedstatedir}/proteus
 %systemd_postun_with_restart proteus-rotate.timer proteus-check.timer proteus-boot.service proteus-resume.service proteus-events.service
 
 %changelog
+* Sun May 17 2026 Kit3713 <noreply@example.com> - 1.0.0-1
+- v1.0.0: first stable, non-beta release. 18-subcommand CLI ergonomics
+  wave (version/about, logs, state info, backup/restore, pin list,
+  unpin --all/--scope, rotate --json / --reason, apply/revert --json,
+  config show --annotate / explain, persona search/delete/random --use,
+  events list-sources/status/trigger, wiki list) plus two residual
+  hardening fixes (V11 OUI extension, S3 state-lock mode test). No
+  breaking changes vs v0.4.3-beta. Semver commitment: CLI surface,
+  state schema, config schema, exit codes, and --yes gate semantics
+  are now stable.
+
 * Tue May 12 2026 Kit3713 <noreply@example.com> - 0.4.3~beta-1
 - v0.4.3-beta: wave-2 hardening pass closes every reachable High and
   Medium roadmap ⏳ item across CLI safety, events daemon, NM backend,
