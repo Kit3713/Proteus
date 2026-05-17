@@ -116,7 +116,7 @@ _proteus_commands() {
 _proteus_json_only()      { _arguments $_proteus_global_opts '--json[Emit JSON]' }
 _proteus_yes_only()       { _arguments $_proteus_global_opts '--yes[Skip confirmation]' }
 _proteus_pin_arg()        { _arguments $_proteus_global_opts '--mac[Specific MAC]' '--yes[Skip confirmation]' '1:target:_proteus_pin_targets' }
-_proteus_unpin_arg()      { _arguments $_proteus_global_opts '1:target:_proteus_pin_targets' }
+_proteus_unpin_arg()      { _arguments $_proteus_global_opts '--all[Remove every pin]' '--scope[Restrict to scope]:type:(iface nm-connection)' '--yes[Skip confirmation]' '::target:_proteus_pin_targets' }
 _proteus_completions_arg(){ _arguments $_proteus_global_opts '1:shell:_proteus_shell_arg' }
 
 _proteus_status() {

@@ -149,7 +149,18 @@ pub(super) fn dispatch(cli: Cli) -> Result<u8> {
         Command::Pin { target, mac, yes } => {
             commands::pin::run(&target, mac.as_deref(), yes, cli.state.as_deref())
         }
-        Command::Unpin { target, yes } => commands::unpin::run(&target, yes, cli.state.as_deref()),
+        Command::Unpin {
+            target,
+            all,
+            scope,
+            yes,
+        } => commands::unpin::run(
+            target.as_deref(),
+            all,
+            scope.as_deref(),
+            yes,
+            cli.state.as_deref(),
+        ),
         Command::Diff { json } => {
             commands::diff::run(json, cli.state.as_deref(), cli.config.as_deref())
         }

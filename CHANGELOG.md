@@ -11,6 +11,15 @@ landed, what is in flight, and what is on the bench. See
 
 ## [Unreleased]
 
+### Added
+
+- **CLI: `unpin --all` / `--scope <type>`** (#392) — symmetric bulk-clear
+  for the pin registry. `--all` removes every pin; `--scope iface` and
+  `--scope nm-connection` restrict the bulk clear to one scope. Both
+  bulk modes require `--yes`; without it the command exits with
+  `CONFIRMATION_REQUIRED` (65). The single-target shape
+  (`proteus unpin <target> --yes`) is unchanged.
+
 ## [0.4.3-beta] - 2026-05-12
 
 Wave-2 v0.4.x hardening pass — closes every reachable High and Medium
