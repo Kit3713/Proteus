@@ -113,13 +113,13 @@ pub(super) fn dispatch(cli: Cli) -> Result<u8> {
         Command::Original { json } => commands::original::run(json, cli.state.as_deref()),
         Command::ShowConfig { json } => commands::show_config::run(json, cli.config.as_deref()),
         Command::ShowDefaults { json } => commands::show_defaults::run(json),
-        Command::Apply { yes } => {
-            commands::apply::run(yes, cli.state.as_deref(), cli.config.as_deref())
+        Command::Apply { yes, json } => {
+            commands::apply::run(yes, json, cli.state.as_deref(), cli.config.as_deref())
         }
         // Issue #386: thread the global `--state <path>` through revert
         // so the nested per-component reverts honour the operator's
         // override instead of all hardcoding the default state path.
-        Command::Revert { yes } => commands::revert::run(yes, cli.state.as_deref()),
+        Command::Revert { yes, json } => commands::revert::run(yes, json, cli.state.as_deref()),
         Command::Rotate {
             iface,
             yes,
@@ -444,6 +444,11 @@ fn apply_json_to_command(cmd: &mut Command) {
         | Command::Logs { json, .. }
         | Command::Resume { json, .. }
         | Command::Version { json }
+        // Issue #343: apply/revert grew a JSON per-component summary; the
+        // global `--format json` flag flips theirs too so wrappers stay
+        // consistent with the readers above.
+        | Command::Apply { json, .. }
+        | Command::Revert { json, .. }
         | Command::Config {
             action:
                 ConfigAction::Show { json }
@@ -520,14 +525,55 @@ mod tests {
     }
 
     /// Subcommands without a `--json` flag must not panic when the
-    /// helper is called against them. Mutating commands like Apply
-    /// are the canonical no-flag case.
+    /// helper is called against them. `Rotate` is a canonical
+    /// no-JSON-flag mutator (it prints to stdout regardless).
     #[test]
-    fn apply_json_to_mutating_command_is_a_noop() {
-        let mut cmd = Command::Apply { yes: true };
+    fn apply_json_to_mutating_command_without_json_is_a_noop() {
+        let mut cmd = Command::Rotate {
+            iface: None,
+            yes: true,
+            explain: false,
+        };
         apply_json_to_command(&mut cmd);
         match cmd {
-            Command::Apply { yes } => assert!(yes),
+            Command::Rotate { yes, explain, .. } => {
+                assert!(yes);
+                assert!(!explain);
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    /// Issue #343: `--format json` flips the per-subcommand `json` flag
+    /// for the new apply/revert summaries.
+    #[test]
+    fn apply_json_to_apply_command_sets_json_flag() {
+        let mut cmd = Command::Apply {
+            yes: true,
+            json: false,
+        };
+        apply_json_to_command(&mut cmd);
+        match cmd {
+            Command::Apply { yes, json } => {
+                assert!(yes);
+                assert!(json);
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn apply_json_to_revert_command_sets_json_flag() {
+        let mut cmd = Command::Revert {
+            yes: true,
+            json: false,
+        };
+        apply_json_to_command(&mut cmd);
+        match cmd {
+            Command::Revert { yes, json } => {
+                assert!(yes);
+                assert!(json);
+            }
             _ => unreachable!(),
         }
     }

@@ -22,6 +22,8 @@ use anyhow::{Context, Result};
 use crate::exit;
 use crate::state::State;
 
+use super::apply::{ComponentReport, Status, Summary, emit_summary};
+
 /// Drop-ins Proteus writes outside `/etc/proteus/`. Mirrors `wiki/uninstall.md`
 /// and the install script. `pub(crate)` so the dry-run preview iterates the
 /// same list as the real teardown (issue #265).
@@ -34,13 +36,21 @@ pub(crate) const EXTERNAL_DROPINS: &[&str] = &[
 const RESOLVED_DROPIN_DIR: &str = "/etc/systemd/resolved.conf.d";
 const RESOLVED_DROPIN_PREFIX: &str = "10-proteus-";
 
-/// `proteus revert [--yes]` entry point.
-pub fn run(yes: bool, state_path: Option<&Path>) -> Result<u8> {
+/// `proteus revert [--yes] [--json]` entry point.
+pub fn run(yes: bool, json: bool, state_path: Option<&Path>) -> Result<u8> {
     if let Err(code) = super::require_yes(yes, "revert is destructive", "proteus help revert") {
+        if json {
+            emit_summary(&Summary::with_error("revert", code, "missing --yes"))?;
+        }
         return Ok(code);
     }
     if let Err(e) = super::require_root() {
-        eprintln!("proteus: {e}");
+        let msg = format!("{e}");
+        if json {
+            emit_summary(&Summary::with_error("revert", exit::PERMISSION_ERROR, msg))?;
+        } else {
+            eprintln!("proteus: {msg}");
+        }
         return Ok(exit::PERMISSION_ERROR);
     }
     // Issue #126: hold the state lock while iterating through every revert
@@ -50,13 +60,24 @@ pub fn run(yes: bool, state_path: Option<&Path>) -> Result<u8> {
     // hardcoded `None`, which always pinned the system default.
     let _lock = match super::acquire_state_lock_or_print(state_path) {
         Ok(g) => g,
-        Err(code) => return Ok(code),
+        Err(code) => {
+            if json {
+                emit_summary(&Summary::with_error(
+                    "revert",
+                    code,
+                    "state lock unavailable",
+                ))?;
+            }
+            return Ok(code);
+        }
     };
 
     let mut warns: Vec<String> = Vec::new();
-    revert_best_effort(state_path, &mut warns);
+    let reports = revert_with_reports(state_path, &mut warns);
 
-    if warns.is_empty() {
+    if json {
+        emit_summary(&Summary::new("revert", reports, exit::SUCCESS))?;
+    } else if warns.is_empty() {
         println!("proteus revert: complete");
     } else {
         eprintln!("proteus revert: {} warning(s):", warns.len());
@@ -86,6 +107,18 @@ pub(crate) struct RevertChanged {
 /// consistent. Each step is independent: a failure pushes a warning and the
 /// next step still runs.
 ///
+/// Thin wrapper over [`revert_with_reports`] for callers that only care
+/// about the warning stream (uninstall, the human-output revert path).
+/// Per-component summary reporting (issue #343) lives in
+/// `revert_with_reports`.
+pub(crate) fn revert_best_effort(state_path: Option<&Path>, warns: &mut Vec<String>) {
+    let _ = revert_with_reports(state_path, warns);
+}
+
+/// Run every revert step and collect both warning lines and a typed
+/// per-component report. The shape of `ComponentReport` matches the
+/// apply orchestrator so wrappers can share a single deserialiser.
+///
 /// File-removal handles the on-disk drop-ins (sysctl/timesyncd/dispatcher,
 /// per-link resolved drop-ins, the proteus nft table). Per-NM-connection
 /// DBus state for IPv6 and DHCP is *not* covered by file removal — those
@@ -102,7 +135,11 @@ pub(crate) struct RevertChanged {
 /// silently pinned the default `/var/lib/proteus/state.json` — every
 /// wrapper or integration test that pointed `--state` at an isolated
 /// location got their state file untouched.
-pub(crate) fn revert_best_effort(state_path: Option<&Path>, warns: &mut Vec<String>) {
+pub(crate) fn revert_with_reports(
+    state_path: Option<&Path>,
+    warns: &mut Vec<String>,
+) -> Vec<ComponentReport> {
+    let mut reports: Vec<ComponentReport> = Vec::new();
     let mut changed = RevertChanged::default();
     // NCMD2.4: prune cached uuids that no longer exist in NM before any
     // per-feature revert runs. A recycled uuid otherwise causes the
@@ -113,51 +150,77 @@ pub(crate) fn revert_best_effort(state_path: Option<&Path>, warns: &mut Vec<Stri
     if let Err(e) = validate_cached_connection_uuids(state_path, warns) {
         warns.push(format!("uuid-validation: {e:#}"));
     }
-    if let Err(e) = super::hostname::revert(true, state_path) {
-        warns.push(format!("hostname: {e:#}"));
-    }
-    if let Err(e) = super::bluetooth_cmd::revert(true, state_path) {
-        warns.push(format!("bluetooth: {e:#}"));
-    }
-    if let Err(e) = super::ipv6::revert(true, state_path) {
-        warns.push(format!("ipv6: {e:#}"));
-    }
-    if let Err(e) = super::dhcp::revert(true, state_path) {
-        warns.push(format!("dhcp: {e:#}"));
-    }
+    reports.push(classify_revert(
+        "hostname",
+        super::hostname::revert(true, state_path),
+        warns,
+    ));
+    reports.push(classify_revert(
+        "bluetooth",
+        super::bluetooth_cmd::revert(true, state_path),
+        warns,
+    ));
+    reports.push(classify_revert(
+        "ipv6",
+        super::ipv6::revert(true, state_path),
+        warns,
+    ));
+    reports.push(classify_revert(
+        "dhcp",
+        super::dhcp::revert(true, state_path),
+        warns,
+    ));
     // Issue #298: enterprise-wifi was missing from the revert fan-out,
     // so `proteus revert` left `802-1x.anonymous-identity` on every
     // managed connection. Restore the cached originals here so the
     // 802.1X profile goes back to the pre-Proteus state alongside
     // every other feature.
-    if let Err(e) = super::enterprise_wifi::revert(true, state_path) {
-        warns.push(format!("enterprise-wifi: {e:#}"));
-    }
-    if let Err(e) = super::rf::revert(true, state_path) {
-        warns.push(format!("rf: {e:#}"));
-    }
+    reports.push(classify_revert(
+        "enterprise-wifi",
+        super::enterprise_wifi::revert(true, state_path),
+        warns,
+    ));
+    reports.push(classify_revert(
+        "rf",
+        super::rf::revert(true, state_path),
+        warns,
+    ));
+
+    let mut dropin_removals: Vec<String> = Vec::new();
+    let mut dropin_errors: Vec<String> = Vec::new();
     for p in EXTERNAL_DROPINS {
         let path = Path::new(p);
         let outcome = remove_file_opt(path);
-        if matches!(outcome, Ok(true)) {
-            // Track which kind of drop-in was actually removed so we can
-            // skip the matching reload when nothing changed.
-            if path.starts_with("/etc/sysctl.d/") {
-                changed.sysctl_dropin_removed = true;
-            } else if path.starts_with("/etc/systemd/timesyncd.conf.d/") {
-                changed.timesyncd_dropin_removed = true;
+        match &outcome {
+            Ok(true) => {
+                dropin_removals.push(path.display().to_string());
+                // Track which kind of drop-in was actually removed so we
+                // can skip the matching reload when nothing changed.
+                if path.starts_with("/etc/sysctl.d/") {
+                    changed.sysctl_dropin_removed = true;
+                } else if path.starts_with("/etc/systemd/timesyncd.conf.d/") {
+                    changed.timesyncd_dropin_removed = true;
+                }
             }
+            Ok(false) => {}
+            Err(e) => dropin_errors.push(format!("{}: {e}", path.display())),
         }
         note(path, outcome, warns);
     }
-    if remove_resolved_dropins(warns) {
+    let resolved_removed = remove_resolved_dropins(warns);
+    if resolved_removed {
         changed.resolved_dropin_removed = true;
+        dropin_removals.push("/etc/systemd/resolved.conf.d/10-proteus-*.conf".into());
     }
     // `nft delete table` non-zero usually means the table was already
     // absent (a no-op); record only the success case.
-    if run_quiet("nft", &["delete", "table", "inet", "proteus"]).is_ok() {
+    let nft_removed = run_quiet("nft", &["delete", "table", "inet", "proteus"]).is_ok();
+    if nft_removed {
         changed.nft_table_removed = true;
+        dropin_removals.push("nft table inet proteus".into());
     }
+    reports.push(summarise_dropins(&dropin_removals, &dropin_errors));
+
     if changed.sysctl_dropin_removed {
         let _ = run_quiet("sysctl", &["--system"]);
     }
@@ -175,6 +238,70 @@ pub(crate) fn revert_best_effort(state_path: Option<&Path>, warns: &mut Vec<Stri
         let mut args = vec!["restart"];
         args.extend(to_restart);
         let _ = run_quiet("systemctl", &args);
+    }
+    reports
+}
+
+/// Map a per-feature revert `Result<u8>` into a [`ComponentReport`] and
+/// accumulate a parallel warning line so the legacy stderr stream
+/// (used by `proteus uninstall`) stays unchanged. Mirrors the shape of
+/// `commands::apply::classify` so the two orchestrators emit
+/// byte-identical envelopes.
+fn classify_revert(
+    name: &'static str,
+    res: Result<u8>,
+    warns: &mut Vec<String>,
+) -> ComponentReport {
+    match res {
+        Ok(c) if c == exit::SUCCESS => ComponentReport {
+            name,
+            status: Status::Applied,
+            note: "reverted".into(),
+        },
+        Ok(c) => {
+            warns.push(format!("{name}: exited with code {c}"));
+            ComponentReport {
+                name,
+                status: Status::Failed,
+                note: format!("exited with code {c}"),
+            }
+        }
+        Err(e) => {
+            let msg = format!("{e:#}");
+            warns.push(format!("{name}: {msg}"));
+            ComponentReport {
+                name,
+                status: Status::Failed,
+                note: msg,
+            }
+        }
+    }
+}
+
+/// Roll the drop-in removals + nft table delete into a single
+/// `dropins` component so the JSON envelope mirrors `wiki/uninstall.md`
+/// (one bullet per cleanup area). An empty removal list maps to
+/// `Skipped` so re-running revert on an already-clean system doesn't
+/// inflate the applied count.
+fn summarise_dropins(removed: &[String], errors: &[String]) -> ComponentReport {
+    if !errors.is_empty() {
+        return ComponentReport {
+            name: "dropins",
+            status: Status::Failed,
+            note: errors.join("; "),
+        };
+    }
+    if removed.is_empty() {
+        return ComponentReport {
+            name: "dropins",
+            status: Status::Skipped,
+            note: "no proteus drop-ins on disk".into(),
+        };
+    }
+    ComponentReport {
+        name: "dropins",
+        status: Status::Applied,
+        note: format!("removed {}", removed.join(", ")),
     }
 }
 
@@ -570,5 +697,65 @@ mod tests {
         // Second call: gone, but no error — proves idempotency.
         assert!(!remove_file_opt(&path).unwrap());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ---- Issue #343: --json per-component summary ----------------------
+
+    #[test]
+    fn classify_revert_maps_success_to_applied() {
+        let mut warns: Vec<String> = Vec::new();
+        let r = classify_revert("hostname", Ok(exit::SUCCESS), &mut warns);
+        assert_eq!(r.name, "hostname");
+        assert_eq!(r.status, Status::Applied);
+        assert!(warns.is_empty());
+    }
+
+    #[test]
+    fn classify_revert_maps_nonzero_to_failed_and_warns() {
+        let mut warns: Vec<String> = Vec::new();
+        let r = classify_revert("dhcp", Ok(exit::GENERIC_ERROR), &mut warns);
+        assert_eq!(r.status, Status::Failed);
+        assert!(r.note.contains("exited with code"));
+        assert_eq!(warns.len(), 1);
+        assert!(warns[0].starts_with("dhcp:"));
+    }
+
+    #[test]
+    fn classify_revert_maps_err_to_failed_with_message() {
+        let mut warns: Vec<String> = Vec::new();
+        let r = classify_revert("ipv6", Err(anyhow::anyhow!("dbus down")), &mut warns);
+        assert_eq!(r.status, Status::Failed);
+        assert!(r.note.contains("dbus down"));
+        assert!(warns[0].contains("dbus down"));
+    }
+
+    #[test]
+    fn summarise_dropins_empty_is_skipped() {
+        let r = summarise_dropins(&[], &[]);
+        assert_eq!(r.name, "dropins");
+        assert_eq!(r.status, Status::Skipped);
+        assert!(r.note.contains("no proteus drop-ins"));
+    }
+
+    #[test]
+    fn summarise_dropins_with_removals_is_applied() {
+        let r = summarise_dropins(&["/etc/sysctl.d/95-proteus.conf".to_string()], &[]);
+        assert_eq!(r.status, Status::Applied);
+        assert!(r.note.contains("95-proteus.conf"));
+    }
+
+    #[test]
+    fn summarise_dropins_with_errors_is_failed() {
+        let r = summarise_dropins(&[], &["/etc/sysctl.d/95-proteus.conf: EPERM".to_string()]);
+        assert_eq!(r.status, Status::Failed);
+        assert!(r.note.contains("EPERM"));
+    }
+
+    #[test]
+    fn revert_run_without_yes_returns_confirmation_required() {
+        // The `--yes` gate fires before root / state-lock work, so this
+        // is safe to exercise as an unprivileged test.
+        let code = run(false, false, None).unwrap();
+        assert_eq!(code, exit::CONFIRMATION_REQUIRED);
     }
 }

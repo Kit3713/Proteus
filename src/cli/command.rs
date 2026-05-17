@@ -69,11 +69,24 @@ pub enum Command {
     Apply {
         #[arg(long)]
         yes: bool,
+        /// Issue #343: emit a single-line JSON summary
+        /// (`{ command, components: [...], exit_code }`) instead of the
+        /// human-readable per-component lines. CI / Ansible consumers
+        /// can grep `.exit_code` and inspect `.components[].status`
+        /// without parsing the rendered table.
+        #[arg(long)]
+        json: bool,
     },
     /// Revert Proteus changes to the cached originals.
     Revert {
         #[arg(long)]
         yes: bool,
+        /// Issue #343: emit a single-line JSON summary
+        /// (`{ command, components: [...], exit_code }`) instead of
+        /// the per-step removal lines + trailing warnings. Same
+        /// envelope as `apply --json`.
+        #[arg(long)]
+        json: bool,
     },
     /// Rotate MAC for one or all managed interfaces.
     #[command(alias = "r")]
