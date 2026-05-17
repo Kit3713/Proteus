@@ -33,6 +33,7 @@ pub mod show_config;
 pub mod show_defaults;
 pub mod ssid;
 pub mod stack;
+pub mod state_cmd;
 pub mod status;
 pub mod stub;
 pub mod timer;
