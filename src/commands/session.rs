@@ -888,6 +888,7 @@ mod tests {
             InterfaceRecord {
                 current_mac: Some("aa:bb:cc:dd:ee:ff".into()),
                 pinned: None,
+                pinned_at: None,
                 last_rotated: Some("2026-05-07T14:30:00Z".into()),
                 rotation_count: 5,
             },

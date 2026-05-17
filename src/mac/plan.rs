@@ -244,6 +244,7 @@ mod tests {
             crate::state::InterfaceRecord {
                 current_mac: Some("aa:bb:cc:dd:ee:ff".into()),
                 pinned: None,
+                pinned_at: None,
                 last_rotated: None,
                 rotation_count: 0,
             },
@@ -274,6 +275,7 @@ mod tests {
             crate::state::InterfaceRecord {
                 current_mac: Some("aa:bb:cc:dd:ee:ff".into()),
                 pinned: None,
+                pinned_at: None,
                 last_rotated: None,
                 rotation_count: 0,
             },

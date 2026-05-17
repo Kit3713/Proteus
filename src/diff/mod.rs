@@ -695,6 +695,7 @@ mod tests {
             InterfaceRecord {
                 current_mac: Some("11:22:33:44:55:66".to_string()),
                 pinned: Some("11:22:33:44:55:66".to_string()),
+                pinned_at: Some("2026-05-07T12:34:56Z".to_string()),
                 last_rotated: Some("2026-05-07T12:34:56Z".to_string()),
                 rotation_count: 1,
             },

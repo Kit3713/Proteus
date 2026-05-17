@@ -150,9 +150,24 @@ pub(super) fn dispatch(cli: Cli) -> Result<u8> {
             cli.state.as_deref(),
             cli.config.as_deref(),
         ),
-        Command::Pin { target, mac, yes } => {
-            commands::pin::run(&target, mac.as_deref(), yes, cli.state.as_deref())
-        }
+        Command::Pin {
+            action,
+            target,
+            mac,
+            yes,
+        } => match action {
+            Some(PinAction::List { json }) => commands::pin::run_list(json, cli.state.as_deref()),
+            None => match target {
+                Some(t) => commands::pin::run(&t, mac.as_deref(), yes, cli.state.as_deref()),
+                None => {
+                    eprintln!(
+                        "proteus: pin requires a <target> or the `list` subcommand; \
+                         see `proteus help pin`"
+                    );
+                    Ok(crate::exit::CONFIG_ERROR)
+                }
+            },
+        },
         Command::Unpin {
             target,
             all,
@@ -468,6 +483,12 @@ fn apply_json_to_command(cmd: &mut Command) {
         }
         | Command::Portal {
             action: PortalAction::Status { json } | PortalAction::List { json },
+        }
+        // Issue #364: `proteus pin list --json` participates in the
+        // global `--format json` knob like every other reader.
+        | Command::Pin {
+            action: Some(PinAction::List { json }),
+            ..
         }
         | Command::Timer {
             action: TimerAction::Status { json } | TimerAction::List { json },
