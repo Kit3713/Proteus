@@ -242,6 +242,8 @@ The shipped surface is `proteus rf status / apply / revert`. `apply` writes via 
 
 Rotation cadence is governed by `[mac] rotation_interval` for the scheduled timer. Event-driven rotation triggers (NM connection-up, link-flap, regulatory-domain change, captive-portal auth completion) live under `[events]` and are surfaced by the `proteus events run` daemon. Per-SSID overrides go through `[per_ssid."<ssid>"]` (see `proteus wiki per-ssid`).
 
+The running daemon publishes a status snapshot at `<state-dir>/events-status.json` (default `/var/lib/proteus/events-status.json`), refreshed once per second. `proteus events status [--json]` reads that file and prints per-source counters, per-handler counters, daemon uptime, and total triggers handled. The command exits with `SYSTEM_NOT_SUPPORTED` (70) when the snapshot is missing or stale beyond 10s — that's the wrapper-friendly "daemon not running" signal. The file is removed on a clean daemon shutdown so the staleness fallback only fires on a hard kill.
+
 Cross-ref `proteus wiki rotation`.
 
 ### `[timers]`

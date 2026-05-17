@@ -625,6 +625,17 @@ pub enum EventsAction {
         #[arg(long)]
         json: bool,
     },
+    /// Print live counters from a running events daemon.
+    ///
+    /// Reads the daemon's on-disk snapshot (written every second under
+    /// `<state-dir>/events-status.json`). Exits with
+    /// `SYSTEM_NOT_SUPPORTED` (70) when the snapshot is missing or
+    /// stale beyond a 10s threshold — that's the wrapper-friendly
+    /// "daemon not running" signal. Roadmap #393.
+    Status {
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]
