@@ -226,9 +226,15 @@ fn acquire_inner(path: &Path) -> Result<File, LockError> {
         .write(true)
         .create(true)
         .truncate(false)
-        // Issue #275: don't fall back to umask for the lock-file mode.
-        // 0o600 matches state.json (the file the lock guards) — no other
-        // user has any reason to read or take this flock.
+        // Issue #275 / Stream 9 S3: don't fall back to umask for the
+        // lock-file mode. 0o600 matches state.json (the file the lock
+        // guards) — no other user has any reason to read or take this
+        // flock. Paired with the post-open `fchmod` below so a
+        // pre-existing wider-mode file is also tightened; do NOT drop
+        // this `.mode()` call (the fchmod alone would land a fresh file
+        // at `0o666 & ~umask` for the window between open() and fchmod,
+        // i.e. the file is briefly world-readable on a permissive
+        // umask). Regression: `fresh_lock_file_lands_at_0600_regardless_of_umask`.
         .mode(STATE_FILE_MODE)
         // Security audit N-3: `O_NOFOLLOW` so a symlink planted at the
         // lock-file path errors out instead of being followed. The
@@ -488,6 +494,58 @@ mod tests {
         assert!(is_held_in_process(), "outer lock must still hold");
         drop(outer);
         assert!(!is_held_in_process());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Stream 9 S3: a *fresh* lock file (one that does not exist before
+    /// `acquire_for_state_path` is called) must land at exactly 0o600
+    /// regardless of the calling process's umask. This guards the
+    /// `OpenOptions::mode(0o600)` invocation in `acquire_inner` so a
+    /// future refactor that drops the `.mode()` call (and relies only on
+    /// the post-open `fchmod` tighten-existing-file path) is caught by
+    /// CI — even when the file is new and the fchmod tighten branch is
+    /// effectively a no-op. We deliberately set a *loose* umask
+    /// (`0o000`, i.e. "don't strip any permission bits") before the
+    /// acquire so a missing `mode(...)` would land the file at
+    /// `0o666 & ~umask = 0o666` and the assertion below would fail.
+    #[test]
+    fn fresh_lock_file_lands_at_0600_regardless_of_umask() {
+        let _serial = serial_guard();
+        let dir = std::env::temp_dir().join(format!(
+            "proteus-lock-fresh-mode-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        // Don't pre-create the inner state dir or the lock file —
+        // acquire_for_state_path must own both creations.
+        let state = dir.join("state.json");
+        let lock = lock_path_for(&state);
+        assert!(
+            !lock.exists(),
+            "test precondition: lock file must not exist"
+        );
+
+        // Set a permissive umask so a missing `OpenOptions::mode(0o600)`
+        // would surface as a 0o666 file (rather than being silently
+        // masked back to 0o600 by the inherited umask).
+        let prev_umask = unsafe { libc::umask(0o000) };
+
+        let g = acquire_for_state_path(&state).expect("acquire on fresh dir");
+
+        // Restore umask immediately so any other test running in
+        // parallel (we hold TEST_SERIAL, but rustc test main also
+        // creates fds) inherits the original mask.
+        unsafe {
+            libc::umask(prev_umask);
+        }
+
+        let lock_mode = std::fs::metadata(&lock).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            lock_mode, 0o600,
+            "fresh lock file must land at 0o600, got 0o{lock_mode:o}"
+        );
+        drop(g);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
