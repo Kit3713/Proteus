@@ -135,6 +135,18 @@ Note: `proteus help` is **not** the same as `proteus --help`. `proteus --help` i
 
 Exit: `0` success or no-arg listing · `1` no such page.
 
+### `logs`
+
+```sh
+proteus logs [-f|--follow] [-n|--lines N] [--since <TIME>] [--json]
+```
+
+Tail journald across every Proteus systemd unit (`proteus-boot.service`, `proteus-check.{service,timer}`, `proteus-events.service`, `proteus-resume.service`, `proteus-rotate.{service,timer}`) plus the NetworkManager dispatcher syslog tag (`proteus-dispatcher`). Composes a single `journalctl -u <unit> ... -t proteus-dispatcher` invocation so operators don't have to remember the unit list. Read-only.
+
+Flags: `-f`/`--follow` tail-follow rather than exit after the initial batch · `-n`/`--lines N` line count (default 50; bounded 1..=100000) · `--since <TIME>` passthrough to journalctl's `--since` (e.g. `1h ago`, `09:00`, `2025-05-17`) · `--json` emit structured journal entries (`journalctl --output=json`).
+Exit: `0` success · `1` generic · `70` no systemd or `journalctl` missing.
+Example: `proteus logs -f --since '1h ago'`
+
 ### `original`
 
 ```sh

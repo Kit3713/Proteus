@@ -256,6 +256,12 @@ pub(super) fn dispatch(cli: Cli) -> Result<u8> {
             TimerAction::Reset(a) => commands::timer::run_reset(&a.name, a.yes),
             TimerAction::Logs { name, lines } => commands::timer::run_logs(&name, lines),
         },
+        Command::Logs {
+            follow,
+            lines,
+            since,
+            json,
+        } => commands::logs::run(lines, follow, since.as_deref(), json),
         Command::Config { action } => dispatch_config(action, cli.config.as_deref()),
         Command::Portal { action } => match action {
             PortalAction::Status { json } => {
@@ -422,6 +428,7 @@ fn apply_json_to_command(cmd: &mut Command) {
             json,
             ..
         }
+        | Command::Logs { json, .. }
         | Command::Resume { json, .. }
         | Command::Config {
             action:

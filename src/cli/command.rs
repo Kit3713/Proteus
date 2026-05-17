@@ -244,6 +244,33 @@ pub enum Command {
         #[command(subcommand)]
         action: TimerAction,
     },
+    /// Tail journald across every Proteus systemd unit + the NM dispatcher.
+    ///
+    /// Composes `journalctl -u <unit> ... -t proteus-dispatcher` so a
+    /// single command surfaces every line Proteus emits (boot, rotate,
+    /// check, resume, events service, and the dispatcher script). Defaults
+    /// to printing the last 50 lines and exiting; pair with `--follow` for
+    /// a live tail.
+    Logs {
+        /// Tail-follow (don't exit after the initial batch).
+        #[arg(long, short = 'f')]
+        follow: bool,
+        /// How many lines to tail (1..=100000). Same bound as `timer logs`.
+        #[arg(
+            long,
+            short = 'n',
+            default_value_t = 50,
+            value_parser = clap::value_parser!(u32).range(1..=100_000),
+        )]
+        lines: u32,
+        /// Passthrough to `journalctl --since` (e.g. `1h ago`, `09:00`,
+        /// `2025-05-17`).
+        #[arg(long)]
+        since: Option<String>,
+        /// Emit structured journal entries (`journalctl --output=json`).
+        #[arg(long)]
+        json: bool,
+    },
     /// Manage Proteus configuration without hand-editing config.toml.
     Config {
         #[command(subcommand)]
