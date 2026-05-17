@@ -15,6 +15,7 @@ pub mod events;
 pub mod hostname;
 pub mod ipv6;
 pub mod kill;
+pub mod logs;
 pub mod nft;
 pub mod ntp;
 pub mod original;
