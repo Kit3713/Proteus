@@ -213,6 +213,10 @@ pub(super) fn dispatch(cli: Cli) -> Result<u8> {
             }
             StackAction::Revert { yes } => commands::stack::revert(yes, cli.state.as_deref()),
         },
+        // Roadmap #300: read-only state.json summary. Honors --state.
+        Command::State { action } => match action {
+            StateAction::Info { json } => commands::state_cmd::run_info(json, cli.state.as_deref()),
+        },
         Command::Dns { action } => match action {
             DnsAction::Status { json } => commands::dns::status(json, cli.config.as_deref()),
             DnsAction::Apply { yes } => commands::dns::apply(yes, cli.config.as_deref()),
@@ -430,6 +434,9 @@ fn apply_json_to_command(cmd: &mut Command) {
         }
         | Command::Ssid {
             action: SsidAction::List { json } | SsidAction::Show { json, .. },
+        }
+        | Command::State {
+            action: StateAction::Info { json },
         }
         | Command::Wiki {
             action: Some(WikiAction::Search { json, .. } | WikiAction::List { json }),

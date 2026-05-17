@@ -345,6 +345,21 @@ pub enum ConfigAction {
     },
 }
 
+/// `proteus state ...` — roadmap #300.
+///
+/// Read-only inspection of `state.json`. Kept as a subcommand enum so
+/// future entries (`migrate`, `dump`, ...) can land alongside `info`
+/// without reshaping the CLI surface.
+#[derive(Subcommand, Debug)]
+pub enum StateAction {
+    /// Read-only summary: schema version, file path/size, counts, and
+    /// last-rotated timestamps per managed iface.
+    Info {
+        #[arg(long)]
+        json: bool,
+    },
+}
+
 #[derive(Subcommand, Debug)]
 pub enum StackAction {
     /// Show current sysctl values + the drop-in we'd apply.

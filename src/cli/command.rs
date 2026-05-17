@@ -7,7 +7,7 @@ use clap::Subcommand;
 use super::actions::{
     BluetoothAction, ConfigAction, DhcpAction, DnsAction, EnterpriseWifiAction, EventsAction,
     HostnameAction, Ipv6Action, KillAction, NftAction, NtpAction, PersonaAction, PortalAction,
-    ResolvedAction, RfAction, SsidAction, StackAction, TimerAction, WikiAction,
+    ResolvedAction, RfAction, SsidAction, StackAction, StateAction, TimerAction, WikiAction,
 };
 
 #[derive(Subcommand, Debug)]
@@ -199,6 +199,15 @@ pub enum Command {
     Stack {
         #[command(subcommand)]
         action: StackAction,
+    },
+    /// Read-only inspection of `state.json` (schema version, counts, etc.).
+    ///
+    /// Roadmap #300: support-desk diagnostic adjacent to `proteus status`.
+    /// Today the only subcommand is `info`; future homes for `migrate`,
+    /// `dump`, etc. share the same namespace.
+    State {
+        #[command(subcommand)]
+        action: StateAction,
     },
     /// DNS ECS-strip drop-in on systemd-resolved (one knob, hard guard).
     Dns {
