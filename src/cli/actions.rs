@@ -249,6 +249,12 @@ pub enum WikiAction {
         )]
         limit: u64,
     },
+    /// Enumerate every embedded wiki page (replaces the curated TOC for
+    /// programmatic consumers). Issue #406.
+    List {
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]

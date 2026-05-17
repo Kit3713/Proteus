@@ -7,7 +7,7 @@ use serde::Serialize;
 
 use crate::commands::print_json;
 use crate::exit;
-use crate::wiki::{self, RenderStyle, SearchHit};
+use crate::wiki::{self, PageInfo, RenderStyle, SearchHit};
 
 /// Bytes of context shown on either side of the first match in a snippet.
 const SNIPPET_WINDOW: usize = 40;
@@ -156,6 +156,50 @@ impl SearchHitJson {
             matched_terms: hit.matched_terms,
             term_frequency: hit.term_frequency,
             score: hit.score,
+        }
+    }
+}
+
+/// Issue #406: `proteus wiki list [--json]` — enumerate every embedded
+/// wiki page programmatically so wrappers don't have to parse the
+/// rendered TOC. Human form is two whitespace-separated columns
+/// (`name  title`); JSON form is an array of `{name, title, description}`.
+pub fn run_list(json: bool) -> Result<u8> {
+    let pages = wiki::embedded_pages();
+
+    if json {
+        let payload: Vec<PageInfoJson<'_>> = pages.iter().map(PageInfoJson::from).collect();
+        print_json(&payload)?;
+        return Ok(exit::SUCCESS);
+    }
+
+    if pages.is_empty() {
+        println!("{NO_PAGES_NOTE}");
+        return Ok(exit::SUCCESS);
+    }
+
+    let name_width = pages.iter().map(|p| p.name.len()).max().unwrap_or(0);
+    for p in pages {
+        // `name  title` — two spaces separator so the column is easy to
+        // eyeball without ANSI styling. Description is JSON-only.
+        println!("{:<width$}  {}", p.name, p.title, width = name_width);
+    }
+    Ok(exit::SUCCESS)
+}
+
+#[derive(Serialize)]
+struct PageInfoJson<'a> {
+    name: &'a str,
+    title: &'a str,
+    description: &'a str,
+}
+
+impl<'a> From<&'a PageInfo> for PageInfoJson<'a> {
+    fn from(p: &'a PageInfo) -> Self {
+        Self {
+            name: p.name,
+            title: p.title,
+            description: p.description,
         }
     }
 }

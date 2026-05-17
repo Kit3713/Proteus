@@ -31,6 +31,105 @@ pub fn list_pages() -> Vec<String> {
     names
 }
 
+/// Metadata about a single embedded wiki page: stem name, derived title,
+/// and a short description. Returned by [`embedded_pages`] so `proteus
+/// wiki list` can render a table or JSON array without re-reading the
+/// page contents.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PageInfo {
+    /// File stem, e.g. `intro` (matches `proteus wiki <name>`).
+    pub name: &'static str,
+    /// First markdown H1 (`# ...`) with the marker trimmed; falls back to
+    /// the file stem when no H1 is present (which is the case for most
+    /// pages — the wiki style opens with prose, not a heading).
+    pub title: &'static str,
+    /// First non-empty non-heading paragraph line, trimmed. Empty string
+    /// when the page has nothing past its heading.
+    pub description: &'static str,
+}
+
+/// Programmatic enumeration of every embedded wiki page (excluding the
+/// curated `_index` TOC, which is rendered separately by `proteus wiki`
+/// with no args). Issue #406: replaces the curated TOC fallback for
+/// wrapper authors that want a structured list.
+///
+/// The slice is materialised lazily on first call and cached for the
+/// process lifetime — `include_dir`/`WIKI_LINES` are already static, so
+/// the metadata extraction runs once per execution and never again.
+pub fn embedded_pages() -> &'static [PageInfo] {
+    use std::sync::OnceLock;
+    static PAGES: OnceLock<Vec<PageInfo>> = OnceLock::new();
+    PAGES.get_or_init(|| {
+        let mut out: Vec<PageInfo> = WIKI
+            .files()
+            .filter_map(|f| {
+                let path = f.path();
+                if path.extension().and_then(|s| s.to_str()) != Some("md") {
+                    return None;
+                }
+                let stem = path.file_stem().and_then(|s| s.to_str())?;
+                if stem == CURATED_INDEX_PAGE {
+                    return None;
+                }
+                let content = f.contents_utf8()?;
+                let (title, description) = extract_title_and_description(content);
+                Some(PageInfo {
+                    name: stem,
+                    title: title.unwrap_or(stem),
+                    description: description.unwrap_or(""),
+                })
+            })
+            .collect();
+        out.sort_by(|a, b| a.name.cmp(b.name));
+        out
+    })
+}
+
+/// Pull a page's H1 title and first description paragraph out of the raw
+/// markdown. Both are returned as `&'static str` slices into the
+/// `include_dir!` blob — no allocation, no copying.
+///
+/// Title: first line whose trimmed form starts with `# ` and contains
+/// non-whitespace after the marker. We skip lines inside fenced code
+/// blocks so commented-out shell snippets like `# managed by proteus`
+/// don't get misread as the page title.
+///
+/// Description: the first subsequent non-empty line that isn't a heading
+/// or a code-fence delimiter, trimmed of trailing whitespace.
+fn extract_title_and_description(md: &str) -> (Option<&str>, Option<&str>) {
+    let mut title: Option<&str> = None;
+    let mut description: Option<&str> = None;
+    let mut in_fence = false;
+    for raw in md.lines() {
+        let trimmed = raw.trim();
+        if trimmed.starts_with("```") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_fence || trimmed.is_empty() {
+            continue;
+        }
+        if let Some(rest) = trimmed.strip_prefix("# ")
+            && title.is_none()
+            && !rest.trim().is_empty()
+        {
+            title = Some(rest.trim());
+            continue;
+        }
+        // Skip every heading level for the description.
+        if trimmed.starts_with('#') {
+            continue;
+        }
+        if description.is_none() {
+            description = Some(trimmed);
+        }
+        if title.is_some() && description.is_some() {
+            break;
+        }
+    }
+    (title, description)
+}
+
 pub fn get_page(name: &str) -> Option<&'static str> {
     // NEV2.1: defense-in-depth — refuse names that could traverse out of
     // the embedded archive. The `include_dir!` archive itself rejects
@@ -889,6 +988,81 @@ mod tests {
                 "page {page} missing from index"
             );
         }
+    }
+
+    // ---- embedded_pages (issue #406) ------------------------------------
+
+    #[test]
+    fn embedded_pages_matches_list_pages() {
+        // The two enumerators should agree on the page set — both filter
+        // out `_index` and walk the same `include_dir!` blob.
+        let names_from_list: Vec<String> = list_pages();
+        let names_from_info: Vec<String> = embedded_pages()
+            .iter()
+            .map(|p| p.name.to_string())
+            .collect();
+        assert_eq!(names_from_info, names_from_list);
+    }
+
+    #[test]
+    fn embedded_pages_excludes_curated_index() {
+        assert!(
+            embedded_pages()
+                .iter()
+                .all(|p| p.name != CURATED_INDEX_PAGE)
+        );
+    }
+
+    #[test]
+    fn embedded_pages_is_sorted() {
+        let names: Vec<&str> = embedded_pages().iter().map(|p| p.name).collect();
+        let mut sorted = names.clone();
+        sorted.sort_unstable();
+        assert_eq!(names, sorted);
+    }
+
+    #[test]
+    fn embedded_pages_every_entry_has_resolvable_title_and_name() {
+        for p in embedded_pages() {
+            assert!(!p.name.is_empty(), "empty page name");
+            assert!(!p.title.is_empty(), "empty title for {}", p.name);
+            // get_page must resolve every listed name.
+            assert!(get_page(p.name).is_some(), "missing page {}", p.name);
+        }
+    }
+
+    #[test]
+    fn extract_title_picks_first_h1() {
+        let md = "# Real Title\n\nbody text";
+        let (title, desc) = extract_title_and_description(md);
+        assert_eq!(title, Some("Real Title"));
+        assert_eq!(desc, Some("body text"));
+    }
+
+    #[test]
+    fn extract_title_skips_code_fence_hashes() {
+        // `# managed by proteus` inside a code fence must not be picked
+        // as the page title — it's a shell-style comment in a config
+        // snippet, not a markdown heading.
+        let md = "intro paragraph\n\n```\n# managed by proteus\nfoo = 1\n```\n";
+        let (title, desc) = extract_title_and_description(md);
+        assert_eq!(title, None);
+        assert_eq!(desc, Some("intro paragraph"));
+    }
+
+    #[test]
+    fn extract_description_skips_headings() {
+        let md = "# H1\n\n## H2\n\nfirst paragraph\n";
+        let (title, desc) = extract_title_and_description(md);
+        assert_eq!(title, Some("H1"));
+        assert_eq!(desc, Some("first paragraph"));
+    }
+
+    #[test]
+    fn extract_returns_none_for_empty_input() {
+        let (title, desc) = extract_title_and_description("");
+        assert_eq!(title, None);
+        assert_eq!(desc, None);
     }
 
     #[test]
