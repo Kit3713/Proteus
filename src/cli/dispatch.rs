@@ -286,6 +286,8 @@ pub(super) fn dispatch(cli: Cli) -> Result<u8> {
                 // N12.12: clap-bounded to 1..=500 (u64); fits `usize` trivially.
                 commands::wiki_cmd::run_search(&query, json, limit as usize)
             }
+            // Issue #406: programmatic enumeration of embedded pages.
+            Some(WikiAction::List { json }) => commands::wiki_cmd::run_list(json),
             None => commands::wiki_cmd::run(page.as_deref(), json, cli.no_color),
         },
         Command::Help { feature } => commands::wiki_cmd::run_help(feature.as_deref(), cli.no_color),
@@ -424,7 +426,7 @@ fn apply_json_to_command(cmd: &mut Command) {
             action: SsidAction::List { json } | SsidAction::Show { json, .. },
         }
         | Command::Wiki {
-            action: Some(WikiAction::Search { json, .. }),
+            action: Some(WikiAction::Search { json, .. } | WikiAction::List { json }),
             ..
         }
         // CL6: top-level `proteus wiki [page] --json` (no subcommand).
