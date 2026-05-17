@@ -297,6 +297,16 @@ pub struct InterfaceRecord {
     pub pinned_at: Option<String>,
     pub last_rotated: Option<String>,
     pub rotation_count: u64,
+    /// Issue #294: optional audit string stamped at rotate time so an
+    /// operator can later correlate a rotation with the trigger (a
+    /// dispatcher event, an SSID join, a manual `--reason "lab test"`,
+    /// etc.). Sanitized through [`crate::commands::rotate::sanitize_reason`]
+    /// (strip control bytes, trim, cap at 256 bytes) before write.
+    /// Optional + `skip_serializing_if` so old state.json files keep
+    /// loading and rotations without `--reason` leave the on-disk
+    /// shape unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -661,6 +671,7 @@ mod tests {
                 pinned_at: None,
                 last_rotated: Some("2026-05-06T00:00:00Z".to_string()),
                 rotation_count: 3,
+                reason: None,
             },
         );
         let bytes = serde_json::to_vec(&s).unwrap();

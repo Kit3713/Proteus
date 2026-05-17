@@ -698,6 +698,7 @@ mod tests {
                 pinned_at: Some("2026-05-07T12:34:56Z".to_string()),
                 last_rotated: Some("2026-05-07T12:34:56Z".to_string()),
                 rotation_count: 1,
+                reason: None,
             },
         );
         state.managed = managed;

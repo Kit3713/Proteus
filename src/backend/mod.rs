@@ -187,11 +187,21 @@ pub trait NetworkBackend: Send + Sync {
     /// dispatcher run with a custom state file recorded the cooldown
     /// stamp on disk but the next `rotate-if-needed` check read from
     /// the default file and rotated again.
+    ///
+    /// Issue #294: `reason` is the sanitized audit string from the
+    /// `--reason` flag. It's passed through to the inner rotate hook
+    /// so each rotated iface's state record carries the same value
+    /// the dispatcher / operator supplied. `None` keeps the pre-#294
+    /// behaviour (no reason stamped). Sanitization (control-byte
+    /// strip + 256-byte cap) happens at the CLI layer in
+    /// [`crate::commands::rotate::sanitize_reason`] before reaching
+    /// the trait, so backend impls treat the input as already-safe.
     fn rotate_if_needed<'a>(
         &'a self,
         iface: &'a str,
         cooldown: Duration,
         state_path: Option<&'a std::path::Path>,
+        reason: Option<&'a str>,
     ) -> BoxFuture<'a, Result<RotateOutcome>>;
 
     /// Read the human-friendly profile id for `connection` (`connection.id`

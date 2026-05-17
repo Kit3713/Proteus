@@ -127,11 +127,13 @@ pub(super) fn dispatch(cli: Cli) -> Result<u8> {
             yes,
             explain,
             json,
+            reason,
         } => commands::rotate::run(
             iface.as_deref(),
             yes,
             explain,
             json,
+            reason.as_deref(),
             cli.state.as_deref(),
             cli.config.as_deref(),
         ),
@@ -141,12 +143,14 @@ pub(super) fn dispatch(cli: Cli) -> Result<u8> {
             ssid,
             yes,
             explain,
+            reason,
         } => commands::rotate::run_if_needed(
             iface.as_deref(),
             cooldown,
             ssid.as_deref(),
             yes,
             explain,
+            reason.as_deref(),
             cli.state.as_deref(),
             cli.config.as_deref(),
         ),
@@ -614,6 +618,7 @@ mod tests {
             yes: true,
             explain: false,
             json: false,
+            reason: None,
         };
         apply_json_to_command(&mut cmd);
         match cmd {

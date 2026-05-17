@@ -891,6 +891,7 @@ mod tests {
                 pinned_at: None,
                 last_rotated: Some("2026-05-07T14:30:00Z".into()),
                 rotation_count: 5,
+                reason: None,
             },
         );
         let iface = status_cmd::Iface {

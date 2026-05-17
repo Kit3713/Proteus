@@ -102,6 +102,7 @@ impl NetworkBackend for RawBackend {
         _iface: &'a str,
         _cooldown: Duration,
         _state_path: Option<&'a std::path::Path>,
+        _reason: Option<&'a str>,
     ) -> BoxFuture<'a, Result<RotateOutcome>> {
         Box::pin(async { Ok(RotateOutcome::BackendUnavailable) })
     }

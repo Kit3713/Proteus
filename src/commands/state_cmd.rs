@@ -224,6 +224,7 @@ mod tests {
                 pinned_at: None,
                 last_rotated: Some("2026-05-17T12:00:00Z".into()),
                 rotation_count: 4,
+                reason: None,
             },
         );
         s.managed.interfaces.insert(
@@ -234,6 +235,7 @@ mod tests {
                 pinned_at: None,
                 last_rotated: None,
                 rotation_count: 0,
+                reason: None,
             },
         );
         let uuid = "aabbccdd-eeff-1122-3344-556677889900".to_string();
