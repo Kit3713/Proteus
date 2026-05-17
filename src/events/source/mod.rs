@@ -145,6 +145,34 @@ pub fn start_all(registry: &EventRegistry) -> Result<()> {
     Ok(())
 }
 
+/// Roadmap #283: cheap host-side probes used by `proteus events
+/// list-sources` to render the source availability matrix. The
+/// helpers mirror the gate `spawn_into` actually trips on at daemon
+/// startup, so what `list-sources` reports matches what an operator
+/// running `proteus events run` would observe.
+///
+/// Portal-auth has no probe helper — its `spawn_into` is
+/// unconditional. The caller hardcodes `available` for that source.
+pub fn probe_nm_connection_up_available() -> bool {
+    std::path::Path::new("/run/NetworkManager").exists()
+        || std::path::Path::new("/var/run/NetworkManager").exists()
+}
+
+/// Try-bind a `NETLINK_ROUTE` socket. The bind closes immediately
+/// when the socket drops. `Err` carries the libc-specific reason so
+/// the caller can render the same message the daemon would log.
+pub fn probe_link_flap_available() -> Result<()> {
+    let _socket = link_flap::netlink::open_route_link_socket()?;
+    Ok(())
+}
+
+/// Mirror of [`probe_link_flap_available`] for the genetlink socket
+/// the reg-domain source binds.
+pub fn probe_reg_domain_available() -> Result<()> {
+    let _socket = link_flap::netlink::open_genetlink_socket()?;
+    Ok(())
+}
+
 /// Spawn every production source into a tokio runtime, registering
 /// each one against the given `Arc<EventRegistry>`. Returns one
 /// [`SourceTask`] per source; the orchestrator awaits them in

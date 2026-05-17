@@ -530,6 +530,231 @@ pub fn run(
     })
 }
 
+/// Roadmap #283: read-only enumeration of the four event sources the
+/// daemon can subscribe to, each annotated with a host-side
+/// availability probe.
+///
+/// The probe shapes mirror the actual `spawn_into` paths the daemon
+/// uses, so what `list-sources` reports here is the same gate
+/// `proteus events run` would observe at startup:
+///
+/// - `nm-connection-up` — `/run/NetworkManager` marker check
+///   (cheap path stat).
+/// - `link-flap` — try-bind a `NETLINK_ROUTE` socket; degrades when
+///   the bind fails (typical without `CAP_NET_ADMIN`).
+/// - `reg-domain` — same on `NETLINK_GENERIC`.
+/// - `portal-auth` — pure userspace HTTP poller; always available.
+///
+/// Read-only and non-mutating: safe to run when `[events] enabled =
+/// false` and from any non-root account. The probes themselves are
+/// cheap (one path check + two netlink binds); the command exits in
+/// single-digit milliseconds.
+pub fn list_sources(json: bool) -> Result<u8> {
+    let sources = probe_sources();
+    if json {
+        // Single-line array — the roadmap contract so a pipe to
+        // `head -1` always sees the full payload.
+        let json_sources: Vec<SourceEntryJson<'_>> =
+            sources.iter().map(SourceEntryJson::from).collect();
+        let s = serde_json::to_string(&json_sources)
+            .context("serialising events list-sources report")?;
+        println!("{s}");
+    } else {
+        print_sources_human(&sources);
+    }
+    Ok(exit::SUCCESS)
+}
+
+/// Status of a probed event source. Two states only — operators
+/// reading `proteus events list-sources` care about "can the daemon
+/// use this source on this host" and, when not, "what's missing." A
+/// third "unknown" state would just kick the can; the probe is cheap
+/// enough to always produce a definite answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SourceStatus {
+    Available,
+    Degraded,
+}
+
+impl SourceStatus {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Available => "available",
+            Self::Degraded => "degraded",
+        }
+    }
+}
+
+/// One row in the `list-sources` output. Field names match the JSON
+/// schema callers will key off — `name`, `status`, `degraded_reason`,
+/// `capability_needed`.
+#[derive(Debug)]
+struct SourceEntry {
+    name: &'static str,
+    status: SourceStatus,
+    /// `None` when `status == Available`. Owned `String` so the probe
+    /// can compose a host-specific reason (e.g. the libc error from a
+    /// failed netlink bind) without leaking a `&'static str` for
+    /// every possible failure mode.
+    degraded_reason: Option<String>,
+    /// Human-readable description of the kernel cap / DBus interface
+    /// that gates this source. Stable across hosts — the same string
+    /// for any probe outcome.
+    capability_needed: &'static str,
+}
+
+/// JSON shape — borrows from `SourceEntry` so we don't double-alloc
+/// for the serialiser. `degraded_reason` stays `Option<&str>` so a
+/// degraded source emits the explanation and an available source
+/// emits `null`, matching the documented JSON contract.
+#[derive(serde::Serialize)]
+struct SourceEntryJson<'a> {
+    name: &'a str,
+    status: &'a str,
+    degraded_reason: Option<&'a str>,
+    capability_needed: &'a str,
+}
+
+impl<'a> From<&'a SourceEntry> for SourceEntryJson<'a> {
+    fn from(e: &'a SourceEntry) -> Self {
+        Self {
+            name: e.name,
+            status: e.status.as_str(),
+            degraded_reason: e.degraded_reason.as_deref(),
+            capability_needed: e.capability_needed,
+        }
+    }
+}
+
+/// Build the four-entry source list. Order matches the daemon's
+/// `spawn_all`: nm-connection-up, link-flap, reg-domain, portal-auth.
+/// Stable so scripts grepping the table can rely on row ordering.
+fn probe_sources() -> Vec<SourceEntry> {
+    vec![
+        probe_nm_connection_up(),
+        probe_link_flap(),
+        probe_reg_domain(),
+        probe_portal_auth(),
+    ]
+}
+
+/// NM connection-up probe — needs a running NetworkManager.
+/// `/run/NetworkManager` is the same marker
+/// `commands::status::detect_system` keys off, so what we report here
+/// matches what an operator sees in `proteus status`. The DBus open
+/// itself happens lazily inside `spawn_into`; we don't open a
+/// connection in the read-only path because it would re-authenticate
+/// per invocation. The marker-file probe is cheap and a sufficient
+/// proxy.
+fn probe_nm_connection_up() -> SourceEntry {
+    let (status, reason) = if crate::events::source::probe_nm_connection_up_available() {
+        (SourceStatus::Available, None)
+    } else {
+        (
+            SourceStatus::Degraded,
+            Some(String::from("NetworkManager not running")),
+        )
+    };
+    SourceEntry {
+        name: "nm-connection-up",
+        status,
+        degraded_reason: reason,
+        capability_needed: "system DBus (org.freedesktop.NetworkManager)",
+    }
+}
+
+/// Link-flap probe — try to bind a NETLINK_ROUTE socket via the
+/// shared probe helper. Mirrors the daemon's actual `spawn_into` path
+/// so what we report here is what `proteus events run` would observe
+/// at startup.
+fn probe_link_flap() -> SourceEntry {
+    match crate::events::source::probe_link_flap_available() {
+        Ok(()) => SourceEntry {
+            name: "link-flap",
+            status: SourceStatus::Available,
+            degraded_reason: None,
+            capability_needed: "CAP_NET_ADMIN (NETLINK_ROUTE)",
+        },
+        Err(e) => SourceEntry {
+            name: "link-flap",
+            status: SourceStatus::Degraded,
+            // Probe-error renderings vary by libc (EPERM vs "Operation
+            // not permitted"); pin a stable reason for the typical
+            // CAP_NET_ADMIN-missing case and append the OS detail.
+            degraded_reason: Some(format!(
+                "netlink bind failed (likely missing CAP_NET_ADMIN): {e:#}"
+            )),
+            capability_needed: "CAP_NET_ADMIN (NETLINK_ROUTE)",
+        },
+    }
+}
+
+/// Reg-domain probe — try to bind a NETLINK_GENERIC socket. The full
+/// nl80211 family-id resolution is more involved than this probe
+/// captures (an older kernel without nl80211 still lets the genetlink
+/// bind succeed), but the gate the daemon actually trips on is the
+/// bind, so this matches the runtime behaviour. The reason string
+/// covers both the cap and the nl80211 case so an operator sees the
+/// full set of possibilities.
+fn probe_reg_domain() -> SourceEntry {
+    match crate::events::source::probe_reg_domain_available() {
+        Ok(()) => SourceEntry {
+            name: "reg-domain",
+            status: SourceStatus::Available,
+            degraded_reason: None,
+            capability_needed: "CAP_NET_ADMIN (NETLINK_GENERIC + nl80211)",
+        },
+        Err(e) => SourceEntry {
+            name: "reg-domain",
+            status: SourceStatus::Degraded,
+            degraded_reason: Some(format!(
+                "genetlink bind failed (missing CAP_NET_ADMIN or nl80211 absent): {e:#}"
+            )),
+            capability_needed: "CAP_NET_ADMIN (NETLINK_GENERIC + nl80211)",
+        },
+    }
+}
+
+/// Portal-auth probe — the captive-portal poller is pure userspace
+/// HTTP and has no privilege requirement. The daemon's
+/// `PortalAuthSource::spawn_into` always returns `Some` regardless of
+/// host privilege, so we mirror that and report `available`
+/// unconditionally.
+fn probe_portal_auth() -> SourceEntry {
+    SourceEntry {
+        name: "portal-auth",
+        status: SourceStatus::Available,
+        degraded_reason: None,
+        capability_needed: "(none — userspace HTTP poller)",
+    }
+}
+
+/// Human-readable table. One header line + one row per source.
+/// Columns: name (20), status (10), capability_needed (rest), with
+/// degraded reasons folded onto a second indented line so a wide
+/// reason doesn't push the capability column off-screen.
+///
+/// `display_safe` is applied to `degraded_reason` only — the other
+/// columns are `&'static str` from the probe set and cannot carry
+/// attacker-controlled bytes. The reason field embeds a libc error
+/// string on the netlink probes, which is the only place an OS
+/// translation could land a non-printable.
+fn print_sources_human(sources: &[SourceEntry]) {
+    println!("{:<20} {:<10} CAPABILITY_NEEDED", "NAME", "STATUS");
+    for entry in sources {
+        println!(
+            "{:<20} {:<10} {}",
+            entry.name,
+            entry.status.as_str(),
+            entry.capability_needed
+        );
+        if let Some(reason) = entry.degraded_reason.as_deref() {
+            let reason_safe = crate::display::display_safe(reason);
+            println!("  reason: {reason_safe}");
+        }
+    }
+}
+
 /// Per-source graceful shutdown. Signals every source to stop, waits
 /// up to `deadline` for each `JoinHandle` to complete, then aborts
 /// any stragglers. Issue #256.
@@ -1046,5 +1271,116 @@ mod tests {
         assert_eq!(h.counter.load(Ordering::SeqCst), 1);
         // No backend wired — the in-flight vec must stay empty.
         assert!(h.in_flight.lock().unwrap().is_empty());
+    }
+
+    /// Roadmap #283: `list-sources` reports all four known sources in
+    /// a stable order. Off-system the underlying DBus / netlink may
+    /// well be missing — the contract is that every kind shows up
+    /// regardless, with a `degraded` status + reason when the probe
+    /// fails. Pin both row count and the per-row `name` tokens so a
+    /// downstream JSON consumer can rely on the ordering.
+    #[test]
+    fn list_sources_reports_all_four_kinds_in_stable_order() {
+        let sources = probe_sources();
+        let names: Vec<&'static str> = sources.iter().map(|s| s.name).collect();
+        assert_eq!(
+            names,
+            vec!["nm-connection-up", "link-flap", "reg-domain", "portal-auth"],
+            "list-sources must emit the four kinds in spawn_all order"
+        );
+    }
+
+    /// Every entry has a non-empty `capability_needed` token. Pin so
+    /// a future probe addition doesn't accidentally surface a blank
+    /// column on the human renderer.
+    #[test]
+    fn list_sources_entries_each_have_a_capability_needed() {
+        for entry in probe_sources() {
+            assert!(
+                !entry.capability_needed.is_empty(),
+                "{}: capability_needed must be non-empty",
+                entry.name
+            );
+        }
+    }
+
+    /// Available entries report `degraded_reason: None`; degraded
+    /// entries report `Some(reason)`. The invariant matches the JSON
+    /// shape callers serialise against.
+    #[test]
+    fn list_sources_degraded_reason_matches_status() {
+        for entry in probe_sources() {
+            match entry.status {
+                SourceStatus::Available => assert!(
+                    entry.degraded_reason.is_none(),
+                    "{}: available source must not carry a degraded_reason",
+                    entry.name
+                ),
+                SourceStatus::Degraded => assert!(
+                    entry.degraded_reason.is_some(),
+                    "{}: degraded source must carry a degraded_reason",
+                    entry.name
+                ),
+            }
+        }
+    }
+
+    /// Portal-auth always reports `available` — the captive-portal
+    /// poller has no privilege gate. Pin so a future refactor can't
+    /// silently flip the always-on source off.
+    #[test]
+    fn list_sources_portal_auth_is_always_available() {
+        let sources = probe_sources();
+        let entry = sources.iter().find(|s| s.name == "portal-auth").unwrap();
+        assert_eq!(entry.status, SourceStatus::Available);
+        assert!(entry.degraded_reason.is_none());
+    }
+
+    /// JSON shape pins the four fields callers key off:
+    /// `name`, `status`, `degraded_reason`, `capability_needed`.
+    /// `degraded_reason` is `null` for available sources, a string
+    /// for degraded ones — the `serde_json::Value` variant check
+    /// makes the contract explicit. Also pins the single-line
+    /// invariant the roadmap calls out.
+    #[test]
+    fn list_sources_json_shape_is_stable() {
+        let sources = probe_sources();
+        let json_entries: Vec<SourceEntryJson<'_>> =
+            sources.iter().map(SourceEntryJson::from).collect();
+        let serialised = serde_json::to_string(&json_entries).unwrap();
+        assert!(
+            !serialised.contains('\n'),
+            "list-sources JSON must be single-line; got: {serialised}"
+        );
+        let parsed: serde_json::Value = serde_json::from_str(&serialised).unwrap();
+        let arr = parsed.as_array().expect("top-level JSON must be an array");
+        assert_eq!(arr.len(), 4);
+        for entry in arr {
+            let obj = entry.as_object().unwrap();
+            assert!(obj.contains_key("name"));
+            assert!(obj.contains_key("status"));
+            assert!(obj.contains_key("degraded_reason"));
+            assert!(obj.contains_key("capability_needed"));
+            let status = obj["status"].as_str().unwrap();
+            assert!(
+                status == "available" || status == "degraded",
+                "status must be one of available|degraded; got {status}"
+            );
+            match status {
+                "available" => assert!(obj["degraded_reason"].is_null()),
+                "degraded" => assert!(obj["degraded_reason"].is_string()),
+                _ => unreachable!(),
+            }
+        }
+    }
+
+    /// `list_sources` returns SUCCESS in both renderers — the call
+    /// is read-only and must not require root or `[events] enabled`.
+    /// Pin both renderers so a future refactor can't accidentally
+    /// flip one to a non-zero exit.
+    #[test]
+    fn list_sources_returns_success_in_both_renderers() {
+        assert_eq!(list_sources(false).unwrap(), exit::SUCCESS);
+        assert_eq!(list_sources(true).unwrap(), exit::SUCCESS);
     }
 }
