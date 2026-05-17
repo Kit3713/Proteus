@@ -469,7 +469,9 @@ pub enum PersonaAction {
         #[arg(long)]
         json: bool,
     },
-    /// Pick a random persona id (filterable). Does NOT auto-apply.
+    /// Pick a random persona id (filterable). With `--use`, also activate
+    /// the pick by writing `[persona] active = <id>` to config. With
+    /// `--apply`, additionally run `proteus apply` after.
     Random {
         #[arg(long)]
         kind: Option<String>,
@@ -477,6 +479,15 @@ pub enum PersonaAction {
         category: Option<String>,
         #[arg(long)]
         json: bool,
+        /// After picking, activate the persona (writes config). Requires `--yes`.
+        #[arg(long = "use")]
+        use_: bool,
+        /// Implies `--use`, then runs `proteus apply`. Requires `--yes` and root.
+        #[arg(long)]
+        apply: bool,
+        /// Confirm the destructive `--use` / `--apply` paths.
+        #[arg(long)]
+        yes: bool,
     },
     /// Clone an existing persona to `/etc/proteus/personas/<new>.toml`.
     New {
