@@ -657,16 +657,31 @@ pub enum EventsAction {
         #[arg(long)]
         json: bool,
     },
-    /// Print live counters from a running events daemon.
-    ///
-    /// Reads the daemon's on-disk snapshot (written every second under
-    /// `<state-dir>/events-status.json`). Exits with
-    /// `SYSTEM_NOT_SUPPORTED` (70) when the snapshot is missing or
-    /// stale beyond a 10s threshold — that's the wrapper-friendly
-    /// "daemon not running" signal. Roadmap #393.
+    /// Print live counters from a running events daemon. Roadmap #393.
     Status {
         #[arg(long)]
         json: bool,
+    },
+    /// Fire a synthetic event into the running daemon (or, with
+    /// `--debug`, into an in-process [`EventRegistry`] for tests in CI
+    /// containers without a daemon). Issue #346.
+    Trigger {
+        /// Synthetic trigger to fire. Must match one of the four
+        /// known kinds.
+        #[arg(
+            value_parser = clap::builder::PossibleValuesParser::new(
+                crate::commands::events::TRIGGER_NAMES,
+            ),
+        )]
+        name: String,
+        /// Confirm this mutating action (may cause a real rotation).
+        #[arg(long)]
+        yes: bool,
+        /// Dispatch through an in-process registry instead of trying
+        /// to reach a running daemon. The default (no `--debug`)
+        /// returns `NOT_IMPLEMENTED` until a live-daemon IPC lands.
+        #[arg(long)]
+        debug: bool,
     },
 }
 

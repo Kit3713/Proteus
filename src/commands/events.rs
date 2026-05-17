@@ -1058,6 +1058,97 @@ fn format_unix_iso(secs: u64) -> String {
     format!("{y:04}-{mo:02}-{d:02}T{h:02}:{mi:02}:{s:02}Z")
 }
 
+/// Accepted `<name>` arguments to `proteus events trigger`. Single
+/// source of truth — clap's `value_parser` re-exports this through
+/// [`TRIGGER_NAMES`] so the help text and the runtime mapper cannot
+/// drift.
+pub const TRIGGER_NAMES: &[&str] = &["nm-connection-up", "link-flap", "reg-domain", "portal-auth"];
+
+/// Issue #346: `proteus events trigger <name>` — fire a synthetic
+/// rotation trigger for integration tests.
+pub fn trigger(name: &str, yes: bool, debug: bool) -> Result<u8> {
+    if let Err(code) = super::require_yes(
+        yes,
+        "`events trigger` may cause a rotation",
+        "proteus help events",
+    ) {
+        return Ok(code);
+    }
+
+    let synthetic = match synthetic_trigger_for(name) {
+        Some(t) => t,
+        None => {
+            eprintln!(
+                "proteus: unknown trigger name `{name}`; expected one of {}",
+                TRIGGER_NAMES.join(", ")
+            );
+            return Ok(exit::CONFIG_ERROR);
+        }
+    };
+
+    if !debug {
+        eprintln!(
+            "proteus: live-daemon trigger IPC is not implemented yet; \
+             pass --debug to dispatch through an in-process registry"
+        );
+        return Ok(exit::NOT_IMPLEMENTED);
+    }
+
+    let registry = EventRegistry::new();
+    let counter = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    registry
+        .register(Box::new(DebugCounterHandler {
+            count: Arc::clone(&counter),
+        }))
+        .context("registering in-process debug handler")?;
+    let kind = synthetic.kind();
+    registry
+        .fire(synthetic)
+        .context("dispatching synthetic trigger through in-process registry")?;
+    let observed = counter.load(std::sync::atomic::Ordering::SeqCst);
+    println!(
+        "proteus: dispatched synthetic `{kind}` trigger through in-process registry \
+         (handlers fired: {observed})"
+    );
+    Ok(exit::SUCCESS)
+}
+
+/// Map the CLI's kebab-case name onto a [`RotationTrigger`] populated
+/// with deterministic synthetic payload values.
+fn synthetic_trigger_for(name: &str) -> Option<RotationTrigger> {
+    match name {
+        "nm-connection-up" => Some(RotationTrigger::ConnectionUp {
+            iface: "wlan0".into(),
+            ssid: Some("home".into()),
+        }),
+        "link-flap" => Some(RotationTrigger::LinkFlap {
+            iface: "wlan0".into(),
+        }),
+        "reg-domain" => Some(RotationTrigger::RegDomainChange {
+            from: "00".into(),
+            to: "US".into(),
+        }),
+        "portal-auth" => Some(RotationTrigger::PortalAuth {
+            ssid: "Cafe".into(),
+        }),
+        _ => None,
+    }
+}
+
+/// Bare counter handler the `--debug` path registers so the dispatch
+/// outcome reflects whether a registered handler actually saw the
+/// trigger.
+struct DebugCounterHandler {
+    count: Arc<std::sync::atomic::AtomicU64>,
+}
+
+impl EventHandler for DebugCounterHandler {
+    fn handle(&self, _trigger: &RotationTrigger) -> Result<()> {
+        self.count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(())
+    }
+}
+
 /// Per-source graceful shutdown. Signals every source to stop, waits
 /// up to `deadline` for each `JoinHandle` to complete, then aborts
 /// any stragglers. Issue #256.
