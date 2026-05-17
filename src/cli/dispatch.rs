@@ -407,7 +407,8 @@ fn apply_json_to_command(cmd: &mut Command) {
                 PersonaAction::List { json, .. }
                 | PersonaAction::Show { json, .. }
                 | PersonaAction::Current { json }
-                | PersonaAction::Random { json, .. },
+                | PersonaAction::Random { json, .. }
+                | PersonaAction::Search { json, .. },
         }
         | Command::Ssid {
             action: SsidAction::List { json } | SsidAction::Show { json, .. },
