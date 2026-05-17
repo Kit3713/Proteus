@@ -552,3 +552,71 @@ jobs:
           draft: true
           generate_release_notes: true
           fail_on_unmatched_files: false
+
+  # Copr publish: submits the SRPM built in build-rpm to the configured
+  # Copr project so Fedora users can `dnf copr enable kit3713/proteus`
+  # and pull the package straight from the official Fedora build farm.
+  #
+  # Requires three repo secrets configured at
+  # `https://github.com/Kit3713/Proteus/settings/secrets/actions`:
+  #
+  #   COPR_LOGIN     — value of `login` from copr.fedorainfracloud.org/api/
+  #   COPR_USERNAME  — FAS username (typically same as Copr owner)
+  #   COPR_TOKEN     — value of `token` from copr.fedorainfracloud.org/api/
+  #   COPR_PROJECT   — `<owner>/<project>` (e.g. `kit3713/proteus`)
+  #
+  # See `dist/copr/README.md` for the one-time setup walkthrough.
+  #
+  # `continue-on-error: true`: a failed Copr submission must not block the
+  # release (raw binaries + GitHub Release are the canonical artifacts).
+  # The job no-ops gracefully when `COPR_TOKEN` is empty so contributors
+  # forking the repo without a Copr project don't see a red workflow.
+  publish-copr:
+    name: publish to copr
+    runs-on: ubuntu-latest
+    container: fedora:43
+    needs: [build-rpm]
+    continue-on-error: true
+    steps:
+      - name: Install git + copr-cli
+        run: dnf install -y git copr-cli
+      - name: Download RPM artifact (includes the .src.rpm)
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
+        with:
+          name: proteus-rpm
+          path: rpm-artifacts
+      - name: Configure copr-cli (skip when secrets unset)
+        env:
+          COPR_LOGIN: ${{ secrets.COPR_LOGIN }}
+          COPR_USERNAME: ${{ secrets.COPR_USERNAME }}
+          COPR_TOKEN: ${{ secrets.COPR_TOKEN }}
+        run: |
+          set -eu
+          if [ -z "${COPR_TOKEN:-}" ]; then
+            echo "::notice::COPR_TOKEN not set — skipping Copr submission"
+            echo "COPR_SKIP=1" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          mkdir -p ~/.config
+          umask 077
+          cat > ~/.config/copr <<CFG
+          [copr-cli]
+          login = ${COPR_LOGIN}
+          username = ${COPR_USERNAME}
+          token = ${COPR_TOKEN}
+          copr_url = https://copr.fedorainfracloud.org
+          CFG
+      - name: Submit SRPM to Copr
+        if: env.COPR_SKIP != '1'
+        env:
+          COPR_PROJECT: ${{ secrets.COPR_PROJECT }}
+        run: |
+          set -euo pipefail
+          : "${COPR_PROJECT:?COPR_PROJECT secret must be set (e.g. kit3713/proteus)}"
+          SRPM=$(ls rpm-artifacts/*.src.rpm | head -1)
+          if [ -z "$SRPM" ]; then
+            echo "::error::no .src.rpm found in proteus-rpm artifact"
+            exit 1
+          fi
+          echo "submitting $SRPM to copr project $COPR_PROJECT"
+          copr-cli build "$COPR_PROJECT" "$SRPM"
