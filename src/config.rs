@@ -585,6 +585,141 @@ impl RawConfig {
         cfg
     }
 
+    /// Roadmap #404: report which **section** of the resolved config has at
+    /// least one user-supplied override on top of the profile baseline.
+    /// Returned values are section names (e.g. `"mac"`, `"timers"`); a
+    /// section appears in the map iff the user explicitly set at least one
+    /// of its fields in `config.toml`. Used by `proteus config show
+    /// --annotate` to label each section with `file` vs `profile:<name>`
+    /// vs `default`.
+    ///
+    /// Per-SSID entries are not reported here — they are surfaced separately
+    /// via `per_ssid` map keys (one entry per SSID), since each entry has its
+    /// own provenance label (`per-ssid:<ssid>`).
+    pub fn explicit_sections(&self) -> std::collections::BTreeSet<&'static str> {
+        let mut out = std::collections::BTreeSet::new();
+        macro_rules! mark_if_any {
+            ($name:expr, $section:expr, [$($field:ident),+ $(,)?]) => {
+                if let Some(s) = $section
+                    && ( $( s.$field.is_some() )||+ )
+                {
+                    out.insert($name);
+                }
+            };
+        }
+        mark_if_any!("mac", &self.mac, [enabled, rotation_interval, oui_pool]);
+        mark_if_any!(
+            "bluetooth",
+            &self.bluetooth,
+            [
+                enabled,
+                generic_alias,
+                alias_source,
+                pinned_alias,
+                discoverable,
+                ble_rpa
+            ]
+        );
+        mark_if_any!(
+            "hostname",
+            &self.hostname,
+            [enabled, mode, pinned_value, rotate_with_mac]
+        );
+        mark_if_any!("dns", &self.dns, [strip_edns_client_subnet]);
+        mark_if_any!("resolved", &self.resolved, [mdns_off, llmnr_off]);
+        mark_if_any!("ntp", &self.ntp, [enabled, ntp_servers, fallback_servers]);
+        mark_if_any!(
+            "nft",
+            &self.nft,
+            [icmpv4_timestamp_drop, broadcast_ping_drop, igmp_query_drop]
+        );
+        mark_if_any!(
+            "discovery",
+            &self.discovery,
+            [mdns_silence, llmnr_silence, ssdp_block, wsd_block]
+        );
+        mark_if_any!(
+            "probes",
+            &self.probes,
+            [quorum_n, quorum_total, interval, cooldown, endpoints]
+        );
+        mark_if_any!(
+            "ipv6",
+            &self.ipv6,
+            [enabled, use_temp_addresses, addr_gen_mode, ndp_hardening]
+        );
+        mark_if_any!(
+            "enterprise_wifi",
+            &self.enterprise_wifi,
+            [
+                anonymous_outer_identity,
+                realm_strip_strategy,
+                anonymous_realm
+            ]
+        );
+        mark_if_any!(
+            "stack",
+            &self.stack,
+            [
+                tcp_timestamps_off,
+                icmpv6_hardening,
+                suppress_gratuitous_arp,
+                icmp_info_replies_drop
+            ]
+        );
+        mark_if_any!(
+            "dhcp",
+            &self.dhcp,
+            [
+                enabled,
+                suppress_hostname,
+                suppress_vendor_class,
+                rotate_client_id,
+                renew_on_apply,
+                keep_iaid_stable_across_rotation
+            ]
+        );
+        mark_if_any!(
+            "captive_portal",
+            &self.captive_portal,
+            [
+                enabled,
+                detect_url,
+                expected_response,
+                policy,
+                fresh_mac_per_visit,
+                timeout_secs
+            ]
+        );
+        mark_if_any!(
+            "rf",
+            &self.rf,
+            [tx_power_reduce, tx_power_reduction_db, scan_random_mac]
+        );
+        if let Some(t) = &self.timers
+            && ((t
+                .rotate
+                .as_ref()
+                .and_then(|r| r.interval.as_ref())
+                .is_some())
+                || (t.check.as_ref().and_then(|c| c.interval.as_ref()).is_some()))
+        {
+            out.insert("timers");
+        }
+        if let Some(p) = &self.persona
+            && p.active.is_some()
+        {
+            out.insert("persona");
+        }
+        mark_if_any!(
+            "events",
+            &self.events,
+            [enabled, portal_poll_secs, link_flap_window_secs]
+        );
+        mark_if_any!("backend", &self.backend, [driver]);
+        out
+    }
+
     /// True iff the user has set at least one per-knob override on top
     /// of the profile baseline. Used by `proteus config reset` to report
     /// how many overrides were cleared.

@@ -55,8 +55,8 @@ struct KeyEntry {
 
 // ---------- Commands ----------
 
-pub fn show(json: bool, config: Option<&Path>) -> Result<u8> {
-    super::show_config::run(json, config)
+pub fn show(json: bool, annotate: bool, config: Option<&Path>) -> Result<u8> {
+    super::show_config::run(json, annotate, config)
 }
 
 pub fn get(key: &str, json: bool, config: Option<&Path>) -> Result<u8> {
