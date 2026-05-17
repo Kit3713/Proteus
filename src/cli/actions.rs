@@ -593,6 +593,13 @@ pub enum EventsAction {
         )]
         once_after_secs: u64,
     },
+    /// List the event sources Proteus can subscribe to, with each
+    /// source's availability + capability requirement. Read-only;
+    /// safe to run when `[events] enabled = false`. Roadmap #283.
+    ListSources {
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]

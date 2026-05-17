@@ -337,6 +337,9 @@ pub(super) fn dispatch(cli: Cli) -> Result<u8> {
                 cli.state.as_deref(),
                 cli.config.as_deref(),
             ),
+            // Roadmap #283: read-only enumeration of the four event
+            // sources + the host-side availability probe for each.
+            EventsAction::ListSources { json } => commands::events::list_sources(json),
         },
         // Roadmap Milestone 6: print bundled shell completions.
         Command::Completions { shell } => commands::completions::run(&shell),
@@ -401,6 +404,9 @@ fn apply_json_to_command(cmd: &mut Command) {
         }
         | Command::Timer {
             action: TimerAction::Status { json } | TimerAction::List { json },
+        }
+        | Command::Events {
+            action: EventsAction::ListSources { json },
         }
         | Command::Persona {
             action:
