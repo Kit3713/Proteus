@@ -34,8 +34,45 @@ use crate::events::source::{
     LinkFlapSource, NmConnectionUpSource, PortalAuthSource, RegDomainChangeSource,
     SystemPortalSampler,
 };
-use crate::events::{EventHandler, EventRegistry, RotationTrigger};
+use crate::events::{EventHandler, EventRegistry, RotationTrigger, Snapshot};
 use crate::exit;
+
+/// #393: snapshot freshness threshold for `proteus events status`. A
+/// snapshot older than this is treated as "daemon not running" — the
+/// daemon's writer task pushes a fresh snapshot every second, so 10 s
+/// is a safe margin against a single slow scheduling tick while still
+/// surfacing a stopped daemon quickly.
+const STATUS_FRESHNESS_SECS: u64 = 10;
+
+/// #393: how often the daemon refreshes the on-disk status snapshot.
+/// One second matches `watch -n 1 proteus events status` for a live
+/// human view. The write doubles as a liveness heartbeat — the reader
+/// treats a snapshot older than `STATUS_FRESHNESS_SECS` as "daemon
+/// not running" — so the writer ticks unconditionally, not only when
+/// counters change. The payload is ~1 KB so the disk traffic is
+/// negligible.
+const STATUS_WRITE_INTERVAL_SECS: u64 = 1;
+
+/// #393: filename the daemon writes alongside `state.json` so the
+/// status command finds it without an extra config knob. Lives in the
+/// same directory as the state file (default `/var/lib/proteus/`).
+const STATUS_SNAPSHOT_FILENAME: &str = "events-status.json";
+
+/// #393: resolve the snapshot path from the state directory. The
+/// daemon writes here on every refresh; the status command reads it.
+/// Single source of truth so a future `--state` override flows through
+/// both paths consistently.
+pub fn status_snapshot_path(state_path: Option<&Path>) -> PathBuf {
+    let state = super::state_path(state_path);
+    let parent = state.parent().map(Path::to_path_buf).unwrap_or_else(|| {
+        // `state_path` is never relative in production (it defaults to
+        // `/var/lib/proteus/state.json`) so this fallback only fires
+        // when a test passes a bare filename without a directory. Use
+        // the current directory so the file lands somewhere writable.
+        PathBuf::from(".")
+    });
+    parent.join(STATUS_SNAPSHOT_FILENAME)
+}
 
 /// Default handler — turns a `RotationTrigger` into a rotation. The
 /// handler captures the state + config paths at construction so the
@@ -360,6 +397,13 @@ pub fn run(
         .register(Box::new(handler))
         .context("registering default rotation handler")?;
 
+    // #393: capture wall-clock start so the status snapshot's
+    // `started_at_unix` survives across snapshot writes. `Instant`
+    // (used for the budget math below) is monotonic and not
+    // serialisable; we keep both.
+    let started_unix = crate::events::now_unix_secs();
+    let snapshot_path = status_snapshot_path(state_path);
+
     rt.block_on(async {
         let started = Instant::now();
         let mut tasks = Vec::new();
@@ -407,6 +451,53 @@ pub fn run(
             flap_window_secs = config.events.link_flap_window_secs,
             "events daemon started"
         );
+
+        // #393: live trigger kinds captured at spawn-time so the
+        // snapshot writer can tag each source as `running` or `idle`.
+        // A source that failed its `spawn_into` is absent from
+        // `tasks`, so its emitted kind will not appear in this set
+        // and the snapshot writer labels it `idle`. We translate from
+        // the source name (`nm-connection-up`) to its emitted trigger
+        // kind (`connection-up`) because the snapshot rows are keyed
+        // by the stable trigger-kind token — every source emits a
+        // single kind, so the mapping is 1:1.
+        let live_sources: std::collections::HashSet<&'static str> =
+            tasks.iter().map(|t| source_name_to_kind(t.name)).collect();
+
+        // #393: spawn the status-snapshot writer. Runs on the same
+        // tokio runtime as the source tasks; serialises the registry
+        // counters every `STATUS_WRITE_INTERVAL_SECS` and persists via
+        // the same `write_atomic` shape the rest of the codebase uses.
+        // The writer races a stop channel so the daemon's shutdown
+        // path drains it alongside the source tasks.
+        let (snapshot_stop_tx, mut snapshot_stop_rx) = tokio::sync::oneshot::channel::<()>();
+        let registry_for_snap = Arc::clone(&registry);
+        let snapshot_path_for_task = snapshot_path.clone();
+        let snapshot_task = tokio::spawn(async move {
+            let mut tick = tokio::time::interval(Duration::from_secs(STATUS_WRITE_INTERVAL_SECS));
+            // Immediately write a snapshot so a `proteus events status`
+            // run right after daemon startup sees a fresh file even
+            // before the first tick lands.
+            tick.tick().await;
+            loop {
+                let snap = Snapshot::capture(
+                    &registry_for_snap,
+                    started_unix,
+                    std::process::id(),
+                    |name| live_sources.contains(name),
+                );
+                if let Err(e) = write_snapshot(&snapshot_path_for_task, &snap) {
+                    tracing::warn!(
+                        path = %snapshot_path_for_task.display(),
+                        "events daemon: status snapshot write failed: {e:#}"
+                    );
+                }
+                tokio::select! {
+                    _ = tick.tick() => {}
+                    _ = &mut snapshot_stop_rx => break,
+                }
+            }
+        });
 
         // Block until a stop condition fires. The shutdown loop
         // checks both the trigger budget (`--max-triggers`) and the
@@ -469,6 +560,32 @@ pub fn run(
             if once_after_secs > 0 && started.elapsed().as_secs() >= once_after_secs {
                 tracing::info!("events daemon: --once-after-secs elapsed; shutting down");
                 break;
+            }
+        }
+
+        // #393: stop the snapshot writer and remove its on-disk
+        // artefact so `proteus events status` after `systemctl stop`
+        // promptly observes "daemon not running" rather than waiting
+        // STATUS_FRESHNESS_SECS for the staleness threshold to trip.
+        // Best-effort: if the writer task already exited we drop the
+        // sender silently; if the unlink fails the staleness fallback
+        // still kicks in.
+        let _ = snapshot_stop_tx.send(());
+        match tokio::time::timeout(Duration::from_secs(2), snapshot_task).await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                tracing::warn!("events daemon: status snapshot task: {e}");
+            }
+            Err(_) => {
+                tracing::warn!("events daemon: status snapshot task did not exit within 2s");
+            }
+        }
+        if let Err(e) = std::fs::remove_file(&snapshot_path) {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                tracing::debug!(
+                    path = %snapshot_path.display(),
+                    "events daemon: could not remove status snapshot at shutdown: {e}"
+                );
             }
         }
 
@@ -561,6 +678,173 @@ pub fn list_sources(json: bool) -> Result<u8> {
         println!("{s}");
     } else {
         print_sources_human(&sources);
+    }
+    Ok(exit::SUCCESS)
+}
+
+/// #393: map a source-task name (`nm-connection-up`, `link-flap`,
+/// `reg-domain-change`, `portal-auth`) to the trigger-kind token it
+/// emits. The status snapshot is keyed by trigger kind because that's
+/// what the registry counters track; every source emits exactly one
+/// kind so the mapping is 1:1. An unrecognised name (a future source
+/// the status writer doesn't know about) falls back to the raw input
+/// so the writer never silently drops a live task.
+fn source_name_to_kind(source_name: &'static str) -> &'static str {
+    match source_name {
+        "nm-connection-up" => "connection-up",
+        // The other three source names already match their trigger
+        // kind exactly. Returning the source name verbatim keeps the
+        // match arms minimal.
+        other => other,
+    }
+}
+
+/// #393: persist a snapshot via the project-wide atomic-write shape so
+/// a partially-written file is never observable by a concurrent reader.
+fn write_snapshot(path: &Path, snap: &Snapshot) -> Result<()> {
+    let body = serde_json::to_vec_pretty(snap).context("serializing events status snapshot")?;
+    super::write_atomic(path, &body)
+}
+
+/// Outcome of a snapshot read. `Missing` covers both "file not there"
+/// and "the running user cannot reach it" — both reduce to the same
+/// "daemon not running" CLI surface so wrappers see one error code.
+enum SnapshotRead {
+    Found(Snapshot),
+    Missing,
+    PermissionDenied,
+}
+
+/// #393: read a snapshot back. NotFound and PermissionDenied collapse
+/// onto the "missing" surface so a non-root operator gets the same
+/// `SYSTEM_NOT_SUPPORTED` exit as one running before the daemon ever
+/// started. Parse errors and other IO failures bubble.
+fn read_snapshot(path: &Path) -> Result<SnapshotRead> {
+    match std::fs::read(path) {
+        Ok(bytes) => {
+            let snap: Snapshot = serde_json::from_slice(&bytes)
+                .with_context(|| format!("parsing events status snapshot at {}", path.display()))?;
+            Ok(SnapshotRead::Found(snap))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(SnapshotRead::Missing),
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+            Ok(SnapshotRead::PermissionDenied)
+        }
+        Err(e) => Err(anyhow::Error::from(e).context(format!(
+            "reading events status snapshot at {}",
+            path.display()
+        ))),
+    }
+}
+
+/// `proteus events status` — render the on-disk snapshot the events
+/// daemon writes each second (#393). Returns
+/// [`exit::SYSTEM_NOT_SUPPORTED`] when the snapshot is missing or
+/// stale (>10s old) so wrappers can distinguish "daemon stopped" from
+/// other errors. `--json` parity mirrors the rest of the read surface.
+pub fn status(json: bool, state_path: Option<&Path>) -> Result<u8> {
+    let snapshot_path = status_snapshot_path(state_path);
+    let snap = match read_snapshot(&snapshot_path)? {
+        SnapshotRead::Found(s) => s,
+        SnapshotRead::Missing => return render_not_running(&snapshot_path, json, "missing"),
+        SnapshotRead::PermissionDenied => {
+            return render_not_running(&snapshot_path, json, "permission-denied");
+        }
+    };
+    // Schema-version mismatch: a future-shape snapshot landed under an
+    // older `proteus events status`. Refuse to render rather than
+    // mis-decode; the operator should upgrade the CLI.
+    if snap.schema_version != crate::events::SNAPSHOT_SCHEMA_VERSION {
+        eprintln!(
+            "proteus: events status snapshot at {} has schema_version={} (this CLI understands {}); upgrade proteus",
+            snapshot_path.display(),
+            snap.schema_version,
+            crate::events::SNAPSHOT_SCHEMA_VERSION,
+        );
+        return Ok(exit::CONFIG_ERROR);
+    }
+    let now = crate::events::now_unix_secs();
+    let age = now.saturating_sub(snap.wrote_at_unix);
+    if age > STATUS_FRESHNESS_SECS {
+        return render_not_running(&snapshot_path, json, "stale");
+    }
+    render_status(&snap, age, json)
+}
+
+/// #393: shared "daemon not running" branch — emits the SYSTEM_NOT_SUPPORTED
+/// exit code with a friendly stderr message (or a tiny JSON object when
+/// `--json` is set so wrappers can still parse the failure).
+fn render_not_running(path: &Path, json: bool, reason: &str) -> Result<u8> {
+    if json {
+        super::print_json(&serde_json::json!({
+            "running": false,
+            "reason": reason,
+            "snapshot_path": path.display().to_string(),
+        }))?;
+    } else {
+        eprintln!(
+            "proteus: events daemon not running ({} snapshot at {})",
+            reason,
+            path.display(),
+        );
+        eprintln!("hint: `systemctl status proteus-events` or `proteus events run --help`");
+    }
+    Ok(exit::SYSTEM_NOT_SUPPORTED)
+}
+
+/// #393: render a fresh snapshot to stdout. Human view is one block
+/// per source / per handler so an operator can scan it; the JSON view
+/// emits the snapshot verbatim plus a derived `age_secs` so callers
+/// don't have to re-do the wall-clock math.
+fn render_status(snap: &Snapshot, age_secs: u64, json: bool) -> Result<u8> {
+    if json {
+        // Augment the on-disk shape with a derived `age_secs` field
+        // for parity with the human view. `flatten` keeps the
+        // top-level keys exactly as on disk.
+        super::print_json(&serde_json::json!({
+            "schema_version": snap.schema_version,
+            "pid": snap.pid,
+            "started_at_unix": snap.started_at_unix,
+            "wrote_at_unix": snap.wrote_at_unix,
+            "age_secs": age_secs,
+            "uptime_secs": snap.wrote_at_unix.saturating_sub(snap.started_at_unix),
+            "total_triggers": snap.total_triggers,
+            "total_rate_limited": snap.total_rate_limited,
+            "sources": snap.sources,
+            "handlers": snap.handlers,
+        }))?;
+        return Ok(exit::SUCCESS);
+    }
+    println!("events daemon: running (pid {})", snap.pid);
+    let uptime = snap.wrote_at_unix.saturating_sub(snap.started_at_unix);
+    println!("  uptime:           {}", format_secs(uptime));
+    println!("  snapshot age:     {}s", age_secs);
+    println!("  total triggers:   {}", snap.total_triggers);
+    println!("  rate-limited:     {}", snap.total_rate_limited);
+    println!("\nsources:");
+    for s in &snap.sources {
+        println!(
+            "  - {:<20} status={:<8} fires={:<5} rate_limited={:<3} last_fired={}",
+            s.name,
+            s.status,
+            s.triggers_fired,
+            s.rate_limited,
+            s.last_fired_unix
+                .map(format_unix_iso)
+                .unwrap_or_else(|| "-".into()),
+        );
+    }
+    println!("\nhandlers:");
+    for h in &snap.handlers {
+        println!(
+            "  - {:<20} fires={:<5} panics={:<3} last_fired={}",
+            h.name,
+            h.fires,
+            h.panics,
+            h.last_fired_unix
+                .map(format_unix_iso)
+                .unwrap_or_else(|| "-".into()),
+        );
     }
     Ok(exit::SUCCESS)
 }
@@ -753,6 +1037,25 @@ fn print_sources_human(sources: &[SourceEntry]) {
             println!("  reason: {reason_safe}");
         }
     }
+}
+
+/// #393: humane `s/m/h` rendering for the uptime line. Keeps the
+/// status surface readable without pulling in a duration crate.
+fn format_secs(secs: u64) -> String {
+    if secs < 60 {
+        format!("{secs}s")
+    } else if secs < 3600 {
+        format!("{}m{}s", secs / 60, secs % 60)
+    } else {
+        format!("{}h{}m", secs / 3600, (secs % 3600) / 60)
+    }
+}
+
+/// #393: Unix-epoch → ISO-8601 UTC. Uses the same hand-rolled converter
+/// the rest of the codebase relies on so we keep zero deps.
+fn format_unix_iso(secs: u64) -> String {
+    let (y, mo, d, h, mi, s) = super::unix_to_ymdhms(secs);
+    format!("{y:04}-{mo:02}-{d:02}T{h:02}:{mi:02}:{s:02}Z")
 }
 
 /// Per-source graceful shutdown. Signals every source to stop, waits
@@ -1382,5 +1685,214 @@ mod tests {
     fn list_sources_returns_success_in_both_renderers() {
         assert_eq!(list_sources(false).unwrap(), exit::SUCCESS);
         assert_eq!(list_sources(true).unwrap(), exit::SUCCESS);
+    }
+
+    /// #393: source-name → trigger-kind mapping is the contract the
+    /// snapshot writer relies on. Pin every known source name so a
+    /// future rename (or new source) updates the mapping table
+    /// instead of silently misreporting "idle".
+    #[test]
+    fn source_name_to_kind_covers_every_known_source() {
+        assert_eq!(source_name_to_kind("nm-connection-up"), "connection-up");
+        assert_eq!(source_name_to_kind("link-flap"), "link-flap");
+        assert_eq!(
+            source_name_to_kind("reg-domain-change"),
+            "reg-domain-change"
+        );
+        assert_eq!(source_name_to_kind("portal-auth"), "portal-auth");
+        // Unknown names fall through verbatim — keeps a future
+        // source's live status from silently disappearing.
+        assert_eq!(source_name_to_kind("future-source"), "future-source");
+    }
+
+    /// #393: snapshot path lands next to the state file. Pin so a
+    /// future refactor that moves the state-dir convention also
+    /// updates the snapshot writer + reader together.
+    #[test]
+    fn status_snapshot_path_lives_next_to_state_file() {
+        let p = status_snapshot_path(Some(std::path::Path::new("/tmp/foo/state.json")));
+        assert_eq!(p, std::path::PathBuf::from("/tmp/foo/events-status.json"));
+    }
+
+    /// #393: round-trip a freshly-captured snapshot through
+    /// `write_snapshot` / `read_snapshot` to pin the on-disk shape.
+    /// The atomic-write story is exercised at the
+    /// `commands::mod.rs::write_atomic_tests` layer; this test only
+    /// proves the JSON encoding survives.
+    #[test]
+    fn snapshot_round_trip_through_disk() {
+        let dir =
+            std::env::temp_dir().join(format!("proteus-events-status-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let state_path = dir.join("state.json");
+        // Touch the state path so the snapshot path resolver gives us
+        // a sibling under the tempdir, not the production default.
+        std::fs::write(&state_path, b"{}").unwrap();
+
+        let registry = crate::events::EventRegistry::new();
+        registry
+            .fire(RotationTrigger::ConnectionUp {
+                iface: "wlan0".into(),
+                ssid: Some("home".into()),
+            })
+            .unwrap();
+        // The status snapshot rows are keyed by trigger kind, so the
+        // live closure also takes a kind token.
+        let snap = Snapshot::capture(&registry, 1_700_000_000, 12345, |name| {
+            name == "connection-up"
+        });
+
+        let path = status_snapshot_path(Some(&state_path));
+        write_snapshot(&path, &snap).unwrap();
+        let back = match read_snapshot(&path).unwrap() {
+            SnapshotRead::Found(s) => s,
+            _ => panic!("snapshot read did not find written snapshot"),
+        };
+        assert_eq!(back, snap);
+        assert_eq!(back.pid, 12345);
+        assert_eq!(back.started_at_unix, 1_700_000_000);
+        assert_eq!(back.total_triggers, 1);
+        let nm = back
+            .sources
+            .iter()
+            .find(|s| s.name == "connection-up")
+            .unwrap();
+        assert_eq!(nm.status, "running");
+        assert_eq!(nm.triggers_fired, 1);
+        // A non-live source name should render as idle.
+        let lf = back.sources.iter().find(|s| s.name == "link-flap").unwrap();
+        assert_eq!(lf.status, "idle");
+        assert_eq!(lf.triggers_fired, 0);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #393: `read_snapshot` on an absent file returns
+    /// `SnapshotRead::Missing` so the caller distinguishes "daemon
+    /// never ran" from a parse error.
+    #[test]
+    fn read_snapshot_returns_missing_when_absent() {
+        let dir =
+            std::env::temp_dir().join(format!("proteus-events-no-snap-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("events-status.json");
+        assert!(matches!(
+            read_snapshot(&path).unwrap(),
+            SnapshotRead::Missing
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #393: `status` returns `SYSTEM_NOT_SUPPORTED` when the snapshot
+    /// is missing — the wrapper-friendly "daemon not running" signal.
+    #[test]
+    fn status_returns_system_not_supported_when_no_snapshot() {
+        let dir = std::env::temp_dir().join(format!(
+            "proteus-events-status-missing-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+        let state_path = dir.join("state.json");
+        let rc = status(true, Some(&state_path)).unwrap();
+        assert_eq!(rc, exit::SYSTEM_NOT_SUPPORTED);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #393: a stale snapshot (older than `STATUS_FRESHNESS_SECS`)
+    /// reports the daemon as not running. We write a snapshot with
+    /// `wrote_at_unix` far in the past and confirm the read path
+    /// rejects it.
+    #[test]
+    fn status_treats_stale_snapshot_as_not_running() {
+        let dir = std::env::temp_dir().join(format!("proteus-events-stale-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let state_path = dir.join("state.json");
+        std::fs::write(&state_path, b"{}").unwrap();
+        let snap = Snapshot {
+            schema_version: crate::events::SNAPSHOT_SCHEMA_VERSION,
+            pid: 99,
+            started_at_unix: 1_700_000_000,
+            // Way past STATUS_FRESHNESS_SECS — definitely stale.
+            wrote_at_unix: 1_700_000_001,
+            sources: vec![],
+            handlers: vec![],
+            total_triggers: 0,
+            total_rate_limited: 0,
+        };
+        let path = status_snapshot_path(Some(&state_path));
+        write_snapshot(&path, &snap).unwrap();
+        let rc = status(true, Some(&state_path)).unwrap();
+        assert_eq!(rc, exit::SYSTEM_NOT_SUPPORTED);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #393: a fresh snapshot renders successfully and returns
+    /// `SUCCESS`. The JSON branch is exercised so the writer output
+    /// stays compatible with the renderer.
+    #[test]
+    fn status_returns_success_for_fresh_snapshot() {
+        let dir = std::env::temp_dir().join(format!("proteus-events-fresh-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let state_path = dir.join("state.json");
+        std::fs::write(&state_path, b"{}").unwrap();
+        let now = crate::events::now_unix_secs();
+        let snap = Snapshot {
+            schema_version: crate::events::SNAPSHOT_SCHEMA_VERSION,
+            pid: 99,
+            started_at_unix: now.saturating_sub(120),
+            wrote_at_unix: now,
+            sources: crate::events::KINDS
+                .iter()
+                .map(|k| crate::events::SourceStatus {
+                    name: k.to_string(),
+                    status: "running".to_string(),
+                    triggers_fired: 0,
+                    rate_limited: 0,
+                    last_fired_unix: None,
+                })
+                .collect(),
+            handlers: vec![crate::events::HandlerStatus {
+                name: "rotate-on-trigger".to_string(),
+                fires: 0,
+                panics: 0,
+                last_fired_unix: None,
+            }],
+            total_triggers: 0,
+            total_rate_limited: 0,
+        };
+        let path = status_snapshot_path(Some(&state_path));
+        write_snapshot(&path, &snap).unwrap();
+        let rc = status(true, Some(&state_path)).unwrap();
+        assert_eq!(rc, exit::SUCCESS);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #393: a snapshot from a future schema is refused with a
+    /// CONFIG_ERROR rather than a mis-rendered surface. Pins the
+    /// "upgrade the CLI" contract so a forward-compat change can be
+    /// detected end-to-end.
+    #[test]
+    fn status_refuses_future_schema_version() {
+        let dir =
+            std::env::temp_dir().join(format!("proteus-events-future-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let state_path = dir.join("state.json");
+        std::fs::write(&state_path, b"{}").unwrap();
+        let now = crate::events::now_unix_secs();
+        let snap = Snapshot {
+            schema_version: crate::events::SNAPSHOT_SCHEMA_VERSION + 1,
+            pid: 99,
+            started_at_unix: now.saturating_sub(60),
+            wrote_at_unix: now,
+            sources: vec![],
+            handlers: vec![],
+            total_triggers: 0,
+            total_rate_limited: 0,
+        };
+        let path = status_snapshot_path(Some(&state_path));
+        write_snapshot(&path, &snap).unwrap();
+        let rc = status(true, Some(&state_path)).unwrap();
+        assert_eq!(rc, exit::CONFIG_ERROR);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

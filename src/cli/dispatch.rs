@@ -367,6 +367,8 @@ pub(super) fn dispatch(cli: Cli) -> Result<u8> {
             // Roadmap #283: read-only enumeration of the four event
             // sources + the host-side availability probe for each.
             EventsAction::ListSources { json } => commands::events::list_sources(json),
+            // Roadmap #393: read-only status surface for the running daemon.
+            EventsAction::Status { json } => commands::events::status(json, cli.state.as_deref()),
         },
         // Roadmap Milestone 6: print bundled shell completions.
         Command::Completions { shell } => commands::completions::run(&shell),
@@ -440,7 +442,7 @@ fn apply_json_to_command(cmd: &mut Command) {
             action: TimerAction::Status { json } | TimerAction::List { json },
         }
         | Command::Events {
-            action: EventsAction::ListSources { json },
+            action: EventsAction::ListSources { json } | EventsAction::Status { json },
         }
         | Command::Persona {
             action:

@@ -43,17 +43,46 @@
 //! without the NM dispatcher (networkd, raw) and for triggers the
 //! dispatcher doesn't expose (link-flap, reg-domain, portal-auth).
 
+use std::collections::HashMap;
 use std::panic::AssertUnwindSafe;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
+use serde::{Deserialize, Serialize};
 
 pub mod rate_limit;
 pub mod source;
 
 pub use rate_limit::{Decision, RateLimiter};
+
+/// The four trigger kinds the registry tracks. Listed in a stable order
+/// so the status snapshot's per-source array is deterministic across
+/// daemon restarts (matters for `--json` consumers and snapshot tests).
+pub const KINDS: [&str; 4] = [
+    "connection-up",
+    "link-flap",
+    "reg-domain-change",
+    "portal-auth",
+];
+
+/// Per-trigger-kind counters: how many triggers fired, when the last
+/// one landed, and how many were dropped by the rate limiter. The
+/// daemon writes one of these into the on-disk snapshot consumed by
+/// `proteus events status` (#393).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct KindCounters {
+    /// Number of triggers of this kind the registry observed (post
+    /// rate-limit; matches handler-invocation count).
+    pub fires: u64,
+    /// Number of triggers of this kind the rate limiter dropped.
+    pub rate_limited: u64,
+    /// Unix-epoch seconds of the most recent fire (`None` if the kind
+    /// has never fired in this run). Serialised as a number for stable
+    /// JSON; the CLI renders it as ISO-8601 for the human view.
+    pub last_fired_unix: Option<u64>,
+}
 
 /// The four reactive triggers the framework supports. Each variant
 /// carries enough payload for a handler to make a routing decision
@@ -136,6 +165,19 @@ pub struct EventRegistry {
     /// `proteus events status` can surface it. Atomic so the read is
     /// lock-free and never blocks dispatch.
     handler_panics: AtomicU64,
+    /// Total handler invocations across every kind+handler combination
+    /// — counts `handler.handle(...)` calls that did not panic, so
+    /// `handler_fires + handler_panics` is "post-rate-limit dispatches
+    /// attempted." Atomic so the read path stays lock-free. Surfaced
+    /// to `proteus events status` (#393).
+    handler_fires: AtomicU64,
+    /// Per-kind counters (fires, rate-limited drops, last-fired
+    /// timestamp). Stored behind a mutex because `last_fired_unix` and
+    /// the two counts need to update atomically wrt one another — a
+    /// reader that saw `fires=5, last_fired=None` would be confusing.
+    /// The mutex is uncontended in practice: only `fire` writes, and
+    /// `fire` is already serialised by the handler-vec mutex below.
+    kind_counters: Mutex<HashMap<&'static str, KindCounters>>,
 }
 
 impl EventRegistry {
@@ -143,11 +185,7 @@ impl EventRegistry {
     /// Followed by zero or more `register` calls before the source
     /// loop starts firing.
     pub fn new() -> Self {
-        Self {
-            handlers: Mutex::new(Vec::new()),
-            limiter: RateLimiter::new(),
-            handler_panics: AtomicU64::new(0),
-        }
+        Self::with_limiter(RateLimiter::new())
     }
 
     /// Build a registry with an explicit rate limiter — used by
@@ -155,10 +193,21 @@ impl EventRegistry {
     /// trigger or by an orchestrator that wants to override the
     /// default cap. Production wiring uses [`EventRegistry::new`].
     pub fn with_limiter(limiter: RateLimiter) -> Self {
+        // Pre-seed the per-kind map so a `Snapshot` taken before any
+        // trigger fires still lists every kind with `fires = 0`. Keeps
+        // the on-disk shape consumed by `proteus events status` (#393)
+        // deterministic regardless of which sources have observed
+        // events.
+        let mut kinds = HashMap::with_capacity(KINDS.len());
+        for k in KINDS {
+            kinds.insert(k, KindCounters::default());
+        }
         Self {
             handlers: Mutex::new(Vec::new()),
             limiter,
             handler_panics: AtomicU64::new(0),
+            handler_fires: AtomicU64::new(0),
+            kind_counters: Mutex::new(kinds),
         }
     }
 
@@ -253,6 +302,11 @@ impl EventRegistry {
         let kind = trigger.kind();
         let now = Instant::now();
         if let Decision::RateLimited(consecutive) = self.limiter.check_and_record(kind, now) {
+            // #393: tally limiter drops per-kind so a future
+            // `proteus events status` can answer "why aren't my
+            // triggers firing." Locked inside the same recovery
+            // pattern the handler mutex uses below.
+            self.bump_rate_limited(kind);
             if self.limiter.note_overflow(kind, now).is_some() {
                 tracing::warn!(
                     kind = kind,
@@ -263,6 +317,10 @@ impl EventRegistry {
             }
             return Ok(());
         }
+        // #393: record the kind-fire before dispatch so the snapshot's
+        // "last_fired" reflects observation time, not handler-completion
+        // time (mirrors the `RotateOnTriggerHandler` counter semantics).
+        self.bump_fire(kind);
         let handlers = match self.handlers.lock() {
             Ok(g) => g,
             Err(poisoned) => {
@@ -276,8 +334,14 @@ impl EventRegistry {
             // unwind boundary; subsequent handlers see a fresh frame.
             let result = std::panic::catch_unwind(AssertUnwindSafe(|| h.handle(&trigger)));
             match result {
-                Ok(Ok(())) => {}
+                Ok(Ok(())) => {
+                    self.handler_fires.fetch_add(1, Ordering::SeqCst);
+                }
                 Ok(Err(e)) => {
+                    // Errors still count as "the handler ran" for the
+                    // fires tally — they are observable executions, just
+                    // unhappy ones. Panics get their own counter below.
+                    self.handler_fires.fetch_add(1, Ordering::SeqCst);
                     tracing::warn!(handler_index = idx, kind = kind, "handler error: {e:#}");
                 }
                 Err(payload) => {
@@ -293,6 +357,52 @@ impl EventRegistry {
             }
         }
         Ok(())
+    }
+
+    /// #393: poisoned-mutex-safe access to the per-kind counter map.
+    /// Mirrors the registry's "a handler panic must not silently
+    /// disable counters" stance applied to the handler-vec mutex.
+    fn with_kind_counters<R>(
+        &self,
+        f: impl FnOnce(&mut HashMap<&'static str, KindCounters>) -> R,
+    ) -> R {
+        let mut map = match self.kind_counters.lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        f(&mut map)
+    }
+
+    /// #393: per-kind fire counter + last-fired timestamp update.
+    fn bump_fire(&self, kind: &'static str) {
+        self.with_kind_counters(|map| {
+            let entry = map.entry(kind).or_default();
+            entry.fires = entry.fires.saturating_add(1);
+            entry.last_fired_unix = Some(now_unix_secs());
+        });
+    }
+
+    /// #393: per-kind rate-limited counter. Bumped on every dropped
+    /// trigger, not just the first in a streak, so the snapshot
+    /// reflects total drop volume.
+    fn bump_rate_limited(&self, kind: &'static str) {
+        self.with_kind_counters(|map| {
+            let entry = map.entry(kind).or_default();
+            entry.rate_limited = entry.rate_limited.saturating_add(1);
+        });
+    }
+
+    /// #393: clone the per-kind counters for the snapshot writer.
+    /// Returns the map keyed by the stable token from
+    /// [`RotationTrigger::kind`].
+    pub fn kind_counters_snapshot(&self) -> HashMap<&'static str, KindCounters> {
+        self.with_kind_counters(|map| map.clone())
+    }
+
+    /// #393: total handler invocations (Ok + Err returns). Panics are
+    /// counted separately by [`handler_panic_count`].
+    pub fn handler_fire_count(&self) -> u64 {
+        self.handler_fires.load(Ordering::SeqCst)
     }
 
     /// Roadmap C7: count of handler panics observed since the registry
@@ -316,6 +426,145 @@ impl Default for EventRegistry {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// #393: schema version embedded in every status snapshot. Bump when
+/// the on-disk shape changes incompatibly so old readers refuse to
+/// render a newer snapshot rather than mis-parsing it.
+pub const SNAPSHOT_SCHEMA_VERSION: u32 = 1;
+
+impl Snapshot {
+    /// Build a fresh snapshot from the registry's live counters plus
+    /// the daemon-supplied per-source live/idle state. The `live`
+    /// closure answers "is the source's task currently alive?" — the
+    /// daemon caller derives this from its `tasks: Vec<SourceTask>`.
+    pub fn capture(
+        registry: &EventRegistry,
+        started_at_unix: u64,
+        pid: u32,
+        mut live: impl FnMut(&'static str) -> bool,
+    ) -> Self {
+        let counters = registry.kind_counters_snapshot();
+        let mut sources = Vec::with_capacity(KINDS.len());
+        let mut total_triggers: u64 = 0;
+        let mut total_rate_limited: u64 = 0;
+        for &kind in KINDS.iter() {
+            let c = counters.get(kind).cloned().unwrap_or_default();
+            total_triggers = total_triggers.saturating_add(c.fires);
+            total_rate_limited = total_rate_limited.saturating_add(c.rate_limited);
+            sources.push(SourceStatus {
+                name: kind.to_string(),
+                status: if live(kind) { "running" } else { "idle" }.to_string(),
+                triggers_fired: c.fires,
+                rate_limited: c.rate_limited,
+                last_fired_unix: c.last_fired_unix,
+            });
+        }
+        // Today there is one registered handler (the default
+        // rotation handler). When that changes the daemon should
+        // pass per-handler counters in via a richer accessor; for
+        // now the aggregate registry counters are the source of
+        // truth.
+        let handler = HandlerStatus {
+            name: "rotate-on-trigger".to_string(),
+            fires: registry.handler_fire_count(),
+            panics: registry.handler_panic_count(),
+            // The registry doesn't track "last handler fire" separately
+            // from "last kind fire" — they're the same instant for a
+            // single-handler daemon. Surface the most recent kind fire
+            // as the handler's last-fired so the row is non-empty.
+            last_fired_unix: sources.iter().filter_map(|s| s.last_fired_unix).max(),
+        };
+        Self {
+            schema_version: SNAPSHOT_SCHEMA_VERSION,
+            pid,
+            started_at_unix,
+            wrote_at_unix: now_unix_secs(),
+            sources,
+            handlers: vec![handler],
+            total_triggers,
+            total_rate_limited,
+        }
+    }
+}
+
+/// Wall-clock seconds since the Unix epoch, saturating to `0` if the
+/// clock is set before 1970 (it isn't — this is just a non-panicking
+/// shape we can pass to `SystemTime::duration_since`). Used by the
+/// status-snapshot writer (#393) so the on-disk timestamp survives
+/// serde round-trips as a plain integer.
+pub(crate) fn now_unix_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// #393: on-disk snapshot the events daemon writes periodically so
+/// `proteus events status` (a read-only sibling of `events run`) can
+/// answer "how is the daemon doing?" without an IPC channel. The shape
+/// is the documented public contract: per-source counters, per-handler
+/// counters, daemon uptime, total triggers handled. Schema version
+/// pins the serialisation so a future change is detectable by old
+/// readers.
+///
+/// "Per-source" maps 1:1 to trigger kinds — each production source
+/// (`nm-connection-up`, `link-flap`, `reg-domain-change`,
+/// `portal-auth`) emits a single trigger kind, so the source name and
+/// the trigger kind token are interchangeable in the snapshot. The
+/// `status` of a source is "running" when its `SourceTask` is alive at
+/// snapshot time and "idle" otherwise; "error" is reserved for the
+/// future case where a source records a permanent-failure reason.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Snapshot {
+    /// Schema version. Bump when the on-disk shape changes so old
+    /// `proteus events status` binaries can refuse to render a newer
+    /// snapshot instead of mis-parsing it.
+    pub schema_version: u32,
+    /// Process id of the daemon that wrote this snapshot. The CLI
+    /// uses this for the human-readable header; staleness is judged
+    /// off `wrote_at_unix`, not the pid.
+    pub pid: u32,
+    /// Unix-epoch seconds when the daemon started.
+    pub started_at_unix: u64,
+    /// Unix-epoch seconds when this snapshot was written. The CLI
+    /// compares this against `now` to decide whether the daemon is
+    /// alive (snapshot freshness threshold lives at the read site).
+    pub wrote_at_unix: u64,
+    /// Per-source rows. One entry per known trigger kind; order is
+    /// stable across snapshots (matches [`KINDS`]).
+    pub sources: Vec<SourceStatus>,
+    /// Per-handler rows. Today every daemon registers exactly one
+    /// rotation handler; the shape is plural so a future
+    /// per-component handler registration story doesn't break the
+    /// on-disk contract.
+    pub handlers: Vec<HandlerStatus>,
+    /// Sum of `sources[*].fires` — total triggers post rate-limit.
+    pub total_triggers: u64,
+    /// Sum of `sources[*].rate_limited`.
+    pub total_rate_limited: u64,
+}
+
+/// #393: one source's row in the snapshot. The name is the stable
+/// token from [`source::EventSource::name`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SourceStatus {
+    pub name: String,
+    /// `"running"` | `"idle"` | `"error"`. The daemon decides the
+    /// label at snapshot-write time; the CLI does not interpret it.
+    pub status: String,
+    pub triggers_fired: u64,
+    pub rate_limited: u64,
+    pub last_fired_unix: Option<u64>,
+}
+
+/// #393: one handler's row in the snapshot.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HandlerStatus {
+    pub name: String,
+    pub fires: u64,
+    pub panics: u64,
+    pub last_fired_unix: Option<u64>,
 }
 
 /// Roadmap C7: best-effort downcast of a `Box<dyn Any + Send>` panic
@@ -757,5 +1006,140 @@ mod tests {
 
         assert_eq!(count.load(Ordering::SeqCst), 1);
         assert_eq!(reg.handler_panic_count(), 2);
+    }
+
+    /// #393: every fire bumps the per-kind counter and refreshes the
+    /// last-fired timestamp. Pin so the snapshot writer that surfaces
+    /// these values can't silently regress.
+    #[test]
+    fn fire_bumps_per_kind_counters_and_last_fired_timestamp() {
+        let reg = EventRegistry::new();
+        reg.fire(RotationTrigger::ConnectionUp {
+            iface: "wlan0".into(),
+            ssid: None,
+        })
+        .unwrap();
+        reg.fire(RotationTrigger::ConnectionUp {
+            iface: "wlan0".into(),
+            ssid: None,
+        })
+        .unwrap();
+        reg.fire(RotationTrigger::LinkFlap {
+            iface: "wlan0".into(),
+        })
+        .unwrap();
+        let counters = reg.kind_counters_snapshot();
+        assert_eq!(counters.get("connection-up").unwrap().fires, 2);
+        assert_eq!(counters.get("link-flap").unwrap().fires, 1);
+        assert_eq!(counters.get("portal-auth").unwrap().fires, 0);
+        // Last-fired is recorded for the kinds we fired and absent
+        // for the ones we did not.
+        assert!(
+            counters
+                .get("connection-up")
+                .unwrap()
+                .last_fired_unix
+                .is_some()
+        );
+        assert!(counters.get("link-flap").unwrap().last_fired_unix.is_some());
+        assert!(
+            counters
+                .get("portal-auth")
+                .unwrap()
+                .last_fired_unix
+                .is_none()
+        );
+    }
+
+    /// #393: rate-limited fires bump the per-kind rate_limited counter
+    /// but not the fires counter — they never reached the handlers.
+    #[test]
+    fn rate_limited_fires_only_bump_rate_limited_counter() {
+        use std::time::Duration;
+        let reg =
+            EventRegistry::with_limiter(RateLimiter::with_capacity(1, Duration::from_secs(60)));
+        // First fire passes the limiter; second is dropped.
+        reg.fire(RotationTrigger::LinkFlap {
+            iface: "wlan0".into(),
+        })
+        .unwrap();
+        reg.fire(RotationTrigger::LinkFlap {
+            iface: "wlan0".into(),
+        })
+        .unwrap();
+        let counters = reg.kind_counters_snapshot();
+        let lf = counters.get("link-flap").unwrap();
+        assert_eq!(lf.fires, 1);
+        assert_eq!(lf.rate_limited, 1);
+    }
+
+    /// #393: handler fire counter advances per dispatch (Ok and Err
+    /// both count). Pre-fix the registry only tracked panics; this
+    /// test pins the new shape so a future refactor can't silently
+    /// stop counting.
+    #[test]
+    fn handler_fire_counter_advances_on_each_dispatch() {
+        let count = Arc::new(AtomicUsize::new(0));
+        let last = Arc::new(Mutex::new(None));
+        let reg = EventRegistry::new();
+        reg.register(Box::new(CountingHandler {
+            count: Arc::clone(&count),
+            last_kind: Arc::clone(&last),
+        }))
+        .unwrap();
+        assert_eq!(reg.handler_fire_count(), 0);
+        for _ in 0..3 {
+            reg.fire(RotationTrigger::LinkFlap {
+                iface: "wlan0".into(),
+            })
+            .unwrap();
+        }
+        assert_eq!(reg.handler_fire_count(), 3);
+    }
+
+    /// #393: `Snapshot::capture` matches the live registry state and
+    /// labels sources `running` vs `idle` based on the `live` closure.
+    #[test]
+    fn snapshot_capture_reflects_registry_and_live_set() {
+        let reg = EventRegistry::new();
+        reg.fire(RotationTrigger::ConnectionUp {
+            iface: "wlan0".into(),
+            ssid: None,
+        })
+        .unwrap();
+        reg.fire(RotationTrigger::PortalAuth {
+            ssid: "Cafe".into(),
+        })
+        .unwrap();
+        // The live closure receives trigger-kind tokens (matching the
+        // snapshot row key, not the source-task name).
+        let snap = Snapshot::capture(&reg, 1_700_000_000, 42, |name| {
+            name == "connection-up" || name == "portal-auth"
+        });
+        assert_eq!(snap.schema_version, SNAPSHOT_SCHEMA_VERSION);
+        assert_eq!(snap.pid, 42);
+        assert_eq!(snap.started_at_unix, 1_700_000_000);
+        assert_eq!(snap.total_triggers, 2);
+        // Sources are ordered per `KINDS` and labelled per the live
+        // closure.
+        let names: Vec<&str> = snap.sources.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, KINDS.to_vec());
+        let nm = snap
+            .sources
+            .iter()
+            .find(|s| s.name == "connection-up")
+            .unwrap();
+        assert_eq!(nm.status, "running");
+        assert_eq!(nm.triggers_fired, 1);
+        let lf = snap.sources.iter().find(|s| s.name == "link-flap").unwrap();
+        assert_eq!(lf.status, "idle");
+        assert_eq!(lf.triggers_fired, 0);
+        // Single handler row with the aggregate fires/panics.
+        assert_eq!(snap.handlers.len(), 1);
+        assert_eq!(snap.handlers[0].name, "rotate-on-trigger");
+        // No handlers were registered, so fires stays at 0 even though
+        // two triggers landed.
+        assert_eq!(snap.handlers[0].fires, 0);
+        assert_eq!(snap.handlers[0].panics, 0);
     }
 }
