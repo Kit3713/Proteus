@@ -154,6 +154,34 @@ pub const HP: &[OuiPrefix] = &[
     [0xB4, 0x99, 0xBA],
 ];
 
+/// Espressif — covers `iot-generic` and any ESP32/ESP8266-flavoured persona.
+/// IEEE OUI allocations to Espressif Inc. (canonical, widely-published).
+pub const ESPRESSIF: &[OuiPrefix] = &[
+    [0x24, 0x0A, 0xC4],
+    [0x24, 0x62, 0xAB],
+    [0x30, 0xAE, 0xA4],
+    [0x68, 0xC6, 0x3A],
+    [0x7C, 0x9E, 0xBD],
+    [0x94, 0xB9, 0x7E],
+    [0xA0, 0x20, 0xA6],
+    [0xCC, 0x50, 0xE3],
+    [0xEC, 0xFA, 0xBC],
+];
+
+/// Realtek — covers `iot-generic` and any Realtek-chipset-flavoured persona.
+/// IEEE OUI allocations to Realtek Semiconductor Corp. `52:54:00` is the
+/// QEMU/KVM virtual-NIC range Realtek originally registered, kept because
+/// virtual IoT gear ships with it routinely.
+pub const REALTEK: &[OuiPrefix] = &[
+    [0x00, 0x13, 0x33],
+    [0x00, 0xE0, 0x4C],
+    [0x00, 0xE0, 0x7D],
+    [0x52, 0x54, 0x00],
+    [0x00, 0x21, 0xCC],
+    [0x10, 0xEC, 0x4F],
+    [0xB0, 0xC0, 0x90],
+];
+
 #[derive(Debug, Clone, Copy)]
 pub enum Vendor {
     Apple,
@@ -170,6 +198,8 @@ pub enum Vendor {
     Sony,
     Nintendo,
     Hp,
+    Espressif,
+    Realtek,
     IotGeneric,
     LocallyAdministered,
 }
@@ -191,6 +221,8 @@ impl Vendor {
             "sony" => Some(Self::Sony),
             "nintendo" => Some(Self::Nintendo),
             "hp" | "hewlett-packard" => Some(Self::Hp),
+            "espressif" => Some(Self::Espressif),
+            "realtek" => Some(Self::Realtek),
             "iot-generic" | "generic-iot" => Some(Self::IotGeneric),
             "random-locally-administered" | "laa" | "locally-administered" => {
                 Some(Self::LocallyAdministered)
@@ -215,6 +247,8 @@ impl Vendor {
             Self::Sony => Some(SONY),
             Self::Nintendo => Some(NINTENDO),
             Self::Hp => Some(HP),
+            Self::Espressif => Some(ESPRESSIF),
+            Self::Realtek => Some(REALTEK),
             Self::IotGeneric => Some(IOT_GENERIC),
             Self::LocallyAdministered => None,
         }
@@ -309,6 +343,8 @@ mod tests {
             Vendor::Sony,
             Vendor::Nintendo,
             Vendor::Hp,
+            Vendor::Espressif,
+            Vendor::Realtek,
             Vendor::IotGeneric,
         ] {
             let prefs = v.prefixes().unwrap();
@@ -332,6 +368,8 @@ mod tests {
             ("sony", SONY[0][0]),
             ("nintendo", NINTENDO[0][0]),
             ("hp", HP[0][0]),
+            ("espressif", ESPRESSIF[0][0]),
+            ("realtek", REALTEK[0][0]),
             ("iot-generic", IOT_GENERIC[0][0]),
         ] {
             let v = Vendor::from_pool_token(tok)
@@ -402,5 +440,40 @@ mod tests {
         let tokens = vec!["unknown1".to_string(), "unknown2".to_string()];
         let out = resolve_vendor_tokens(&tokens);
         assert!(out.is_empty());
+    }
+
+    /// Stream 2 V11 follow-up: `iot-generic` carries `espressif` and
+    /// `realtek` tokens that must now resolve to real OUI prefixes rather
+    /// than degrading to LAA.
+    #[test]
+    fn espressif_and_realtek_tokens_resolve() {
+        let esp = Vendor::from_pool_token("espressif").expect("espressif must resolve");
+        let rt = Vendor::from_pool_token("realtek").expect("realtek must resolve");
+        assert!(matches!(esp, Vendor::Espressif));
+        assert!(matches!(rt, Vendor::Realtek));
+        assert!(!esp.prefixes().unwrap().is_empty());
+        assert!(!rt.prefixes().unwrap().is_empty());
+    }
+
+    /// Stream 2 V11 follow-up: the canonical `iot-generic` persona pool
+    /// (`espressif`, `realtek`, `random-locally-administered`) must
+    /// resolve to at least one prefix per non-LAA token with no unknown
+    /// tokens dropped.
+    #[test]
+    fn iot_generic_persona_pool_resolves_cleanly() {
+        let tokens = vec![
+            "espressif".to_string(),
+            "realtek".to_string(),
+            "random-locally-administered".to_string(),
+        ];
+        let out = resolve_vendor_tokens(&tokens);
+        // LAA contributes nothing — the other two each contribute their slice.
+        assert_eq!(out.len(), ESPRESSIF.len() + REALTEK.len());
+        for p in ESPRESSIF {
+            assert!(out.contains(p), "espressif prefix {p:?} missing");
+        }
+        for p in REALTEK {
+            assert!(out.contains(p), "realtek prefix {p:?} missing");
+        }
     }
 }

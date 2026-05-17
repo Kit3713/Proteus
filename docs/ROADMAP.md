@@ -366,11 +366,10 @@ P1, P7, NMOD.4, NTEST.1.
 - ✅ Validate `quorum_n <= quorum_total` (V3).
 - ✅ Bound second-precision durations (V4); bound `tx_power_reduction_db` (V5).
 - ✅ Validate `pin_mac` format at load (V7) via `Mac::from_str`.
-- 🟡 Validate persona OUI pool (V11). User personas now hard-fail on an
-  unknown vendor token; built-in `iot-generic` keeps its `espressif` /
-  `realtek` shape-only tokens until the OUI-catalogue extension (Stream
-  owning `src/mac/oui.rs`) lands. Tracked separately as a follow-up so
-  Stream 2 doesn't widen scope into the MAC stream.
+- ✅ Validate persona OUI pool (V11). User personas hard-fail on an
+  unknown vendor token; the OUI catalogue (`src/mac/oui.rs`) now carries
+  `Espressif` and `Realtek` variants so `iot-generic`'s shape-only
+  tokens resolve to real IEEE prefixes rather than degrading to LAA.
 - ✅ Fix `parse_duration` overflow (N12.4) and the multibyte-trailing-char
   panic in `is_valid_per_ssid_duration` (N12.5) — shipped together.
 - ✅ Constrain `clap` `u32`/`u64`/`usize` flags to sane ranges (N12.12).

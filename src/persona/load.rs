@@ -181,14 +181,12 @@ pub fn validate_bytes(bytes: &[u8], origin: &str) -> Result<Persona> {
     Ok(p)
 }
 
-/// V11 / GH#382: user-persona-only semantic checks. Built-ins ship with
-/// known shape-quirks (e.g. `iot-generic` carrying `espressif`/`realtek`
-/// tokens that aren't in `Vendor::from_pool_token`); fixing those
-/// requires an OUI catalogue extension that's tracked separately and
-/// owned by the MAC stream. Until that lands, we hold user-authored
+/// V11 / GH#382: user-persona-only semantic checks. Hold user-authored
 /// personas to the stricter "every vendor token must resolve" standard
 /// so a fresh hand-edited persona doesn't silently degrade to LAA at
-/// apply time.
+/// apply time. The OUI catalogue (`src/mac/oui.rs`) carries every vendor
+/// token that built-in personas reference, so this check is symmetric
+/// for built-ins and user personas alike.
 fn validate_user_only(p: &Persona) -> Result<()> {
     for token in &p.oui_pool {
         // Literal `aa:bb:cc` prefixes pass through unchanged.
@@ -198,7 +196,7 @@ fn validate_user_only(p: &Persona) -> Result<()> {
         if crate::mac::oui::Vendor::from_pool_token(token).is_none() {
             anyhow::bail!(
                 "persona '{}' oui_pool entry '{token}' is not a known vendor name and not an OUI literal 'aa:bb:cc'; \
-                 known vendors include apple, intel, samsung, dell, google, microsoft, lg, tplink, asus, roku, amazon, sony, nintendo, hp, iot-generic, random-locally-administered \
+                 known vendors include apple, intel, samsung, dell, google, microsoft, lg, tplink, asus, roku, amazon, sony, nintendo, hp, espressif, realtek, iot-generic, random-locally-administered \
                  (see `proteus wiki personas`)",
                 p.id
             );
@@ -673,11 +671,12 @@ mod tests {
     }
 
     /// V11 / GH#382: a user-authored persona that lists an unknown
-    /// vendor token (the GH#382 case is `espressif` / `realtek`)
-    /// must hard-fail at validate time, not silently degrade to LAA
-    /// at apply time. Built-ins go through `schema_check` only —
-    /// `validate_user_only` is layered on top in `validate` /
-    /// `validate_bytes`, the user-import paths.
+    /// vendor token must hard-fail at validate time, not silently
+    /// degrade to LAA at apply time. Built-ins go through `schema_check`
+    /// only — `validate_user_only` is layered on top in `validate` /
+    /// `validate_bytes`, the user-import paths. (`espressif` / `realtek`
+    /// — the GH#382 follow-up tokens — now resolve, so this test uses
+    /// a token that remains unmapped in `Vendor::from_pool_token`.)
     #[test]
     fn user_persona_with_unknown_vendor_token_is_rejected() {
         let body = r#"
@@ -685,7 +684,7 @@ id = "rogue-iot"
 display_name = "Rogue IoT"
 kind = "stealth"
 category = "iot"
-oui_pool = ["espressif"]
+oui_pool = ["definitely-not-a-vendor"]
 hostname_template = "esp-{n}"
 mdns_advertise = false
 bt_name_template = ""
@@ -694,7 +693,7 @@ notes = "user persona that should fail"
         let err = validate_bytes(body.as_bytes(), "<test>").unwrap_err();
         let msg = format!("{err:#}");
         assert!(
-            msg.contains("oui_pool") && msg.contains("espressif"),
+            msg.contains("oui_pool") && msg.contains("definitely-not-a-vendor"),
             "expected unknown-vendor reject, got: {msg}"
         );
     }
