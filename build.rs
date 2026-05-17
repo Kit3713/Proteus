@@ -15,6 +15,7 @@ use std::ffi::OsStr;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 fn main() {
     let manifest_dir = PathBuf::from(
@@ -37,6 +38,18 @@ fn main() {
     // and emits its rerun-if-changed for the next build).
     println!("cargo:rerun-if-changed=wiki");
     println!("cargo:rerun-if-changed=build.rs");
+
+    // Issue #376: emit `proteus version --json` metadata at build time so the
+    // runtime doesn't shell out. Each value falls back to a clearly-tagged
+    // sentinel rather than panicking — reproducible-build environments and
+    // source tarballs without `.git/` must still compile.
+    //
+    // `cargo:rerun-if-env-changed` lines below ensure CI / reproducible-build
+    // pipelines that rewrite these env vars invalidate the cached value.
+    println!("cargo:rerun-if-env-changed=PROTEUS_GIT_SHA");
+    println!("cargo:rerun-if-env-changed=SOURCE_DATE_EPOCH");
+    println!("cargo:rerun-if-env-changed=TARGET");
+    emit_build_metadata(&manifest_dir);
 
     let mut entries: Vec<(String, PathBuf)> = Vec::new();
     match fs::read_dir(&wiki_dir) {
@@ -151,6 +164,101 @@ fn rust_str(s: &str) -> String {
     }
     buf.push('"');
     buf
+}
+
+/// Issue #376: stamp git sha, rustc version, target triple, and a
+/// reproducible-friendly build timestamp into `cargo:rustc-env` lines so the
+/// runtime can read them via `env!(...)` without shelling out at startup.
+///
+/// Every probe is best-effort: a missing `.git/`, an absent `rustc` on PATH,
+/// or a sandbox that strips env vars all degrade to the literal string
+/// `"unknown"` rather than failing the build. Source tarballs and Gentoo
+/// ebuilds set `PROTEUS_GIT_SHA` / `SOURCE_DATE_EPOCH` explicitly to recover
+/// the values the in-tree probes would have picked up.
+fn emit_build_metadata(manifest_dir: &Path) {
+    let git_sha = env::var("PROTEUS_GIT_SHA")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .or_else(|| git_short_sha(manifest_dir))
+        .unwrap_or_else(|| "unknown".to_string());
+    println!("cargo:rustc-env=PROTEUS_GIT_SHA={git_sha}");
+
+    let build_time = reproducible_build_time();
+    println!("cargo:rustc-env=PROTEUS_BUILD_TIME={build_time}");
+
+    let rustc = rustc_version().unwrap_or_else(|| "unknown".to_string());
+    println!("cargo:rustc-env=PROTEUS_RUSTC_VERSION={rustc}");
+
+    // `TARGET` is always set by cargo for the active build; fall back only
+    // out of paranoia for hand-rolled invocations.
+    let target = env::var("TARGET").unwrap_or_else(|_| "unknown".to_string());
+    println!("cargo:rustc-env=PROTEUS_TARGET={target}");
+}
+
+/// `git rev-parse --short HEAD` from the manifest dir, or `None` if git is
+/// unavailable or the tree isn't a checkout (source tarball).
+fn git_short_sha(manifest_dir: &Path) -> Option<String> {
+    let output = Command::new("git")
+        .args(["rev-parse", "--short", "HEAD"])
+        .current_dir(manifest_dir)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let s = String::from_utf8(output.stdout).ok()?.trim().to_string();
+    if s.is_empty() { None } else { Some(s) }
+}
+
+/// `rustc -V` so the runtime can surface the toolchain that built the binary.
+/// Newline-trimmed; "unknown" fallback wired by the caller.
+fn rustc_version() -> Option<String> {
+    let rustc = env::var("RUSTC").unwrap_or_else(|_| "rustc".to_string());
+    let output = Command::new(rustc).arg("-V").output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let s = String::from_utf8(output.stdout).ok()?.trim().to_string();
+    if s.is_empty() { None } else { Some(s) }
+}
+
+/// Pick a build timestamp suitable for reproducible builds: prefer
+/// `SOURCE_DATE_EPOCH` (the cross-distro convention) when set, otherwise the
+/// current UTC time. Formatted as ISO-8601 `YYYY-MM-DDTHH:MM:SSZ`.
+fn reproducible_build_time() -> String {
+    let secs = env::var("SOURCE_DATE_EPOCH")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or_else(|| {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0)
+        });
+    format_iso8601_utc(secs)
+}
+
+/// Hand-rolled UTC ISO-8601 — mirrors `commands::now_iso8601` so we stay
+/// zero-dep. Civil-from-days algorithm by Howard Hinnant (public domain).
+fn format_iso8601_utc(mut t: u64) -> String {
+    let s = (t % 60) as u32;
+    t /= 60;
+    let mi = (t % 60) as u32;
+    t /= 60;
+    let h = (t % 24) as u32;
+    t /= 24;
+    let mut days = t as i64;
+    days += 719_468;
+    let era = days.div_euclid(146_097);
+    let doe = days.rem_euclid(146_097) as u64;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
+    let y = (yoe as i64 + era * 400) as u32;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let mo = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    let y = if mo <= 2 { y + 1 } else { y };
+    format!("{y:04}-{mo:02}-{d:02}T{h:02}:{mi:02}:{s:02}Z")
 }
 
 fn write_if_changed(dest: &Path, bytes: &[u8]) {

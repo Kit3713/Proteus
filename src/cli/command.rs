@@ -339,4 +339,18 @@ pub enum Command {
         /// Shell to print completions for: bash, zsh, or fish.
         shell: String,
     },
+    /// Print build provenance (package version, git sha, rustc, target,
+    /// build time, state schema version).
+    ///
+    /// Issue #376: CI and GUI wrappers need a stable, machine-readable
+    /// shape for "which proteus is this?". Pass `--json` for the wrapper
+    /// surface; the bare form is human-readable. `proteus about` is an
+    /// alias for the bare form.
+    Version {
+        /// Emit JSON instead of human-readable output.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Friendly alias for `proteus version` (human-readable).
+    About,
 }

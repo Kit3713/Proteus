@@ -340,6 +340,10 @@ pub(super) fn dispatch(cli: Cli) -> Result<u8> {
         },
         // Roadmap Milestone 6: print bundled shell completions.
         Command::Completions { shell } => commands::completions::run(&shell),
+        // Issue #376: build-provenance reader for CI / GUI wrappers.
+        // `about` is a friendly alias for the bare `version` form.
+        Command::Version { json } => commands::version::run(json),
+        Command::About => commands::version::run(false),
     }
 }
 
@@ -423,6 +427,7 @@ fn apply_json_to_command(cmd: &mut Command) {
             ..
         }
         | Command::Resume { json, .. }
+        | Command::Version { json }
         | Command::Config {
             action:
                 ConfigAction::Show { json }
