@@ -504,6 +504,14 @@ pub enum PersonaAction {
         #[arg(long)]
         force: bool,
     },
+    /// Case-insensitive search across persona id / display_name / notes /
+    /// category / kind. Ranks id exact > id prefix > field substring.
+    Search {
+        /// Query string (case-insensitive substring match).
+        query: String,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 /// `proteus ssid ...` — roadmap Milestone 3.

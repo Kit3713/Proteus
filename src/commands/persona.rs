@@ -118,6 +118,7 @@ pub fn run(action: PersonaAction, config_override: Option<&Path>) -> Result<u8> 
             yes,
             force,
         } => export(&id, &path, yes, force, &user_root),
+        PersonaAction::Search { query, json } => run_search(&query, json, &user_root),
     }
 }
 
@@ -409,6 +410,101 @@ fn random(kind: Option<&str>, category: Option<&str>, json: bool, user_root: &Pa
     }
     println!("{}", pick.id);
     Ok(exit::SUCCESS)
+}
+
+// ---- search ----------------------------------------------------------
+
+/// Match-quality bucket. Lower rank sorts first (best fit), so callers can
+/// stable-sort by `(rank, id)` and the natural output order falls out.
+///
+/// Order:
+/// 1. `IdExact` — query equals persona id (case-insensitive).
+/// 2. `IdPrefix` — id starts with the query.
+/// 3. `Substring` — query appears in id, display_name, notes, category, or kind.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum SearchRank {
+    IdExact = 0,
+    IdPrefix = 1,
+    Substring = 2,
+}
+
+/// Search across the catalogue (built-in + user). Loads each persona body
+/// once so the `notes` field is in scope; the catalogue is small (~30
+/// built-ins + the operator's user dir), so the full-load cost is fine.
+///
+/// Schema-invalid personas are skipped — `persona list` already surfaces
+/// them with `[INVALID]` markers, and search results that include
+/// un-`use`-able entries would be a footgun.
+pub fn run_search(query: &str, json: bool, user_root: &Path) -> Result<u8> {
+    let needle = query.trim().to_ascii_lowercase();
+    if needle.is_empty() {
+        eprintln!("proteus: empty search query — pass a non-empty string");
+        return Ok(exit::CONFIG_ERROR);
+    }
+
+    let mut hits: Vec<(SearchRank, PersonaSummary)> = Vec::new();
+    for summary in load::list_all(user_root) {
+        if !summary.valid {
+            continue;
+        }
+        let Some(rank) = rank_persona(&summary, &needle, user_root)? else {
+            continue;
+        };
+        hits.push((rank, summary));
+    }
+    // Stable sort by (rank, id). `list_all` already returns id-sorted
+    // entries, so within a rank bucket the alphabetic order is preserved.
+    hits.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.id.cmp(&b.1.id)));
+
+    let matches: Vec<PersonaSummary> = hits.into_iter().map(|(_, s)| s).collect();
+    if json {
+        super::print_json(&matches)?;
+        return Ok(exit::SUCCESS);
+    }
+    for s in &matches {
+        println!(
+            "{}  {}/{}  {}",
+            display_safe(&s.id),
+            s.category.name(),
+            s.kind.name(),
+            display_safe(&s.display_name),
+        );
+    }
+    Ok(exit::SUCCESS)
+}
+
+/// Decide whether (and how strongly) a persona matches the lowercased
+/// `needle`. Returns `None` when nothing matches. `notes` is read by
+/// re-loading the persona body — the `PersonaSummary` only carries id,
+/// display_name, kind, category, source.
+fn rank_persona(
+    summary: &PersonaSummary,
+    needle: &str,
+    user_root: &Path,
+) -> Result<Option<SearchRank>> {
+    let id_lc = summary.id.to_ascii_lowercase();
+    if id_lc == needle {
+        return Ok(Some(SearchRank::IdExact));
+    }
+    if id_lc.starts_with(needle) {
+        return Ok(Some(SearchRank::IdPrefix));
+    }
+    if id_lc.contains(needle)
+        || summary.display_name.to_ascii_lowercase().contains(needle)
+        || summary.category.name().contains(needle)
+        || summary.kind.name().contains(needle)
+    {
+        return Ok(Some(SearchRank::Substring));
+    }
+    // `notes` is not in the summary. Load on demand; a miss here just
+    // returns `None`. Errors propagate so a broken persona surfaces as
+    // a hard fail rather than silently dropping search hits.
+    if let Some((p, _)) = load::load(&summary.id, user_root)?
+        && p.notes.to_ascii_lowercase().contains(needle)
+    {
+        return Ok(Some(SearchRank::Substring));
+    }
+    Ok(None)
 }
 
 // ---- new / edit / validate / import / export -------------------------
@@ -829,6 +925,84 @@ mod tests {
         // The symlink itself stays in place.
         let meta = std::fs::symlink_metadata(&dest).unwrap();
         assert!(meta.file_type().is_symlink());
+    }
+
+    /// #383: `search <query>` parses with a positional + `--json`.
+    #[test]
+    fn cli_parses_search_with_json() {
+        let w = Wrap::try_parse_from(["x", "search", "apple", "--json"]).expect("parse");
+        match w.cmd {
+            PersonaAction::Search { query, json } => {
+                assert_eq!(query, "apple");
+                assert!(json);
+            }
+            _ => panic!("wrong action"),
+        }
+    }
+
+    /// #383: empty query refuses with CONFIG_ERROR; whitespace-only is
+    /// the same case after trimming.
+    #[test]
+    fn run_search_rejects_empty_query() {
+        let tmp = crate::testing::TempRoot::new("persona-search-empty");
+        let rc = run_search("   ", false, &tmp.path).expect("call ok");
+        assert_eq!(rc, crate::exit::CONFIG_ERROR);
+    }
+
+    /// #383: a query that matches no persona exits SUCCESS with no
+    /// stdout — the e2e recipe pins this contract.
+    #[test]
+    fn run_search_no_matches_returns_success() {
+        let tmp = crate::testing::TempRoot::new("persona-search-nomatch");
+        let rc = run_search("definitely-nope-xyz", false, &tmp.path).expect("call ok");
+        assert_eq!(rc, crate::exit::SUCCESS);
+    }
+
+    /// #383: known built-ins surface on a substring match. `iphone-15`
+    /// has the literal token in both id and display_name, so it must
+    /// land in the results regardless of how `notes` is shaped.
+    #[test]
+    fn run_search_finds_known_builtin_by_id_substring() {
+        let tmp = crate::testing::TempRoot::new("persona-search-iphone");
+        // Smoke: call returns SUCCESS. Stdout isn't captured in unit
+        // tests; the ranking logic is exercised directly below.
+        let rc = run_search("iphone", false, &tmp.path).expect("call ok");
+        assert_eq!(rc, crate::exit::SUCCESS);
+    }
+
+    /// #383: ranking — id-exact beats id-prefix beats substring. Build
+    /// three synthetic summaries against a real id ("iphone-15") and
+    /// confirm the bucket each query lands in.
+    #[test]
+    fn rank_persona_buckets_exact_prefix_and_substring() {
+        let tmp = crate::testing::TempRoot::new("persona-search-rank");
+        let s = crate::persona::PersonaSummary {
+            id: "iphone-15".into(),
+            display_name: "iPhone 15".into(),
+            kind: crate::persona::PersonaKind::Stealth,
+            category: crate::persona::PersonaCategory::Phone,
+            source: crate::persona::PersonaSource::Builtin,
+            valid: true,
+            schema_error: None,
+        };
+        assert_eq!(
+            rank_persona(&s, "iphone-15", &tmp.path).unwrap(),
+            Some(SearchRank::IdExact)
+        );
+        assert_eq!(
+            rank_persona(&s, "iphone", &tmp.path).unwrap(),
+            Some(SearchRank::IdPrefix)
+        );
+        assert_eq!(
+            rank_persona(&s, "15", &tmp.path).unwrap(),
+            Some(SearchRank::Substring)
+        );
+        // Category match — "phone" is the category name.
+        assert_eq!(
+            rank_persona(&s, "phone", &tmp.path).unwrap(),
+            Some(SearchRank::Substring)
+        );
+        assert_eq!(rank_persona(&s, "nothere", &tmp.path).unwrap(), None);
     }
 
     /// Issue #286 — happy path: writing to a fresh path lands a 0o600
