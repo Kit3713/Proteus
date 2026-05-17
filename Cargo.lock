@@ -515,7 +515,7 @@ dependencies = [
 
 [[package]]
 name = "proteus"
-version = "0.4.3-beta"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "clap",
