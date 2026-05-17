@@ -557,12 +557,15 @@ jobs:
   # Copr project so Fedora users can `dnf copr enable kit3713/proteus`
   # and pull the package straight from the official Fedora build farm.
   #
-  # Requires three repo secrets configured at
+  # Requires four repo configuration values at
   # `https://github.com/Kit3713/Proteus/settings/secrets/actions`:
   #
+  # Secrets (encrypted, never logged):
   #   COPR_LOGIN     — value of `login` from copr.fedorainfracloud.org/api/
-  #   COPR_USERNAME  — FAS username (typically same as Copr owner)
   #   COPR_TOKEN     — value of `token` from copr.fedorainfracloud.org/api/
+  #
+  # Variables (non-sensitive, visible in logs):
+  #   COPR_USERNAME  — FAS username (typically same as Copr owner)
   #   COPR_PROJECT   — `<owner>/<project>` (e.g. `kit3713/proteus`)
   #
   # See `dist/copr/README.md` for the one-time setup walkthrough.
@@ -588,7 +591,7 @@ jobs:
       - name: Configure copr-cli (skip when secrets unset)
         env:
           COPR_LOGIN: ${{ secrets.COPR_LOGIN }}
-          COPR_USERNAME: ${{ secrets.COPR_USERNAME }}
+          COPR_USERNAME: ${{ vars.COPR_USERNAME }}
           COPR_TOKEN: ${{ secrets.COPR_TOKEN }}
         run: |
           set -eu
@@ -609,10 +612,10 @@ jobs:
       - name: Submit SRPM to Copr
         if: env.COPR_SKIP != '1'
         env:
-          COPR_PROJECT: ${{ secrets.COPR_PROJECT }}
+          COPR_PROJECT: ${{ vars.COPR_PROJECT }}
         run: |
           set -euo pipefail
-          : "${COPR_PROJECT:?COPR_PROJECT secret must be set (e.g. kit3713/proteus)}"
+          : "${COPR_PROJECT:?COPR_PROJECT variable must be set (e.g. kit3713/proteus)}"
           SRPM=$(ls rpm-artifacts/*.src.rpm | head -1)
           if [ -z "$SRPM" ]; then
             echo "::error::no .src.rpm found in proteus-rpm artifact"

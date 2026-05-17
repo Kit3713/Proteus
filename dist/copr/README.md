@@ -41,15 +41,24 @@ If you don't already have one: <https://accounts.fedoraproject.org>.
    values out — you'll paste them as GitHub secrets, not as a config
    file in the repo.
 
-### 4. Add four GitHub Actions secrets
+### 4. Add four GitHub Actions config values
 
-Settings → Secrets and variables → Actions → New repository secret:
+Settings → Secrets and variables → Actions. Split across the two tabs
+so non-sensitive values are visible in logs (helpful for debugging)
+and the auth bits stay encrypted:
+
+**Secrets tab** → New repository secret:
 
 | Secret name      | Value                                                                  |
 | ---------------- | ---------------------------------------------------------------------- |
-| `COPR_LOGIN`     | the `login` line from the API page                                     |
+| `COPR_LOGIN`     | the `login` line from the API page (opaque auth string)                |
+| `COPR_TOKEN`     | the `token` line from the API page (opaque auth string)                |
+
+**Variables tab** → New repository variable:
+
+| Variable name    | Value                                                                  |
+| ---------------- | ---------------------------------------------------------------------- |
 | `COPR_USERNAME`  | your FAS username (typically same as Copr owner)                       |
-| `COPR_TOKEN`     | the `token` line from the API page                                     |
 | `COPR_PROJECT`   | `<owner>/<project>` — e.g. `kit3713/proteus`                           |
 
 The `publish-copr` job no-ops gracefully when `COPR_TOKEN` is unset, so
