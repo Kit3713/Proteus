@@ -282,6 +282,12 @@ pub enum ConfigAction {
     Show {
         #[arg(long)]
         json: bool,
+        /// Roadmap #404: append a per-section provenance label to each
+        /// key/section in the output (`file`, `profile:<name>`,
+        /// `per-ssid:<ssid>`, `default`). `--origin` is the documented
+        /// alias.
+        #[arg(long, alias = "origin")]
+        annotate: bool,
     },
     /// Print a single config value (e.g. `mac.enabled`).
     Get {

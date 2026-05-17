@@ -50,7 +50,7 @@ Manage `/etc/proteus/config.toml` from the CLI instead of hand-editing. Read sub
 
 Sub-subcommands:
 
-- `show [--json]` — print active config; alias for `proteus show-config`. Exit `0` success · `65` parse failure · `66` permission denied.
+- `show [--json] [--annotate|--origin]` — print active config; alias for `proteus show-config`. With `--annotate` (alias `--origin`), each section is suffixed with `# <source>` showing its provenance (`file` if the user wrote it, `profile:<name>` if it falls back to the active profile baseline, `per-ssid:<ssid>` for per-SSID overrides, or `default` for the built-in default when no profile is set). Granularity is section-level: every key inside a section shares its header's label. Field-level provenance is a follow-up (#404). With `--json`, the resolved config is paired with a `_origins` map keyed by section name. Exit `0` success · `65` parse failure · `66` permission denied.
 - `get <key> [--json]` — print a single dotted key, e.g. `mac.enabled`. Falls back to the built-in default when the user config doesn't set the key. Exit `0` success · `65` unknown key.
 - `set <key> <value> --yes` — coerce `<value>` to the existing key's type (bool/int/string/array) and write atomically. Exit `0` success · `65` unknown key or invalid value · `66` not root.
 - `set-profile <name> --yes` — write `profile = "<name>"` at the top of `/etc/proteus/config.toml`. Per-knob overrides already in the file are preserved (the override-only-if-present model); switching to `"off"` keeps overrides on disk and resolution simply ignores them until the profile changes back. `<name>` must be one of `off`, `min`, `low`, `med`, `high`, `agr`. Exit `0` success · `65` unknown profile or missing `--yes` · `66` not root.
@@ -65,6 +65,8 @@ Examples:
 
 ```sh
 proteus config show --json
+proteus config show --annotate           # mark each section with its source
+proteus config show --origin --json      # parallel _origins map for jq
 proteus config get mac.rotation_interval
 proteus config keys | head -10
 sudo proteus config disable dns --reason "using dnscrypt-proxy" --yes

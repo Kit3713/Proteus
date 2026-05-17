@@ -111,7 +111,9 @@ pub(super) fn dispatch(cli: Cli) -> Result<u8> {
             }
         }
         Command::Original { json } => commands::original::run(json, cli.state.as_deref()),
-        Command::ShowConfig { json } => commands::show_config::run(json, cli.config.as_deref()),
+        Command::ShowConfig { json } => {
+            commands::show_config::run(json, false, cli.config.as_deref())
+        }
         Command::ShowDefaults { json } => commands::show_defaults::run(json),
         Command::Apply { yes, json } => {
             commands::apply::run(yes, json, cli.state.as_deref(), cli.config.as_deref())
@@ -478,7 +480,7 @@ fn apply_json_to_command(cmd: &mut Command) {
         | Command::Revert { json, .. }
         | Command::Config {
             action:
-                ConfigAction::Show { json }
+                ConfigAction::Show { json, .. }
                 | ConfigAction::Get { json, .. }
                 | ConfigAction::Validate { json }
                 | ConfigAction::Keys { json },
@@ -495,7 +497,7 @@ fn apply_json_to_command(cmd: &mut Command) {
 fn dispatch_config(action: ConfigAction, config: Option<&Path>) -> Result<u8> {
     use commands::config_cmd as c;
     match action {
-        ConfigAction::Show { json } => c::show(json, config),
+        ConfigAction::Show { json, annotate } => c::show(json, annotate, config),
         ConfigAction::Get { key, json } => c::get(&key, json, config),
         ConfigAction::Set { key, value, yes } => c::set(&key, &value, yes, config),
         ConfigAction::Enable { component, yes } => c::enable(&component, yes, config),
@@ -560,6 +562,7 @@ mod tests {
             iface: None,
             yes: true,
             explain: false,
+            json: false,
         };
         apply_json_to_command(&mut cmd);
         match cmd {

@@ -19,6 +19,14 @@ landed, what is in flight, and what is on the bench. See
   bulk modes require `--yes`; without it the command exits with
   `CONFIRMATION_REQUIRED` (65). The single-target shape
   (`proteus unpin <target> --yes`) is unchanged.
+- `proteus config show --annotate` (alias `--origin`) marks each section
+  of the rendered config with its provenance: `file` for user-supplied
+  overrides, `profile:<name>` for the active profile baseline,
+  `per-ssid:<ssid>` for per-SSID blocks, or `default` for the built-in
+  default when no profile is set. Human output appends `# <source>` to
+  each line; `--json` adds a parallel `_origins` map keyed by section
+  name. Granularity is section-level for this landing; field-level
+  follow-up is tracked at #404. ([#404])
 
 ## [0.4.3-beta] - 2026-05-12
 
