@@ -93,12 +93,17 @@ pub fn run(
         && rec.pinned.is_some()
     {
         rec.pinned = None;
+        // Issue #364: drop the set-at stamp alongside the pin so the
+        // entry doesn't carry a stale timestamp that `pin list` would
+        // misreport.
+        rec.pinned_at = None;
         changed = true;
     }
     if let Some(rec) = state.managed.connections.get_mut(target)
         && rec.pinned.is_some()
     {
         rec.pinned = None;
+        rec.pinned_at = None;
         changed = true;
     }
 

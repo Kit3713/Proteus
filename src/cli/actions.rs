@@ -685,6 +685,23 @@ pub enum EventsAction {
     },
 }
 
+/// `proteus pin ...` — issue #364.
+///
+/// Today only the read-only `list` sibling lives here; the existing
+/// `proteus pin <target> [--mac X] [--yes]` shape stays in `command.rs`
+/// as positional args on the `Pin` variant (preserved for back-compat
+/// via `args_conflicts_with_subcommands`). Future pin-related readers
+/// (e.g. `pin show <target>`) can join this enum without disturbing the
+/// existing CLI surface.
+#[derive(Subcommand, Debug)]
+pub enum PinAction {
+    /// List every pinned interface / NM connection from state.json.
+    List {
+        #[arg(long)]
+        json: bool,
+    },
+}
+
 #[derive(Subcommand, Debug)]
 pub enum RfAction {
     /// Show Wi-Fi/Bluetooth chipset inventory + current TX-power per iface.

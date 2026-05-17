@@ -287,6 +287,14 @@ pub struct ManagedState {
 pub struct InterfaceRecord {
     pub current_mac: Option<String>,
     pub pinned: Option<String>,
+    /// Issue #364: ISO-8601 UTC timestamp captured when `pinned` was last
+    /// set via `proteus pin`. Surfaced by `proteus pin list` so the
+    /// operator can see when each pin was authored. Older state files
+    /// (pre-#364) and unpinned records have this as `None`; the
+    /// `skip_serializing_if` keeps fresh installs from growing the
+    /// state file with a useless key.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pinned_at: Option<String>,
     pub last_rotated: Option<String>,
     pub rotation_count: u64,
 }
@@ -296,6 +304,10 @@ pub struct InterfaceRecord {
 pub struct ConnectionRecord {
     pub current_mac: Option<String>,
     pub pinned: Option<String>,
+    /// Issue #364: ISO-8601 UTC timestamp captured when `pinned` was last
+    /// set via `proteus pin`. See [`InterfaceRecord::pinned_at`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pinned_at: Option<String>,
     pub last_rotated: Option<String>,
     pub rotation_count: u64,
 }
@@ -646,6 +658,7 @@ mod tests {
             InterfaceRecord {
                 current_mac: Some("aa:bb:cc:dd:ee:ff".to_string()),
                 pinned: None,
+                pinned_at: None,
                 last_rotated: Some("2026-05-06T00:00:00Z".to_string()),
                 rotation_count: 3,
             },

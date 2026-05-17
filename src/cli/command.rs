@@ -8,8 +8,9 @@ use clap::Subcommand;
 
 use super::actions::{
     BluetoothAction, ConfigAction, DhcpAction, DnsAction, EnterpriseWifiAction, EventsAction,
-    HostnameAction, Ipv6Action, KillAction, NftAction, NtpAction, PersonaAction, PortalAction,
-    ResolvedAction, RfAction, SsidAction, StackAction, StateAction, TimerAction, WikiAction,
+    HostnameAction, Ipv6Action, KillAction, NftAction, NtpAction, PersonaAction, PinAction,
+    PortalAction, ResolvedAction, RfAction, SsidAction, StackAction, StateAction, TimerAction,
+    WikiAction,
 };
 
 #[derive(Subcommand, Debug)]
@@ -151,9 +152,21 @@ pub enum Command {
         explain: bool,
     },
     /// Pin an interface or NM connection to a specific MAC.
+    ///
+    /// Two shapes (issue #364):
+    ///   - `proteus pin <target> [--mac X] [--yes]` — set a pin.
+    ///   - `proteus pin list [--json]` — read-only enumeration of every
+    ///     pin currently persisted in `state.json`.
+    ///
+    /// `args_conflicts_with_subcommands = true` is what lets clap accept
+    /// the positional `<target>` form alongside the `list` subcommand
+    /// without the parser treating `list` as a target name.
+    #[command(args_conflicts_with_subcommands = true)]
     Pin {
+        #[command(subcommand)]
+        action: Option<PinAction>,
         /// Interface name or NM connection profile.
-        target: String,
+        target: Option<String>,
         /// Specific MAC to pin (defaults to current cloned MAC).
         #[arg(long)]
         mac: Option<String>,

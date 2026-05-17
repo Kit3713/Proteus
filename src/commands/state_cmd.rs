@@ -221,6 +221,7 @@ mod tests {
             InterfaceRecord {
                 current_mac: Some("11:22:33:44:55:66".into()),
                 pinned: Some("11:22:33:44:55:66".into()),
+                pinned_at: None,
                 last_rotated: Some("2026-05-17T12:00:00Z".into()),
                 rotation_count: 4,
             },
@@ -230,6 +231,7 @@ mod tests {
             InterfaceRecord {
                 current_mac: Some("aa:00:00:00:00:01".into()),
                 pinned: None,
+                pinned_at: None,
                 last_rotated: None,
                 rotation_count: 0,
             },
@@ -240,6 +242,7 @@ mod tests {
             ConnectionRecord {
                 current_mac: Some("11:22:33:44:55:66".into()),
                 pinned: None,
+                pinned_at: None,
                 last_rotated: Some("2026-05-17T12:00:00Z".into()),
                 rotation_count: 4,
             },
