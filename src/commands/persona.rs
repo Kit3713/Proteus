@@ -119,6 +119,9 @@ pub fn run(action: PersonaAction, config_override: Option<&Path>) -> Result<u8> 
             force,
         } => export(&id, &path, yes, force, &user_root),
         PersonaAction::Search { query, json } => run_search(&query, json, &user_root),
+        PersonaAction::Delete { id, yes, json } => {
+            run_delete(&id, yes, json, config_override, &user_root)
+        }
     }
 }
 
@@ -747,6 +750,129 @@ fn export(id: &str, path: &Path, yes: bool, force: bool, user_root: &Path) -> Re
     Ok(exit::SUCCESS)
 }
 
+// ---- delete ----------------------------------------------------------
+
+#[derive(Serialize)]
+struct DeleteReport {
+    id: String,
+    path: String,
+    deleted: bool,
+}
+
+/// Public entry point: layers the `require_root` gate atop [`delete`].
+/// Tests bypass the root check by calling [`delete`] directly with a
+/// `TempRoot`, same pattern the `export` tests use.
+fn run_delete(
+    id: &str,
+    yes: bool,
+    json: bool,
+    config_override: Option<&Path>,
+    user_root: &Path,
+) -> Result<u8> {
+    if let Err(e) = super::require_root() {
+        eprintln!("proteus: {e}");
+        return Ok(exit::PERMISSION_ERROR);
+    }
+    delete(id, yes, json, config_override, user_root)
+}
+
+/// Issue #338: symmetric counterpart to `persona new`. Removes a
+/// user-authored persona file at `<user_root>/<id>.toml`.
+///
+/// Safety gates, in order:
+/// * `--yes` is required (destructive).
+/// * `id` must pass [`is_valid_persona_id`] (GH#342 path-traversal gate).
+/// * The target must be a user-authored persona — built-ins compiled in
+///   via `build.rs` cannot be deleted from the filesystem. If `<id>` only
+///   exists as a built-in, refuse with a clear message.
+/// * Target must not be a symlink — checked via `lstat` so the symlink
+///   itself is examined rather than its target (mirror of #286 export
+///   safety).
+/// * If `<id>` is the currently active persona in config, refuse and
+///   point the operator at `persona clear --yes`. Without this gate a
+///   delete would leave `[persona] active = "<id>"` pointing at a missing
+///   file, which the loader treats as not-found and silently falls back
+///   to plain randomizer mode.
+fn delete(
+    id: &str,
+    yes: bool,
+    json: bool,
+    config_override: Option<&Path>,
+    user_root: &Path,
+) -> Result<u8> {
+    if let Err(code) = super::require_yes(
+        yes,
+        "removes a persona file under /etc/proteus/personas/",
+        "proteus help persona",
+    ) {
+        return Ok(code);
+    }
+    if !is_valid_persona_id(id) {
+        return Ok(reject_invalid_id(id));
+    }
+    let path = load::user_path(user_root, id);
+    // lstat-based existence/type check: symlink_metadata does NOT follow
+    // symlinks, so a symlink pre-placed at `path` is detected as a
+    // symlink rather than reporting the target's type. NotFound means
+    // the user-authored file doesn't exist — fall through to the
+    // built-in vs. unknown disambiguation below.
+    match std::fs::symlink_metadata(&path) {
+        Ok(meta) => {
+            if meta.file_type().is_symlink() {
+                eprintln!(
+                    "proteus: refusing to delete through symlink {} (security)",
+                    path.display()
+                );
+                return Ok(exit::CONFIG_ERROR);
+            }
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            // No user-authored file. Disambiguate: is this a built-in
+            // (refuse with a clear message) or genuinely unknown?
+            if load::load_builtin(id)?.is_some() {
+                eprintln!(
+                    "proteus: '{}' is a built-in persona and cannot be deleted",
+                    display_safe(id)
+                );
+                return Ok(exit::CONFIG_ERROR);
+            }
+            eprintln!(
+                "proteus: persona '{}' not found (try `proteus persona list`)",
+                display_safe(id)
+            );
+            return Ok(exit::CONFIG_ERROR);
+        }
+        Err(e) => {
+            return Err(anyhow::Error::from(e)).with_context(|| format!("stat {}", path.display()));
+        }
+    }
+    // Refuse if the persona being deleted is the active one. Without this
+    // gate `[persona] active` would point at a missing id after delete.
+    let cfg = Config::default_or_loaded(&super::config_path(config_override)).unwrap_or_default();
+    if cfg.persona.active.as_deref() == Some(id) {
+        eprintln!(
+            "proteus: '{}' is the currently active persona; run `proteus persona clear --yes` first",
+            display_safe(id)
+        );
+        return Ok(exit::CONFIG_ERROR);
+    }
+    std::fs::remove_file(&path).with_context(|| format!("removing {}", path.display()))?;
+    if json {
+        super::print_json(&DeleteReport {
+            id: id.to_string(),
+            path: path.display().to_string(),
+            deleted: true,
+        })?;
+    } else {
+        println!(
+            "deleted persona '{}' ({})",
+            display_safe(id),
+            path.display()
+        );
+    }
+    Ok(exit::SUCCESS)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1020,5 +1146,141 @@ mod tests {
         // write_atomic lands files at 0o600.
         let mode = std::fs::metadata(&dest).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600, "exported file must be 0o600, got 0o{mode:o}");
+    }
+
+    /// Body of a minimal valid user persona keyed at `<id>`. Mirrors the
+    /// shape of `data/personas/iphone-15.toml` (which is what the e2e
+    /// recipe copies in) but with a configurable id so we can place it
+    /// at any user-root.
+    fn synth_user_persona(id: &str) -> String {
+        format!(
+            r#"id = "{id}"
+display_name = "Synth"
+kind = "stealth"
+category = "phone"
+oui_pool = ["apple"]
+hostname_template = "{{owner}}s-Synth"
+mdns_advertise = false
+bt_name_template = "{{owner}} Synth"
+notes = ""
+"#
+        )
+    }
+
+    /// Issue #338 — `Delete` parses with `--yes` and `--json`.
+    #[test]
+    fn cli_parses_delete_with_yes_and_json() {
+        let w =
+            Wrap::try_parse_from(["x", "delete", "my-custom", "--yes", "--json"]).expect("parse");
+        match w.cmd {
+            PersonaAction::Delete { id, yes, json } => {
+                assert_eq!(id, "my-custom");
+                assert!(yes);
+                assert!(json);
+            }
+            _ => panic!("wrong action"),
+        }
+    }
+
+    /// Issue #338 — without `--yes`, delete bails with the confirmation
+    /// exit code and does not touch the file.
+    #[test]
+    fn delete_refuses_without_yes() {
+        let tmp = crate::testing::TempRoot::new("persona-delete-noyes");
+        let dest = tmp.path.join("my-custom.toml");
+        std::fs::write(&dest, synth_user_persona("my-custom")).unwrap();
+        let rc = delete("my-custom", false, false, None, &tmp.path).expect("call ok");
+        assert_eq!(rc, crate::exit::CONFIRMATION_REQUIRED);
+        assert!(dest.exists(), "file must not be removed without --yes");
+    }
+
+    /// Issue #338 — built-in personas have no user-root file. Deleting
+    /// them must refuse with a clear message, not fall through to
+    /// "not found".
+    #[test]
+    fn delete_refuses_builtin_persona() {
+        let tmp = crate::testing::TempRoot::new("persona-delete-builtin");
+        // No user file for "iphone-15"; it only exists as a built-in.
+        let rc = delete("iphone-15", true, false, None, &tmp.path).expect("call ok");
+        assert_eq!(rc, crate::exit::CONFIG_ERROR);
+    }
+
+    /// Issue #338 — an unknown id (neither user nor built-in) yields
+    /// CONFIG_ERROR with a not-found diagnostic.
+    #[test]
+    fn delete_refuses_unknown_id() {
+        let tmp = crate::testing::TempRoot::new("persona-delete-unknown");
+        let rc = delete("nonexistent-id", true, false, None, &tmp.path).expect("call ok");
+        assert_eq!(rc, crate::exit::CONFIG_ERROR);
+    }
+
+    /// Issue #338 — invalid id (path-traversal shape) is refused before
+    /// any filesystem touch.
+    #[test]
+    fn delete_refuses_invalid_id() {
+        let tmp = crate::testing::TempRoot::new("persona-delete-bad-id");
+        let rc = delete("../../etc/passwd", true, false, None, &tmp.path).expect("call ok");
+        assert_eq!(rc, crate::exit::CONFIG_ERROR);
+    }
+
+    /// Issue #338 — a symlink at the target path is refused (lstat
+    /// reject; mirror of #286 export safety). Target file is untouched.
+    #[test]
+    fn delete_refuses_symlink_target() {
+        let tmp = crate::testing::TempRoot::new("persona-delete-sym");
+        let victim = tmp.path.join("victim");
+        std::fs::write(&victim, b"sensitive").unwrap();
+        let link = tmp.path.join("my-custom.toml");
+        std::os::unix::fs::symlink(&victim, &link).unwrap();
+
+        let rc = delete("my-custom", true, false, None, &tmp.path).expect("call ok");
+        assert_eq!(rc, crate::exit::CONFIG_ERROR);
+        // Victim file must be untouched.
+        assert_eq!(std::fs::read(&victim).unwrap(), b"sensitive");
+        // The symlink itself stays in place.
+        let meta = std::fs::symlink_metadata(&link).unwrap();
+        assert!(meta.file_type().is_symlink());
+    }
+
+    /// Issue #338 — refuse to delete the currently active persona;
+    /// otherwise `[persona] active` would dangle. The config's
+    /// `[persona].active` is checked via the override path.
+    #[test]
+    fn delete_refuses_active_persona() {
+        let tmp = crate::testing::TempRoot::new("persona-delete-active");
+        let dest = tmp.path.join("my-custom.toml");
+        std::fs::write(&dest, synth_user_persona("my-custom")).unwrap();
+        let cfg_path = tmp.path.join("config.toml");
+        std::fs::write(&cfg_path, "[persona]\nactive = \"my-custom\"\n").unwrap();
+
+        let rc = delete("my-custom", true, false, Some(&cfg_path), &tmp.path).expect("call ok");
+        assert_eq!(rc, crate::exit::CONFIG_ERROR);
+        assert!(dest.exists(), "active persona must not be removed");
+    }
+
+    /// Issue #338 — happy path: a user-authored persona is removed
+    /// from disk and SUCCESS is returned.
+    #[test]
+    fn delete_removes_user_persona() {
+        let tmp = crate::testing::TempRoot::new("persona-delete-ok");
+        let dest = tmp.path.join("my-custom.toml");
+        std::fs::write(&dest, synth_user_persona("my-custom")).unwrap();
+        let rc = delete("my-custom", true, false, None, &tmp.path).expect("call ok");
+        assert_eq!(rc, crate::exit::SUCCESS);
+        assert!(!dest.exists(), "user persona file must be removed");
+    }
+
+    /// Issue #338 — `--json` parity: the happy path emits a JSON report
+    /// when requested. We don't pin the exact JSON here (that's a
+    /// renderer detail) but we verify SUCCESS + file removal under
+    /// `--json`.
+    #[test]
+    fn delete_json_parity() {
+        let tmp = crate::testing::TempRoot::new("persona-delete-json");
+        let dest = tmp.path.join("my-custom.toml");
+        std::fs::write(&dest, synth_user_persona("my-custom")).unwrap();
+        let rc = delete("my-custom", true, true, None, &tmp.path).expect("call ok");
+        assert_eq!(rc, crate::exit::SUCCESS);
+        assert!(!dest.exists());
     }
 }

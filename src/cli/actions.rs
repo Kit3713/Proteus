@@ -512,6 +512,17 @@ pub enum PersonaAction {
         #[arg(long)]
         json: bool,
     },
+    /// Delete a user-authored persona at `/etc/proteus/personas/<id>.toml`.
+    /// Built-in personas are refused. Symlinks at the target path are
+    /// refused (lstat reject, mirror of #286 export safety).
+    Delete {
+        id: String,
+        /// Confirm this destructive operation.
+        #[arg(long)]
+        yes: bool,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 /// `proteus ssid ...` — roadmap Milestone 3.
