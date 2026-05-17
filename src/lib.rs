@@ -6,6 +6,7 @@ pub mod captive_portal;
 pub mod cli;
 pub mod commands;
 pub mod config;
+pub mod config_catalogue;
 pub mod crypto;
 pub mod diff;
 pub mod display;

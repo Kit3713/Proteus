@@ -53,6 +53,30 @@ struct KeyEntry {
     default: serde_json::Value,
 }
 
+/// JSON shape for `proteus config explain <key> --json` (#394).
+///
+/// `risk` and `wiki` are `Option<&str>` so an entry without a documented
+/// risk / wiki page renders as `null` rather than an empty string — that
+/// way a GUI wrapper can distinguish "no risk" from "we just have not
+/// written the risk yet."
+///
+/// `current` is `None` when the value is not set in the user's config
+/// file (the schema default is in effect). `source` is the file path on
+/// disk when an override exists, otherwise the literal string
+/// `"(built-in default)"`.
+#[derive(Serialize)]
+struct ExplainReport<'a> {
+    key: &'a str,
+    #[serde(rename = "type")]
+    kind: &'static str,
+    default: serde_json::Value,
+    current: Option<serde_json::Value>,
+    source: String,
+    doc: &'a str,
+    risk: Option<&'a str>,
+    wiki: Option<&'a str>,
+}
+
 // ---------- Commands ----------
 
 pub fn show(json: bool, annotate: bool, config: Option<&Path>) -> Result<u8> {
@@ -276,6 +300,134 @@ pub fn keys(json: bool) -> Result<u8> {
         }
     }
     Ok(exit::SUCCESS)
+}
+
+/// `proteus config explain <key>` — #394. Print the doc-comment, risk
+/// warning, default, type, and wiki cross-link for a single config key.
+///
+/// Read-only sibling to `config get`. Unknown keys exit with
+/// `CONFIG_ERROR` (65) plus the closest-known key as a suggestion so a
+/// typo gets a one-line hint instead of an opaque failure.
+pub fn explain(key: &str, json: bool, config: Option<&Path>) -> Result<u8> {
+    // Schema gate first: a key the live schema does not expose can never
+    // be a real config knob, even if the catalogue happened to mention
+    // it. The catalogue lookup is the *second* gate.
+    let defaults = default_document()?;
+    let Some(default_item) = lookup(&defaults, key) else {
+        emit_unknown_key(key);
+        return Ok(exit::CONFIG_ERROR);
+    };
+
+    let Some(entry) = crate::config_catalogue::lookup(key) else {
+        // Known to the schema but missing from the catalogue. Surface a
+        // distinct diagnostic so the operator knows the key exists but
+        // is undocumented — actionable in a way the unknown-key branch
+        // is not.
+        eprintln!(
+            "proteus: '{}' is a valid config key but has no documentation entry yet; \
+             see proteus wiki config",
+            crate::display::display_safe(key),
+        );
+        return Ok(exit::CONFIG_ERROR);
+    };
+
+    let kind = default_item.as_value().map(type_name).unwrap_or("table");
+    let path = super::config_path(config);
+    let (current_value, source) = current_and_source(&path, key)?;
+    let risk_opt = Some(entry.risk).filter(|r| !r.is_empty());
+    let wiki_opt = Some(entry.wiki).filter(|w| !w.is_empty());
+
+    if json {
+        super::print_json(&ExplainReport {
+            key,
+            kind,
+            default: item_to_json(default_item),
+            current: current_value.as_ref().map(item_to_json),
+            source,
+            doc: entry.doc,
+            risk: risk_opt,
+            wiki: wiki_opt,
+        })?;
+    } else {
+        print_explain_human(
+            key,
+            kind,
+            default_item,
+            current_value.as_ref(),
+            &source,
+            entry,
+        );
+    }
+    Ok(exit::SUCCESS)
+}
+
+/// Render the unknown-key error with a closest-known-key suggestion.
+/// Shared between `explain` and any future reader that needs the same
+/// "did-you-mean" line.
+fn emit_unknown_key(key: &str) {
+    let safe = crate::display::display_safe(key);
+    let entries = enumerate_keys().unwrap_or_default();
+    let all: Vec<&str> = entries.iter().map(|e| e.key.as_str()).collect();
+    match crate::config::closest_match(key, &all) {
+        Some(suggestion) => eprintln!(
+            "proteus: unknown config key '{safe}' — did you mean '{suggestion}'? \
+             (try `proteus config keys`)"
+        ),
+        None => eprintln!("proteus: unknown config key '{safe}' (try `proteus config keys`)"),
+    }
+}
+
+/// Source label used when no on-disk override exists for the key.
+const SOURCE_BUILTIN_DEFAULT: &str = "(built-in default)";
+
+/// Look up the current value of `key` in the user's config file (if any)
+/// and return the `Source:` line to print. `None` means "not overridden;
+/// schema default applies." The source string is either the file path
+/// (when an override exists) or [`SOURCE_BUILTIN_DEFAULT`].
+fn current_and_source(path: &Path, key: &str) -> Result<(Option<Item>, String)> {
+    let raw = match fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Ok((None, SOURCE_BUILTIN_DEFAULT.to_string()));
+        }
+        Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+    };
+    if raw.is_empty() {
+        return Ok((None, SOURCE_BUILTIN_DEFAULT.to_string()));
+    }
+    let user: DocumentMut = raw
+        .parse()
+        .with_context(|| format!("parsing {}", path.display()))?;
+    match lookup(&user, key) {
+        Some(item) => Ok((Some(item.clone()), path.display().to_string())),
+        None => Ok((None, SOURCE_BUILTIN_DEFAULT.to_string())),
+    }
+}
+
+/// Human-readable `proteus config explain` renderer.
+fn print_explain_human(
+    key: &str,
+    kind: &str,
+    default_item: &Item,
+    current: Option<&Item>,
+    source: &str,
+    entry: &crate::config_catalogue::ExplainEntry,
+) {
+    let default_str = item_to_display(default_item);
+    println!("Key:      {key}");
+    println!("Type:     {kind}");
+    println!("Default:  {default_str}");
+    match current {
+        Some(item) => println!("Source:   {source} (current: {})", item_to_display(item)),
+        None => println!("Source:   {source}"),
+    }
+    println!("Doc:      {}", entry.doc);
+    if !entry.risk.is_empty() {
+        println!("Risk:     {}", entry.risk);
+    }
+    if !entry.wiki.is_empty() {
+        println!("Wiki:     proteus wiki {}", entry.wiki);
+    }
 }
 
 /// `proteus config set-profile <name>`. Writes `profile = "<name>"` at the
@@ -848,6 +1000,60 @@ mod tests {
         let raw: crate::config::RawConfig =
             toml::from_str(body).expect("minimal reset body parses as TOML");
         assert!(!raw.has_overrides());
+    }
+
+    /// #394: every catalogue entry must round-trip through the live
+    /// schema's `lookup` so `explain <key>` and `get <key>` agree on
+    /// what counts as a real key. If a future schema rename drops e.g.
+    /// `mac.rotation_interval`, this test fails before the explain
+    /// command starts printing stale advice.
+    #[test]
+    fn catalogue_entries_resolve_via_lookup() {
+        let doc = default_document().expect("default document parses");
+        for entry in crate::config_catalogue::ENTRIES {
+            assert!(
+                lookup(&doc, entry.key).is_some(),
+                "catalogue key '{}' is not in the live schema",
+                entry.key,
+            );
+        }
+    }
+
+    /// #394: `current_and_source` must report "(built-in default)" when
+    /// the file does not exist, and the file path when the user
+    /// overrides the key. The override-only-if-present model lives or
+    /// dies on this distinction.
+    #[test]
+    fn explain_current_and_source_reports_override_state() {
+        let dir =
+            std::env::temp_dir().join(format!("proteus-explain-source-{}", std::process::id(),));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+
+        // No file → (built-in default).
+        let (cur, src) = current_and_source(&path, "mac.rotation_interval").unwrap();
+        assert!(cur.is_none(), "missing file should report no current value");
+        assert_eq!(src, "(built-in default)");
+
+        // File with an override → path + Some(value).
+        std::fs::write(&path, "[mac]\nrotation_interval = \"30m\"\n").unwrap();
+        let (cur, src) = current_and_source(&path, "mac.rotation_interval").unwrap();
+        assert_eq!(src, path.display().to_string());
+        assert_eq!(
+            cur.as_ref()
+                .and_then(|i| i.as_value())
+                .and_then(|v| v.as_str()),
+            Some("30m"),
+        );
+
+        // File without that specific override → (built-in default).
+        let (cur, src) =
+            current_and_source(&path, "dhcp.enabled").expect("partial override must parse");
+        assert!(cur.is_none());
+        assert_eq!(src, "(built-in default)");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Per-section reset must drop the user's overrides for that section
