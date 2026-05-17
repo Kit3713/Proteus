@@ -99,6 +99,14 @@ pub enum Command {
         /// (collision, forbidden, gateway, avoid). Roadmap M2.
         #[arg(long)]
         explain: bool,
+        /// Emit a `{"results": [ ... ]}` JSON envelope summarising the
+        /// rotation (issue #395). One entry per interface touched, each
+        /// carrying `iface`, `old_mac`, `new_mac`, `outcome`, and
+        /// (under `--explain`) the candidate trace. Mirrors the
+        /// `--json` shape on other readers so dispatchers can stop
+        /// screen-scraping the human-readable lines.
+        #[arg(long)]
+        json: bool,
     },
     /// Rotate the MAC iff the cooldown window has elapsed.
     ///

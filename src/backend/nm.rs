@@ -472,7 +472,7 @@ async fn rotate_if_needed_inner(
         // already uses (the previous trait method called it the same
         // way before issue #245's fix). The inner acquire is reentrant
         // and the lock we hold here makes it a no-op.
-        crate::commands::rotate::run(Some(iface), true, false, Some(sp), None)
+        crate::commands::rotate::run(Some(iface), true, false, false, Some(sp), None)
     })
     .await
 }
