@@ -11,6 +11,42 @@ landed, what is in flight, and what is on the bench. See
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-05-17
+
+Distro publishing infrastructure. No user-visible code changes; pure
+release-pipeline work. Cut to exercise the new auto-publish jobs
+end-to-end.
+
+### Added — distro publishing pipelines
+
+- **Copr auto-publish** (PR #483) — `.github/workflows/release.yml`
+  gained a `publish-copr` job that submits the build-rpm SRPM to a
+  configured Copr project on every tag push. Fedora users install with
+  `sudo dnf copr enable kit3713/proteus && sudo dnf install proteus`.
+  Setup walkthrough at `dist/copr/README.md`. Graceful skip when the
+  `COPR_TOKEN` secret is unset, so forks of the repo don't see a red
+  workflow. (PR #484 split the config: `COPR_LOGIN`/`COPR_TOKEN` stay
+  in repo Secrets; `COPR_USERNAME`/`COPR_PROJECT` move to repo Variables
+  so they're visible in logs for debugging.)
+- **Launchpad PPA auto-publish** (PR #485) — `publish-ppa` GHA job
+  builds a Debian source package per Ubuntu series in
+  `vars.LAUNCHPAD_SERIES` (default: `noble`), signs it with the
+  imported GPG key, and `dput`s it to `vars.LAUNCHPAD_PPA`. Ubuntu
+  users install with `sudo add-apt-repository ppa:kit3713/proteus &&
+  sudo apt install proteus`. Setup walkthrough at
+  `dist/launchpad/README.md`. Same graceful-skip pattern.
+- **OBS publishing** (PR #485) — `dist/obs/_service` template + setup
+  walkthrough at `dist/obs/README.md`. OBS pulls from GitHub itself on
+  a daily cadence (optional webhook for instant rebuild), so no GHA
+  involvement is needed. Builds for Ubuntu + Debian + Fedora +
+  openSUSE in one place.
+
+### Packaging
+
+- `dist/rpm/proteus.spec` Version → 1.0.1
+- `dist/debian/changelog` prepended with `proteus (1.0.1-1)` stanza
+- `dist/arch/PKGBUILD` and `dist/arch/PKGBUILD-bin` pkgver → 1.0.1
+
 ## [1.0.0] - 2026-05-17
 
 First stable, non-beta release. v0.4.x closed every reachable High
