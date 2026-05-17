@@ -40,6 +40,20 @@ Flags: `--yes` proceed without confirmation.
 Exit: `0` success · `1` generic · `65` config error / missing `--yes` · `66` not root · `70` system unsupported · `75` state lock busy (another proteus instance running).
 Example: `sudo proteus apply --yes`
 
+### `backup`
+
+```sh
+proteus backup <PATH> [--force] [--json] [--yes]
+```
+
+Bundle `/etc/proteus/` (config + personas) and `/var/lib/proteus/` (cached state) into a single `tar.gz` at `<PATH>`. Pairs with `proteus restore` to move a working install between machines without hand-rolling `tar`. Honours global `--state <FILE>` / `--config <FILE>` overrides — the actual file's parent directory is what gets archived. Refuses overwriting an existing file unless `--force`. Refuses a target whose final component is a symlink (lstat-reject, mirrors persona export safety from issue #286). Output file lands at mode `0o600`.
+
+Flags: `--force` overwrite existing archive · `--json` emit `{ "path": ..., "files": N, "bytes": N, "sha256": "..." }` instead of human output · `--yes` confirm the (sensitive) state-dump write.
+Exit: `0` success · `1` generic · `65` config error / missing `--yes` / target exists without `--force` / target is a symlink · `66` parent dir missing.
+Example: `sudo proteus backup /var/backups/proteus.tar.gz --yes`
+
+The contrib script under `contrib/recovery-kit/backup.sh` covers the broader surface (encryption, manifest JSON, retention) — this subcommand is the minimal one-shot version.
+
 ### `config`
 
 ```sh
@@ -195,6 +209,18 @@ proteus reset [--yes] [--dry-run]
 Rewrite `/etc/proteus/config.toml` to a minimal `profile = "<name>"` file, preserving the active profile from the existing config. The "I tinkered and broke it" hatch. Resolution at load time fills in every other knob from the profile baseline, so the on-disk file stays human-readable instead of bloating with every default explicitly set. Deliberately does **not** touch the cached original MACs in `state.json` — those remain sacred. Mutating; requires root. Pass `--dry-run` to preview the action without writing.
 
 Exit: `0` success · `65` missing `--yes` · `66` not root.
+
+### `restore`
+
+```sh
+proteus restore <PATH> --yes [--json] [--expected-sha <HEX>]
+```
+
+Extract a tarball produced by `proteus backup` back into `/etc/proteus/` and `/var/lib/proteus/`. Destructive — overwrites both trees — so `--yes` is required. Validates the gzip magic before touching anything, rejects archive members whose paths fall outside the known roots, rejects `..` components in member paths and symlink targets, and optionally verifies the bundle's SHA-256 against `--expected-sha`. Honours global `--state <FILE>` / `--config <FILE>` overrides — the destination dirs are the parents of those file paths. After restore, run `sudo proteus apply --yes` to re-stage managed files.
+
+Flags: `--yes` confirm destructive overwrite · `--json` emit `{ "path": ..., "files": N, "bytes": N, "sha256": "..." }` instead of human output · `--expected-sha <HEX>` pin the archive's SHA-256.
+Exit: `0` success · `1` generic · `65` missing `--yes` / not a gzip tarball / member outside known roots / SHA mismatch · `66` not root.
+Example: `sudo proteus restore /var/backups/proteus.tar.gz --yes --expected-sha 248d6a61...`
 
 ### `revert`
 

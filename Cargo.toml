@@ -68,3 +68,10 @@ getrandom = "0.2"
 # apply`/`rotate`/etc. runs serialize. libc is already a transitive dep
 # (zbus/tokio), promoting it to a direct dep keeps build graph stable.
 libc = { version = "0.2", default-features = false, features = ["std"] }
+# Issue #353: `proteus backup` / `proteus restore` bundle the three Proteus
+# trees (/etc/proteus, /var/lib/proteus, /etc/proteus/personas) into a
+# tar.gz so an operator can move a working install between machines. Both
+# crates are widely-used and ship with permissive licenses; we keep the
+# default feature sets to avoid widening the dep graph.
+tar = { version = "0.4", default-features = false }
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }

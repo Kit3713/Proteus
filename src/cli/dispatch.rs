@@ -372,6 +372,35 @@ pub(super) fn dispatch(cli: Cli) -> Result<u8> {
                 commands::events::trigger(&name, yes, debug)
             }
         },
+        // Issue #353: roadmap "no-brainer" — bundle/restore the three
+        // Proteus directory trees as a tar.gz so an operator can move
+        // a working install between machines.
+        Command::Backup {
+            path,
+            force,
+            json,
+            yes,
+        } => commands::backup::run(
+            path,
+            force,
+            json,
+            yes,
+            cli.state.as_deref(),
+            cli.config.as_deref(),
+        ),
+        Command::Restore {
+            path,
+            yes,
+            json,
+            expected_sha,
+        } => commands::restore::run(
+            path,
+            yes,
+            json,
+            expected_sha,
+            cli.state.as_deref(),
+            cli.config.as_deref(),
+        ),
         // Roadmap Milestone 6: print bundled shell completions.
         Command::Completions { shell } => commands::completions::run(&shell),
         // Issue #376: build-provenance reader for CI / GUI wrappers.
@@ -473,11 +502,10 @@ fn apply_json_to_command(cmd: &mut Command) {
         | Command::Logs { json, .. }
         | Command::Resume { json, .. }
         | Command::Version { json }
-        // Issue #343: apply/revert grew a JSON per-component summary; the
-        // global `--format json` flag flips theirs too so wrappers stay
-        // consistent with the readers above.
         | Command::Apply { json, .. }
         | Command::Revert { json, .. }
+        | Command::Backup { json, .. }
+        | Command::Restore { json, .. }
         | Command::Config {
             action:
                 ConfigAction::Show { json, .. }
