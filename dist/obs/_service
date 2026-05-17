@@ -1,0 +1,41 @@
+<services>
+  <!--
+    OBS _service file for the proteus package.
+
+    OBS polls the GitHub repo for new tags on a daily cadence (mode="auto").
+    When a new tag matching `v*` is found, OBS runs the chained services
+    below in order:
+
+      tar_scm     — clone the repo at the named ref and produce a tarball.
+      recompress  — repack as .tar.gz so the spec's %autosetup finds it.
+      set_version — pull the version out of the tag and stamp it into the
+                    spec/changelog (drops the leading `v`).
+
+    Upload this file via the OBS web UI: project → package proteus →
+    "Upload File", choose `_service`. OBS detects the change and runs
+    the service chain immediately.
+
+    The corresponding spec file is `dist/rpm/proteus.spec` — copy it into
+    the OBS package as `proteus.spec` (or symlink via _service in a more
+    advanced setup; the simple path is "upload the spec once, OBS rebuilds
+    it whenever the tarball regenerates").
+
+    Polling cadence: OBS checks daily. To trigger an immediate rebuild
+    after a tag push, click "Trigger Services" in the OBS web UI or POST
+    to the OBS source-control trigger URL. See dist/obs/README.md.
+  -->
+  <service name="tar_scm" mode="auto">
+    <param name="url">https://github.com/Kit3713/Proteus.git</param>
+    <param name="scm">git</param>
+    <param name="revision">main</param>
+    <param name="versionformat">@PARENT_TAG@</param>
+    <param name="versionrewrite-pattern">v(.*)</param>
+    <param name="versionrewrite-replacement">\1</param>
+    <param name="filename">proteus</param>
+  </service>
+  <service name="recompress" mode="auto">
+    <param name="file">*.tar</param>
+    <param name="compression">gz</param>
+  </service>
+  <service name="set_version" mode="auto" />
+</services>

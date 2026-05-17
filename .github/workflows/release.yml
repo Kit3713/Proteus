@@ -623,3 +623,124 @@ jobs:
           fi
           echo "submitting $SRPM to copr project $COPR_PROJECT"
           copr-cli build "$COPR_PROJECT" "$SRPM"
+
+  # Launchpad PPA publish: builds a Debian *source* package (.dsc + .tar.xz
+  # + .changes), signs it with the maintainer's GPG key, and `dput`s it to
+  # the configured PPA. Launchpad's build farm then produces .deb binaries
+  # for the targeted Ubuntu series.
+  #
+  # Requires four repo configuration values at
+  # `https://github.com/Kit3713/Proteus/settings/secrets/actions`:
+  #
+  # Secrets:
+  #   LAUNCHPAD_GPG_PRIVATE_KEY  — full ASCII-armored private key the GPG
+  #                                key UID matches debian/changelog's
+  #                                maintainer line; this is the same key
+  #                                you registered on launchpad.net
+  #   LAUNCHPAD_GPG_PASSPHRASE   — passphrase for that key
+  #
+  # Variables:
+  #   LAUNCHPAD_PPA              — `ppa:<lp-user>/<ppa-name>` —
+  #                                e.g. `ppa:kit3713/proteus`
+  #   LAUNCHPAD_SERIES           — optional, defaults to `noble`. Comma-
+  #                                separated list to build for multiple
+  #                                Ubuntu releases (e.g. `noble,jammy`).
+  #
+  # See `dist/launchpad/README.md` for the one-time setup walkthrough.
+  #
+  # `continue-on-error: true` + graceful skip on missing secret — same
+  # pattern as publish-copr.
+  publish-ppa:
+    name: publish to launchpad ppa
+    runs-on: ubuntu-latest
+    container: ubuntu:24.04
+    needs: [build-deb]
+    continue-on-error: true
+    env:
+      DEBIAN_FRONTEND: noninteractive
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Install git + dput + debuild + gnupg
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            git ca-certificates devscripts dput debhelper gnupg2 \
+            build-essential fakeroot pkg-config libdbus-1-dev curl
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - name: Import GPG key (skip when secret unset)
+        env:
+          GPG_KEY: ${{ secrets.LAUNCHPAD_GPG_PRIVATE_KEY }}
+          GPG_PASS: ${{ secrets.LAUNCHPAD_GPG_PASSPHRASE }}
+        run: |
+          set -eu
+          if [ -z "${GPG_KEY:-}" ]; then
+            echo "::notice::LAUNCHPAD_GPG_PRIVATE_KEY not set — skipping PPA publish"
+            echo "PPA_SKIP=1" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          # Loopback pinentry so the passphrase is supplied non-interactively.
+          mkdir -p ~/.gnupg
+          chmod 700 ~/.gnupg
+          echo "allow-loopback-pinentry" > ~/.gnupg/gpg-agent.conf
+          echo "pinentry-mode loopback" > ~/.gnupg/gpg.conf
+          gpgconf --reload gpg-agent || true
+          echo "$GPG_KEY" | gpg --batch --import
+          KEY_ID=$(gpg --list-secret-keys --keyid-format=LONG | awk '/^sec/ {split($2,a,"/"); print a[2]; exit}')
+          echo "imported key id: $KEY_ID"
+          echo "GPG_KEY_ID=$KEY_ID" >> "$GITHUB_ENV"
+          # Pre-cache passphrase so debsign doesn't prompt.
+          echo "test" | gpg --batch --pinentry-mode loopback --passphrase "$GPG_PASS" \
+            --clearsign --local-user "$KEY_ID" > /dev/null
+      - name: Install Rust toolchain (debian/control requires >= 1.85)
+        if: env.PPA_SKIP != '1'
+        run: |
+          set -euo pipefail
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
+            sh -s -- -y --default-toolchain none --profile minimal
+          source "$HOME/.cargo/env"
+          rustup toolchain install --profile minimal stable
+          ln -sf "$HOME/.cargo/bin/rustc" /usr/local/bin/rustc
+          ln -sf "$HOME/.cargo/bin/cargo" /usr/local/bin/cargo
+      - name: Build + sign + dput per Ubuntu series
+        if: env.PPA_SKIP != '1'
+        env:
+          GPG_PASS: ${{ secrets.LAUNCHPAD_GPG_PASSPHRASE }}
+          PPA: ${{ vars.LAUNCHPAD_PPA }}
+          SERIES_CSV: ${{ vars.LAUNCHPAD_SERIES }}
+        run: |
+          set -euo pipefail
+          : "${PPA:?LAUNCHPAD_PPA variable must be set (e.g. ppa:kit3713/proteus)}"
+          SERIES_CSV="${SERIES_CSV:-noble}"
+
+          # Original 1.0.0-1 etc. version from debian/changelog
+          BASE_VER=$(dpkg-parsechangelog -l dist/debian/changelog -S Version)
+          echo "base version: $BASE_VER"
+
+          for SERIES in ${SERIES_CSV//,/ }; do
+            echo "===== building for $SERIES ====="
+            WORK=$(mktemp -d)
+            cp -a . "$WORK/proteus"
+            cp -a "$WORK/proteus/dist/debian" "$WORK/proteus/debian"
+            cd "$WORK/proteus"
+            # Append ~<series>1 to the version so each upload is unique per
+            # series — required by Launchpad which forbids re-uploading the
+            # same source version.
+            debchange --newversion "${BASE_VER}~${SERIES}1" \
+                      --distribution "$SERIES" \
+                      --force-distribution \
+                      "Auto-build for $SERIES" || true
+            # -S = source-only, -sa = include orig tarball, -d = skip
+            # build-dep check (rust comes from rustup, not apt). Source
+            # package lands in $WORK as .dsc + .tar.xz + .changes.
+            dpkg-buildpackage -S -sa -d \
+              -k"$GPG_KEY_ID" \
+              -p"gpg --batch --pinentry-mode loopback --passphrase $GPG_PASS"
+            cd "$WORK"
+            CHANGES=$(ls *_source.changes | head -1)
+            echo "uploading $CHANGES to $PPA"
+            dput "$PPA" "$CHANGES"
+            cd "$GITHUB_WORKSPACE"
+            rm -rf "$WORK"
+          done
