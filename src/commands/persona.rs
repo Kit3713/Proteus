@@ -466,7 +466,7 @@ fn random(
             return Ok(rc);
         }
         if apply {
-            return super::apply::run(true, state_path, config_override);
+            return super::apply::run(true, false, state_path, config_override);
         }
     }
     Ok(exit::SUCCESS)
