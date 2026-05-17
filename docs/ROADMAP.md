@@ -877,7 +877,15 @@ L‑3 (residual), audit I‑1, NEV2.1.
   in `src/captive_portal/mod.rs` rejects CR/LF/NUL/control bytes,
   caps length at 4 KiB, and requires absolute or scheme-/root-relative
   refs. Wired into the redirect classifier and the redirect-following
-  GET path. ⏳ Enforce `mode(0o600)` on lock file (S3 — deferred).
+  GET path.
+- ✅ Enforce `mode(0o600)` on lock file creation (S3, Stream 9) —
+  `OpenOptions::mode(STATE_FILE_MODE)` in `src/state_lock.rs::acquire_inner`
+  pins a fresh `.lock` at 0o600 regardless of the caller's umask;
+  paired with the existing post-open `fchmod` (GH #370, TOCTOU-safe
+  via the open fd + `O_NOFOLLOW`) so a pre-existing wider-mode lock
+  file is also tightened. Regression: `fresh_lock_file_lands_at_0600_regardless_of_umask`
+  sets `umask(0o000)` before acquire and asserts the on-disk mode is
+  exactly 0o600.
 - ✅ Open-by-fd then `unlinkat` for resolved drop-in cleanup, closing the
   TOCTOU (S5, Wave 3 Group C — `remove_resolved_dropins` in
   `src/commands/revert.rs`).
