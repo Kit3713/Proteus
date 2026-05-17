@@ -19,6 +19,7 @@
 //! cleared its own gate at the top, so every per-feature call below
 //! passes `yes=true` to satisfy the gate without re-prompting.
 
+use std::io::{self, Write};
 use std::path::Path;
 
 use anyhow::{Context, Result};
@@ -42,6 +43,58 @@ pub struct ComponentReport {
     pub note: String,
 }
 
+/// Issue #343: single-line `--json` envelope shared by `proteus apply
+/// --json` and `proteus revert --json`. The `command` field discriminates
+/// the two, `components` mirrors the per-feature reports, `exit_code`
+/// carries the same exit code the binary returns so CI / Ansible
+/// consumers only have to parse stdout (no `$?` lookup needed). An
+/// optional `error` field is set when the orchestrator never reached the
+/// per-component fan-out (root / `--yes` / config / lock / preflight
+/// gates) so wrappers can distinguish "everything failed" from "we never
+/// got there."
+#[derive(Debug, Clone, Serialize)]
+pub struct Summary {
+    pub command: &'static str,
+    pub components: Vec<ComponentReport>,
+    pub exit_code: u8,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+impl Summary {
+    pub fn new(command: &'static str, components: Vec<ComponentReport>, exit_code: u8) -> Self {
+        Self {
+            command,
+            components,
+            exit_code,
+            error: None,
+        }
+    }
+
+    pub fn with_error(command: &'static str, exit_code: u8, error: impl Into<String>) -> Self {
+        Self {
+            command,
+            components: Vec::new(),
+            exit_code,
+            error: Some(error.into()),
+        }
+    }
+}
+
+/// Write a [`Summary`] as a single line on stdout. Used by both apply
+/// and revert `--json` paths so the envelope is byte-identical between
+/// them. Failures here surface as a non-zero exit only via the caller's
+/// existing error-handling — we never panic on a serializer error.
+pub(crate) fn emit_summary(summary: &Summary) -> Result<()> {
+    let stdout = io::stdout();
+    let mut handle = stdout.lock();
+    serde_json::to_writer(&mut handle, summary).context("serialising apply/revert summary")?;
+    handle
+        .write_all(b"\n")
+        .context("flushing summary newline")?;
+    Ok(())
+}
+
 #[derive(Debug, Default, Serialize)]
 pub struct Tally {
     pub applied: usize,
@@ -63,7 +116,12 @@ impl Tally {
     }
 }
 
-pub fn run(yes: bool, state_path: Option<&Path>, config_path: Option<&Path>) -> Result<u8> {
+pub fn run(
+    yes: bool,
+    json: bool,
+    state_path: Option<&Path>,
+    config_path: Option<&Path>,
+) -> Result<u8> {
     // root check first — every other failure mode below is a no-op for
     // a non-root caller, so surfacing the privilege error first keeps
     // the message clean.
@@ -76,7 +134,12 @@ pub fn run(yes: bool, state_path: Option<&Path>, config_path: Option<&Path>) -> 
     // typed `ExitCodeError(u8)` wrapper can convert this without losing
     // either the chain or the typed code.
     if let Err(e) = super::require_root() {
-        eprintln!("proteus: {e}");
+        let msg = format!("{e}");
+        if json {
+            emit_summary(&Summary::with_error("apply", exit::PERMISSION_ERROR, msg))?;
+        } else {
+            eprintln!("proteus: {msg}");
+        }
         return Ok(exit::PERMISSION_ERROR);
     }
 
@@ -88,7 +151,20 @@ pub fn run(yes: bool, state_path: Option<&Path>, config_path: Option<&Path>) -> 
     // while the validator returned an error. With load-before-lock, a
     // typo'd config fails fast and the lock is never taken.
     let cfg_path = super::config_path(config_path);
-    let config = Config::default_or_loaded(&cfg_path)?;
+    let config = match Config::default_or_loaded(&cfg_path) {
+        Ok(c) => c,
+        Err(e) => {
+            if json {
+                emit_summary(&Summary::with_error(
+                    "apply",
+                    exit::CONFIG_ERROR,
+                    format!("{e:#}"),
+                ))?;
+                return Ok(exit::CONFIG_ERROR);
+            }
+            return Err(e);
+        }
+    };
 
     // NMOD.2: the `--yes` gate must run AFTER config validation so a user
     // with a typo'd `[per_ssid]` block sees the parse error before the
@@ -96,6 +172,11 @@ pub fn run(yes: bool, state_path: Option<&Path>, config_path: Option<&Path>) -> 
     // then the validator rejects — the "confirmation = mutation
     // imminent" invariant breaks because no mutation actually happens.
     if let Err(code) = super::require_yes(yes, "'apply' is mutating", "proteus help apply") {
+        if json {
+            // `require_yes` already printed the stderr hint; pair it
+            // with the structured envelope so wrappers stay on stdout.
+            emit_summary(&Summary::with_error("apply", code, "missing --yes"))?;
+        }
         return Ok(code);
     }
 
@@ -104,7 +185,16 @@ pub fn run(yes: bool, state_path: Option<&Path>, config_path: Option<&Path>) -> 
     // pins the lock budget.
     let _lock = match super::acquire_state_lock_or_print(state_path) {
         Ok(g) => g,
-        Err(code) => return Ok(code),
+        Err(code) => {
+            if json {
+                emit_summary(&Summary::with_error(
+                    "apply",
+                    code,
+                    "state lock unavailable",
+                ))?;
+            }
+            return Ok(code);
+        }
     };
 
     // Roadmap Milestone 1: resolve the backend once at the top of the
@@ -123,12 +213,23 @@ pub fn run(yes: bool, state_path: Option<&Path>, config_path: Option<&Path>) -> 
     // dispatch table can't distinguish typed vs generic without a
     // wrapper. Defer until the wrapper lands.
     if let Err(e) = preflight_backend(&config) {
-        eprintln!("proteus apply: backend preflight failed: {e:#}");
+        let msg = format!("{e:#}");
+        if json {
+            emit_summary(&Summary::with_error(
+                "apply",
+                exit::SYSTEM_NOT_SUPPORTED,
+                format!("backend preflight failed: {msg}"),
+            ))?;
+        } else {
+            eprintln!("proteus apply: backend preflight failed: {msg}");
+        }
         return Ok(exit::SYSTEM_NOT_SUPPORTED);
     }
 
-    let warnings = risk_warnings(&config);
-    print_risk_warnings(&warnings);
+    if !json {
+        let warnings = risk_warnings(&config);
+        print_risk_warnings(&warnings);
+    }
 
     let reports = orchestrate(&config, state_path, config_path);
 
@@ -141,15 +242,22 @@ pub fn run(yes: bool, state_path: Option<&Path>, config_path: Option<&Path>) -> 
     // disk and will be picked up on next boot regardless.
     let reload_note = systemctl_daemon_reload_after_apply(&reports);
 
-    let tally = print_summary(&reports);
-    if let Some(note) = reload_note {
-        println!("{note}");
-    }
-    if tally.failed > 0 {
-        Ok(exit::GENERIC_ERROR)
+    let tally = Tally::from_reports(&reports);
+    let exit_code = if tally.failed > 0 {
+        exit::GENERIC_ERROR
     } else {
-        Ok(exit::SUCCESS)
+        exit::SUCCESS
+    };
+
+    if json {
+        emit_summary(&Summary::new("apply", reports, exit_code))?;
+    } else {
+        print_summary(&reports);
+        if let Some(note) = reload_note {
+            println!("{note}");
+        }
     }
+    Ok(exit_code)
 }
 
 /// Run `systemctl daemon-reload` once after orchestration so freshly-written
@@ -708,7 +816,7 @@ fn skipped(name: &'static str, note: &str) -> ComponentReport {
     }
 }
 
-fn print_summary(reports: &[ComponentReport]) -> Tally {
+fn print_summary(reports: &[ComponentReport]) {
     println!("apply summary:");
     for r in reports {
         let label = match r.status {
@@ -723,7 +831,6 @@ fn print_summary(reports: &[ComponentReport]) -> Tally {
         "totals: applied={} skipped={} failed={}",
         tally.applied, tally.skipped, tally.failed
     );
-    tally
 }
 
 #[cfg(test)]
@@ -1029,5 +1136,68 @@ mod tests {
         assert_eq!(t.applied, 2);
         assert_eq!(t.skipped, 1);
         assert_eq!(t.failed, 1);
+    }
+
+    // ---- Issue #343: --json per-component summary ----------------------
+    //
+    // Pin the JSON envelope shape against synthetic per-component
+    // reports. We don't drive the orchestrator (it needs root + a real
+    // backend); the serializer is the load-bearing surface for CI /
+    // Ansible consumers.
+
+    #[test]
+    fn summary_serialises_per_component_status_and_exit_code() {
+        let reports = vec![
+            ComponentReport {
+                name: "mac",
+                status: Status::Applied,
+                note: "ok".into(),
+            },
+            ComponentReport {
+                name: "hostname",
+                status: Status::Skipped,
+                note: "disabled in config (hostname.enabled = false)".into(),
+            },
+            ComponentReport {
+                name: "dns",
+                status: Status::Failed,
+                note: "exited with code 1".into(),
+            },
+        ];
+        let summary = Summary::new("apply", reports, exit::GENERIC_ERROR);
+        let s = serde_json::to_string(&summary).expect("serialises");
+        // No `error` field on the happy-path summary.
+        assert!(!s.contains("\"error\""));
+        assert!(s.contains("\"command\":\"apply\""));
+        assert!(s.contains("\"exit_code\":1"));
+        // kebab-case status strings (matches Serialize derive on Status).
+        assert!(s.contains("\"status\":\"applied\""));
+        assert!(s.contains("\"status\":\"skipped\""));
+        assert!(s.contains("\"status\":\"failed\""));
+        assert!(s.contains("\"name\":\"mac\""));
+        // The summary is a single line — no embedded newlines.
+        assert!(!s.contains('\n'));
+    }
+
+    #[test]
+    fn summary_with_error_includes_error_string() {
+        // Used by the early-bail gates (root / yes / config / lock /
+        // preflight). The envelope still parses as a single JSON object,
+        // and consumers can distinguish "never reached fan-out" from
+        // "every component failed" via the `error` field.
+        let summary = Summary::with_error("apply", exit::PERMISSION_ERROR, "must be run as root");
+        let s = serde_json::to_string(&summary).expect("serialises");
+        assert!(s.contains("\"error\":\"must be run as root\""));
+        assert!(s.contains("\"exit_code\":66"));
+        assert!(s.contains("\"components\":[]"));
+    }
+
+    #[test]
+    fn summary_command_field_is_caller_supplied() {
+        // The same envelope is reused by `revert --json`; pin the
+        // discriminator so a future refactor can't collapse the two.
+        let s = serde_json::to_string(&Summary::new("revert", Vec::new(), exit::SUCCESS))
+            .expect("serialises");
+        assert!(s.contains("\"command\":\"revert\""));
     }
 }
