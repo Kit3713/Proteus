@@ -612,16 +612,21 @@ jobs:
       - name: Submit SRPM to Copr
         if: env.COPR_SKIP != '1'
         env:
-          COPR_PROJECT: ${{ vars.COPR_PROJECT }}
+          # Trim leading/trailing whitespace defensively — pasting into
+          # the GitHub Variables UI sometimes carries a stray space or
+          # newline that copr-cli then rejects ("Project  X does not
+          # exist" with a tell-tale double space in the error).
+          COPR_PROJECT_RAW: ${{ vars.COPR_PROJECT }}
         run: |
           set -euo pipefail
+          COPR_PROJECT=$(printf '%s' "$COPR_PROJECT_RAW" | tr -d '[:space:]')
           : "${COPR_PROJECT:?COPR_PROJECT variable must be set (e.g. kit3713/proteus)}"
           SRPM=$(ls rpm-artifacts/*.src.rpm | head -1)
           if [ -z "$SRPM" ]; then
             echo "::error::no .src.rpm found in proteus-rpm artifact"
             exit 1
           fi
-          echo "submitting $SRPM to copr project $COPR_PROJECT"
+          echo "submitting $SRPM to copr project '$COPR_PROJECT'"
           copr-cli build "$COPR_PROJECT" "$SRPM"
 
   # Launchpad PPA publish: builds a Debian *source* package (.dsc + .tar.xz
