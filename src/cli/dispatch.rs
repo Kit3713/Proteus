@@ -124,10 +124,12 @@ pub(super) fn dispatch(cli: Cli) -> Result<u8> {
             iface,
             yes,
             explain,
+            json,
         } => commands::rotate::run(
             iface.as_deref(),
             yes,
             explain,
+            json,
             cli.state.as_deref(),
             cli.config.as_deref(),
         ),
@@ -378,6 +380,9 @@ fn apply_json_to_command(cmd: &mut Command) {
         | Command::Diff { json }
         | Command::Doctor { json, .. }
         | Command::Probe { json, .. }
+        // Issue #395: rotate is mutating, but its post-mutation summary
+        // is read-shaped — let the global `--format json` flip it.
+        | Command::Rotate { json, .. }
         | Command::Bluetooth {
             action: BluetoothAction::Status { json },
         }

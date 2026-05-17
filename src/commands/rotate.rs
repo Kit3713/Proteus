@@ -63,17 +63,55 @@ struct ExplainEntry {
     candidates: Vec<ExplainCandidate>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 struct ExplainCandidate {
     mac: String,
     token: String,
     reason: String,
 }
 
+/// Issue #395: per-iface JSON summary line. `outcome` is the categorical
+/// verb (`rotated` / `skipped`) chosen so GUI/dispatcher callers can
+/// branch on a stable token instead of regex-matching the human prose.
+/// `explain` is populated only when `--explain` is set; serde skips it
+/// otherwise so the common-case wire format stays minimal.
+#[derive(Debug, Serialize)]
+struct RotateSummary {
+    iface: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    old_mac: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    new_mac: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    connection: Option<String>,
+    outcome: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    explain: Option<ExplainSummary>,
+}
+
+/// Per-iface explain trace folded into the JSON summary so a caller
+/// doesn't need to correlate two arrays by iface name.
+#[derive(Debug, Serialize)]
+struct ExplainSummary {
+    chosen_token: String,
+    oui_fallbacks: usize,
+    candidates: Vec<ExplainCandidate>,
+}
+
+#[derive(Debug, Serialize)]
+struct RotateSummaryEnvelope {
+    results: Vec<RotateSummary>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    active_persona: Option<String>,
+}
+
 pub fn run(
     iface_filter: Option<&str>,
     yes: bool,
     explain: bool,
+    json: bool,
     state_path: Option<&Path>,
     config_path: Option<&Path>,
 ) -> Result<u8> {
@@ -162,10 +200,22 @@ pub fn run(
             "proteus: no managed interfaces matched (backend = {})",
             config.backend.driver
         );
+        if json {
+            let envelope = RotateSummaryEnvelope {
+                results: Vec::new(),
+                active_persona: report.active_persona.clone(),
+            };
+            super::print_json(&envelope)?;
+        }
         return Ok(exit::GENERIC_ERROR);
     }
 
-    print_report(&report, explain);
+    if json {
+        let envelope = build_summary_envelope(&report, explain);
+        super::print_json(&envelope)?;
+    } else {
+        print_report(&report, explain);
+    }
     Ok(exit::SUCCESS)
 }
 
@@ -509,6 +559,62 @@ fn persona_shape_for(
             }
         });
     (pool, suffix)
+}
+
+/// Issue #395: fold `RotateReport` into the per-iface JSON summary
+/// envelope. The categorical `outcome` token is what a dispatcher
+/// branches on; the human reason rides along on skips. iface and
+/// connection id flow through `display_safe` because they originate
+/// from NM / kernel surfaces (issue #367).
+fn build_summary_envelope(report: &RotateReport, explain: bool) -> RotateSummaryEnvelope {
+    let mut results: Vec<RotateSummary> =
+        Vec::with_capacity(report.rotated.len() + report.skipped.len());
+    for r in &report.rotated {
+        let explain_entry = if explain {
+            report
+                .explain
+                .iter()
+                .find(|e| e.iface == r.iface)
+                .map(explain_summary_from_entry)
+        } else {
+            None
+        };
+        results.push(RotateSummary {
+            iface: display_safe(&r.iface).into_owned(),
+            old_mac: r.previous.clone(),
+            new_mac: Some(r.new.clone()),
+            connection: r
+                .connection
+                .as_deref()
+                .map(|c| display_safe(c).into_owned()),
+            outcome: "rotated",
+            reason: None,
+            explain: explain_entry,
+        });
+    }
+    for s in &report.skipped {
+        results.push(RotateSummary {
+            iface: display_safe(&s.iface).into_owned(),
+            old_mac: None,
+            new_mac: None,
+            connection: None,
+            outcome: "skipped",
+            reason: Some(s.reason.clone()),
+            explain: None,
+        });
+    }
+    RotateSummaryEnvelope {
+        results,
+        active_persona: report.active_persona.clone(),
+    }
+}
+
+fn explain_summary_from_entry(entry: &ExplainEntry) -> ExplainSummary {
+    ExplainSummary {
+        chosen_token: entry.chosen_token.clone(),
+        oui_fallbacks: entry.oui_fallbacks,
+        candidates: entry.candidates.clone(),
+    }
 }
 
 fn print_report(report: &RotateReport, explain: bool) {
@@ -1473,6 +1579,208 @@ mod tests {
             irec.map(|r| r.current_mac.is_none()).unwrap_or(true),
             "state.managed.interfaces must not carry a ghost MAC; got {:?}",
             irec.and_then(|r| r.current_mac.clone()),
+        );
+    }
+
+    // === Issue #395 — `proteus rotate --json` summary envelope ===
+
+    /// Drive `run_with_backend` against the mock backend and confirm the
+    /// JSON summary built from the resulting `RotateReport` parses back
+    /// as a `{"results": [ ... ]}` envelope with `iface`, `old_mac`,
+    /// `new_mac`, and `outcome = "rotated"` on the successful entry.
+    /// Mirrors the headline acceptance from the roadmap: dispatcher
+    /// callers can branch on `outcome` instead of regex-matching the
+    /// human prose.
+    #[test]
+    fn rotate_json_summary_envelope_carries_expected_fields() {
+        let backend = MockBackend::new();
+        let device = dev("wlan0");
+        let cref = device.connections[0].clone();
+        backend.insert_device(device, Some("aa:bb:cc:dd:ee:ff".into()));
+        backend.insert_connection(&cref, Some("Home Wi-Fi"), Some("uuid-1"));
+
+        let dir = crate::testing::TempRoot::new("rotate-json");
+        let state_path = dir.path.join("state.json");
+        let mut state = State::default();
+        state
+            .original_macs
+            .insert("wlan0".into(), "aa:bb:cc:dd:ee:ff".into());
+
+        let cfg = cfg();
+        let avoid: HashSet<Mac> = HashSet::new();
+        let probe = MockProbe::responds(false);
+        let report = rt().block_on(async {
+            run_with_backend(
+                &backend,
+                Some("wlan0"),
+                &cfg,
+                &avoid,
+                &probe,
+                false,
+                &mut state,
+                &state_path,
+            )
+            .await
+            .unwrap()
+        });
+
+        let envelope = build_summary_envelope(&report, false);
+        let serialized = serde_json::to_string(&envelope).expect("serialise");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&serialized).expect("round-trips as JSON");
+
+        let results = parsed
+            .get("results")
+            .and_then(|v| v.as_array())
+            .expect("results array present");
+        assert_eq!(results.len(), 1, "exactly one iface rotated");
+        let entry = &results[0];
+        assert_eq!(entry.get("iface").and_then(|v| v.as_str()), Some("wlan0"));
+        assert_eq!(
+            entry.get("outcome").and_then(|v| v.as_str()),
+            Some("rotated"),
+            "outcome must be a stable categorical token, not human prose"
+        );
+        assert_eq!(
+            entry.get("old_mac").and_then(|v| v.as_str()),
+            Some("aa:bb:cc:dd:ee:ff"),
+            "old_mac mirrors the device's pre-rotate hw address"
+        );
+        let new_mac = entry
+            .get("new_mac")
+            .and_then(|v| v.as_str())
+            .expect("new_mac present on a successful rotate");
+        let _: Mac = new_mac.parse().expect("new_mac parses");
+        assert_ne!(new_mac, "aa:bb:cc:dd:ee:ff");
+        assert!(
+            entry.get("explain").is_none(),
+            "explain must be absent without --explain; got {:?}",
+            entry.get("explain")
+        );
+        assert_eq!(
+            entry.get("connection").and_then(|v| v.as_str()),
+            Some("Home Wi-Fi"),
+        );
+    }
+
+    /// Pinned iface lands in the envelope as `outcome = "skipped"` with
+    /// the operator-readable `reason` populated. No `new_mac` on a skip.
+    #[test]
+    fn rotate_json_summary_envelope_skipped_entry_carries_reason() {
+        let backend = MockBackend::new();
+        let device = dev("wlan0");
+        backend.insert_device(device, Some("aa:bb:cc:dd:ee:ff".into()));
+        let dir = crate::testing::TempRoot::new("rotate-json-skip");
+        let state_path = dir.path.join("state.json");
+        let mut state = State::default();
+        state
+            .original_macs
+            .insert("wlan0".into(), "aa:bb:cc:dd:ee:ff".into());
+        let rec = crate::state::InterfaceRecord {
+            pinned: Some("02:00:00:00:00:99".into()),
+            ..Default::default()
+        };
+        state.managed.interfaces.insert("wlan0".into(), rec);
+
+        let cfg = cfg();
+        let avoid: HashSet<Mac> = HashSet::new();
+        let probe = MockProbe::responds(false);
+        let report = rt().block_on(async {
+            run_with_backend(
+                &backend,
+                Some("wlan0"),
+                &cfg,
+                &avoid,
+                &probe,
+                false,
+                &mut state,
+                &state_path,
+            )
+            .await
+            .unwrap()
+        });
+
+        let envelope = build_summary_envelope(&report, false);
+        let parsed: serde_json::Value = serde_json::to_value(&envelope).expect("to_value");
+        let results = parsed
+            .get("results")
+            .and_then(|v| v.as_array())
+            .expect("results array");
+        assert_eq!(results.len(), 1);
+        let entry = &results[0];
+        assert_eq!(
+            entry.get("outcome").and_then(|v| v.as_str()),
+            Some("skipped")
+        );
+        assert!(
+            entry
+                .get("reason")
+                .and_then(|v| v.as_str())
+                .is_some_and(|s| s.contains("pinned")),
+            "skip entry must carry the human reason; got {:?}",
+            entry.get("reason")
+        );
+        assert!(
+            entry.get("new_mac").is_none(),
+            "no new_mac on a skip; got {:?}",
+            entry.get("new_mac")
+        );
+    }
+
+    /// `--explain` mode attaches the candidate trace to the matching
+    /// per-iface summary, so a dispatcher can correlate the chosen MAC
+    /// with the rejection reasons without a second walk.
+    #[test]
+    fn rotate_json_summary_envelope_includes_explain_when_requested() {
+        let backend = MockBackend::new();
+        let device = dev("wlan0");
+        let cref = device.connections[0].clone();
+        backend.insert_device(device, Some("aa:bb:cc:dd:ee:ff".into()));
+        backend.insert_connection(&cref, Some("Home"), Some("uuid-explain"));
+
+        let dir = crate::testing::TempRoot::new("rotate-json-explain");
+        let state_path = dir.path.join("state.json");
+        let mut state = State::default();
+        state
+            .original_macs
+            .insert("wlan0".into(), "aa:bb:cc:dd:ee:ff".into());
+
+        let cfg = cfg();
+        let avoid: HashSet<Mac> = HashSet::new();
+        let probe = MockProbe::responds(false);
+        let report = rt().block_on(async {
+            run_with_backend(
+                &backend,
+                Some("wlan0"),
+                &cfg,
+                &avoid,
+                &probe,
+                true,
+                &mut state,
+                &state_path,
+            )
+            .await
+            .unwrap()
+        });
+
+        let envelope = build_summary_envelope(&report, true);
+        let parsed: serde_json::Value = serde_json::to_value(&envelope).expect("to_value");
+        let entry = &parsed["results"][0];
+        let explain = entry
+            .get("explain")
+            .and_then(|v| v.as_object())
+            .expect("explain object attached under --explain");
+        assert!(
+            explain.contains_key("chosen_token"),
+            "explain must surface chosen_token"
+        );
+        let candidates = explain
+            .get("candidates")
+            .and_then(|v| v.as_array())
+            .expect("candidates array");
+        assert!(
+            !candidates.is_empty(),
+            "explain must record at least one candidate"
         );
     }
 }
