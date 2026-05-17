@@ -1,5 +1,5 @@
 Name:           proteus
-Version:        1.0.0
+Version:        1.0.1
 Release:        1%{?dist}
 Summary:        Erase network-layer identifiers your Linux laptop hands out on every join
 
@@ -126,6 +126,12 @@ install -dm700 %{buildroot}%{_sharedstatedir}/proteus
 %systemd_postun_with_restart proteus-rotate.timer proteus-check.timer proteus-boot.service proteus-resume.service proteus-events.service
 
 %changelog
+* Sun May 17 2026 Kit3713 <noreply@example.com> - 1.0.1-1
+- v1.0.1: distro publishing infra. publish-copr / publish-ppa GitHub
+  Actions jobs (Fedora + Ubuntu auto-publish on tag push), OBS
+  _service file (openSUSE + Debian + Ubuntu + Fedora via OBS build
+  farm). No user-visible code changes — pure release-pipeline work.
+
 * Sun May 17 2026 Kit3713 <noreply@example.com> - 1.0.0-1
 - v1.0.0: first stable, non-beta release. 18-subcommand CLI ergonomics
   wave (version/about, logs, state info, backup/restore, pin list,
