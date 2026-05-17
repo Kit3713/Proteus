@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 pub mod apply;
+pub mod backup;
 pub mod bluetooth_cmd;
 pub mod completions;
 pub mod config_cmd;
@@ -25,6 +26,7 @@ pub mod portal;
 pub mod probe;
 pub mod reset;
 pub mod resolved;
+pub mod restore;
 pub mod revert;
 pub mod rf;
 pub mod rotate;

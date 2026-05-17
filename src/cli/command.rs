@@ -2,6 +2,8 @@
 
 //! Top-level `Command` enum. One variant per `proteus <subcommand>`.
 
+use std::path::PathBuf;
+
 use clap::Subcommand;
 
 use super::actions::{
@@ -398,6 +400,49 @@ pub enum Command {
     Events {
         #[command(subcommand)]
         action: EventsAction,
+    },
+    /// Bundle /etc/proteus and /var/lib/proteus into a tar.gz at `<PATH>`.
+    ///
+    /// Issue #353: a first-class "one-shot move my Proteus install to
+    /// another box" command. Reads the three known trees, refuses to
+    /// overwrite an existing file without `--force`, refuses a symlink
+    /// at the target (lstat-reject mirroring persona export safety in
+    /// issue #286), and writes at mode 0o600. The contrib script under
+    /// `contrib/recovery-kit/` keeps the larger surface (encryption,
+    /// manifest, retention) — this CLI covers the common case.
+    Backup {
+        /// Destination path for the tar.gz bundle.
+        path: PathBuf,
+        /// Overwrite an existing file at `<PATH>`.
+        #[arg(long)]
+        force: bool,
+        /// Emit a single-line JSON summary instead of human output.
+        #[arg(long)]
+        json: bool,
+        /// Confirm the (mildly sensitive) state-dump write.
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Extract a backup tarball back into /etc/proteus + /var/lib/proteus.
+    ///
+    /// Issue #353: destructive — overwrites the two known trees from
+    /// the archive — so it requires `--yes`. Validates the gzip magic,
+    /// rejects archive members outside the three roots, rejects `..`
+    /// components, and optionally pins the bundle's SHA-256 via
+    /// `--expected-sha`.
+    Restore {
+        /// Path to a tar.gz produced by `proteus backup`.
+        path: PathBuf,
+        /// Confirm destructive overwrite.
+        #[arg(long)]
+        yes: bool,
+        /// Emit a single-line JSON summary instead of human output.
+        #[arg(long)]
+        json: bool,
+        /// Pin the archive's SHA-256 (lowercase hex). Refuses to
+        /// extract if the digest mismatches.
+        #[arg(long = "expected-sha", value_name = "HEX")]
+        expected_sha: Option<String>,
     },
     /// Print the embedded shell-completion script for this binary's CLI.
     ///
