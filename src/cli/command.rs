@@ -138,9 +138,27 @@ pub enum Command {
         yes: bool,
     },
     /// Remove a pin previously set with `pin`.
+    ///
+    /// Issue #392: bulk-clear flags `--all` and `--scope <type>` mirror
+    /// the symmetric shape of `pin`. Exactly one of `target`, `--all`,
+    /// or `--scope` must be supplied; clap rejects every other combo
+    /// at parse time. Both bulk modes require `--yes` because they
+    /// rewrite the pin registry wholesale.
     Unpin {
-        /// Interface name or NM connection profile.
-        target: String,
+        /// Interface name or NM connection profile. Omit when using
+        /// `--all` or `--scope`.
+        #[arg(
+            required_unless_present_any = ["all", "scope"],
+            conflicts_with_all = ["all", "scope"],
+        )]
+        target: Option<String>,
+        /// Remove every pin in the registry (requires `--yes`).
+        #[arg(long, conflicts_with = "scope")]
+        all: bool,
+        /// Remove every pin of the given scope: `iface` or
+        /// `nm-connection` (requires `--yes`).
+        #[arg(long, value_name = "TYPE")]
+        scope: Option<String>,
         /// Confirm this mutating change (issue #391 / N12.1):
         /// `unpin` clears the persisted pin so the next rotation
         /// drops the operator-chosen MAC. Without `--yes` the

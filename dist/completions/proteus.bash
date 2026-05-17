@@ -98,7 +98,7 @@ _proteus_pin_handler() {
 }
 command_pin()   { _proteus_pin_handler; }
 command_unpin() {
-    COMPREPLY=( $(compgen -W "$(_proteus_pin_targets) $_proteus_global_opts" -- "$cur") )
+    COMPREPLY=( $(compgen -W "$(_proteus_pin_targets) --all --scope --yes $_proteus_global_opts" -- "$cur") )
 }
 
 command_completions() {

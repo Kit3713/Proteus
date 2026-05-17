@@ -136,6 +136,10 @@ complete -c proteus -n '__fish_seen_subcommand_from reset' \
     -l dry-run -d 'Print what would happen without writing'
 complete -c proteus -n '__fish_seen_subcommand_from pin' \
     -l mac -d 'Specific MAC to pin' -x
+complete -c proteus -n '__fish_seen_subcommand_from unpin' \
+    -l all -d 'Remove every pin (requires --yes)'
+complete -c proteus -n '__fish_seen_subcommand_from unpin' \
+    -l scope -d 'Restrict bulk clear to scope' -x -a 'iface nm-connection'
 
 # Action sub-subcommands. True when the parent has been seen but no
 # action from its known action list has been entered yet.
