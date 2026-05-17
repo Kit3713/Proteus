@@ -89,7 +89,11 @@ fn is_safe_editor_value(v: &std::ffi::OsStr) -> bool {
 }
 
 /// Top-level dispatch for `proteus persona ...`.
-pub fn run(action: PersonaAction, config_override: Option<&Path>) -> Result<u8> {
+pub fn run(
+    action: PersonaAction,
+    state_path: Option<&Path>,
+    config_override: Option<&Path>,
+) -> Result<u8> {
     let user_root = user_root();
     match action {
         PersonaAction::List {
@@ -107,7 +111,20 @@ pub fn run(action: PersonaAction, config_override: Option<&Path>) -> Result<u8> 
             kind,
             category,
             json,
-        } => random(kind.as_deref(), category.as_deref(), json, &user_root),
+            use_,
+            apply,
+            yes,
+        } => random(
+            kind.as_deref(),
+            category.as_deref(),
+            json,
+            use_,
+            apply,
+            yes,
+            state_path,
+            config_override,
+            &user_root,
+        ),
         PersonaAction::New { id, from, yes } => new(&id, &from, yes, &user_root),
         PersonaAction::Edit { id } => edit(&id, &user_root),
         PersonaAction::Validate { path } => validate(&path),
@@ -387,7 +404,33 @@ fn persona_shaped_fields() -> Vec<&'static str> {
 
 // ---- random ----------------------------------------------------------
 
-fn random(kind: Option<&str>, category: Option<&str>, json: bool, user_root: &Path) -> Result<u8> {
+#[allow(clippy::too_many_arguments)]
+fn random(
+    kind: Option<&str>,
+    category: Option<&str>,
+    json: bool,
+    use_: bool,
+    apply: bool,
+    yes: bool,
+    state_path: Option<&Path>,
+    config_override: Option<&Path>,
+    user_root: &Path,
+) -> Result<u8> {
+    // Issue #356: `--apply` implies `--use`. Both require `--yes` because
+    // they mutate config (and `--apply` additionally mutates network
+    // state). Gate up-front so a typo doesn't burn entropy on a pick
+    // we'd refuse to apply.
+    let want_use = use_ || apply;
+    if want_use
+        && let Err(code) = super::require_yes(
+            yes,
+            "writes [persona] active to config",
+            "proteus help persona",
+        )
+    {
+        return Ok(code);
+    }
+
     let kind_filter = parse_kind_filter(kind)?;
     let cat_filter = parse_category_filter(category)?;
     let mut pool: Vec<PersonaSummary> = load::list_all(user_root);
@@ -409,9 +452,23 @@ fn random(kind: Option<&str>, category: Option<&str>, json: bool, user_root: &Pa
     let pick = &pool[idx];
     if json {
         super::print_json(pick)?;
-        return Ok(exit::SUCCESS);
+    } else {
+        println!("{}", pick.id);
     }
-    println!("{}", pick.id);
+
+    // Issue #356: chain into the existing `use` (and optionally `apply`)
+    // paths rather than re-implement them. `use_persona` handles root +
+    // path-traversal gating; we already cleared `--yes` above, so pass
+    // `yes=true` through. `apply` itself enforces the root gate.
+    if want_use {
+        let rc = use_persona(&pick.id, false, true, config_override, user_root)?;
+        if rc != exit::SUCCESS {
+            return Ok(rc);
+        }
+        if apply {
+            return super::apply::run(true, state_path, config_override);
+        }
+    }
     Ok(exit::SUCCESS)
 }
 
@@ -906,6 +963,92 @@ mod tests {
             }
             _ => panic!("wrong action"),
         }
+    }
+
+    /// Issue #356: `random --use --apply --yes` parses. Back-compat is also
+    /// covered (no extra flags = defaults all false).
+    #[test]
+    fn cli_parses_random_with_use_apply_yes() {
+        let w = Wrap::try_parse_from(["x", "random", "--use", "--yes"]).expect("parse");
+        match w.cmd {
+            PersonaAction::Random {
+                use_, apply, yes, ..
+            } => {
+                assert!(use_);
+                assert!(!apply);
+                assert!(yes);
+            }
+            _ => panic!("wrong action"),
+        }
+
+        let w2 = Wrap::try_parse_from(["x", "random", "--apply", "--yes"]).expect("parse");
+        match w2.cmd {
+            PersonaAction::Random {
+                use_, apply, yes, ..
+            } => {
+                assert!(!use_);
+                assert!(apply);
+                assert!(yes);
+            }
+            _ => panic!("wrong action"),
+        }
+
+        // Back-compat — bare `random` keeps the old shape.
+        let w3 = Wrap::try_parse_from(["x", "random"]).expect("parse");
+        match w3.cmd {
+            PersonaAction::Random {
+                use_, apply, yes, ..
+            } => {
+                assert!(!use_);
+                assert!(!apply);
+                assert!(!yes);
+            }
+            _ => panic!("wrong action"),
+        }
+    }
+
+    /// Issue #356: `random --use` without `--yes` bails with the confirmation
+    /// gate before consuming entropy or writing anything.
+    #[test]
+    fn random_use_without_yes_returns_confirmation_required() {
+        let tmp = crate::testing::TempRoot::new("persona-random-use-noyes");
+        let cfg = tmp.path.join("config.toml");
+        let rc = random(
+            None,
+            None,
+            false,
+            true,  // use_
+            false, // apply
+            false, // yes
+            None,
+            Some(&cfg),
+            &tmp.path,
+        )
+        .expect("call ok");
+        assert_eq!(rc, crate::exit::CONFIRMATION_REQUIRED);
+        assert!(!cfg.exists(), "config must not be written without --yes");
+    }
+
+    /// Issue #356: `random --apply` without `--yes` also bails (since --apply
+    /// implies --use).
+    #[test]
+    fn random_apply_without_yes_returns_confirmation_required() {
+        let tmp = crate::testing::TempRoot::new("persona-random-apply-noyes");
+        let cfg = tmp.path.join("config.toml");
+        let rc = random(
+            None,
+            None,
+            false,
+            false, // use_
+            true,  // apply
+            false, // yes
+            None,
+            Some(&cfg),
+            &tmp.path,
+        )
+        .expect("call ok");
+        assert_eq!(rc, crate::exit::CONFIRMATION_REQUIRED);
+        assert!(!cfg.exists(), "config must not be written without --yes");
     }
 
     #[test]

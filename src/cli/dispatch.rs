@@ -327,7 +327,9 @@ pub(super) fn dispatch(cli: Cli) -> Result<u8> {
         // Roadmap Milestone 2: persona schema + CLI. Apply/rotate
         // integration is the follow-up; this dispatch only flips
         // `[persona] active` and runs the read-side commands.
-        Command::Persona { action } => commands::persona::run(action, cli.config.as_deref()),
+        Command::Persona { action } => {
+            commands::persona::run(action, cli.state.as_deref(), cli.config.as_deref())
+        }
         // Roadmap Milestone 3: per-SSID profile policies. Resolver +
         // CLI surface land here; the NM-connection-up dispatcher
         // integration is the follow-up.
