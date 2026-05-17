@@ -11,22 +11,110 @@ landed, what is in flight, and what is on the bench. See
 
 ## [Unreleased]
 
-### Added
+## [0.5.0] - 2026-05-17
 
-- **CLI: `unpin --all` / `--scope <type>`** (#392) — symmetric bulk-clear
-  for the pin registry. `--all` removes every pin; `--scope iface` and
-  `--scope nm-connection` restrict the bulk clear to one scope. Both
-  bulk modes require `--yes`; without it the command exits with
-  `CONFIRMATION_REQUIRED` (65). The single-target shape
-  (`proteus unpin <target> --yes`) is unchanged.
-- `proteus config show --annotate` (alias `--origin`) marks each section
-  of the rendered config with its provenance: `file` for user-supplied
-  overrides, `profile:<name>` for the active profile baseline,
-  `per-ssid:<ssid>` for per-SSID blocks, or `default` for the built-in
-  default when no profile is set. Human output appends `# <source>` to
-  each line; `--json` adds a parallel `_origins` map keyed by section
-  name. Granularity is section-level for this landing; field-level
-  follow-up is tracked at #404. ([#404])
+First non-beta release. v0.4.x closed every reachable High and Critical
+bug-hunt finding; v0.5.0 lands the CLI ergonomics wave on top: 18 new
+read-mostly subcommands, two residual hardening fixes, and a clean
+bug-tracker. No breaking changes against v0.4.3-beta — every existing
+shape, exit code, and `--yes` gate is preserved.
+
+### Added — CLI ergonomics wave
+
+- **`proteus version --json` / `proteus about`** (#376) — structured
+  build info: package version, git sha, rustc, target triple,
+  `SOURCE_DATE_EPOCH`-aware build timestamp. Wrappers can pin the
+  exact binary they're driving without screen-scraping `--help`.
+- **`proteus logs`** (#390) — thin journalctl wrapper across every
+  Proteus systemd unit + the NM dispatcher syslog tag. Honours
+  `--follow`, `--lines`, `--since`, `--json`. Degrades cleanly when
+  journalctl is absent (`SYSTEM_NOT_SUPPORTED`).
+- **`proteus state info` / `proteus state ...`** (#300) — read-only
+  state.json summary: schema version, file path, size, per-iface
+  last-rotated, count breakdown across managed interfaces, connections,
+  pinned entries, cached originals. `--json` parity. New `state`
+  top-level namespace reserved for future `state migrate` / `state
+  dump`.
+- **`proteus backup <path>` / `proteus restore <path>`** (#353) —
+  first-class backup/restore for `/etc/proteus/` + `/var/lib/proteus/`.
+  `tar.gz` with lstat-symlink reject, mode 0o600, optional SHA-256
+  pinning via `--expected-sha`. Restore requires `--yes` and acquires
+  the state lock for safety. The `contrib/recovery-kit/` sidecar
+  scripts stay in place for distros without the binary installed.
+- **`proteus pin list`** (#364) — read-only inverse of `pin`.
+  Enumerates pinned interfaces + connections from state. Added
+  `pinned_at: Option<String>` ISO-8601 timestamp to per-iface +
+  per-connection records (set on `pin`, cleared on `unpin`).
+- **`proteus unpin --all` / `--scope <type>`** (#392) — symmetric
+  bulk-clear. `--all` removes every pin; `--scope iface|nm-connection`
+  filters by kind. Both modes require `--yes`.
+- **`proteus rotate --json`** (#395) — single-line `{"results": [...]}`
+  envelope per iface, `outcome` as a stable categorical token
+  (`rotated`/`skipped`), explain payload folded in under `--explain`.
+- **`proteus rotate --reason "<text>"`** (#294) — optional audit
+  string stamped into the per-iface state record alongside
+  `last_rotated`, echoed at `tracing::info!`. Bounded 256 bytes;
+  control bytes (C0/C1/bidi/DEL) stripped; truncated on overflow.
+- **`proteus apply / revert --json`** (#343) — per-component summary
+  envelope `{"command", "components": [...], "exit_code"}` for CI /
+  Ansible consumers.
+- **`proteus config show --annotate`** (#404) — sections marked with
+  provenance (`file`/`profile:<name>`/`per-ssid:<ssid>`/`default`).
+  Field-level annotation is a v0.5.x follow-up.
+- **`proteus config explain <key>`** (#394) — surfaces type, default,
+  current value, source file, doc-comment, risk warning, wiki link
+  for any of 62 catalogued keys. Unknown keys exit `CONFIG_ERROR` (65)
+  with a closest-known-key suggestion.
+- **`proteus persona search <query>`** (#383) — case-insensitive scan
+  over persona ids / display_names / notes; ranked id-exact >
+  id-prefix > substring.
+- **`proteus persona delete <id>`** (#338) — removes a user-authored
+  persona with `--yes` + lstat-symlink reject + active-persona guard.
+  Built-in personas are refused.
+- **`proteus persona random --use [--apply]`** (#356) — one-shot
+  pick + activate; `--apply` chains through `proteus apply`. Both
+  require `--yes`.
+- **`proteus events list-sources`** (#283) — read-only enumeration
+  of the four event sources with a host-side availability probe
+  (NetworkManager marker for `nm-connection-up`, netlink bind probes
+  for `link-flap` + `reg-domain`, always-available for `portal-auth`).
+- **`proteus events status`** (#393) — live per-source / per-handler
+  counters + uptime + last-fired timestamps from a 1s on-disk snapshot
+  the daemon writes. Missing/stale snapshots surface as
+  `SYSTEM_NOT_SUPPORTED` (70) — the wrapper-friendly "daemon not
+  running" signal.
+- **`proteus events trigger <name> --debug --yes`** (#346) — synthetic
+  trigger dispatch through an in-process registry for CI containers
+  without a daemon. Live-daemon trigger IPC returns `NOT_IMPLEMENTED`
+  pending a follow-up.
+- **`proteus wiki list [--json]`** (#406) — programmatic enumeration
+  of every embedded wiki page with title + description.
+
+### Added — residual hardening
+
+- **V11 follow-up** (#461) — `iot-generic` persona OUI pool now
+  resolves cleanly. `Vendor::Espressif` (9 IEEE prefixes) and
+  `Vendor::Realtek` (7) added to `src/mac/oui.rs`. Built-in personas
+  hard-fail on unknown vendor tokens.
+- **S3 regression test** (#462) — `mode(0o600)` on the state-lock
+  `OpenOptions` is now pinned by an explicit `umask(0o000)` →
+  acquire → stat test so a future refactor can't drop it without CI
+  catching it.
+
+### Tooling
+
+- Stripped release binary size cap raised to 5.5 MB to accommodate
+  the 18-subcommand expansion. CI + release workflows updated in
+  lockstep.
+
+### Closed (auto-closed via merged PRs)
+
+The 18 ergonomics issues above closed via `Closes #N` on their
+respective PRs. The wave-2 hardening backlog (#339, #345, #351,
+#354, #355, #357, #358, #359, #360, #361, #362, #363, #365, #366,
+#367, #370, #373, #374, #375, #377, #379, #380, #381, #382, #388,
+#389, #391) was closed by hand with citations to the roadmap stream
+that landed each fix.
 
 ## [0.4.3-beta] - 2026-05-12
 
