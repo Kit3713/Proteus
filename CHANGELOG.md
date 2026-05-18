@@ -11,6 +11,29 @@ landed, what is in flight, and what is on the bench. See
 
 ## [Unreleased]
 
+## [1.0.2] - 2026-05-17
+
+Copr offline-build fix. v1.0.1 successfully submitted its SRPM to Copr
+but the per-chroot rpmbuilds all failed because Copr's mock chroots
+run with no network access (`cargo build --locked` still tried to
+fetch crates from `index.crates.io`). v1.0.2 pre-vendors every cargo
+dependency into the source tarball and switches the spec to
+`--frozen --offline`.
+
+### Packaging
+
+- `.github/workflows/release.yml` build-rpm step now runs
+  `cargo vendor --locked vendor` inside the staged source tree and
+  writes a `.cargo/config.toml` that points cargo at the vendored
+  copies, before rolling the SRPM tarball.
+- `dist/rpm/proteus.spec` `%build` switched from
+  `cargo build --release --locked` to
+  `cargo build --release --frozen --offline`; `%check` matched.
+- SRPM ~13 MB larger as a result. Build reproducibility improves: the
+  vendored `vendor/` directory is bit-stable for a given `Cargo.lock`.
+
+No user-visible code changes.
+
 ## [1.0.1] - 2026-05-17
 
 Distro publishing infrastructure. No user-visible code changes; pure

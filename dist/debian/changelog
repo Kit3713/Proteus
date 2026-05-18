@@ -1,3 +1,12 @@
+proteus (1.0.2-1) unstable; urgency=medium
+
+  * v1.0.2 — Copr offline-build fix. Pre-vendors cargo deps into the
+    SRPM and switches the RPM spec to --frozen --offline so Copr's
+    no-network mock chroots can actually build. SRPM ~13 MB larger.
+    No user-visible code changes.
+
+ -- Kit3713 <noreply@example.com>  Sun, 17 May 2026 19:25:00 -0500
+
 proteus (1.0.1-1) unstable; urgency=medium
 
   * v1.0.1 — distro publishing infrastructure. publish-copr +

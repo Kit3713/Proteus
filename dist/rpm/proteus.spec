@@ -1,5 +1,5 @@
 Name:           proteus
-Version:        1.0.1
+Version:        1.0.2
 Release:        1%{?dist}
 Summary:        Erase network-layer identifiers your Linux laptop hands out on every join
 
@@ -132,6 +132,13 @@ install -dm700 %{buildroot}%{_sharedstatedir}/proteus
 %systemd_postun_with_restart proteus-rotate.timer proteus-check.timer proteus-boot.service proteus-resume.service proteus-events.service
 
 %changelog
+* Sun May 17 2026 Kit3713 <noreply@example.com> - 1.0.2-1
+- v1.0.2: Copr offline-build fix. Pre-vendors every cargo dependency
+  into the source tarball and switches %build/%check to
+  `cargo build/test --frozen --offline`, so Copr's no-network mock
+  chroots can actually build the spec. SRPM grows ~13 MB. No
+  user-visible code changes.
+
 * Sun May 17 2026 Kit3713 <noreply@example.com> - 1.0.1-1
 - v1.0.1: distro publishing infra. publish-copr / publish-ppa GitHub
   Actions jobs (Fedora + Ubuntu auto-publish on tag push), OBS
