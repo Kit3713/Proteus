@@ -1,6 +1,6 @@
 # Maintainer: Kit3713 <noreply@example.com>
 pkgname=proteus
-pkgver=1.0.2
+pkgver=1.0.3
 pkgrel=1
 pkgdesc="Erase the network identifiers your Linux laptop hands out on every join"
 arch=('x86_64' 'aarch64')

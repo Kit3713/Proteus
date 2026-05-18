@@ -11,6 +11,24 @@ landed, what is in flight, and what is on the bench. See
 
 ## [Unreleased]
 
+## [1.0.3] - 2026-05-17
+
+Copr full-chroot coverage. v1.0.2's vendor fix unblocked Fedora and
+openSUSE (6/20 chroots green), but RHEL/EPEL/CentOS/Alma chroots
+strict-fail on an empty `debugsourcefiles.list` manifest. Cargo.toml's
+release profile strips debug info, so there's nothing to extract.
+Disabling the debug subpackage entirely (`%global debug_package %{nil}`)
+makes all 20 chroots behave the same.
+
+### Packaging
+
+- `dist/rpm/proteus.spec`: added `%global debug_package %{nil}` near the
+  top of the spec. Released-binary stripping is already enforced by
+  `Cargo.toml`'s `[profile.release] strip = true`, so the debug
+  subpackage was always empty.
+
+No user-visible code changes.
+
 ## [1.0.2] - 2026-05-17
 
 Copr offline-build fix. v1.0.1 successfully submitted its SRPM to Copr
