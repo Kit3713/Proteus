@@ -1,3 +1,12 @@
+proteus (1.0.4-1) unstable; urgency=medium
+
+  * v1.0.4 — hotfix for v1.0.3. RPM changelog text accidentally
+    contained a literal %global directive that rpmbuild expanded and
+    choked on. Re-ships v1.0.3's spec change with the percent-signs
+    properly escaped in changelog prose. No code changes.
+
+ -- Kit3713 <noreply@example.com>  Mon, 18 May 2026 09:30:00 -0500
+
 proteus (1.0.3-1) unstable; urgency=medium
 
   * v1.0.3 — Copr full-chroot coverage. Disables RPM debug-subpackage
