@@ -44,7 +44,13 @@ NetworkManager.
 # observed to exit non-zero on fedora:43 (likely vendoring or %{__cargo}
 # resolution issues in the container). Calling cargo directly matches the
 # rest of CI and is the same recipe used for the raw-binary release jobs.
-cargo build --release --locked
+#
+# `--offline`: Copr / mock build chroots have no network access. The
+# release workflow pre-vendors every dependency into `vendor/` and writes
+# a `.cargo/config.toml` that points cargo at that directory before
+# rolling the source tarball. See `.github/workflows/release.yml`'s
+# `build-rpm.Stage local source tarball` step for the producer side.
+cargo build --release --frozen --offline
 
 %check
 # Library tests only — integration tests need a privileged systemd
@@ -59,7 +65,7 @@ cargo build --release --locked
 # expands the conditional to a no-op.
 %bcond_without check
 %if %{with check}
-cargo test --release --locked --lib
+cargo test --release --frozen --offline --lib
 %else
 echo "WARNING: %check skipped via --without check (NPKG.9). Validate the build elsewhere."
 %endif
