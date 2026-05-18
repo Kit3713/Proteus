@@ -1,5 +1,5 @@
 Name:           proteus
-Version:        1.0.3
+Version:        1.0.4
 Release:        1%{?dist}
 Summary:        Erase network-layer identifiers your Linux laptop hands out on every join
 
@@ -141,9 +141,17 @@ install -dm700 %{buildroot}%{_sharedstatedir}/proteus
 %systemd_postun_with_restart proteus-rotate.timer proteus-check.timer proteus-boot.service proteus-resume.service proteus-events.service
 
 %changelog
+* Sun May 18 2026 Kit3713 <noreply@example.com> - 1.0.4-1
+- v1.0.4: hotfix for v1.0.3. The v1.0.3 changelog entry contained the
+  literal text %%global debug_package %%{nil} (the directive we added
+  in the spec body), which rpmbuild's parser expanded inside the
+  changelog and choked on the leftover prose. Re-shipping the same
+  spec change with the percent-signs in changelog prose properly
+  doubled. No code changes.
+
 * Sun May 17 2026 Kit3713 <noreply@example.com> - 1.0.3-1
 - v1.0.3: Copr full-chroot coverage. Disables the auto-generated debug
-  subpackage (%global debug_package %{nil}) since Cargo.toml's release
+  subpackage (%%global debug_package %%{nil}) since Cargo.toml's release
   profile strips debug info. RHEL/EPEL/CentOS/Alma chroots used to
   strict-fail on the empty debugsourcefiles.list manifest; Fedora and
   openSUSE tolerated it (6/20 chroots green in v1.0.2). All 20 should

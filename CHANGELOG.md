@@ -11,6 +11,24 @@ landed, what is in flight, and what is on the bench. See
 
 ## [Unreleased]
 
+## [1.0.4] - 2026-05-18
+
+Hotfix for v1.0.3. The v1.0.3 RPM spec's changelog entry contained
+the literal text `%global debug_package %{nil}` (the directive added
+in the spec body), which rpmbuild expanded inside the changelog and
+choked on the leftover prose. `build-rpm` failed at the parse step
+before producing artifacts, so the `publish-copr` submission never
+happened.
+
+### Packaging
+
+- `dist/rpm/proteus.spec` changelog: percent-signs in prose now
+  doubled (`%%global`, `%%{nil}`) so rpmbuild treats them as literal
+  characters instead of directive expansions. Same fix retroactively
+  applied to the v1.0.3 changelog entry.
+
+No code changes. Re-ships v1.0.3's spec body unchanged.
+
 ## [1.0.3] - 2026-05-17
 
 Copr full-chroot coverage. v1.0.2's vendor fix unblocked Fedora and
