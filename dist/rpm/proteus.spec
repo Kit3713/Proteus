@@ -1,11 +1,20 @@
 Name:           proteus
-Version:        1.0.2
+Version:        1.0.3
 Release:        1%{?dist}
 Summary:        Erase network-layer identifiers your Linux laptop hands out on every join
 
 License:        GPL-3.0-or-later
 URL:            https://github.com/Kit3713/Proteus
 Source0:        %{url}/archive/v%{version}/%{name}-%{version}.tar.gz
+
+# Cargo.toml's release profile sets `strip = true`, so there is no debug
+# info in the final binary and the rpm debugsource extraction has nothing
+# to do. On Fedora chroots an empty debugsource manifest is tolerated, but
+# RHEL/EPEL/CentOS/Alma chroots strict-fail with:
+#   error: Empty %files file .../debugsourcefiles.list
+# Disable the auto-generated debug subpackage entirely so all chroots
+# behave the same. Verified in v1.0.2 build #10473735 logs.
+%global debug_package %{nil}
 
 # Milestone 5: explicit cargo + rust >= 1.85 BRs (edition 2024 floor).
 # `rust-packaging` would also pull these via %cargo_build, but we drive
@@ -132,6 +141,14 @@ install -dm700 %{buildroot}%{_sharedstatedir}/proteus
 %systemd_postun_with_restart proteus-rotate.timer proteus-check.timer proteus-boot.service proteus-resume.service proteus-events.service
 
 %changelog
+* Sun May 17 2026 Kit3713 <noreply@example.com> - 1.0.3-1
+- v1.0.3: Copr full-chroot coverage. Disables the auto-generated debug
+  subpackage (%global debug_package %{nil}) since Cargo.toml's release
+  profile strips debug info. RHEL/EPEL/CentOS/Alma chroots used to
+  strict-fail on the empty debugsourcefiles.list manifest; Fedora and
+  openSUSE tolerated it (6/20 chroots green in v1.0.2). All 20 should
+  now build. No user-visible code changes.
+
 * Sun May 17 2026 Kit3713 <noreply@example.com> - 1.0.2-1
 - v1.0.2: Copr offline-build fix. Pre-vendors every cargo dependency
   into the source tarball and switches %build/%check to
