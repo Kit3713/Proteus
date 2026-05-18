@@ -287,7 +287,7 @@ jobs:
         run: dnf install -y rpm-build rpmdevtools tar gzip gcc pkg-config dbus-devel openssl-devel rust cargo systemd-rpm-macros
       - name: Set up rpmbuild tree
         run: rpmdev-setuptree
-      - name: Stage local source tarball
+      - name: Stage local source tarball (with vendored crates)
         run: |
           set -euo pipefail
           VERSION=$(awk -F'[ \t]+' '/^Version:/ {print $2; exit}' dist/rpm/proteus.spec)
@@ -296,6 +296,18 @@ jobs:
           mkdir -p "$STAGE/Proteus-${VERSION}"
           tar --exclude=.git --exclude=target --exclude=dist-out \
               -cf - . | tar -xf - -C "$STAGE/Proteus-${VERSION}"
+          # Pre-vendor cargo dependencies into the tarball. Copr / mock
+          # chroots run with no network access, so `cargo build` cannot
+          # fetch from crates.io at build time. `cargo vendor` writes
+          # every transitive dep to `vendor/` and the config snippet
+          # below points cargo at that directory in offline mode.
+          # See dist/copr/README.md and the build.log "failed to get
+          # `anyhow` as a dependency / download of config.json failed"
+          # signature for the diagnostic this fixes.
+          pushd "$STAGE/Proteus-${VERSION}" > /dev/null
+          mkdir -p .cargo
+          cargo vendor --locked vendor > .cargo/config.toml
+          popd > /dev/null
           tar -czf ~/rpmbuild/SOURCES/proteus-${VERSION}.tar.gz \
               -C "$STAGE" "Proteus-${VERSION}"
           rm -rf "$STAGE"
