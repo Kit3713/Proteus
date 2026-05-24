@@ -214,6 +214,106 @@ jobs:
             echo "OK: stripped ${{ matrix.target }} proteus binary is ${SIZE} bytes (under 5.5 MB target)"
           fi
 
+  # Milestone 1.2 (U7): read-only `proteus doctor` smoke test.
+  #
+  # Runs `cargo run -- doctor --json` inside the Fedora 43 test container
+  # so the environment matches real user conditions. The assertion is
+  # intentionally lenient: we require only that the command (a) does NOT
+  # panic (a panic produces no JSON and exits 101 via Rust's panic hook)
+  # and (b) emits well-formed JSON with the expected top-level keys.
+  #
+  # We do NOT assert exit 0 because on an unconfigured CI box NM / BlueZ
+  # may be absent, which causes backend checks to Fail and doctor to exit 1
+  # by the contract in exit_code_for (see src/commands/doctor.rs).
+  # Checking for no-panic + valid JSON is the right bar for a smoke test.
+  #
+  # doctor is read-only; it inspects the environment only — no mutations.
+  doctor-smoke:
+    name: doctor smoke (--json, no panic)
+    runs-on: ubuntu-latest
+    container: fedora:43
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - name: Install build dependencies
+        run: dnf install -y gcc pkg-config dbus-devel openssl-devel
+      - uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6  # v1
+      # No explicit cache key — shares the same Swatinem/rust-cache bucket as
+      # the `test` job (same fedora:43 container, same debug build, same Cargo.lock).
+      # Whichever job runs second gets a warm cache; no extra compile needed.
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32  # v2
+      # Build the binary first so the smoke step is a clean one-liner.
+      - name: cargo build --locked
+        run: cargo build --locked
+      # Run doctor --json and validate output.
+      # Exit code may be 0 (all ok/warn) or 1 (some checks failed, e.g.
+      # no backend available in this container) — both are acceptable.
+      # Exit code 101 means Rust panicked; that is the only failure mode
+      # we guard against here.
+      - name: proteus doctor --json (no panic, valid JSON)
+        run: |
+          set -euo pipefail
+          # Capture output + exit code without aborting on non-zero exit.
+          ./target/debug/proteus doctor --json > doctor-out.json || DOCTOR_EXIT=$?
+          DOCTOR_EXIT=${DOCTOR_EXIT:-0}
+          echo "doctor exit code: ${DOCTOR_EXIT}"
+          # Rust panics exit 101 via the default panic hook.
+          if [ "${DOCTOR_EXIT}" -eq 101 ]; then
+            echo "FAIL: proteus doctor panicked (exit 101)" >&2
+            exit 1
+          fi
+          # Must produce well-formed JSON with the expected top-level keys.
+          python3 -c "
+          import json, sys
+          data = json.load(open('doctor-out.json'))
+          for key in ('schema_version', 'checks', 'summary'):
+              assert key in data, f'missing key: {key}'
+          print(f\"OK: doctor emitted valid JSON — {len(data['checks'])} check(s), \
+          summary={data['summary']}\")
+          "
+
+  # Milestone 1.2 (U7): x86_64-v2 microarchitecture build.
+  #
+  # RUSTFLAGS="-C target-cpu=x86-64-v2" targets the second x86-64
+  # microarchitecture level (Haswell/Broadwell era, circa 2013+). This
+  # is the lowest baseline that still benefits from AVX2 vectorization
+  # without requiring AVX-512. Adding it as a CI matrix entry ensures
+  # that the code stays buildable and that LLVM doesn't emit illegal
+  # instructions for this baseline (which would be caught at runtime,
+  # not build time).
+  #
+  # Runs only on push/main (same as build-and-size) to keep PR feedback
+  # fast. The aarch64 cross-build (cross-build-arm matrix) is already
+  # present and untouched above.
+  build-x86-64-v2:
+    name: build x86_64-v2 (RUSTFLAGS target-cpu)
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    container: fedora:43
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - name: Install build dependencies
+        run: dnf install -y gcc pkg-config dbus-devel openssl-devel binutils
+      - uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6  # v1
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32  # v2
+        with:
+          key: x86-64-v2
+      - name: cargo build --release --locked (x86_64-v2)
+        env:
+          RUSTFLAGS: "-C target-cpu=x86-64-v2"
+        run: cargo build --release --locked
+      - name: Strip and log size (x86_64-v2)
+        run: |
+          set -euo pipefail
+          BIN=target/release/proteus
+          strip "$BIN"
+          SIZE=$(wc -c < "$BIN")
+          echo "PROTEUS_BINARY_SIZE_BYTES=${SIZE} (x86_64-v2)"
+          if [ "$SIZE" -gt 5500000 ]; then
+            echo "WARN: stripped x86_64-v2 proteus binary is ${SIZE} bytes, exceeds 5.5 MB target" >&2
+          else
+            echo "OK: stripped x86_64-v2 proteus binary is ${SIZE} bytes (under 5.5 MB target)"
+          fi
+
   # Stream 3 acceptance: lint packaging files and shell scripts so
   # lockstep coherence regressions (e.g. install.sh enabling proteus-events
   # but the RPM spec leaving it out) surface in CI rather than in a
