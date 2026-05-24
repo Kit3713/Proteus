@@ -64,6 +64,12 @@ pub struct Config {
     /// NM → networkd → raw at runtime; only the NM impl is fully
     /// wired in this PR.
     pub backend: BackendConfig,
+    /// Logging-layer redaction policy (roadmap 1.0.5). Controls how device
+    /// identifiers (MAC / SSID / hostname / 802.1X) are rendered at *log*
+    /// sites. Default `"redacted"`. This never affects `--json` output or
+    /// CLI display, which always show real values — it shapes journald /
+    /// stderr only. See `crate::redaction`.
+    pub logging: LoggingConfig,
     /// Per-SSID policy overrides (roadmap Milestone 3). Each entry under
     /// `[per_ssid."<ssid>"]` may override one or more knobs that the
     /// orchestrator looks up at NM `connection-up` time. Precedence is
@@ -108,9 +114,27 @@ impl Config {
                 let cfg = raw.resolve();
                 cfg.validate()
                     .with_context(|| format!("validating {}", path.display()))?;
+                // Roadmap 1.0.5: install the logging-layer redaction policy
+                // from the resolved config. First-writer-wins inside
+                // `set_policy`; done here (not in `logging::init`) because the
+                // logger is set up before config is read. `validate_ranges`
+                // above already rejected an unknown value, so `parse` succeeds
+                // for any value that reaches here; `unwrap_or_default` keeps
+                // the safe `Redacted` fallback for total robustness.
+                crate::redaction::set_policy(
+                    crate::redaction::IdentifierPolicy::parse(&cfg.logging.identifiers)
+                        .unwrap_or_default(),
+                );
                 Ok(cfg)
             }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                let cfg = Self::default();
+                crate::redaction::set_policy(
+                    crate::redaction::IdentifierPolicy::parse(&cfg.logging.identifiers)
+                        .unwrap_or_default(),
+                );
+                Ok(cfg)
+            }
             Err(e) => Err(e).with_context(|| format!("reading {}", path.display())),
         }
     }
@@ -165,6 +189,7 @@ impl Config {
             persona: PersonaConfig::default(),
             events: EventsConfig::default(),
             backend: BackendConfig::default(),
+            logging: LoggingConfig::default(),
             per_ssid: BTreeMap::new(),
         }
     }
@@ -282,6 +307,9 @@ impl Config {
             backend: Some(RawBackendConfig {
                 driver: Some(self.backend.driver.clone()),
             }),
+            logging: Some(RawLoggingConfig {
+                identifiers: Some(self.logging.identifiers.clone()),
+            }),
             per_ssid: self.per_ssid.clone(),
         }
     }
@@ -316,6 +344,7 @@ pub struct RawConfig {
     pub persona: Option<RawPersonaConfig>,
     pub events: Option<RawEventsConfig>,
     pub backend: Option<RawBackendConfig>,
+    pub logging: Option<RawLoggingConfig>,
     /// Per-SSID policies (roadmap Milestone 3). Stored as a flat map so
     /// `[per_ssid."<ssid>"]` round-trips through TOML without losing
     /// fields the resolver would otherwise discard. The map is always
@@ -333,6 +362,15 @@ impl RawConfig {
     pub fn resolve(self) -> Config {
         let profile = self.profile.unwrap_or_default();
         let mut cfg = profile.baseline();
+        // Logging redaction is a cross-cutting safety concern, not a
+        // hardening *feature*, so it must apply even under `profile =
+        // "off"`. Merge it before the Off short-circuit so an operator
+        // who runs Proteus-off-but-logging-on still gets redaction.
+        if let Some(l) = &self.logging
+            && let Some(v) = &l.identifiers
+        {
+            cfg.logging.identifiers = v.clone();
+        }
         if profile == Profile::Off {
             return cfg;
         }
@@ -717,6 +755,7 @@ impl RawConfig {
             [enabled, portal_poll_secs, link_flap_window_secs]
         );
         mark_if_any!("backend", &self.backend, [driver]);
+        mark_if_any!("logging", &self.logging, [identifiers]);
         out
     }
 
@@ -831,6 +870,7 @@ impl RawConfig {
             [enabled, portal_poll_secs, link_flap_window_secs]
         );
         any_some!(&self.backend, [driver]);
+        any_some!(&self.logging, [identifiers]);
         if !self.per_ssid.is_empty() {
             return true;
         }
@@ -1043,6 +1083,19 @@ impl RawConfig {
         // ---- backend ----
         // (already done above; left here so the section ordering reads
         // top-to-bottom but the actual check sits earlier.)
+
+        // ---- logging (roadmap 1.0.5) ----
+        // The identifier-redaction policy must be one of the three known
+        // forms. A typo here would silently fall back to the safe default
+        // at `set_policy` time, but a hard reject surfaces it in `proteus
+        // doctor` so the operator knows their `full-view` debug request
+        // never took effect.
+        if let Some(l) = &self.logging
+            && let Some(s) = &l.identifiers
+            && crate::redaction::parse(s).is_none()
+        {
+            anyhow::bail!("[logging] identifiers '{s}' must be one of: off, redacted, full-view");
+        }
 
         // ---- per_ssid: per-entry sanity ----
         for (ssid, policy) in &self.per_ssid {
@@ -1395,6 +1448,13 @@ pub struct RawBackendConfig {
     pub driver: Option<String>,
 }
 
+/// Raw on-disk shape of `[logging]`. Roadmap 1.0.5.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct RawLoggingConfig {
+    pub identifiers: Option<String>,
+}
+
 /// Raw on-disk shape of `[events]`. Roadmap Milestone 4c.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
@@ -1740,6 +1800,29 @@ impl Default for BackendConfig {
     }
 }
 
+/// Logging-layer identifier-redaction policy. Roadmap 1.0.5.
+///
+/// `identifiers` is one of `off` | `redacted` | `full-view` and controls
+/// how device identifiers (MAC / SSID / hostname / 802.1X) are rendered at
+/// log sites. The default `"redacted"` is safe (real values never reach
+/// journald / stderr); `"full-view"` is the only weakening form and is
+/// opt-in, warns once at startup, and is documented in `config explain`.
+/// `--json` output and CLI display are unaffected — they always show real
+/// values. See `crate::redaction`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LoggingConfig {
+    pub identifiers: String,
+}
+
+impl Default for LoggingConfig {
+    fn default() -> Self {
+        Self {
+            identifiers: "redacted".into(),
+        }
+    }
+}
+
 // ---- Defaults -----------------------------------------------------------
 //
 // These provide the non-profile-affected fields (intervals, modes, paths,
@@ -2072,6 +2155,70 @@ tx_power_reduction_db = 9
         let back = parsed.resolve();
         assert!(back.rf.tx_power_reduce);
         assert_eq!(back.rf.tx_power_reduction_db, 9);
+    }
+
+    /// Roadmap 1.0.5: the default `[logging] identifiers` is the safe
+    /// `redacted` form — real values must never reach logs unless the
+    /// operator explicitly opts into `full-view`.
+    #[test]
+    fn logging_identifiers_defaults_to_redacted() {
+        let cfg = Config::default();
+        assert_eq!(cfg.logging.identifiers, "redacted");
+    }
+
+    #[test]
+    fn logging_section_round_trips_through_toml() {
+        let toml_str = r#"
+profile = "med"
+
+[logging]
+identifiers = "full-view"
+"#;
+        let raw: RawConfig = toml::from_str(toml_str).unwrap();
+        assert!(raw.has_overrides());
+        let cfg = raw.resolve();
+        assert_eq!(cfg.logging.identifiers, "full-view");
+        let raw2 = cfg.to_raw_explicit();
+        let s = toml::to_string(&raw2).unwrap();
+        let parsed: RawConfig = toml::from_str(&s).unwrap();
+        let back = parsed.resolve();
+        assert_eq!(back.logging.identifiers, "full-view");
+    }
+
+    /// Redaction must apply even when `profile = "off"` — it is a
+    /// cross-cutting safety concern, not a hardening feature, so the Off
+    /// short-circuit must not drop the logging override.
+    #[test]
+    fn logging_override_survives_profile_off() {
+        let toml_str = r#"
+profile = "off"
+
+[logging]
+identifiers = "off"
+"#;
+        let raw: RawConfig = toml::from_str(toml_str).unwrap();
+        let cfg = raw.resolve();
+        assert_eq!(cfg.profile, Profile::Off);
+        assert_eq!(cfg.logging.identifiers, "off");
+    }
+
+    #[test]
+    fn validate_ranges_rejects_unknown_logging_identifiers() {
+        let raw: RawConfig = toml::from_str("[logging]\nidentifiers = \"loud\"\n").unwrap();
+        let err = raw.validate_ranges().unwrap_err().to_string();
+        assert!(err.contains("off, redacted, full-view"), "got: {err}");
+    }
+
+    #[test]
+    fn validate_ranges_accepts_known_logging_identifiers() {
+        for v in ["off", "redacted", "full-view"] {
+            let raw: RawConfig =
+                toml::from_str(&format!("[logging]\nidentifiers = \"{v}\"\n")).unwrap();
+            assert!(
+                raw.validate_ranges().is_ok(),
+                "'{v}' should be a valid logging.identifiers value"
+            );
+        }
     }
 
     #[test]

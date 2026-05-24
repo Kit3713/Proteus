@@ -314,7 +314,7 @@ pub fn generate_with_probe<P: Probe + ?Sized>(
             ProbeOutcome::Collision { peer_ip } => {
                 tracing::warn!(
                     iface = %probe_opts.iface,
-                    candidate = %mac,
+                    candidate = %crate::redaction::mac(&mac),
                     peer = peer_ip.as_deref().unwrap_or("?"),
                     token = %token,
                     "ARP probe: candidate MAC is taken on segment; re-rolling"
@@ -370,7 +370,7 @@ pub fn generate_with_probe<P: Probe + ?Sized>(
                 ProbeOutcome::Collision { peer_ip } => {
                     tracing::warn!(
                         iface = %probe_opts.iface,
-                        candidate = %mac,
+                        candidate = %crate::redaction::mac(&mac),
                         peer = peer_ip.as_deref().unwrap_or("?"),
                         token = %token,
                         "ND probe: candidate link-local is taken on segment; re-rolling"

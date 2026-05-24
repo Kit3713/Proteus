@@ -276,6 +276,13 @@ pub const ENTRIES: &[ExplainEntry] = &[
         risk: "",
         wiki: "ipv6",
     },
+    // ---- logging ----
+    ExplainEntry {
+        key: "logging.identifiers",
+        doc: "How device identifiers (MAC, SSID, hostname, 802.1X identity) appear in logs: 'off' hides them, 'redacted' (default) shows OUI/hash/***@realm forms, 'full-view' shows real values behind a one-time startup warning. --json output and CLI display always show real values.",
+        risk: "'full-view' writes real fingerprints into journald/stderr — only use for short-lived local debugging.",
+        wiki: "config",
+    },
     // ---- mac ----
     ExplainEntry {
         key: "mac.enabled",

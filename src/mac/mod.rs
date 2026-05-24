@@ -29,7 +29,7 @@ pub enum MacError {
     AllZero,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Mac(pub [u8; 6]);
 
 impl Mac {
@@ -72,6 +72,21 @@ impl fmt::Display for Mac {
             "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
             o[0], o[1], o[2], o[3], o[4], o[5]
         )
+    }
+}
+
+// Hand-written `Debug` (roadmap 1.0.5): the derived `Debug` printed every
+// octet, so any `{:?}` of a struct containing a `Mac` (or a `tracing`
+// field rendered with `?mac`) leaked the full L2 address into logs. This
+// impl keeps the OUI (first three octets, public on the wire anyway) and
+// masks the NIC-specific tail. `Display` / `Serialize` are unchanged and
+// still emit the real value — the `--json` and CLI-display contracts are
+// untouched. Policy-aware log sites use `crate::redaction::mac` instead;
+// this Debug is the belt-and-braces floor for anything that slips through.
+impl fmt::Debug for Mac {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let o = self.0;
+        write!(f, "Mac({:02x}:{:02x}:{:02x}:**:**:**)", o[0], o[1], o[2])
     }
 }
 
@@ -153,6 +168,33 @@ mod tests {
     fn formats_lowercase_colon() {
         let m = Mac::new([0xaa, 0xbb, 0xcc, 0x12, 0x34, 0x56]);
         assert_eq!(m.to_string(), "aa:bb:cc:12:34:56");
+    }
+
+    /// Roadmap 1.0.5: `Debug` must redact the NIC-specific tail so a stray
+    /// `{:?}` can't leak the full L2 address into logs. OUI survives.
+    #[test]
+    fn debug_redacts_nic_tail_keeps_oui() {
+        let m = Mac([0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff]);
+        let dbg = format!("{m:?}");
+        assert!(dbg.contains("aa:bb:cc"), "OUI must survive Debug: {dbg}");
+        assert!(!dbg.contains("dd"), "Debug leaked NIC octet dd: {dbg}");
+        assert!(!dbg.contains("ee"), "Debug leaked NIC octet ee: {dbg}");
+        assert!(!dbg.contains("ff"), "Debug leaked NIC octet ff: {dbg}");
+    }
+
+    /// Display must still emit the REAL address — it feeds CLI output.
+    #[test]
+    fn display_still_shows_real_address() {
+        let m = Mac([0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff]);
+        assert_eq!(m.to_string(), "aa:bb:cc:dd:ee:ff");
+    }
+
+    /// The `--json` contract is sacred: serde still emits the real value
+    /// (Serialize routes through Display via `collect_str`).
+    #[test]
+    fn serialize_pins_real_address_for_json_contract() {
+        let m = Mac([0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff]);
+        assert_eq!(serde_json::to_string(&m).unwrap(), "\"aa:bb:cc:dd:ee:ff\"");
     }
 
     #[test]

@@ -11,6 +11,24 @@ landed, what is in flight, and what is on the bench. See
 
 ## [Unreleased]
 
+### Added
+
+- `[logging] identifiers` config knob (`off` | `redacted` | `full-view`,
+  default `redacted`) controlling how device identifiers (MAC / SSID /
+  hostname / 802.1X identity) are rendered at log sites, plus `proteus
+  config explain logging.identifiers`. `--json` output and CLI display
+  always show real values — this is a logging-layer setting only.
+
+### Security
+
+- MAC and SSID values (including candidate addresses probed during
+  rotation) are now redacted in logs by default: MACs keep their OUI and
+  an 8-hex correlation tag (`aa:bb:cc:**:**:** h:<hash>`), SSIDs collapse
+  to `h:<hash>`. Real values reach journald/stderr only under `logging.
+  identifiers = "full-view"`, which is gated behind a loud one-time
+  startup warning. The `Mac` `Debug` impl no longer reveals the full
+  address (a stray `{:?}` previously leaked it).
+
 ## [1.0.4] - 2026-05-18
 
 Hotfix for v1.0.3. The v1.0.3 RPM spec's changelog entry contained

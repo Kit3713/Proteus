@@ -29,6 +29,7 @@ pub mod persona;
 pub mod probe;
 pub mod profile;
 pub mod rand;
+pub mod redaction;
 pub mod rf;
 pub mod stack;
 pub mod state;

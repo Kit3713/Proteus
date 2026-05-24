@@ -101,7 +101,7 @@ impl Probe for SystemProbe {
             Err(e) => {
                 tracing::debug!(
                     iface,
-                    candidate = %candidate,
+                    candidate = %crate::redaction::mac(&candidate),
                     "SystemProbe::arp_probe failed: {e}; falling back to passive ARP"
                 );
                 ProbeOutcome::Unsupported("arp probe unsupported on this system (see debug log)")
@@ -119,7 +119,7 @@ impl Probe for SystemProbe {
             Err(e) => {
                 tracing::debug!(
                     iface,
-                    candidate = %candidate,
+                    candidate = %crate::redaction::mac(&candidate),
                     "SystemProbe::nd_probe failed: {e}; falling back to passive neighbour table"
                 );
                 ProbeOutcome::Unsupported("nd probe unsupported on this system (see debug log)")
