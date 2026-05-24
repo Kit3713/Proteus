@@ -151,6 +151,10 @@ If any of these shows a leak Proteus claims to suppress, that is a bug. File it.
 
 Some lines Proteus will not cross, even if you ask. These exist because the cost of breaking them is unbounded — silent failures in security-critical subsystems are worse than no feature at all.
 
+- **Proteus redacts device identifiers in its own logs by default.** MAC addresses, SSIDs, hostnames, and 802.1X outer identities are shown in redacted form in journald and on stderr (`logging.identifiers = redacted`, the default). Setting `logging.identifiers = full-view` enables raw values in logs behind a loud one-time warning; `off` suppresses identifiers entirely. `--json` output and the human-readable CLI display always show real values regardless of the logging setting — redaction is a logging-layer concern, not a CLI contract.
+
+- **Wrappers and GUIs must treat `--json` output as ephemeral.** Read commands (`proteus current --json`, `proteus original --json`, `proteus status --json`, etc.) emit real identifier values — the same MACs, hostnames, and SSIDs the tool exists to hide. A wrapper that writes this output to a log file, a database, or any persistent store defeats the purpose. Treat `--json` payloads as in-process data only: parse, act, discard. Never write them to disk.
+
 - **Crypto-policies (`update-crypto-policies`).** Never touched. Proteus does not write to `/etc/ssl/openssl.cnf`, does not override system-wide cipher choices, does not weaken Fedora's hardening defaults. If your TLS or SSH crypto policy needs changing, use the system tool.
 - **`/etc/ssh/ssh_config`.** Never touched. Your SSH client config is yours. See the HASSH section above.
 - **`/etc/ssh/sshd_config`.** Never touched. Your SSH server config is yours.
