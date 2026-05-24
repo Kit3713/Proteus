@@ -214,6 +214,62 @@ jobs:
             echo "OK: stripped ${{ matrix.target }} proteus binary is ${SIZE} bytes (under 5.5 MB target)"
           fi
 
+  # Roadmap 1.1.2: emit the JSON Schema for the --json outputs and validate
+  # a representative, hermetic `proteus … --json` payload against it. Kept as
+  # a distinct job so it merges cleanly with sibling roadmap work and so a
+  # schema-contract regression is legible in the CI matrix on its own row.
+  #
+  # The command used (`proteus version --json`) is fully hermetic — it reads
+  # only build-time `env!` stamps and an in-tree constant, never touching
+  # NetworkManager, DBus, or system state — so it is safe to run in a plain
+  # container. Runs in the Fedora image to match the primary target and to
+  # build with the pinned toolchain.
+  schema-validate:
+    name: json schema contract
+    runs-on: ubuntu-latest
+    container: fedora:43
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - name: Install build dependencies
+        run: dnf install -y gcc pkg-config dbus-devel openssl-devel python3-jsonschema
+      - uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6  # v1
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32  # v2
+      - name: Emit JSON Schema and validate `proteus version --json`
+        # The validator Python is written to a file first (rather than fed
+        # via an inline heredoc) so it is immune to YAML/heredoc indentation
+        # pitfalls: a heredoc body indented by the YAML block would reach
+        # python with leading whitespace and raise IndentationError, and an
+        # indented closing delimiter would never terminate the heredoc.
+        run: |
+          set -euo pipefail
+          # Emit the schema document for the --json outputs.
+          cargo run --locked --quiet -- schema > schema.json
+          echo "=== emitted schema (outputs) ==="
+          python3 -c "import json; print(sorted(json.load(open('schema.json'))['outputs']))"
+          # Capture a hermetic representative payload.
+          cargo run --locked --quiet -- version --json > version.json
+          echo "=== version --json ==="
+          cat version.json
+          # Validate the payload against the `version` output schema using a
+          # real JSON Schema validator (python3-jsonschema, Draft-07).
+          # `tee` echoes the script into the log for debuggability.
+          tee validate_schema.py >/dev/null <<'PY'
+          import json, sys
+          from jsonschema import Draft7Validator
+
+          doc = json.load(open("schema.json"))
+          payload = json.load(open("version.json"))
+          version_schema = doc["outputs"]["version"]
+          Draft7Validator.check_schema(version_schema)
+          errs = sorted(Draft7Validator(version_schema).iter_errors(payload), key=lambda e: list(e.path))
+          if errs:
+              for e in errs:
+                  print(f"SCHEMA VIOLATION: {list(e.path)}: {e.message}", file=sys.stderr)
+              sys.exit(1)
+          print("OK: `proteus version --json` validates against the emitted schema")
+          PY
+          python3 validate_schema.py
+
   # Stream 3 acceptance: lint packaging files and shell scripts so
   # lockstep coherence regressions (e.g. install.sh enabling proteus-events
   # but the RPM spec leaving it out) surface in CI rather than in a

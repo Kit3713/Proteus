@@ -30,6 +30,7 @@ pub mod restore;
 pub mod revert;
 pub mod rf;
 pub mod rotate;
+pub mod schema;
 pub mod session;
 pub mod show_config;
 pub mod show_defaults;

@@ -1,0 +1,38 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Roadmap milestone 1.1.1 / 1.1.2: `proteus-types` holds the pure `--json`
+# output DTOs (serde `Serialize` types emitted by `proteus … --json`) plus
+# their optional `schemars::JsonSchema` derives. Keeping the wire types in a
+# dependency-light crate lets the (future) GUI/tray clients depend on the
+# exact same structs the CLI emits without pulling in the privileged binary's
+# dependency graph.
+#
+# Dependency discipline: this crate must stay tiny. serde is the only
+# always-on dependency; schemars is gated behind the default-on `schema`
+# feature so packagers chasing the release binary-size cap can drop it with
+# `--no-default-features`.
+[package]
+name = "proteus-types"
+version = "1.0.4"
+edition = "2024"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/Kit3713/Proteus"
+description = "Pure --json output DTOs (and optional JSON Schema derives) shared by the Proteus CLI and its GUI clients."
+rust-version = "1.85"
+
+[features]
+# `schema` pulls in schemars and derives `JsonSchema` on every DTO so the
+# `proteus schema` subcommand can emit a JSON Schema for the `--json`
+# outputs. Default-on (so a stock build ships the schema surface) but
+# removable via `cargo build --no-default-features` when the release
+# binary-size budget is tight — the CLI keeps a graceful fallback.
+default = ["schema"]
+schema = ["dep:schemars"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+# schemars 0.8 with default features off: we only need the derive macro and
+# the core `JsonSchema` trait + `schema_for!`. Dropping default features
+# avoids dragging in the optional `chrono`/`url`/etc. integrations, keeping
+# the binary-size impact minimal.
+schemars = { version = "0.8", default-features = false, features = ["derive"], optional = true }

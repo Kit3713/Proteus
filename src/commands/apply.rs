@@ -28,58 +28,12 @@ use serde::Serialize;
 use crate::config::Config;
 use crate::exit;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum Status {
-    Applied,
-    Skipped,
-    Failed,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct ComponentReport {
-    pub name: &'static str,
-    pub status: Status,
-    pub note: String,
-}
-
-/// Issue #343: single-line `--json` envelope shared by `proteus apply
-/// --json` and `proteus revert --json`. The `command` field discriminates
-/// the two, `components` mirrors the per-feature reports, `exit_code`
-/// carries the same exit code the binary returns so CI / Ansible
-/// consumers only have to parse stdout (no `$?` lookup needed). An
-/// optional `error` field is set when the orchestrator never reached the
-/// per-component fan-out (root / `--yes` / config / lock / preflight
-/// gates) so wrappers can distinguish "everything failed" from "we never
-/// got there."
-#[derive(Debug, Clone, Serialize)]
-pub struct Summary {
-    pub command: &'static str,
-    pub components: Vec<ComponentReport>,
-    pub exit_code: u8,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
-}
-
-impl Summary {
-    pub fn new(command: &'static str, components: Vec<ComponentReport>, exit_code: u8) -> Self {
-        Self {
-            command,
-            components,
-            exit_code,
-            error: None,
-        }
-    }
-
-    pub fn with_error(command: &'static str, exit_code: u8, error: impl Into<String>) -> Self {
-        Self {
-            command,
-            components: Vec::new(),
-            exit_code,
-            error: Some(error.into()),
-        }
-    }
-}
+// Roadmap 1.1.1: the `apply`/`revert` `--json` envelope DTOs moved to
+// `proteus-types`. Re-exported here so `commands::apply::Summary` (used by
+// `commands::revert`) and every other in-crate path keep resolving and the
+// emitted JSON is byte-identical. The `emit_summary` writer and the private
+// `Tally` helper below are behaviour, not wire types, so they stay.
+pub use proteus_types::apply::{ComponentReport, Status, Summary};
 
 /// Write a [`Summary`] as a single line on stdout. Used by both apply
 /// and revert `--json` paths so the envelope is byte-identical between

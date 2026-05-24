@@ -1,3 +1,17 @@
+# Roadmap milestone 1.1.0: Proteus is now a cargo workspace. `proteus`
+# remains the ROOT package (this directory is `default-members`), so
+# `cargo build`, `cargo test`, and every `dist/` packaging recipe keep
+# building the binary exactly as before — none of them pass `-p`/`--workspace`.
+# Library crates carved out of the binary (e.g. `crates/proteus-types`) live
+# under `crates/` and are pulled in as path dependencies below.
+[workspace]
+members = ["crates/proteus-types"]
+default-members = ["."]
+# Resolver 3 matches what the root package used implicitly before the
+# workspace existed (edition 2024 selects resolver 3), so feature
+# unification and the resolved dependency graph stay identical to 1.0.x.
+resolver = "3"
+
 [package]
 name = "proteus"
 version = "1.0.4"
@@ -37,15 +51,34 @@ debug = "limited"
 # explicitly. Avoid surprising the upstream cargo install flow by leaving
 # the default set empty.
 [features]
-default = []
+# Roadmap 1.1.2: `schema` (default-on) wires the `proteus schema`
+# subcommand. It forwards to proteus-types' `schema` feature (the
+# `JsonSchema` derives) and pulls schemars into the binary for
+# `schema_for!`. Default-on so a stock build ships the schema surface;
+# removable via `cargo build --no-default-features --features schema=false`
+# style invocations (i.e. `--no-default-features`) when chasing the release
+# binary-size cap. With it off, `proteus schema` prints a clear "built
+# without schema support" message and exits non-zero rather than vanishing.
+default = ["schema"]
+schema = ["dep:schemars", "proteus-types/schema"]
 bluetooth = []
 enterprise-wifi = []
 nft = []
 
 [dependencies]
+# Roadmap 1.1.1: the `--json` output DTOs live in this workspace member; the
+# binary re-exports them so existing `use crate::...` paths keep compiling.
+# Roadmap 1.1.2: the binary forwards its `schema` feature here so a
+# `--no-default-features` build of the binary also drops schemars.
+proteus-types = { path = "crates/proteus-types", default-features = false }
 clap = { version = "4", default-features = false, features = ["derive", "std", "help", "usage", "error-context"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Roadmap 1.1.2: only the binary's `schema` subcommand needs schemars (for
+# `schema_for!`); gated behind the `schema` feature so a size-trimmed
+# `--no-default-features` build drops it entirely. Same minimal feature set
+# as proteus-types to avoid dragging in optional integrations.
+schemars = { version = "0.8", default-features = false, features = ["derive"], optional = true }
 toml = { version = "0.8", default-features = false, features = ["parse", "display"] }
 toml_edit = { version = "0.25", default-features = false, features = ["display", "parse"] }
 # bloat-trim 2026-05-07: dropped tracing/attributes (no `#[instrument]` in src) — saves proc-macro compile time, tiny .text shrink.

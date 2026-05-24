@@ -426,6 +426,9 @@ pub(super) fn dispatch(cli: Cli) -> Result<u8> {
         // `about` is a friendly alias for the bare `version` form.
         Command::Version { json } => commands::version::run(json),
         Command::About => commands::version::run(false),
+        // Roadmap 1.1.2: JSON Schema for the --json outputs. Hermetic
+        // (touches no NetworkManager / system state).
+        Command::Schema => commands::schema::run(),
     }
 }
 
