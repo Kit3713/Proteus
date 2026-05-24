@@ -238,6 +238,24 @@ Knobs:
 
 The shipped surface is `proteus rf status / apply / revert`. `apply` writes via `iw dev <iface> set txpower fixed <mbm>`; `revert` restores the cached pre-Proteus TX power exactly. L1 analog characteristics (oscillator drift, IQ imbalance, etc.) cannot be erased in software; this knob only narrows the capture radius. Cross-ref `proteus wiki rf-fingerprinting`.
 
+### `[logging]`
+
+```toml
+[logging]
+identifiers = "redacted"  # off | redacted | full-view
+```
+
+Knobs:
+
+- `identifiers` — controls how device identifiers (MAC addresses, SSIDs, hostnames, 802.1X outer identities) appear in Proteus's own log output (journald / stderr). Three modes:
+  - `off` — identifiers are suppressed entirely from log lines; a placeholder `[redacted]` appears in their place. The right choice for high-sensitivity environments where even redacted patterns in logs are unacceptable.
+  - `redacted` (default) — identifiers are shown in a redacted form: MACs become `aa:bb:cc:xx:xx:xx`, SSIDs and hostnames are truncated or type-tagged. Log lines remain useful for debugging without spelling out the raw values.
+  - `full-view` — real identifiers are written to logs verbatim. Triggers a loud one-time warning on first use reminding the operator that journal entries now contain the same values Proteus exists to hide. Useful for debugging rotation logic when redacted output is ambiguous; not for routine use.
+
+  `--json` output from read commands (`proteus current`, `proteus original`, `proteus status --json`, etc.) and the human-readable terminal display always show real values regardless of this setting. Redaction is a logging-layer concern only — it controls what ends up in journald and on stderr, not what the CLI reports to the caller.
+
+Cross-ref `proteus wiki config` (this page; `proteus config explain logging.identifiers` links here).
+
 ### Rotation triggers
 
 Rotation cadence is governed by `[mac] rotation_interval` for the scheduled timer. Event-driven rotation triggers (NM connection-up, link-flap, regulatory-domain change, captive-portal auth completion) live under `[events]` and are surfaced by the `proteus events run` daemon. Per-SSID overrides go through `[per_ssid."<ssid>"]` (see `proteus wiki per-ssid`).
@@ -283,6 +301,7 @@ Cross-ref `proteus wiki timer` for the drop-in mechanics and the full duration g
 | `rf.tx_power_reduce` | Reduced range from APs |
 | `ipv6.addr_gen_mode = "eui64"` | IID leaks the MAC; do not set unless diagnosing |
 | `dhcp.rotate_client_id = false` | DUID stays sticky across MAC rotations; correlation hole |
+| `logging.identifiers = full-view` | real MAC/SSID/hostname written to journald/stderr |
 
 ## Validation
 

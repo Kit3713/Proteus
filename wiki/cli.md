@@ -597,6 +597,7 @@ Branch on `config_present` (absent → present config; `false` → defaults in e
   - `JOURNAL_STREAM` is set — running under systemd; output is routed to **journald** via `tracing-journald`.
 - When the subscriber is on and `JOURNAL_STREAM` is unset, output goes to **stderr**. ANSI colors on stderr honor `--no-color` and `NO_COLOR`.
 - `RUST_LOG` overrides `-v` / `-q` when set.
+- **Identifier redaction in logs.** The `[logging] identifiers` config knob (default `redacted`) controls how device identifiers — MACs, SSIDs, hostnames, 802.1X outer identities — appear in log output sent to journald or stderr. `redacted` shows type-tagged placeholders; `off` suppresses them entirely; `full-view` writes real values with a one-time warning. `--json` output and the CLI display always show real values regardless of this setting. Cross-ref `proteus wiki config` for the full `[logging]` section.
 - Inspect timer-driven runs:
   ```sh
   journalctl -t proteus -n 100
