@@ -1,0 +1,30 @@
+# Log-redaction allowlist — pre-existing raw identifier sites.
+#
+# These pre-existing raw sites are removed by the log-redaction core PR;
+# this allowlist should shrink to empty afterward.
+#
+# Strategy: each entry is a colon-separated pair of FILE:SNIPPET where:
+#   FILE    — path relative to repo root (e.g. src/mac/generator.rs)
+#   SNIPPET — a literal string that uniquely identifies the offending line
+#             (trimmed; leading/trailing whitespace ignored when matching).
+# Matching by file+snippet means line number drift does not cause spurious
+# failures. The check script greps each file for the snippet directly and
+# skips the match if both the file path and the snippet are present together.
+#
+# Format: FILE:SNIPPET
+# Lines starting with '#' and blank lines are ignored.
+
+# src/mac/generator.rs — two "candidate = %mac" warn sites.
+# Emitted when an ARP or ND probe finds the candidate MAC already in use;
+# the raw Mac value should be routed through crate::redaction::mac() instead.
+src/mac/generator.rs:candidate = %mac,
+
+# src/mac/probe.rs — two "candidate = %candidate" debug sites.
+# Emitted when arp_probe / nd_probe falls back to passive mode; the raw
+# Mac value should be routed through crate::redaction::mac() instead.
+src/mac/probe.rs:candidate = %candidate,
+
+# src/commands/events.rs — one "ssid = ssid_safe.as_str()" debug site.
+# display_ssid() provides terminal-injection safety but not identity hiding;
+# should be routed through crate::redaction::ssid() instead.
+src/commands/events.rs:ssid = ssid_safe.as_str(),
