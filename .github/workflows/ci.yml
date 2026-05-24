@@ -285,3 +285,26 @@ jobs:
             fail=1
           fi
           exit "$fail"
+
+  # Log-redaction guard: enforce that no NEW tracing!() call site interpolates
+  # a raw device identifier (MAC address, SSID, hostname, 802.1X identity).
+  # Every such field must be routed through crate::redaction::{mac,ssid,...}.
+  # Pre-existing raw sites are listed in scripts/log-redaction-allowlist.txt
+  # and will be removed by the log-redaction core PR; the allowlist shrinks to
+  # zero once that PR merges.
+  # No Rust toolchain needed — this is a pure grep-based check.
+  log-redaction-guard:
+    name: log redaction guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - name: Shellcheck log-redaction script
+        run: |
+          set -euo pipefail
+          sudo apt-get update -q
+          sudo apt-get install -y --no-install-recommends shellcheck
+          # Run with --shell=sh: the script declares POSIX sh and must stay
+          # portable (no bashisms).
+          shellcheck --shell=sh scripts/check-log-redaction.sh
+      - name: Check for raw-identifier tracing call sites
+        run: bash scripts/check-log-redaction.sh
