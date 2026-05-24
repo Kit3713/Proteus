@@ -13,11 +13,14 @@
 //! friendlier name for first-time users browsing `--help`.
 
 use anyhow::Result;
-use serde::Serialize;
 
 use crate::exit;
 use crate::state::CURRENT_SCHEMA_VERSION as STATE_SCHEMA_VERSION;
 use crate::version::VERSION;
+// Roadmap 1.1.1: `VersionReport` moved to `proteus-types`. The build-time
+// stamps (`GIT_SHA`, `BUILD_TIME`, ...) still live here in the binary; only
+// the DTO definition moved. `--json` shape is unchanged.
+use proteus_types::version::VersionReport;
 
 /// Short git SHA at build time, or the literal `"unknown"` when `.git/` is
 /// absent (source tarballs, reproducible-build sandboxes) and
@@ -33,18 +36,6 @@ const RUSTC_VERSION: &str = env!("PROTEUS_RUSTC_VERSION");
 
 /// Cargo target triple, e.g. `"x86_64-unknown-linux-gnu"`.
 const TARGET: &str = env!("PROTEUS_TARGET");
-
-#[derive(Debug, Serialize)]
-struct VersionReport {
-    version: &'static str,
-    git_sha: &'static str,
-    rustc: &'static str,
-    target: &'static str,
-    build_time: &'static str,
-    /// `state.json` schema version this binary writes. Wrappers use it to
-    /// decide whether to migrate before invoking a mutator.
-    state_schema_version: u32,
-}
 
 fn build_report() -> VersionReport {
     VersionReport {

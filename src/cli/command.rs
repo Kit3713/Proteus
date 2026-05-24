@@ -498,4 +498,12 @@ pub enum Command {
     },
     /// Friendly alias for `proteus version` (human-readable).
     About,
+    /// Print the JSON Schema for the `--json` outputs (roadmap 1.1.2).
+    ///
+    /// Emits a single Draft-07 document whose `outputs` map keys each
+    /// logical `--json` output (e.g. `version`, `apply`) to its schema, so
+    /// GUI/tray clients and CI wrappers can validate the wire contract.
+    /// Built behind the default-on `schema` feature; a `--no-default-features`
+    /// build prints a clear note and exits non-zero instead.
+    Schema,
 }
