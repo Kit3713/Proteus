@@ -1,0 +1,15 @@
+[Desktop Entry]
+Type=Application
+Name=Proteus Tray
+GenericName=Network Identity Tray
+Comment=Tray icon for the Proteus network fingerprint eraser
+Exec=proteus-tray
+Icon=network-wired
+Categories=Network;System;
+Keywords=proteus;mac;network;privacy;fingerprint;
+# XDG autostart: launch proteus-tray at desktop session start.
+# Hidden=true would suppress the autostart; leave it false (default) so
+# the tray starts automatically.  Users can toggle this via their session
+# manager's "Startup Applications" panel.
+X-GNOME-Autostart-enabled=true
+StartupNotify=false
