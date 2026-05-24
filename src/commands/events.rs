@@ -286,11 +286,13 @@ impl EventHandler for RotateOnTriggerHandler {
                     && let Some(cfg) = self.load_config()
                 {
                     let policy = crate::per_ssid::resolve_for_ssid(&cfg, ssid);
-                    // Issue #224: SSIDs are attacker-controlled. Sanitize
-                    // before logging so journald renders something the
-                    // operator can read without a hostile AP redrawing
-                    // their terminal via the `journalctl` viewer.
-                    let ssid_safe = crate::per_ssid::display_ssid(ssid);
+                    // Roadmap 1.0.5: route the SSID through the redaction
+                    // policy. Default `redacted` emits an `h:<hash>` tag so
+                    // the AP name never reaches journald; `full-view` reveals
+                    // the real SSID but still terminal-sanitizes it (issue
+                    // #224 — a hostile AP must not redraw the operator's
+                    // terminal via the `journalctl` viewer), so the prior
+                    // `display_ssid` local is now redundant.
                     // E2: demoted from info to debug. Per-trigger
                     // success-path logging fires on every connection-up,
                     // which on a busy dispatcher easily hits journald rate
@@ -299,7 +301,7 @@ impl EventHandler for RotateOnTriggerHandler {
                     tracing::debug!(
                         kind = trigger.kind(),
                         iface = iface.as_str(),
-                        ssid = ssid_safe.as_str(),
+                        ssid = %crate::redaction::ssid(ssid),
                         persona = policy.persona.as_deref().unwrap_or("-"),
                         profile = ?policy.profile,
                         pinned = policy.pin_mac.is_some(),
