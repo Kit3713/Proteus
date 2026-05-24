@@ -79,7 +79,7 @@ jobs:
     name: cargo audit (Cargo.lock)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
       - uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6  # v1
       - name: Install cargo-audit
         run: cargo install --locked cargo-audit
@@ -137,7 +137,7 @@ jobs:
       # checkout uses native git and preserves the repository history.
       - name: Install git for checkout
         run: dnf install -y git
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
           # Need the tagged commit, not a shallow snapshot, so we can read
           # the commit timestamp for SOURCE_DATE_EPOCH.
@@ -208,7 +208,7 @@ jobs:
     env:
       CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
           fetch-depth: 0
       - name: Install aarch64 cross-compile toolchain
@@ -282,7 +282,7 @@ jobs:
     steps:
       - name: Install git for checkout
         run: dnf install -y git
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
       - name: Install rpmbuild toolchain
         run: dnf install -y rpm-build rpmdevtools tar gzip gcc pkg-config dbus-devel openssl-devel rust cargo systemd-rpm-macros
       - name: Set up rpmbuild tree
@@ -351,7 +351,7 @@ jobs:
         run: |
           apt-get update
           apt-get install -y --no-install-recommends git ca-certificates
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
       - name: Install Debian build tooling
         run: |
           set -euo pipefail
@@ -427,7 +427,7 @@ jobs:
     steps:
       - name: Install git for checkout
         run: pacman -Sy --noconfirm --needed git
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
       - name: Refresh pacman and install helpers
         run: |
           set -euo pipefail
@@ -685,7 +685,7 @@ jobs:
           apt-get install -y --no-install-recommends \
             git ca-certificates devscripts dput debhelper gnupg2 \
             build-essential fakeroot pkg-config libdbus-1-dev curl
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
       - name: Import GPG key (skip when secret unset)
         env:
           GPG_KEY: ${{ secrets.LAUNCHPAD_GPG_PRIVATE_KEY }}
