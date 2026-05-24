@@ -1,0 +1,12 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Proteus
+Comment=Network fingerprint eraser — desktop GUI
+Exec=proteus-gui
+Icon=proteus
+Categories=System;Network;
+Keywords=privacy;network;fingerprint;MAC;hostname;
+StartupNotify=true
+StartupWMClass=proteus-gui
+# NoDisplay=false — this entry IS shown in application launchers.
