@@ -199,9 +199,72 @@ The CLI is built to be wrapped. Keep these in mind:
 
 A wrapper does not need to read `state.json` directly. Everything in it is exposed via `proteus original --json`, `proteus current --json`, `proteus status --json`, and `proteus diff --json`. Direct reads of `state.json` are supported for tooling that wants to avoid forking the binary, but the JSON commands are the contract.
 
+## Workspace layout and the `proteus-types` contract (roadmap 1.1)
+
+The repository is migrating to a Cargo workspace. The target layout is:
+
+```text
+Proteus/
+├── Cargo.toml               # workspace root  [members = [".", "crates/proteus-types"]]
+├── src/                     # root package: the `proteus` binary
+└── crates/
+    └── proteus-types/       # library crate: the --json output structs + JSON Schema
+        ├── Cargo.toml
+        └── src/
+            └── lib.rs       # StatusOutput, CurrentOutput, OriginalOutput, DiffOutput, …
+```
+
+The root `proteus` package remains the binary. `crates/proteus-types` is a library crate that holds every struct that can appear in a `--json` response: `StatusOutput`, `CurrentOutput`, `OriginalOutput`, `DiffOutput`, and so on. All of these types derive `serde::Serialize` / `serde::Deserialize`.
+
+Why a separate crate? The `--json` output is the build-time contract between the binary and every downstream consumer — GUI front-ends, scripts, Ansible roles. Putting the DTOs in their own crate makes the contract explicit: a GUI or wrapper that depends on `proteus-types` gets a compile-time guarantee that the shape it parses is the same shape the binary emits. No FFI involved; the contract is enforced by the Rust type system at build time and validated at runtime via JSON Schema (see below). The binary itself takes `proteus-types` as a path dependency and serialises its internal state into the exported structs immediately before printing.
+
+The two crates are joined only through the CLI's JSON output — there is no shared state, no shared runtime, and no inter-process protocol beyond a pipe. This is the "locked architecture" the roadmap describes: one monorepo, one binary, thin consumers over the JSON+pkexec interface.
+
+## `proteus schema` subcommand
+
+`proteus schema` (roadmap 1.1.3) emits a JSON Schema document to stdout that describes every `--json` output shape produced by the binary:
+
+```sh
+$ proteus schema
+{
+  "$schema": "https://json-schema.org/draft/2020-12",
+  "title": "Proteus JSON output schemas",
+  "proteus_version": "1.0.4",
+  "schema_version": 1,
+  "$defs": {
+    "StatusOutput": { ... },
+    "CurrentOutput": { ... },
+    "OriginalOutput": { ... },
+    "DiffOutput": { ... },
+    ...
+  }
+}
+```
+
+The schema is generated at build time from the `proteus-types` structs using `schemars` (a `#[derive(JsonSchema)]` on each DTO). The binary bundles the rendered schema as a static string and `proteus schema` prints it. No network access; no runtime schema generation.
+
+In CI, `proteus schema` is piped into `check-jsonschema` (or an equivalent validator) to confirm the schema is valid JSON Schema and that the sample `--json` outputs recorded in `tests/` validate against their respective `$defs` entries. This catches accidental breaking changes to the DTO shapes before they ship.
+
+Exit codes: `0` success; `1` internal error (schema generation failed, which is a build-time defect and should never happen in a shipped binary).
+
+A wrapper should call `proteus schema` on first run, store the schema version, and refuse to parse `--json` output from a binary whose schema version it was not built against.
+
+## How GUI front-ends consume the JSON output
+
+The planned Qt/C++ tray and GUI applications (roadmap 2.0) call the binary via `pkexec proteus <subcommand> --json` and parse stdout. They depend on `proteus-types`'s generated JSON Schema (obtained by running `proteus schema` once at startup) to validate every response before deserialising. No FFI link into the Rust binary; no shared library; no IPC socket. The binary is the interface.
+
+This means:
+
+- GUI devs iterate against the schema, not against source headers.
+- The schema version number (carried in the `proteus schema` output) gates compatibility: a GUI built against schema v1 refuses to run against a binary that emits schema v2.
+- Adding a nullable field to an existing DTO is a non-breaking change (schema minors); removing or renaming a field requires a schema major bump.
+
+The `proteus wiki cli` page documents the current JSON field names and types for every read command. The schema in `proteus schema` is the machine-readable form of the same information; the wiki page is the human-readable annotation layer.
+
 ## Cross-refs
 
 - `proteus wiki cli` — CLI surface, JSON schemas, exit codes.
 - `proteus wiki config` — config schema (which corresponds to `[mac]` / `[hostname]` / `[dns]` / `[discovery]` / `[probes]` sections).
 - `proteus wiki concepts` — sacred originals, managed files, idempotency, detect-and-defer, the Platform trait.
 - `proteus wiki uninstall` — what `proteus uninstall` and `proteus uninstall --purge` actually remove.
+- `proteus wiki reproducible-builds` — how the workspace and schema are built and verified reproducibly.

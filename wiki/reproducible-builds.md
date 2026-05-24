@@ -107,11 +107,49 @@ These are tolerated by the current build pipeline; rebuilding outside the publis
 - **Maintainer trust**. Reproducibility lets you confirm "the bytes match the source", not "the maintainer is honest". A maintainer who controls the source can ship malicious source, and reproducible builds will faithfully reproduce that. Read the source, or at least the diff against the previous tag, if that matters to you.
 - **The toolchain itself**. We trust the pinned Rust toolchain that `rustup` installs. A compromised rustc would compromise every binary built with it. Bootstrapping rustc from source is out of scope.
 
+## Building the workspace reproducibly
+
+The repository is migrating to a Cargo workspace (roadmap 1.1). When the workspace layout lands, the build recipe is unchanged — `cargo build --release --frozen --locked` still runs from the workspace root and produces a single `proteus` binary. The difference is that Cargo now resolves two members (`proteus` and `crates/proteus-types`) in one pass, with a single `Cargo.lock` covering both.
+
+What this means for reproducibility:
+
+- **`--frozen --locked` applies workspace-wide.** Both members are built from the same `Cargo.lock`. There is no second lockfile for `proteus-types`.
+- **`SOURCE_DATE_EPOCH` applies to both members.** `build.rs` in the root package and any `build.rs` in `crates/proteus-types` both pick up the epoch from the environment. The release workflow sets it once before invoking `cargo build`.
+- **The pinned toolchain covers the whole workspace.** `rust-toolchain.toml` at the workspace root applies to every crate in the workspace. There is no per-crate toolchain override.
+- **The JSON Schema is deterministic.** `proteus schema` bundles the schema as a static byte string generated at compile time (via `schemars`'s derive macro). Given the same `proteus-types` source and the same Rust toolchain, the schema bytes are identical across rebuilds. The schema bytes are part of the binary, so they flow into the `sha256sum` check automatically.
+
+The `scripts/verify-build.sh` recipe is unchanged — clone, set epoch, build, strip, hash. The workspace layout is transparent to the script.
+
+## JSON Schema in CI
+
+CI runs `proteus schema` after a successful build and pipes the output through a schema validator to confirm the document is well-formed JSON Schema. Separately, the integration test suite runs `proteus <subcommand> --json` for every read command and validates the output against the matching `$defs` entry in the schema.
+
+Two things CI catches:
+
+1. **Schema regression**: if a DTO struct changes shape (a field removed, a type widened to `Option`, a new required field added) the schema changes, and the validator diff surfaces it. The PR author must either update the schema-version field or argue that the change is compatible.
+2. **Output-schema drift**: if the binary's `--json` output no longer validates against the schema (a field added in the output but not in `proteus-types`, or vice versa), the integration test fails. This is the "schema is the contract" enforcement.
+
+The CI step looks roughly like:
+
+```sh
+proteus schema > /tmp/proteus-schema.json
+check-jsonschema --check /tmp/proteus-schema.json   # validates it is well-formed JSON Schema
+
+proteus status --json > /tmp/status.json
+# ajv supports per-definition validation via a JSON Pointer ref:
+ajv validate -s /tmp/proteus-schema.json \
+    -r /tmp/proteus-schema.json \
+    --ref '#/$defs/StatusOutput' \
+    -d /tmp/status.json
+```
+
+The exact tooling (`ajv`, `check-jsonschema`, or another validator) is a CI implementation detail; the invariant is that both checks must pass before the build is considered green.
+
 ## Cross-refs
 
 - `proteus wiki verifying` — runtime verification (does the tool actually erase what it claims, on the wire)
 - `proteus wiki security-checklist` — operational hardening tips
-- `proteus wiki internals` — what is embedded in the binary and how
+- `proteus wiki internals` — what is embedded in the binary and how, including the workspace layout and `proteus-types` contract
 - `proteus wiki cli` — CLI surface and exit codes (the `proteus` binary itself never reaches out to GitHub)
 - `scripts/verify-build.sh` — the verification script described above
 - `rust-toolchain.toml` — the pin documented at the top of this page
