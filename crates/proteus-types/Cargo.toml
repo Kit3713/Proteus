@@ -35,4 +35,4 @@ serde = { version = "1", features = ["derive"] }
 # the core `JsonSchema` trait + `schema_for!`. Dropping default features
 # avoids dragging in the optional `chrono`/`url`/etc. integrations, keeping
 # the binary-size impact minimal.
-schemars = { version = "0.8", default-features = false, features = ["derive"], optional = true }
+schemars = { version = "1.2", default-features = false, features = ["derive"], optional = true }

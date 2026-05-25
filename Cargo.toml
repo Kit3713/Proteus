@@ -78,7 +78,7 @@ serde_json = "1"
 # `schema_for!`); gated behind the `schema` feature so a size-trimmed
 # `--no-default-features` build drops it entirely. Same minimal feature set
 # as proteus-types to avoid dragging in optional integrations.
-schemars = { version = "0.8", default-features = false, features = ["derive"], optional = true }
+schemars = { version = "1.2", default-features = false, features = ["derive"], optional = true }
 toml = { version = "0.8", default-features = false, features = ["parse", "display"] }
 toml_edit = { version = "0.25", default-features = false, features = ["display", "parse"] }
 # bloat-trim 2026-05-07: dropped tracing/attributes (no `#[instrument]` in src) — saves proc-macro compile time, tiny .text shrink.
